@@ -222,48 +222,16 @@ def _b2b_sport_id(sport_name: str) -> int | None:
     return _B2B_SPORT_NAME_MAP.get(sport_name.strip().lower())
 
 
-# Confirmed BetB2B domain credentials — per-domain param overrides.
-#
-# Each entry has two sub-dicts: "live" and "upcoming".
-# Any key present here overrides the standard template value in fetch_betb2b.
-# Standard template (matches 1xBet reference URL):
-#   live:     sports count=1000 lng=en [gr] mode=4 country=87 partner
-#             getEmpty=true virtualSports=true noFilterBlockEvent=true
-#   upcoming: sports count=1000 lng=en mode=4 country=87 partner
-#             getEmpty=true virtualSports=true
-#
-_B2B_DOMAIN_CREDS: dict[str, dict] = {
-    "1xbet.co.ke": {
-        "live":     {"partner": "61",  "gr": "656"},
-        "upcoming": {"partner": "61"},
-    },
-    "22bet.co.ke": {
-        # Live:     count=50, lng=en_GB, gr=515, partner=151, no virtualSports, no noFilterBlockEvent
-        # Upcoming: partner=515, no gr
-        "live":     {"partner": "151", "gr": "515", "lng": "en_GB",
-                     "count": "50", "virtualSports": None, "noFilterBlockEvent": None},
-        "upcoming": {"partner": "515"},
-    },
-    "betwinner.co.ke": {
-        "live":     {"partner": "3",   "gr": "656"},
-        "upcoming": {"partner": "3"},
-    },
-    "melbet.co.ke": {
-        "live":     {"partner": "4",   "gr": "656"},
-        "upcoming": {"partner": "4"},
-    },
-    "megapari.com": {
-        "live":     {"partner": "6",   "gr": "656"},
-        "upcoming": {"partner": "6"},
-    },
-    "helabetke.com": {
-        "live":     {"partner": "237"},   # no gr
-        "upcoming": {"partner": "237"},
-    },
-    "paripesa.cool": {
-        "live":     {"partner": "188", "gr": "764"},
-        "upcoming": {"partner": "188"},
-    },
+# Confirmed BetB2B domain credentials (partner_id, gr)
+# gr="" means this bookmaker does not use the gr filter param
+_B2B_DOMAIN_CREDS: dict[str, tuple[str, str]] = {
+    "1xbet.co.ke":     ("61",  "656"),
+    "22bet.co.ke":     ("2",   "656"),
+    "betwinner.co.ke": ("3",   "656"),
+    "melbet.co.ke":    ("4",   "656"),
+    "megapari.com":    ("6",   "656"),
+    "helabetke.com":   ("237", ""),
+    "paripesa.cool":   ("188", "764"),
 }
 
 # Per-domain sport ID cache — populated on first fetch per domain
@@ -681,63 +649,38 @@ def fetch_betb2b(
     partner = params.get("partner", "61")
     status  = "live" if mode == "live" else "upcoming"
 
-    # ── Apply per-domain overrides from _B2B_DOMAIN_CREDS ─────────────────────
-    # Start with values from params dict (harvest_config), then overlay
-    # per-domain overrides. Value=None means "omit this param entirely".
-    domain_key   = domain.lower().lstrip("www.")
-    domain_creds = _B2B_DOMAIN_CREDS.get(domain_key, {})
-    mode_key     = "live" if mode == "live" else "upcoming"
-    overrides    = domain_creds.get(mode_key, {})
-
-    def _p(key: str, default: str) -> str | None:
-        """Return override value, params-dict value, or default. None = omit."""
-        if key in overrides:
-            return overrides[key]   # None means omit
-        return params.get(key, default)
-
-    p_lng     = _p("lng",     "en")
-    p_gr      = _p("gr",      gr)     # gr from params dict or override
-    p_country = _p("country", "87")
-    p_partner = _p("partner", partner)
-    p_count   = _p("count",   "1000")
-    p_vs      = _p("virtualSports",       "true")   # None = omit
-    p_nfbe    = _p("noFilterBlockEvent",  "true")   # None = omit (live only)
-
     if mode == "live":
         base_url = f"https://{domain}/service-api/LiveFeed/Get1x2_VZip"
-        # Fixed param order: sports count lng [gr] mode country partner getEmpty [virtualSports] [noFilterBlockEvent]
+        # Exact order: sports count lng [gr] mode country partner getEmpty virtualSports noFilterBlockEvent
         ordered_params: list[tuple[str, str]] = [
-            ("sports",  str(sport_id)),
-            ("count",   p_count),
-            ("lng",     p_lng),
+            ("sports",             str(sport_id)),
+            ("count",              "1000"),
+            ("lng",                lng),
         ]
-        if p_gr:
-            ordered_params.append(("gr", p_gr))
+        if gr:
+            ordered_params.append(("gr", gr))
         ordered_params += [
-            ("mode",      "4"),
-            ("country",   p_country),
-            ("partner",   p_partner),
-            ("getEmpty",  "true"),
+            ("mode",               "4"),
+            ("country",            country),
+            ("partner",            partner),
+            ("getEmpty",           "true"),
+            ("virtualSports",      "true"),
+            ("noFilterBlockEvent", "true"),
         ]
-        if p_vs is not None:
-            ordered_params.append(("virtualSports", p_vs))
-        if p_nfbe is not None:
-            ordered_params.append(("noFilterBlockEvent", p_nfbe))
     else:
         base_url = f"https://{domain}/service-api/LineFeed/Get1x2_VZip"
-        # Fixed param order: sports count lng mode country partner getEmpty [virtualSports]
-        # Note: no gr for LineFeed
+        # Exact order: sports count lng mode country partner getEmpty virtualSports
+        # Note: no gr for LineFeed (not present in user-provided URL)
         ordered_params = [
-            ("sports",  str(sport_id)),
-            ("count",   p_count),
-            ("lng",     p_lng),
-            ("mode",    "4"),
-            ("country", p_country),
-            ("partner", p_partner),
-            ("getEmpty","true"),
+            ("sports",             str(sport_id)),
+            ("count",              "1000"),
+            ("lng",                lng),
+            ("mode",               "4"),
+            ("country",            country),
+            ("partner",            partner),
+            ("getEmpty",           "true"),
+            ("virtualSports",      "true"),
         ]
-        if p_vs is not None:
-            ordered_params.append(("virtualSports", p_vs))
 
     try:
         raw = _fetch(base_url, headers, ordered_params, timeout)
@@ -1191,16 +1134,11 @@ def fetch_bookmaker(
         if not partner:
             creds = _B2B_DOMAIN_CREDS.get(domain.lower().lstrip("www."))
             if creds:
-                # For legacy path: pull partner/gr from the "upcoming" entry
-                up = creds.get("upcoming", {})
-                lv = creds.get("live", {})
-                partner = up.get("partner") or lv.get("partner", "")
-                gr_val  = lv.get("gr", "")
-                if partner:
-                    params["partner"] = partner
+                partner, gr_val = creds
+                params["partner"] = partner
                 if gr_val and not params.get("gr"):
                     params["gr"] = gr_val
-                print(f"[fetcher] {domain} — using hardcoded creds partner={partner} gr={gr_val or '(none)'}") 
+                print(f"[fetcher] {domain} — using hardcoded creds partner={partner} gr={params.get('gr', '(none)')}")
             else:
                 print(f"[fetcher] {domain} -> WARNING: no partner ID — skipping")
                 return []
