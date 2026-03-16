@@ -140,7 +140,8 @@ def _fetch(url: str, headers: dict, params: dict | list | None = None, timeout: 
             if resp.status_code == 406 and len(resp.content) == 0:
                 print(f"[fetcher] 406+0b from {final_url} — auth token expired")
                 return None
-            if resp.status_code not in (200, 201):
+            # Accept 200, 201, 203 (Non-Authoritative — used by Paripesa CDN)
+            if resp.status_code not in (200, 201, 203):
                 if resp.status_code in (403, 406) and target != targets[-1]:
                     print(f"[fetcher] {resp.status_code} with {target} — trying next fingerprint…")
                     continue
@@ -667,9 +668,10 @@ def fetch_betb2b(
             ("lng",                lng),
             ("country",            country),
             ("partner",            partner),
-            # Note: getEmpty intentionally omitted for LineFeed (upcoming).
-            # getEmpty=true returns matches scheduled far in future with no odds yet.
-            # LineFeed without getEmpty returns only matches with odds open.
+            # getEmpty=true required — without it the API returns 0 results.
+            # Matches with empty E[] (no odds opened yet) are filtered out
+            # client-side in the parsing loop below (no_odds counter).
+            ("getEmpty",           "true"),
             ("virtualSports",      "true"),
         ]
         if gr:
