@@ -1,0 +1,9 @@
+HTTP/2 406 
+server: nginx
+date: Sun, 15 Mar 2026 04:24:19 GMT
+content-length: 0
+cache-control: public, max-age=300
+last-modified: Sun, 15 Mar 2026 04:24:19 GMT
+x-time-ng: 0.002
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+
