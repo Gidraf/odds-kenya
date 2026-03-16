@@ -112,6 +112,7 @@ def create_app() -> Flask:
     from app.views.mapping import bp as mapping_bp
     from app.views.onboarding import bp_onboarding
     from app.views.vendors import bp_vendor
+    from app.views.sbo import bp_sbo
 
 
     flask_app.register_blueprint(bp_search)
@@ -119,6 +120,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bookmarker)
     flask_app.register_blueprint(bp_research)
     flask_app.register_blueprint(odds_bp)
+    flask_app.register_blueprint(bp_sbo)
     flask_app.register_blueprint(mapping_bp)
     flask_app.register_blueprint(bp_vendor, url_prefix="/api/vendors" )
     flask_app.register_blueprint(bp_onboarding, url_prefix="/api/onboarding")
