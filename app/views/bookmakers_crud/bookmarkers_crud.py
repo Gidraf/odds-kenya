@@ -179,7 +179,7 @@ def create_bookmaker():
     return jsonify(_serialize(bm)), 201
 
 
-@bp.route("/<int:bm_id>", methods=["GET"])
+@bp.route("/bookmakers/<int:bm_id>", methods=["GET"])
 def get_bookmaker(bm_id: int):
     Bookmaker = _get_model()
     bm = Bookmaker.query.get_or_404(bm_id)
