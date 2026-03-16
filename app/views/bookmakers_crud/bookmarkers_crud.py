@@ -613,7 +613,7 @@ def get_sport_config(bm_id: int, sport_name: str):
     return jsonify({"bookmaker_id": bm_id, "sport": sport_name, "config": sport_cfg})
 
 
-@bp.route("/<int:bm_id>/config/sports/<sport_name>", methods=["PUT"])
+@bp.route("/bookmakers/<int:bm_id>/config/sports/<sport_name>", methods=["PUT"])
 def save_sport_config(bm_id: int, sport_name: str):
     """
     PUT /bookmakers/<id>/config/sports/Football
@@ -663,7 +663,7 @@ def save_sport_config(bm_id: int, sport_name: str):
     })
 
 
-@bp.route("/<int:bm_id>/config/sports/<sport_name>", methods=["DELETE"])
+@bp.route("/bookmakers/<int:bm_id>/config/sports/<sport_name>", methods=["DELETE"])
 def delete_sport_config(bm_id: int, sport_name: str):
     """DELETE /bookmakers/<id>/config/sports/Football — remove one sport's config."""
     from app.extensions import db
