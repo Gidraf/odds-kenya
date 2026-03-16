@@ -213,7 +213,7 @@ def update_bookmaker(bm_id: int):
     return jsonify(_serialize(bm))
 
 
-@bp.route("/bookmakers/<int:bm_id>", methods=["DELETE"])
+@bp.route("/admin/bookmakers/<int:bm_id>", methods=["DELETE"])
 def delete_bookmaker(bm_id: int):
     from app.extensions import db
     Bookmaker = _get_model()
