@@ -616,45 +616,51 @@ def fetch_betb2b(
     domain: str,
     headers: dict,
     params: dict,
-    bk_sport_id: str | int | None = None,
-    sport_name_filter: str | None = None,
+    sport_id: str | int = 1,
     mode: str = "live",
-    page: int = 1,
-    page_size: int = 200,
     timeout: int = 15,
 ) -> list[dict]:
     """
-    Fetch from 1xBet / BetB2B family using Get1x2_VZip.
+    Fetch from BetB2B family (1xBet, Helabet, Paripesa, etc.) using Get1x2_VZip.
 
-    Strategy: omit the sports= filter entirely — one call returns ALL sports
-    at once (~200-500 live, ~1000+ upcoming). Filter by sport client-side
-    using SE/SN fields. This avoids "only 1 match returned" bugs.
+    Exact URL structure — param order is fixed, only domain and partner change:
 
-    Live   (LiveFeed): ?count=200&lng=en&gr=656&country=87&partner=61
-                        &getEmpty=true&virtualSports=true&noFilterBlockEvent=true
-    Upcoming (LineFeed): ?count=200&lng=en&country=87&partner=61
-                          &getEmpty=true&virtualSports=true
+    Live (LiveFeed):
+        https://{domain}/service-api/LiveFeed/Get1x2_VZip
+            ?sports={id}&count=1000&lng=en&gr={gr}&mode=4
+            &country=87&partner={partner}
+            &getEmpty=true&virtualSports=true&noFilterBlockEvent=true
 
-    sports= is still passed when bk_sport_id is explicitly given.
-    sport_name_filter filters parsed results client-side when set.
-    Matches with empty markets (E:[]) are filtered out after parsing.
+    Upcoming (LineFeed):
+        https://{domain}/service-api/LineFeed/Get1x2_VZip
+            ?sports={id}&count=1000&lng=en&mode=4
+            &country=87&partner={partner}
+            &getEmpty=true&virtualSports=true
+
+    Notes:
+      - gr is only present on LiveFeed (omitted for LineFeed)
+      - count=1000 covers a full sport in one call — no pagination needed
+      - mode=4 always fixed
+      - sport_id filters server-side (1=Football, 3=Basketball, etc.)
     """
     lng     = params.get("lng",     "en")
     gr      = params.get("gr",      "")
     country = params.get("country", "87")
     partner = params.get("partner", "61")
     status  = "live" if mode == "live" else "upcoming"
-    skip    = (page - 1) * page_size
 
     if mode == "live":
         base_url = f"https://{domain}/service-api/LiveFeed/Get1x2_VZip"
+        # Exact order: sports count lng [gr] mode country partner getEmpty virtualSports noFilterBlockEvent
         ordered_params: list[tuple[str, str]] = [
-            ("count",              str(page_size)),
+            ("sports",             str(sport_id)),
+            ("count",              "1000"),
             ("lng",                lng),
         ]
         if gr:
             ordered_params.append(("gr", gr))
         ordered_params += [
+            ("mode",               "4"),
             ("country",            country),
             ("partner",            partner),
             ("getEmpty",           "true"),
@@ -663,90 +669,78 @@ def fetch_betb2b(
         ]
     else:
         base_url = f"https://{domain}/service-api/LineFeed/Get1x2_VZip"
+        # Exact order: sports count lng mode country partner getEmpty virtualSports
+        # Note: no gr for LineFeed (not present in user-provided URL)
         ordered_params = [
-            ("count",              str(page_size)),
+            ("sports",             str(sport_id)),
+            ("count",              "1000"),
             ("lng",                lng),
+            ("mode",               "4"),
             ("country",            country),
             ("partner",            partner),
-            # getEmpty=true required — without it the API returns 0 results.
-            # Matches with empty E[] (no odds opened yet) are filtered out
-            # client-side in the parsing loop below (no_odds counter).
             ("getEmpty",           "true"),
             ("virtualSports",      "true"),
         ]
-        if gr:
-            ordered_params.append(("gr", gr))
 
-    if bk_sport_id is not None:
-        ordered_params.insert(0, ("sports", str(bk_sport_id)))
+    try:
+        raw = _fetch(base_url, headers, ordered_params, timeout)
+    except Exception as exc:
+        print(f"[fetcher] {domain} -> fetch error: {exc}")
+        return []
 
-    if skip > 0:
-        ordered_params.append(("skip", str(skip)))
+    if not isinstance(raw, dict):
+        print(f"[fetcher] {domain} -> non-dict response, skipping")
+        return []
+    if not raw.get("Success"):
+        print(f"[fetcher] {domain} -> Success=False (ErrorCode={raw.get('ErrorCode')}), skipping")
+        return []
 
-    # Auto-pagination: if the API caps per-page results we keep fetching
-    # until we have enough or the API returns fewer than a full page.
-    all_values: list[dict] = []
-    max_pages   = 10        # safety cap
-    current_skip = skip
+    value = raw.get("Value") or []
+    print(f"[fetcher] {domain} -> Value[] len={len(value)} mode={mode} sport_id={sport_id}")
 
-    for page_num in range(max_pages):
-        # Update skip param for this page
-        paged_params = [
-            (k, str(current_skip)) if k == "skip" else (k, v)
-            for k, v in ordered_params
-            if k != "skip"
-        ]
-        if current_skip > 0:
-            paged_params.append(("skip", str(current_skip)))
+    # ── Flatten nested tree (LineFeed = championship tree, LiveFeed = flat) ──
+    # LineFeed: Value[] = [{CI, CN, ..., GE:[{O1,O2,E...},...]}]  ← leagues
+    # LiveFeed: Value[] = [{O1, O2, E...}, ...]                   ← flat matches
+    flat_items: list[dict] = []
 
-        try:
-            raw = _fetch(base_url, headers, paged_params, timeout)
-        except Exception as exc:
-            print(f"[fetcher] {domain} -> fetch error: {exc}")
-            if page_num == 0:
-                return []
-            break
+    def _walk_value(node: dict, depth: int = 0) -> None:
+        """Descend until we find items that have team names (O1/O2 = a match)."""
+        has_teams = (node.get("O1") or node.get("O1N") or node.get("HN") or
+                     node.get("O2") or node.get("O2N") or node.get("AN"))
+        if has_teams:
+            flat_items.append(node)
+            return
+        if depth >= 4:
+            return
+        for key, child_val in node.items():
+            if key in ("E", "AE"):           # always odds arrays — never descend
+                continue
+            if isinstance(child_val, list) and child_val:
+                first = child_val[0]
+                if not isinstance(first, dict):
+                    continue
+                # Skip pure odds-event arrays (have G/T/C but no team names)
+                if "C" in first and "T" in first and "G" in first:
+                    continue
+                for child in child_val:
+                    if isinstance(child, dict):
+                        _walk_value(child, depth + 1)
 
-        if not isinstance(raw, dict):
-            if page_num == 0:
-                print(f"[fetcher] {domain} -> non-dict response, skipping")
-                return []
-            break
+    for top_item in value:
+        if isinstance(top_item, dict):
+            _walk_value(top_item)
 
-        if not raw.get("Success"):
-            if page_num == 0:
-                print(f"[fetcher] {domain} -> Success=False (ErrorCode={raw.get('ErrorCode')}), skipping")
-                return []
-            break
+    if len(flat_items) != len(value):
+        print(f"[fetcher] {domain} -> tree walk: {len(value)} top-level "
+              f"→ {len(flat_items)} match items")
 
-        page_values = raw.get("Value") or []
-        all_values.extend(page_values)
+    results:         list[dict] = []
+    no_odds:         int = 0
+    parse_fail:      int = 0
+    sport_counts:    dict[str, int] = {}
+    no_odds_samples: list[dict] = []
 
-        print(f"[fetcher] {domain} -> page {page_num+1}: {len(page_values)} items "
-              f"(total so far: {len(all_values)}) mode={mode}")
-
-        # Stop if:
-        # a) We got fewer items than the page size (last page)
-        # b) We already have enough
-        # c) First page returned 0 items
-        if len(page_values) < page_size or len(all_values) >= page_size * max_pages:
-            break
-        if len(page_values) == 0:
-            break
-
-        current_skip += len(page_values)
-
-    value = all_values
-    print(f"[fetcher] {domain} -> Value[] total={len(value)} mode={mode}")
-
-    results:        list[dict] = []
-    no_odds:        int = 0
-    wrong_sport:    int = 0
-    parse_fail:     int = 0
-    sport_counts:   dict[str, int] = {}
-    no_odds_samples: list[dict] = []   # first 3 football-no-odds items for debug
-
-    for item in value:
+    for item in flat_items:
         if not isinstance(item, dict):
             continue
         parsed = _parse_betb2b_item(item, status)
@@ -754,83 +748,41 @@ def fetch_betb2b(
             parse_fail += 1
             continue
 
-        # Track sport breakdown
         item_sport = (parsed.get("sport") or "unknown").strip()
         sport_counts[item_sport] = sport_counts.get(item_sport, 0) + 1
 
-        # Skip matches with no odds (E:[] — odds suspended / not yet opened)
         if not parsed.get("markets"):
             no_odds += 1
-            # Capture a few football no-odds samples for debug
-            if (sport_name_filter is None or item_sport.lower() == (sport_name_filter or "").lower()):
-                if len(no_odds_samples) < 3:
-                    no_odds_samples.append({
-                        "match":   f"{parsed['home_team']} v {parsed['away_team']}",
-                        "sport":   item_sport,
-                        "comp":    parsed.get("competition", ""),
-                        "E_len":   len(item.get("E") or []),
-                        "AE_len":  len(item.get("AE") or []),
-                        "raw_keys": list(item.keys()),
-                    })
+            if len(no_odds_samples) < 3:
+                no_odds_samples.append({
+                    "match":    f"{parsed['home_team']} v {parsed['away_team']}",
+                    "sport":    item_sport,
+                    "E_len":    len(item.get("E") or []),
+                    "AE_len":   len(item.get("AE") or []),
+                    "raw_keys": list(item.keys())[:8],
+                })
             continue
-
-        # Client-side sport filter (only when no server-side sports= was used)
-        if sport_name_filter and bk_sport_id is None:
-            if item_sport.lower() != sport_name_filter.lower():
-                wrong_sport += 1
-                continue
 
         results.append(parsed)
 
-    # ── Full debug summary ────────────────────────────────────────────────────
-    top_sports  = sorted(sport_counts.items(), key=lambda x: -x[1])[:8]
-    sports_str  = ", ".join(f"{s}:{n}" for s, n in top_sports)
-    total_items = len(value)
-    total_parsed= sum(sport_counts.values())
-
-    print(f"[fetcher:debug] {domain} mode={mode} ─────────────────────────────")
-    print(f"[fetcher:debug]   raw Value[] items : {total_items}")
-    print(f"[fetcher:debug]   parse_fail        : {parse_fail}")
-    print(f"[fetcher:debug]   parsed total       : {total_parsed}")
-    print(f"[fetcher:debug]   no-odds skipped    : {no_odds}")
-    print(f"[fetcher:debug]   wrong-sport dropped: {wrong_sport}")
-    print(f"[fetcher:debug]   RESULTS            : {len(results)}"
-          + (f" [{sport_name_filter}]" if sport_name_filter else " [all sports]"))
-    print(f"[fetcher:debug]   sport breakdown    : {sports_str}")
-
-    if sport_name_filter:
-        target_raw = sport_counts.get(sport_name_filter, 0)
-        print(f"[fetcher:debug]   {sport_name_filter} total (incl no-odds): {target_raw}")
+    # ── Log summary ───────────────────────────────────────────────────────────
+    top_sports = sorted(sport_counts.items(), key=lambda x: -x[1])[:6]
+    sports_str = ", ".join(f"{s}:{n}" for s, n in top_sports)
+    print(
+        f"[fetcher] {domain} -> {len(results)} matches with odds"
+        + (f", {no_odds} no-odds skipped" if no_odds else "")
+        + (f", {parse_fail} parse-fail" if parse_fail else "")
+        + f"  |  sports: {sports_str}"
+    )
 
     if no_odds_samples:
-        print(f"[fetcher:debug]   sample no-odds matches:")
+        print(f"[fetcher:debug] {domain} no-odds samples:")
         for s in no_odds_samples:
-            print(f"[fetcher:debug]     • {s['match']} [{s['sport']}] "
-                  f"E={s['E_len']} AE={s['AE_len']} keys={s['raw_keys'][:8]}")
-
-    # Peek at the first VALUE item raw to see field names
-    if total_items > 0 and total_parsed == 0:
-        first = value[0] if isinstance(value[0], dict) else {}
-        print(f"[fetcher:debug]   ⚠ 0 parsed! First item keys: {list(first.keys())[:15]}")
-        print(f"[fetcher:debug]   ⚠ O1={first.get('O1')!r} O2={first.get('O2')!r} "
-              f"SE={first.get('SE')!r} SN={first.get('SN')!r}")
-
-    print(f"[fetcher:debug] ─────────────────────────────────────────────────")
-
-    if len(results) == 0 and sport_name_filter:
-        target_count = sport_counts.get(sport_name_filter, 0)
-        print(
-            f"[fetcher] {domain} -> ⚠ 0 {sport_name_filter} matches with odds "
-            f"(API has {target_count} {sport_name_filter} but all have no odds). "
-            f"Try mode='upcoming'."
-        )
+            print(f"[fetcher:debug]   {s['match']} [{s['sport']}] "
+                  f"E={s['E_len']} AE={s['AE_len']} keys={s['raw_keys']}")
 
     return results
 
-
-# =============================================================================
-# BetB2B full market fetcher  (GetGameZip — single match, 250+ events)
-# =============================================================================
 
 def fetch_betb2b_markets(
     domain: str,
@@ -1191,13 +1143,17 @@ def fetch_bookmaker(
                 print(f"[fetcher] {domain} -> WARNING: no partner ID — skipping")
                 return []
 
+        # Resolve BetB2B sport ID from sport name
+        sid = _b2b_sport_id(sport_name) if sport_name.upper() != "ALL" else 1
+        if sid is None:
+            print(f"[fetcher] {domain} — unknown sport '{sport_name}', defaulting to Football (1)")
+            sid = 1
+        print(f"[fetcher] {domain} — '{sport_name}' → sport_id={sid} mode={mode}")
+
         matches = fetch_betb2b(
             domain, headers, params,
-            bk_sport_id=None,           # fetch ALL sports in one call
-            sport_name_filter=sport_name if sport_name.upper() != "ALL" else None,
+            sport_id=sid,
             mode=mode,
-            page=page,
-            page_size=page_size if page_size > 40 else 200,
             timeout=timeout,
         )
 
