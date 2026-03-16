@@ -114,3 +114,98 @@ def parse_match_list(raw_data):
         return []
         
     return parsed_matches
+
+def parse_match_list(raw_data):
+    try:
+        out = []
+        if type(raw_data) is not list:
+            return out
+
+        for item in raw_data:
+            try:
+                parent_match_id = item["betradarId"]
+            except Exception:
+                continue
+                
+            try:
+                home_team = item["competitors"][0]["name"]
+            except Exception:
+                continue
+                
+            try:
+                away_team = item["competitors"][1]["name"]
+            except Exception:
+                continue
+                
+            try:
+                start_time = item["date"]
+            except Exception:
+                start_time = None
+                
+            try:
+                sport = item["sport"]["name"]
+            except Exception:
+                sport = None
+                
+            try:
+                competition = item["competition"]["name"]
+            except Exception:
+                competition = None
+                
+            try:
+                markets = item["markets"]
+            except Exception:
+                continue
+                
+            for m in markets:
+                try:
+                    market_name = m["name"]
+                except Exception:
+                    continue
+                    
+                try:
+                    selections = m["selections"]
+                except Exception:
+                    continue
+                    
+                for s in selections:
+                    try:
+                        selection_name = s["name"]
+                    except Exception:
+                        continue
+                        
+                    try:
+                        price = float(s["odds"])
+                        if price <= 1.0:
+                            continue
+                    except Exception:
+                        continue
+                        
+                    try:
+                        spec = s["specValue"]
+                        if spec == 0 or spec == 0.0 or spec == "0" or spec == "":
+                            specifier = None
+                        else:
+                            specifier = str(spec)
+                    except Exception:
+                        specifier = None
+                        
+                    try:
+                        out.append({
+                            "parent_match_id": parent_match_id,
+                            "home_team": home_team,
+                            "away_team": away_team,
+                            "market": market_name,
+                            "selection": selection_name,
+                            "price": price,
+                            "start_time": start_time,
+                            "sport": sport,
+                            "competition": competition,
+                            "specifier": specifier
+                        })
+                    except Exception:
+                        continue
+                        
+        return out
+    except Exception:
+        return []
