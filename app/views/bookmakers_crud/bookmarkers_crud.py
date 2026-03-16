@@ -186,7 +186,7 @@ def get_bookmaker(bm_id: int):
     return jsonify(_serialize(bm))
 
 
-@bp.route("/bookmakers/<int:bm_id>", methods=["PUT"])
+@bp.route("/bookmaker/<int:bm_id>", methods=["PUT"])
 def update_bookmaker(bm_id: int):
     from app.extensions import db
     Bookmaker = _get_model()
