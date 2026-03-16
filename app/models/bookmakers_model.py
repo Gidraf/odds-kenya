@@ -15,6 +15,7 @@ class Bookmaker(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     domain = db.Column(db.String(100), unique=True, nullable=False)
     name = db.Column(db.String(100), nullable=True)
+    vendor_slug = db.Column(db.String(), nullable=True)  # e.g. "betika", "sportpesa", "betway"
 
     # AI-observed UI metadata
     brand_color = db.Column(db.String(20))
