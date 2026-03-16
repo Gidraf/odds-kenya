@@ -151,7 +151,7 @@ def list_bookmakers():
     })
 
 
-@bp.route("/", methods=["POST"])
+@bp.route("/bookmakers/onboard", methods=["POST"])
 def create_bookmaker():
     from app.extensions import db
     Bookmaker = _get_model()
