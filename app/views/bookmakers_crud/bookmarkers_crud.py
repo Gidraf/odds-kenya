@@ -186,7 +186,7 @@ def get_bookmaker(bm_id: int):
     return jsonify(_serialize(bm))
 
 
-@bp.route("/<int:bm_id>", methods=["PUT"])
+@bp.route("/bookmakers/<int:bm_id>", methods=["PUT"])
 def update_bookmaker(bm_id: int):
     from app.extensions import db
     Bookmaker = _get_model()
@@ -213,7 +213,7 @@ def update_bookmaker(bm_id: int):
     return jsonify(_serialize(bm))
 
 
-@bp.route("/<int:bm_id>", methods=["DELETE"])
+@bp.route("/bookmakers/<int:bm_id>", methods=["DELETE"])
 def delete_bookmaker(bm_id: int):
     from app.extensions import db
     Bookmaker = _get_model()
@@ -228,7 +228,7 @@ def delete_bookmaker(bm_id: int):
 # ─── Config-specific endpoints ────────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@bp.route("/<int:bm_id>/config", methods=["GET"])
+@bp.route("/bookmakers/<int:bm_id>/config", methods=["GET"])
 def get_config(bm_id: int):
     """Return just the harvest_config + vendor_slug for this bookmaker."""
     Bookmaker = _get_model()
@@ -247,7 +247,7 @@ def get_config(bm_id: int):
     })
 
 
-@bp.route("/<int:bm_id>/config", methods=["PUT"])
+@bp.route("/bookmakers/<int:bm_id>/config", methods=["PUT"])
 def save_config(bm_id: int):
     """
     Save or replace the harvest_config for a bookmaker.
@@ -308,7 +308,7 @@ def save_config(bm_id: int):
     })
 
 
-@bp.route("/<int:bm_id>/config", methods=["DELETE"])
+@bp.route("/bookmakers/<int:bm_id>/config", methods=["DELETE"])
 def clear_config(bm_id: int):
     """Clear the harvest_config (set to empty dict). Saves to history first."""
     from app.extensions import db
@@ -329,7 +329,7 @@ def clear_config(bm_id: int):
     })
 
 
-@bp.route("/<int:bm_id>/config/validate", methods=["POST"])
+@bp.route("/bookmakers/<int:bm_id>/config/validate", methods=["POST"])
 def validate_config(bm_id: int):
     """
     Validate a config JSON and optionally do a live probe against the API.
@@ -395,7 +395,7 @@ def validate_config(bm_id: int):
     if do_probe:
         t0 = time.perf_counter()
         try:
-            from app.workers.bookmaker_fetcher import fetch_bookmaker
+            from .bookmaker_fetcher import fetch_bookmaker
             bm_dict = {
                 "id":          bm.id,
                 "name":        bm.name,
@@ -422,7 +422,7 @@ def validate_config(bm_id: int):
     return jsonify(result)
 
 
-@bp.route("/<int:bm_id>/config/history", methods=["GET"])
+@bp.route("/bookmakers/<int:bm_id>/config/history", methods=["GET"])
 def config_history(bm_id: int):
     """Return last 10 saved configs for this bookmaker (from Redis)."""
     Bookmaker = _get_model()
@@ -436,7 +436,7 @@ def config_history(bm_id: int):
     })
 
 
-@bp.route("/<int:bm_id>/config/restore/<int:index>", methods=["POST"])
+@bp.route("/bookmakers/<int:bm_id>/config/restore/<int:index>", methods=["POST"])
 def restore_config(bm_id: int, index: int):
     """Restore config from history slot `index` (0 = most recent)."""
     from app.extensions import db
@@ -467,7 +467,7 @@ def restore_config(bm_id: int, index: int):
 # ─── Bulk config save ─────────────────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@bp.route("/bulk-config", methods=["POST"])
+@bp.route("/bookmakers/bulk-config", methods=["POST"])
 def bulk_save_configs():
     """
     Save configs for multiple bookmakers in one request.
@@ -573,7 +573,7 @@ def _build_sport_params(domain: str, partner: str, gr: str, sport_id: str) -> li
     return params
 
 
-@bp.route("/<int:bm_id>/config/sports", methods=["GET"])
+@bp.route("/bookmakers/<int:bm_id>/config/sports", methods=["GET"])
 def get_sport_configs(bm_id: int):
     """
     GET /bookmakers/<id>/config/sports
@@ -598,7 +598,7 @@ def get_sport_configs(bm_id: int):
     })
 
 
-@bp.route("/<int:bm_id>/config/sports/<sport_name>", methods=["GET"])
+@bp.route("/bookmakers/<int:bm_id>/config/sports/<sport_name>", methods=["GET"])
 def get_sport_config(bm_id: int, sport_name: str):
     """GET /bookmakers/<id>/config/sports/Football"""
     Bookmaker = _get_model()
@@ -689,7 +689,7 @@ def delete_sport_config(bm_id: int, sport_name: str):
     return jsonify({"ok": True, "deleted_sport": sport_name, "remaining": list(sports_cfg.keys())})
 
 
-@bp.route("/<int:bm_id>/config/sports/auto-fill", methods=["POST"])
+@bp.route("/bookmakers/<int:bm_id>/config/sports/auto-fill", methods=["POST"])
 def auto_fill_sports(bm_id: int):
     """
     POST /bookmakers/<id>/config/sports/auto-fill
@@ -758,7 +758,7 @@ def auto_fill_sports(bm_id: int):
     })
 
 
-@bp.route("/<int:bm_id>/config/sports/validate-all", methods=["POST"])
+@bp.route("/bookmakers/<int:bm_id>/config/sports/validate-all", methods=["POST"])
 def validate_all_sports(bm_id: int):
     """
     POST /bookmakers/<id>/config/sports/validate-all
