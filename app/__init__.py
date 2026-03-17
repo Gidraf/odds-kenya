@@ -146,6 +146,12 @@ def create_app() -> Flask:
         from app.models.user_admin import User
         from app.models.onboarding_model import BookmakerOnboardingSession
         from app.models.vendor_template import VendorTemplate, BookmakerVendorConfig
+        from app.models.subscriptions import Subscription, SubscriptionHistory
+        from app.models.notifications import NotificationPref
+        from app.models.metrics import MetricsEvent
+        from app.models.api_key import ApiKey
+        from app.models.bank_roll import BankrollAccount, BankrollTarget
+        from app.models.customer import Customer
 
     import app.sockets  # noqa: registers /admin namespace handlers
 
