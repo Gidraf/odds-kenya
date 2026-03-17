@@ -792,16 +792,33 @@ class BetikaFetcher:
 
             # For markets where each outcome has its own spec (TOTAL), split them
             if any(o.get("spec") for o in outcomes):
-                # Group by spec
-                by_spec: dict[Any, list] = {}
+                # Group by spec — spec can be a dict (unhashable), so we use a
+                # stable string key for grouping and store the original spec value
+                def _spec_key(v: Any) -> str:
+                    """Convert any spec value to a hashable string key."""
+                    if v is None:
+                        return "__none__"
+                    if isinstance(v, (int, float, str)):
+                        return str(v)
+                    if isinstance(v, dict):
+                        # e.g. {"total": 2.5} → "total=2.5"
+                        return "&".join(f"{k}={v2}" for k, v2 in sorted(v.items()))
+                    return str(v)
+
+                by_spec: dict[str, list] = {}       # str key → [outcomes]
+                spec_val: dict[str, Any] = {}        # str key → original spec value
+
                 for o in outcomes:
-                    s = o.get("spec") or spec
-                    by_spec.setdefault(s, []).append(o)
-                for s, outs in by_spec.items():
+                    raw_s = o.get("spec") or spec
+                    sk    = _spec_key(raw_s)
+                    by_spec.setdefault(sk, []).append(o)
+                    spec_val[sk] = raw_s              # keep first seen original value
+
+                for sk, outs in by_spec.items():
                     raw_markets.append({
                         "name":        name,
                         "sub_type_id": sub_id,
-                        "specifier":   s,
+                        "specifier":   spec_val[sk],  # original value (may be dict)
                         "outcomes":    outs,
                     })
             else:
