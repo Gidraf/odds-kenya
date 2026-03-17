@@ -1,10 +1,9 @@
-from flask import request
+from flask import request, Blueprint
 
 from app.utils.customer_jwt_helpers import _err, _signed_response
 from app.utils.decorators_ import log_event, require_auth
 
 
-from celery.bootsteps import Blueprint
 
 from app.utils.fetcher_utils import TIER_LIMITS, TIER_PRICES
 
