@@ -562,14 +562,20 @@ class SportpesaFetcher:
                         home = (m.get("competitors") or [{}])[0].get("name", "")
                         away = (m.get("competitors") or [{}, {}])[1].get("name", "")
 
+                        # league / competition / sport may be dicts {id, name} — extract .name
+                        def _str_field(v):
+                            if isinstance(v, dict):
+                                return str(v.get("name") or v.get("title") or "")
+                            return str(v) if v else ""
+
                         results.append({
                             "betradar_id":    betradar_id,
                             "game_id":        game_id,
                             "home_team":      home,
                             "away_team":      away,
                             "start_time":     m.get("date"),
-                            "competition":    m.get("league") or m.get("competition") or "",
-                            "sport":          m.get("sport") or "",
+                            "competition":    _str_field(m.get("league") or m.get("competition")),
+                            "sport":          _str_field(m.get("sport")),
                             "sp_markets_raw": m.get("markets") or [],  # inline markets
                         })
 
