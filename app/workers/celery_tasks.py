@@ -1,59 +1,15 @@
-"""
-app/workers/celery_tasks.py
-============================
-Production harvest engine — B2B (BetB2B family) + SBO (Sportpesa/Betika/Odibets).
-
-Worker Architecture
---------------------
-  20 concurrent workers × 15-record pages = 300 records/batch
-  Beat fires every 3 s  → aims for ~6 000 refreshed records/minute
-
-Queue topology
---------------
-  harvest   — paginated upcoming market fetches (B2B + SBO)
-  live      — live match updates every 60 s
-  ev_arb    — EV/Arb calculation after each batch lands
-  results   — match result / metadata updates
-  notify    — user notification dispatch
-  default   — health check + misc
-
-Celery CLI (project root)
---------------------------
-  # All queues, 20 concurrent workers
-  celery -A app.celery_app worker --loglevel=info \
-         -Q harvest,live,ev_arb,results,notify,default -c 20
-
-  # Beat scheduler (separate process)
-  celery -A app.celery_app beat --loglevel=info
-
-  # Dev — single combined process (5 workers for dev)
-  celery -A app.celery_app worker --beat --loglevel=info -c 5
-
-Setup
-------
-  # app/celery_app.py
-  from app import create_app
-  from app.workers.celery_tasks import make_celery
-  flask_app = create_app()
-  celery    = make_celery(flask_app)
-"""
-
 from __future__ import annotations
 
 import json
 import os
 import time
-import traceback
 from datetime import datetime, timezone, timedelta
 
-from celery import Celery
+from app.extensions import celery, init_celery
 from celery.utils.log import get_task_logger
 
 logger = get_task_logger(__name__)
 
-# ── Module-level instance — replaced by make_celery() ─────────────────────────
-
-# ── Default sport lists ───────────────────────────────────────────────────────
 _B2B_SPORTS = [
     "Football", "Basketball", "Tennis", "Ice Hockey",
     "Volleyball", "Cricket", "Rugby", "Table Tennis",
@@ -63,101 +19,47 @@ _SBO_SPORTS = [
     "volleyball", "cricket", "rugby", "boxing",
     "handball", "mma", "table-tennis",
 ]
-# How many matches per page (15 × 20 workers = 300/cycle)
 PAGE_SIZE = 15
 
 
-# =============================================================================
-# Factory
-# =============================================================================
-
-def make_celery(app) -> Celery:
-    global celery
-
-    broker  = app.config.get("CELERY_BROKER_URL",    "redis://localhost:6379/0")
-    backend = app.config.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
-
-    celery = Celery(app.import_name, broker=broker, backend=backend)
+def make_celery(app):
+    """
+    Bind the global Celery instance to the Flask app.
+    Calls extensions.init_celery() (sets broker/backend + ContextTask),
+    then layers on harvest-specific task_routes + beat_schedule.
+    Returns the same global celery object — NOT a new instance.
+    """
+    init_celery(app)
     celery.conf.update(
-        task_serializer            = "json",
-        result_serializer          = "json",
-        accept_content             = ["json"],
-        timezone                   = "UTC",
-        enable_utc                 = True,
         task_acks_late             = True,
-        worker_prefetch_multiplier = 1,       # fair queue for 20 workers
+        worker_prefetch_multiplier = 1,
         task_reject_on_worker_lost = True,
         task_default_queue         = "default",
-        worker_max_tasks_per_child = 500,     # recycle workers to avoid memory leaks
-
+        worker_max_tasks_per_child = 500,
         task_routes = {
-            "app.workers.celery_tasks.harvest_b2b_page":          {"queue": "harvest"},
-            "app.workers.celery_tasks.harvest_sbo_sport":         {"queue": "harvest"},
-            "app.workers.celery_tasks.harvest_all_upcoming":       {"queue": "harvest"},
-            "app.workers.celery_tasks.harvest_all_live":           {"queue": "live"},
-            "app.workers.celery_tasks.compute_ev_arb_for_match":  {"queue": "ev_arb"},
-            "app.workers.celery_tasks.update_match_results":       {"queue": "results"},
-            "app.workers.celery_tasks.dispatch_notifications":     {"queue": "notify"},
-            "app.workers.celery_tasks.health_check":               {"queue": "default"},
-            "app.workers.celery_tasks.expire_subscriptions":       {"queue": "default"},
-            "app.workers.celery_tasks.cache_finished_games":       {"queue": "results"},
+            "app.workers.celery_tasks.harvest_b2b_page":         {"queue": "harvest"},
+            "app.workers.celery_tasks.harvest_sbo_sport":        {"queue": "harvest"},
+            "app.workers.celery_tasks.harvest_all_upcoming":     {"queue": "harvest"},
+            "app.workers.celery_tasks.harvest_all_live":         {"queue": "live"},
+            "app.workers.celery_tasks.compute_ev_arb_for_match": {"queue": "ev_arb"},
+            "app.workers.celery_tasks.update_match_results":     {"queue": "results"},
+            "app.workers.celery_tasks.dispatch_notifications":   {"queue": "notify"},
+            "app.workers.celery_tasks.health_check":             {"queue": "default"},
+            "app.workers.celery_tasks.expire_subscriptions":     {"queue": "default"},
+            "app.workers.celery_tasks.cache_finished_games":     {"queue": "results"},
         },
-
         beat_schedule = {
-            # B2B upcoming — every 5 min
-            "b2b-upcoming-5min": {
-                "task":     "app.workers.celery_tasks.harvest_all_upcoming",
-                "schedule": 300,
-                "args":     ["upcoming"],
-            },
-            # B2B live — every 60 s
-            "b2b-live-60s": {
-                "task":     "app.workers.celery_tasks.harvest_all_live",
-                "schedule": 60,
-            },
-            # SBO upcoming — every 3 min (slower API)
-            "sbo-upcoming-3min": {
-                "task":     "app.workers.celery_tasks.harvest_all_sbo_upcoming",
-                "schedule": 180,
-            },
-            # SBO live — every 90 s
-            "sbo-live-90s": {
-                "task":     "app.workers.celery_tasks.harvest_all_sbo_live",
-                "schedule": 90,
-            },
-            # Result updates every 5 min
-            "results-5min": {
-                "task":     "app.workers.celery_tasks.update_match_results",
-                "schedule": 300,
-            },
-            # Cache finished games daily
-            "cache-finished-daily": {
-                "task":     "app.workers.celery_tasks.cache_finished_games",
-                "schedule": 3600,
-            },
-            # Health heartbeat
-            "health-30s": {
-                "task":     "app.workers.celery_tasks.health_check",
-                "schedule": 30,
-            },
-            # Subscription expiry check
-            "expire-subs-hourly": {
-                "task":     "app.workers.celery_tasks.expire_subscriptions",
-                "schedule": 3600,
-            },
+            "b2b-upcoming-5min":     {"task": "app.workers.celery_tasks.harvest_all_upcoming",     "schedule": 300, "args": ["upcoming"]},
+            "b2b-live-60s":          {"task": "app.workers.celery_tasks.harvest_all_live",         "schedule": 60},
+            "sbo-upcoming-3min":     {"task": "app.workers.celery_tasks.harvest_all_sbo_upcoming", "schedule": 180},
+            "sbo-live-90s":          {"task": "app.workers.celery_tasks.harvest_all_sbo_live",     "schedule": 90},
+            "results-5min":          {"task": "app.workers.celery_tasks.update_match_results",     "schedule": 300},
+            "cache-finished-hourly": {"task": "app.workers.celery_tasks.cache_finished_games",     "schedule": 3600},
+            "health-30s":            {"task": "app.workers.celery_tasks.health_check",             "schedule": 30},
+            "expire-subs-hourly":    {"task": "app.workers.celery_tasks.expire_subscriptions",     "schedule": 3600},
         },
     )
-
-    class ContextTask(celery.Task):
-        abstract = True
-        def __call__(self, *args, **kwargs):
-            with app.app_context():
-                return self.run(*args, **kwargs)
-
-    celery.Task = ContextTask
     return celery
-
-
 # =============================================================================
 # Redis cache helpers
 # =============================================================================
