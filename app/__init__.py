@@ -70,6 +70,7 @@ def create_app() -> Flask:
     from app.views.vendors import bp_vendor
     from app.views.sbo import bp_sbo
     from app.views.admin import admin_bp
+    from app.views.customer_auth import bp_customer
     from app.views.subscriptions import bp_customer_subscriptions
 
     flask_app.register_blueprint(bp_search)
@@ -84,6 +85,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_playwright, url_prefix="/api/playwright")
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
+    flask_app.register_blueprint(bp_customer)
 
     init_playwright_manager()
 

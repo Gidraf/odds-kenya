@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <title>Welcome to OddsKenya ⚽</title>
+  <!--[if mso]>
+  <noscript>
+    <xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml>
+  </noscript>
+  <![endif]-->
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800;900&family=Barlow:wght@400;500;600&display=swap');
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background-color: #060e1f;
+      font-family: 'Barlow', Arial, sans-serif;
+      color: #e8e8e8;
+      -webkit-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+    }
+
+    table { border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { border: 0; display: block; outline: none; -ms-interpolation-mode: bicubic; }
+    a { text-decoration: none; }
+
+    .wrapper {
+      width: 100%;
+      background-color: #060e1f;
+      padding: 40px 16px;
+    }
+
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #0a1628;
+      border: 1px solid rgba(245,200,66,0.18);
+      overflow: hidden;
+    }
+
+    /* ── Header hero ──────────────────────────────────────── */
+    .hero {
+      background: linear-gradient(135deg, #060e1f 0%, #0d1f38 50%, #060e1f 100%);
+      position: relative;
+      padding: 52px 40px 44px;
+      text-align: center;
+      border-bottom: 1px solid rgba(245,200,66,0.15);
+      overflow: hidden;
+    }
+
+    .hero-grid-bg {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,.015) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.015) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+
+    .hero-glow {
+      position: absolute;
+      top: -80px; left: 50%;
+      transform: translateX(-50%);
+      width: 400px; height: 300px;
+      background: radial-gradient(ellipse, rgba(245,200,66,0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .logo-row {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+
+    .logo-icon {
+      font-size: 32px;
+      line-height: 1;
+    }
+
+    .logo-text {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 28px;
+      font-weight: 900;
+      color: #F5C842;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    .hero-eyebrow {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 10px;
+      letter-spacing: 4px;
+      color: rgba(245,200,66,0.7);
+      text-transform: uppercase;
+      display: block;
+      margin-bottom: 14px;
+      position: relative;
+    }
+
+    .hero-headline {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 48px;
+      font-weight: 900;
+      line-height: 1.0;
+      color: #ffffff;
+      letter-spacing: -1px;
+      position: relative;
+      margin-bottom: 6px;
+    }
+
+    .hero-headline .accent-gold   { color: #F5C842; }
+    .hero-headline .accent-orange { color: #FB923C; }
+
+    .hero-sub {
+      font-family: 'Barlow', Arial, sans-serif;
+      font-size: 15px;
+      color: rgba(255,255,255,0.55);
+      line-height: 1.6;
+      position: relative;
+      margin-top: 14px;
+    }
+
+    /* ── Verify CTA strip ─────────────────────────────────── */
+    .verify-strip {
+      background: linear-gradient(135deg, rgba(245,200,66,0.08), rgba(251,146,60,0.05));
+      border-top: 1px solid rgba(245,200,66,0.2);
+      border-bottom: 1px solid rgba(245,200,66,0.2);
+      padding: 32px 40px;
+      text-align: center;
+    }
+
+    .verify-label {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 9px;
+      letter-spacing: 4px;
+      color: rgba(245,200,66,0.6);
+      text-transform: uppercase;
+      display: block;
+      margin-bottom: 10px;
+    }
+
+    .verify-title {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 22px;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .verify-sub {
+      font-size: 13px;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 22px;
+      line-height: 1.6;
+    }
+
+    .verify-btn {
+      display: inline-block;
+      padding: 14px 40px;
+      background: linear-gradient(135deg, #F5C842, #FB923C);
+      color: #060e1f;
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-decoration: none;
+      border: none;
+    }
+
+    .verify-link-note {
+      font-size: 11px;
+      color: rgba(255,255,255,0.3);
+      margin-top: 14px;
+      word-break: break-all;
+    }
+
+    .verify-link-note a {
+      color: rgba(245,200,66,0.6);
+    }
+
+    /* ── Trial badge ──────────────────────────────────────── */
+    .trial-banner {
+      margin: 0 40px;
+      padding: 16px 20px;
+      background: rgba(74,222,128,0.06);
+      border: 1px solid rgba(74,222,128,0.2);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-top: 28px;
+    }
+
+    .trial-icon { font-size: 28px; flex-shrink: 0; }
+
+    .trial-text-title {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 15px;
+      font-weight: 800;
+      color: #4ADE80;
+      margin-bottom: 3px;
+    }
+
+    .trial-text-sub {
+      font-size: 12px;
+      color: rgba(255,255,255,0.5);
+      line-height: 1.5;
+    }
+
+    /* ── Features grid ────────────────────────────────────── */
+    .section-title {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 11px;
+      letter-spacing: 4px;
+      color: rgba(245,200,66,0.6);
+      text-transform: uppercase;
+      padding: 32px 40px 16px;
+      display: block;
+    }
+
+    .features-table {
+      width: 100%;
+      padding: 0 40px 8px;
+    }
+
+    .feature-row td {
+      padding: 12px 10px;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .feature-icon-cell {
+      width: 44px;
+    }
+
+    .feature-icon-box {
+      width: 38px;
+      height: 38px;
+      background: rgba(245,200,66,0.07);
+      border: 1px solid rgba(245,200,66,0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      line-height: 38px;
+      text-align: center;
+    }
+
+    .feature-name {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 15px;
+      font-weight: 800;
+      color: #fff;
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    .feature-desc {
+      font-size: 12px;
+      color: rgba(255,255,255,0.5);
+      line-height: 1.5;
+    }
+
+    .feature-tier {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 7px;
+      letter-spacing: 2px;
+      padding: 2px 7px;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+
+    .tier-free    { background: rgba(74,222,128,0.1);  color: #4ADE80; border: 1px solid rgba(74,222,128,0.25); }
+    .tier-pro     { background: rgba(245,200,66,0.1);  color: #F5C842; border: 1px solid rgba(245,200,66,0.25); }
+    .tier-premium { background: rgba(251,146,60,0.1);  color: #FB923C; border: 1px solid rgba(251,146,60,0.25); }
+
+    /* ── Stats row ────────────────────────────────────────── */
+    .stats-row {
+      padding: 28px 40px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .stat-item {
+      text-align: center;
+      padding: 0 8px;
+    }
+
+    .stat-value {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 30px;
+      font-weight: 900;
+      color: #F5C842;
+      line-height: 1;
+      display: block;
+    }
+
+    .stat-label {
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: rgba(255,255,255,0.35);
+      text-transform: uppercase;
+      display: block;
+      margin-top: 4px;
+    }
+
+    /* ── Bookmakers row ───────────────────────────────────── */
+    .bookmakers-section {
+      padding: 24px 40px;
+      text-align: center;
+    }
+
+    .bk-pill {
+      display: inline-block;
+      padding: 4px 12px;
+      margin: 4px;
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      border: 1px solid;
+    }
+
+    /* ── CTA section ──────────────────────────────────────── */
+    .cta-section {
+      text-align: center;
+      padding: 32px 40px 36px;
+      background: rgba(245,200,66,0.04);
+      border-top: 1px solid rgba(245,200,66,0.1);
+    }
+
+    .cta-title {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 24px;
+      font-weight: 900;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .cta-sub {
+      font-size: 13px;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 22px;
+    }
+
+    .cta-btn {
+      display: inline-block;
+      padding: 13px 32px;
+      background: transparent;
+      border: 1px solid rgba(245,200,66,0.5);
+      color: #F5C842;
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+
+    /* ── Footer ───────────────────────────────────────────── */
+    .footer {
+      padding: 28px 40px;
+      text-align: center;
+      border-top: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .footer-logo {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 16px;
+      font-weight: 900;
+      color: rgba(245,200,66,0.5);
+      letter-spacing: 2px;
+      margin-bottom: 10px;
+    }
+
+    .footer-text {
+      font-size: 11px;
+      color: rgba(255,255,255,0.25);
+      line-height: 1.7;
+    }
+
+    .footer-links {
+      margin-top: 12px;
+    }
+
+    .footer-links a {
+      color: rgba(255,255,255,0.3);
+      font-size: 10px;
+      letter-spacing: 1px;
+      margin: 0 8px;
+      text-decoration: none;
+    }
+
+    /* ── Divider ──────────────────────────────────────────── */
+    .divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(245,200,66,0.2), transparent);
+      margin: 0 40px;
+    }
+
+    /* ── Mobile ───────────────────────────────────────────── */
+    @media only screen and (max-width: 480px) {
+      .hero { padding: 40px 24px 32px; }
+      .hero-headline { font-size: 36px; }
+      .verify-strip { padding: 28px 24px; }
+      .trial-banner { margin: 0 24px; }
+      .features-table { padding: 0 24px 8px; }
+      .section-title { padding: 28px 24px 14px; }
+      .stats-row { padding: 24px; }
+      .bookmakers-section { padding: 20px 24px; }
+      .cta-section { padding: 28px 24px; }
+      .footer { padding: 24px; }
+      .divider { margin: 0 24px; }
+      .verify-btn { padding: 13px 28px; font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+<div class="container">
+
+  <!-- ── Hero ──────────────────────────────────────────────── -->
+  <div class="hero">
+    <div class="hero-grid-bg"></div>
+    <div class="hero-glow"></div>
+
+    <!-- Logo -->
+    <div class="logo-row">
+      <span class="logo-icon">⚽</span>
+      <span class="logo-text">OddsKenya</span>
+    </div>
+
+    <span class="hero-eyebrow">Welcome to the platform</span>
+
+    <div class="hero-headline">
+      You&rsquo;re In,<br />
+      <span class="accent-gold">{{ display_name or "Champion" }}</span>
+    </div>
+
+    <p class="hero-sub">
+      Kenya&rsquo;s sharpest odds comparison engine is now yours.<br />
+      Beat every bookmaker. Every single day.
+    </p>
+  </div>
+
+  <!-- ── Email Verification Strip ──────────────────────────── -->
+  <div class="verify-strip">
+    <span class="verify-label">Action Required</span>
+    <div class="verify-title">Verify Your Email Address</div>
+    <p class="verify-sub">
+      Click the button below to confirm your email and activate your<br />
+      <strong style="color:#F5C842;">{{ tier|title }} — 3-Day Free Trial</strong>.
+    </p>
+    <a href="{{ verification_url }}" class="verify-btn">
+      VERIFY MY EMAIL →
+    </a>
+    <p class="verify-link-note">
+      Button not working? Copy this link:<br />
+      <a href="{{ verification_url }}">{{ verification_url }}</a>
+    </p>
+    <p style="font-size:11px; color:rgba(255,255,255,0.25); margin-top:10px;">
+      This link expires in <strong style="color:rgba(245,200,66,0.6);">24 hours</strong>.
+      If you didn&rsquo;t sign up, you can safely ignore this email.
+    </p>
+  </div>
+
+  <!-- ── Trial Badge ────────────────────────────────────────── -->
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td>
+        <div class="trial-banner">
+          <div class="trial-icon">🎁</div>
+          <div>
+            <div class="trial-text-title">3-Day Free Trial Active</div>
+            <div class="trial-text-sub">
+              Full <strong>{{ tier|title }}</strong> access — no credit card needed.
+              Trial ends {{ trial_ends }}. We&rsquo;ll remind you before it does.
+            </div>
+          </div>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <!-- ── Stats ─────────────────────────────────────────────── -->
+  <div class="stats-row">
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td class="stat-item" style="width:25%">
+          <span class="stat-value">12+</span>
+          <span class="stat-label">Bookmakers</span>
+        </td>
+        <td class="stat-item" style="width:25%">
+          <span class="stat-value">5K+</span>
+          <span class="stat-label">Daily Matches</span>
+        </td>
+        <td class="stat-item" style="width:25%">
+          <span class="stat-value">3s</span>
+          <span class="stat-label">Refresh Cycle</span>
+        </td>
+        <td class="stat-item" style="width:25%">
+          <span class="stat-value">98%</span>
+          <span class="stat-label">Uptime</span>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- ── Features ──────────────────────────────────────────── -->
+  <span class="section-title">What&rsquo;s waiting for you</span>
+
+  <table class="features-table" cellpadding="0" cellspacing="0">
+    <tr class="feature-row">
+      <td class="feature-icon-cell">
+        <div class="feature-icon-box">⚡</div>
+      </td>
+      <td style="padding: 12px 10px;">
+        <span class="feature-name">Real-Time Odds Comparison</span>
+        <span class="feature-desc">All 12+ bookmakers side by side, refreshed every 60 seconds.</span>
+      </td>
+      <td style="text-align:right; padding:12px 10px; vertical-align:middle;">
+        <span class="feature-tier tier-free">FREE</span>
+      </td>
+    </tr>
+    <tr class="feature-row">
+      <td class="feature-icon-cell">
+        <div class="feature-icon-box">🎯</div>
+      </td>
+      <td style="padding: 12px 10px;">
+        <span class="feature-name">Arbitrage Finder</span>
+        <span class="feature-desc">Automatic guaranteed-profit detection across all markets.</span>
+      </td>
+      <td style="text-align:right; padding:12px 10px; vertical-align:middle;">
+        <span class="feature-tier tier-free">FREE</span>
+      </td>
+    </tr>
+    <tr class="feature-row">
+      <td class="feature-icon-cell">
+        <div class="feature-icon-box">📊</div>
+      </td>
+      <td style="padding: 12px 10px;">
+        <span class="feature-name">+EV Calculator</span>
+        <span class="feature-desc">Sharp consensus model removes vig and finds true value bets.</span>
+      </td>
+      <td style="text-align:right; padding:12px 10px; vertical-align:middle;">
+        <span class="feature-tier tier-pro">PRO</span>
+      </td>
+    </tr>
+    <tr class="feature-row">
+      <td class="feature-icon-cell">
+        <div class="feature-icon-box">🔔</div>
+      </td>
+      <td style="padding: 12px 10px;">
+        <span class="feature-name">Instant Alerts</span>
+        <span class="feature-desc">Email notification the moment a profitable arb window opens.</span>
+      </td>
+      <td style="text-align:right; padding:12px 10px; vertical-align:middle;">
+        <span class="feature-tier tier-pro">PRO</span>
+      </td>
+    </tr>
+    <tr class="feature-row" style="border-bottom:none;">
+      <td class="feature-icon-cell">
+        <div class="feature-icon-box">💹</div>
+      </td>
+      <td style="padding: 12px 10px;">
+        <span class="feature-name">Bankroll Engine</span>
+        <span class="feature-desc">Kelly Criterion auto-sizing. Set a target, let the AI grow it.</span>
+      </td>
+      <td style="text-align:right; padding:12px 10px; vertical-align:middle;">
+        <span class="feature-tier tier-premium">PREMIUM</span>
+      </td>
+    </tr>
+  </table>
+
+  <div class="divider"></div>
+
+  <!-- ── Bookmakers ─────────────────────────────────────────── -->
+  <div class="bookmakers-section">
+    <span style="font-family:'Barlow Condensed',Arial,sans-serif; font-size:9px; letter-spacing:4px; color:rgba(255,255,255,0.25); display:block; margin-bottom:14px; text-transform:uppercase;">
+      Bookmakers we track
+    </span>
+    <span class="bk-pill" style="color:#1FB954; border-color:rgba(31,185,84,0.3);">Sportpesa</span>
+    <span class="bk-pill" style="color:#E8312A; border-color:rgba(232,49,42,0.3);">Betika</span>
+    <span class="bk-pill" style="color:#0066CC; border-color:rgba(0,102,204,0.3);">Odibets</span>
+    <span class="bk-pill" style="color:#FF6600; border-color:rgba(255,102,0,0.3);">1xBet</span>
+    <span class="bk-pill" style="color:#8B5CF6; border-color:rgba(139,92,246,0.3);">Helabet</span>
+    <span class="bk-pill" style="color:#F5C842; border-color:rgba(245,200,66,0.3);">Paripesa</span>
+    <span class="bk-pill" style="color:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.1);">+ 6 more</span>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ── Final CTA ──────────────────────────────────────────── -->
+  <div class="cta-section">
+    <div class="cta-title">Ready to Beat the Bookies?</div>
+    <p class="cta-sub">Verify your email above, then log in to start comparing odds.</p>
+    <a href="{{ app_url }}/odds" class="cta-btn">
+      Browse Live Odds →
+    </a>
+  </div>
+
+  <!-- ── Footer ─────────────────────────────────────────────── -->
+  <div class="footer">
+    <div class="footer-logo">⚽ ODDSKENYA</div>
+    <p class="footer-text">
+      You received this because you created an account on OddsKenya.<br />
+      Kenya&rsquo;s most complete odds comparison platform.<br />
+      Gamble responsibly &mdash; 18+ only.
+    </p>
+    <div class="footer-links">
+      <a href="{{ app_url }}/terms">Terms</a>
+      <a href="{{ app_url }}/privacy">Privacy</a>
+      <a href="{{ app_url }}/contact">Contact</a>
+      <a href="mailto:support@oddskenya.com">support@oddskenya.com</a>
+    </div>
+    <p style="font-size:10px; color:rgba(255,255,255,0.15); margin-top:16px;">
+      &copy; {{ year }} OddsKenya. All rights reserved. Nairobi, Kenya.
+    </p>
+  </div>
+
+</div><!-- /container -->
+</div><!-- /wrapper -->
+</body>
+</html>
