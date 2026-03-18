@@ -963,48 +963,48 @@ def send_async_email(
     """
     print(body)
     app = create_app()
+    with app.app_context():
+        try:
+            smtp_user = username or os.environ.get("ADMIN_EMAIL", "")
+            smtp_pass = password or os.environ.get("ADMIN_EMAIL_PASSWORD", "")
 
-    try:
-        smtp_user = username or os.environ.get("ADMIN_EMAIL", "")
-        smtp_pass = password or os.environ.get("ADMIN_EMAIL_PASSWORD", "")
+            # app.config.update({
+            #     "MAIL_SERVER":         os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+            #     "MAIL_PORT":           int(os.environ.get("SMTP_PORT", 587)),
+            #     "MAIL_USE_TLS":        True,
+            #     "MAIL_USERNAME":       smtp_user,
+            #     "MAIL_PASSWORD":       smtp_pass,
+            #     "MAIL_DEFAULT_SENDER": smtp_user,
+            # })
 
-        app.config.update({
-            "MAIL_SERVER":         os.environ.get("SMTP_HOST", "smtp.gmail.com"),
-            "MAIL_PORT":           int(os.environ.get("SMTP_PORT", 587)),
-            "MAIL_USE_TLS":        True,
-            "MAIL_USERNAME":       smtp_user,
-            "MAIL_PASSWORD":       smtp_pass,
-            "MAIL_DEFAULT_SENDER": smtp_user,
-        })
+            mail = Mail(app)
+            msg  = Message(subject=subject, sender=smtp_user, recipients=recipients)
 
-        mail = Mail(app)
-        msg  = Message(subject=subject, sender=smtp_user, recipients=recipients)
+            if body_type == "html":
+                msg.html = body
+            else:
+                msg.body = body
 
-        if body_type == "html":
-            msg.html = body
-        else:
-            msg.body = body
+            if attachments:
+                for a in attachments:
+                    content_b64 = a.get("content")
+                    if not content_b64:
+                        continue
+                    try:
+                        msg.attach(
+                            a.get("filename", "file"),
+                            a.get("mimetype", "application/octet-stream"),
+                            base64.b64decode(content_b64),
+                        )
+                    except Exception as decode_err:
+                        logger.warning(f"[email] attachment decode error: {decode_err}")
 
-        if attachments:
-            for a in attachments:
-                content_b64 = a.get("content")
-                if not content_b64:
-                    continue
-                try:
-                    msg.attach(
-                        a.get("filename", "file"),
-                        a.get("mimetype", "application/octet-stream"),
-                        base64.b64decode(content_b64),
-                    )
-                except Exception as decode_err:
-                    logger.warning(f"[email] attachment decode error: {decode_err}")
+            mail.send(msg)
+            logger.info(f"[email] sent to {recipients}")
 
-        mail.send(msg)
-        logger.info(f"[email] sent to {recipients}")
-
-    except Exception as e:
-        logger.error(f"[email] send failed: {e}")
-        raise   # mark task FAILED so Celery can retry
+        except Exception as e:
+            logger.error(f"[email] send failed: {e}")
+            raise   # mark task FAILED so Celery can retry
 
 
 # =============================================================================
