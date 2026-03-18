@@ -1154,7 +1154,7 @@ def send_async_email(subject, recipients, body, body_type="plain", attachments=N
 
 
 
-@celery_service.task
+@celery.task
 def send_email(
     to,
     subject,
