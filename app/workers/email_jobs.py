@@ -16,23 +16,22 @@ import random
 import time
 from random import randint
 
+from redis.credentials import logger
+
 # from app.model.odds import FreeOdds, OddsGeneratedData
 # from app.model.tips import Competitions, Countries, Sports, Tips, TipsDetails
-from . import celery_service
 # from pypdf import PdfMerger
 import requests
 from sqlalchemy import or_, and_
 from celery.schedules import crontab
 # from datetime import datetime
 # from flask import render_template, url_for
-from ..model import db
 
 # import africastalking
 import os
 import os
 from . import create_celery_app
 from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 # from playwright.sync_api import sync_playwright
@@ -53,6 +52,98 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     # "https://www.googleapis.com/auth/calendar"
 ]
+
+
+from app.extensions import celery as celery_service, init_celery
+
+
+def make_celery(app):
+    """
+    Bind the global Celery instance to the Flask app.
+    Calls extensions.init_celery() (sets broker/backend + ContextTask),
+    then layers on harvest-specific task_routes + beat_schedule.
+    Returns the same global celery object — NOT a new instance.
+    """
+    init_celery(app)
+    celery.conf.update(
+        task_acks_late             = True,
+        worker_prefetch_multiplier = 1,
+        task_reject_on_worker_lost = True,
+        task_default_queue         = "default",
+        worker_max_tasks_per_child = 500,
+        task_routes = {
+            "app.workers.celery_tasks.harvest_b2b_page":         {"queue": "harvest"},
+            "app.workers.celery_tasks.harvest_sbo_sport":        {"queue": "harvest"},
+            "app.workers.celery_tasks.harvest_all_upcoming":     {"queue": "harvest"},
+            "app.workers.celery_tasks.harvest_all_live":         {"queue": "live"},
+            "app.workers.celery_tasks.compute_ev_arb_for_match": {"queue": "ev_arb"},
+            "app.workers.celery_tasks.update_match_results":     {"queue": "results"},
+            "app.workers.celery_tasks.dispatch_notifications":   {"queue": "notify"},
+            "app.workers.celery_tasks.health_check":             {"queue": "default"},
+            "app.workers.celery_tasks.expire_subscriptions":     {"queue": "default"},
+            "app.workers.celery_tasks.cache_finished_games":     {"queue": "results"},
+        },
+        beat_schedule = {
+            "b2b-upcoming-5min":     {"task": "app.workers.celery_tasks.harvest_all_upcoming",     "schedule": 300, "args": ["upcoming"]},
+            "b2b-live-60s":          {"task": "app.workers.celery_tasks.harvest_all_live",         "schedule": 60},
+            "sbo-upcoming-3min":     {"task": "app.workers.celery_tasks.harvest_all_sbo_upcoming", "schedule": 180},
+            "sbo-live-90s":          {"task": "app.workers.celery_tasks.harvest_all_sbo_live",     "schedule": 90},
+            "results-5min":          {"task": "app.workers.celery_tasks.update_match_results",     "schedule": 300},
+            "cache-finished-hourly": {"task": "app.workers.celery_tasks.cache_finished_games",     "schedule": 3600},
+            "health-30s":            {"task": "app.workers.celery_tasks.health_check",             "schedule": 30},
+            "expire-subs-hourly":    {"task": "app.workers.celery_tasks.expire_subscriptions",     "schedule": 3600},
+        },
+    )
+    return celery
+# =============================================================================
+# Redis cache helpers
+# =============================================================================
+
+def _redis():
+    import redis as _r
+    url  = celery.conf.broker_url or "redis://localhost:6379/0"
+    base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
+    return _r.Redis.from_url(
+        f"{base}/2",
+        decode_responses       = False,
+        socket_timeout         = 5,
+        socket_connect_timeout = 5,
+        retry_on_timeout       = True,
+    )
+
+
+def cache_set(key: str, data, ttl: int = 600) -> bool:
+    try:
+        _redis().set(key, json.dumps(data, default=str), ex=ttl)
+        return True
+    except Exception as e:
+        logger.warning(f"[cache:set] {key}: {e}")
+        return False
+
+
+def cache_get(key: str):
+    try:
+        raw = _redis().get(key)
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        logger.warning(f"[cache:get] {key}: {e}")
+        return None
+
+
+def cache_keys(pattern: str) -> list[str]:
+    try:
+        return [k.decode() if isinstance(k, bytes) else k
+                for k in _redis().keys(pattern)]
+    except Exception as e:
+        logger.warning(f"[cache:keys] {pattern}: {e}")
+        return []
+
+
+def task_status_set(name: str, status: dict):
+    cache_set(f"task_status:{name}", {
+        **status,
+        "updated_at": datetime.now(datetime.timezone.utc).isoformat(),
+    }, ttl=300)
 
              
 
