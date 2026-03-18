@@ -65,39 +65,18 @@ def make_celery(app):
     Returns the same global celery object — NOT a new instance.
     """
     init_celery(app)
-    celery.conf.update(
+    celery_service.conf.update(
         task_acks_late             = True,
         worker_prefetch_multiplier = 1,
         task_reject_on_worker_lost = True,
         task_default_queue         = "default",
         worker_max_tasks_per_child = 500,
-        task_routes = {
-            "app.workers.celery_tasks.harvest_b2b_page":         {"queue": "harvest"},
-            "app.workers.celery_tasks.harvest_sbo_sport":        {"queue": "harvest"},
-            "app.workers.celery_tasks.harvest_all_upcoming":     {"queue": "harvest"},
-            "app.workers.celery_tasks.harvest_all_live":         {"queue": "live"},
-            "app.workers.celery_tasks.compute_ev_arb_for_match": {"queue": "ev_arb"},
-            "app.workers.celery_tasks.update_match_results":     {"queue": "results"},
-            "app.workers.celery_tasks.dispatch_notifications":   {"queue": "notify"},
-            "app.workers.celery_tasks.health_check":             {"queue": "default"},
-            "app.workers.celery_tasks.expire_subscriptions":     {"queue": "default"},
-            "app.workers.celery_tasks.cache_finished_games":     {"queue": "results"},
-        },
-        beat_schedule = {
-            "b2b-upcoming-5min":     {"task": "app.workers.celery_tasks.harvest_all_upcoming",     "schedule": 300, "args": ["upcoming"]},
-            "b2b-live-60s":          {"task": "app.workers.celery_tasks.harvest_all_live",         "schedule": 60},
-            "sbo-upcoming-3min":     {"task": "app.workers.celery_tasks.harvest_all_sbo_upcoming", "schedule": 180},
-            "sbo-live-90s":          {"task": "app.workers.celery_tasks.harvest_all_sbo_live",     "schedule": 90},
-            "results-5min":          {"task": "app.workers.celery_tasks.update_match_results",     "schedule": 300},
-            "cache-finished-hourly": {"task": "app.workers.celery_tasks.cache_finished_games",     "schedule": 3600},
-            "health-30s":            {"task": "app.workers.celery_tasks.health_check",             "schedule": 30},
-            "expire-subs-hourly":    {"task": "app.workers.celery_tasks.expire_subscriptions",     "schedule": 3600},
-        },
     )
-    return celery
+    return celery_service
 # =============================================================================
 # Redis cache helpers
 # =============================================================================
+
 
 def _redis():
     import redis as _r
@@ -145,7 +124,34 @@ def task_status_set(name: str, status: dict):
         "updated_at": datetime.now(datetime.timezone.utc).isoformat(),
     }, ttl=300)
 
-             
+
+
+def _bootstrap():
+    """
+    Auto-initialise when loaded as the direct -A target:
+        celery -A app.workers.celery_tasks worker ...
+
+    Guard: uses a custom _flask_initialized flag set by init_celery().
+    This avoids the broker_url pitfall — Celery() sets a default amqp://
+    broker even when unconfigured, so `if celery.conf.broker_url` is
+    always truthy and would incorrectly skip bootstrapping.
+
+    Safe to call multiple times (idempotent).
+    """
+    if getattr(celery_service, '_flask_initialized', False):
+        # Already initialised (e.g. imported via app.celery_app) — skip.
+        return
+    try:
+        from app import create_app
+        flask_app = create_app()
+        # make_celery() is fully defined by the time _bootstrap() runs
+        # (it is called at the very bottom of this file, after all defs).
+        make_celery(flask_app)
+        logger.info("[celery_tasks] self-bootstrapped via create_app()")
+    except Exception as exc:
+        logger.error(f"[celery_tasks] bootstrap failed: {exc}")
+        raise
+
 
 @celery_service.task
 def send_message(msg, whatsapp_number):
@@ -384,3 +390,5 @@ def create_message_with_attachment(sender, to, subject, html_message=None, text_
     # Encode message
     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
     return {'raw': raw_message}
+
+_bootstrap()
