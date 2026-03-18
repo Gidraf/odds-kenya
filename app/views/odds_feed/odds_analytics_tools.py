@@ -1,7 +1,6 @@
 import datetime
 
 from flask import g, request
-from pytz import timezone
 
 from app.utils.customer_jwt_helpers import _err, _signed_response
 from app.utils.decorators_ import log_event, require_auth, require_tier
@@ -81,7 +80,7 @@ def get_steam():
     """Sharp money signals — pro + premium only."""
     from app.models.odds_model import SharpMoneySignal, UnifiedMatch
  
-    since   = datetime.now(timezone.utc) - datetime.timedelta(hours=6)
+    since   = datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=6)
     signals = SharpMoneySignal.query.filter(
         SharpMoneySignal.triggered_at >= since,
     ).order_by(SharpMoneySignal.triggered_at.desc()).limit(50).all()

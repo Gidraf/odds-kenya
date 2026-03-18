@@ -1,13 +1,12 @@
 
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
 import time
 
 from flask import Response, request
-from pytz import timezone
 
 from app.utils.security import _SIGNING_SECRET, _get_private_key, _get_public_key
 
