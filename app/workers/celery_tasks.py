@@ -10,6 +10,36 @@ from celery.utils.log import get_task_logger
 
 logger = get_task_logger(__name__)
 
+# ── Self-bootstrap when used as the direct -A target ─────────────────────────
+# Allows BOTH entry points to work:
+#
+#   celery -A app.workers.celery_tasks worker ...   (direct — used by you)
+#   celery -A app.celery_app            worker ...   (via factory)
+#
+# When Celery loads this module as -A app.workers.celery_tasks it just imports
+# it.  At that point make_celery() hasn't been called, so the Celery instance
+# has no broker URL and no Flask app context.  The guard below detects this and
+# runs create_app() + make_celery() automatically.
+#
+# When the module is imported BY app.celery_app, that file calls
+# make_celery(flask_app) explicitly — conf.broker_url is already set, so the
+# block below is skipped entirely (idempotent).
+def _bootstrap():
+    """Auto-initialise when loaded directly as a Celery -A target."""
+    if celery.conf.broker_url:
+        return  # already initialised by app.celery_app — nothing to do
+    try:
+        from app import create_app
+        flask_app = create_app()
+        # make_celery() is defined later in this file but the module is
+        # already fully loaded by the time _bootstrap() runs (called at
+        # the END of the import, below), so the forward reference is fine.
+        make_celery(flask_app)
+        logger.info("[celery_tasks] self-bootstrapped via create_app()")
+    except Exception as exc:
+        logger.error(f"[celery_tasks] bootstrap failed: {exc}")
+        raise
+
 _B2B_SPORTS = [
     "Football", "Basketball", "Tennis", "Ice Hockey",
     "Volleyball", "Cricket", "Rugby", "Table Tennis",
@@ -976,3 +1006,6 @@ def probe_bookmaker_now(bookmaker: dict, sport: str, mode: str = "live") -> dict
     except Exception as exc:
         latency = int((time.perf_counter() - t0) * 1000)
         return {"ok": False, "error": str(exc), "latency_ms": latency}
+
+# ── Auto-bootstrap when used as -A app.workers.celery_tasks ──────────────────
+_bootstrap()
