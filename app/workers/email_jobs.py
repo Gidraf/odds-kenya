@@ -55,7 +55,7 @@ SCOPES = [
 
 
 
-@celery_service.task
+@celery.task
 def send_message(msg, whatsapp_number):
     r = requests.post(message_url, json={"message":msg,"number":whatsapp_number})
     return r.text
@@ -161,7 +161,7 @@ def send_async_email(subject, recipients, body, body_type="plain", attachments=N
 
 
 
-@celery_service.task
+@celery.task
 def send_email(
     to,
     subject,
