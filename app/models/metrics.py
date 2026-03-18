@@ -10,7 +10,7 @@ class MetricsEvent(db.Model):
     __tablename__ = "metrics_events"
  
     id          = db.Column(db.Integer, primary_key=True)
-    user_id     = db.Column(db.Integer, db.ForeignKey("customers.id"), nullable=True, index=True)
+    customer_id     = db.Column(db.Integer, db.ForeignKey("customers.id"), nullable=True, index=True)
     event       = db.Column(db.String(60), nullable=False, index=True)
     tier        = db.Column(db.String(20), nullable=True)
     meta        = db.Column(db.JSON, nullable=True)   # extra context
@@ -27,7 +27,7 @@ class MetricsEvent(db.Model):
     @classmethod
     def log(cls, event: str, user_id: int | None = None, tier: str | None = None,
             meta: dict | None = None, ip: str | None = None) -> "MetricsEvent":
-        e = cls(event=event, user_id=user_id, tier=tier, meta=meta, ip_address=ip)
+        e = cls(event=event, customer_id=user_id, tier=tier, meta=meta, ip_address=ip)
         db.session.add(e)
         return e
  
