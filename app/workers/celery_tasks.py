@@ -861,7 +861,7 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
     """
     try:
         from app.models.odds_model import UnifiedMatch, ArbitrageOpportunity, EVOpportunity
-        from app.models.subscription_models import User, NotificationPref, SubscriptionTier
+        from app.models.subscriptions import User, NotificationPref, SubscriptionTier
         from app.workers.notification_service import NotificationService
 
         um = UnifiedMatch.query.get(match_id)
@@ -1106,6 +1106,7 @@ def send_async_email(subject, recipients, body, body_type="plain", attachments=N
     """
 
     try:
+        
         app = create_app()
 
         with app.app_context():
