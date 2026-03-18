@@ -48,7 +48,7 @@ def _hash_token(raw_token: str) -> str:
 
 def _send_verification_email(user, raw_token: str) -> None:
     """Queue the welcome+verify email via Celery."""
-    from app.workers.email_jobs import send_async_email   # your existing celery task
+    from app.workers.celery_tasks import send_async_email   # your existing celery task
 
     app_url   = os.environ.get("APP_URL", "https://oddskenya.com")
     verify_url = f"{app_url}/auth/verify-email?token={raw_token}"
@@ -82,7 +82,7 @@ def _send_verification_email(user, raw_token: str) -> None:
 
 def _send_password_reset_email(user, raw_token: str) -> None:
     """Queue the password reset email via Celery."""
-    from app.workers.email_jobs import send_async_email
+    from app.workers.celery_tasks import send_async_email
 
     app_url   = os.environ.get("APP_URL", "https://oddskenya.com")
     reset_url = f"{app_url}/auth/reset-password?token={raw_token}"
