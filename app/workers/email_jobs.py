@@ -30,11 +30,11 @@ from celery.schedules import crontab
 # import africastalking
 import os
 import os
-from . import create_celery_app
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 # from playwright.sync_api import sync_playwright
+from app import create_app
 import arrow
 import json
 # import base64
@@ -53,104 +53,6 @@ SCOPES = [
     # "https://www.googleapis.com/auth/calendar"
 ]
 
-
-from app.extensions import celery as celery_service, init_celery
-
-
-def make_celery(app):
-    """
-    Bind the global Celery instance to the Flask app.
-    Calls extensions.init_celery() (sets broker/backend + ContextTask),
-    then layers on harvest-specific task_routes + beat_schedule.
-    Returns the same global celery object — NOT a new instance.
-    """
-    init_celery(app)
-    celery_service.conf.update(
-        task_acks_late             = True,
-        worker_prefetch_multiplier = 1,
-        task_reject_on_worker_lost = True,
-        task_default_queue         = "default",
-        worker_max_tasks_per_child = 500,
-    )
-    return celery_service
-# =============================================================================
-# Redis cache helpers
-# =============================================================================
-
-
-def _redis():
-    import redis as _r
-    url  = celery.conf.broker_url or "redis://localhost:6379/0"
-    base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
-    return _r.Redis.from_url(
-        f"{base}/2",
-        decode_responses       = False,
-        socket_timeout         = 5,
-        socket_connect_timeout = 5,
-        retry_on_timeout       = True,
-    )
-
-
-def cache_set(key: str, data, ttl: int = 600) -> bool:
-    try:
-        _redis().set(key, json.dumps(data, default=str), ex=ttl)
-        return True
-    except Exception as e:
-        logger.warning(f"[cache:set] {key}: {e}")
-        return False
-
-
-def cache_get(key: str):
-    try:
-        raw = _redis().get(key)
-        return json.loads(raw) if raw else None
-    except Exception as e:
-        logger.warning(f"[cache:get] {key}: {e}")
-        return None
-
-
-def cache_keys(pattern: str) -> list[str]:
-    try:
-        return [k.decode() if isinstance(k, bytes) else k
-                for k in _redis().keys(pattern)]
-    except Exception as e:
-        logger.warning(f"[cache:keys] {pattern}: {e}")
-        return []
-
-
-def task_status_set(name: str, status: dict):
-    cache_set(f"task_status:{name}", {
-        **status,
-        "updated_at": datetime.now(datetime.timezone.utc).isoformat(),
-    }, ttl=300)
-
-
-
-def _bootstrap():
-    """
-    Auto-initialise when loaded as the direct -A target:
-        celery -A app.workers.celery_tasks worker ...
-
-    Guard: uses a custom _flask_initialized flag set by init_celery().
-    This avoids the broker_url pitfall — Celery() sets a default amqp://
-    broker even when unconfigured, so `if celery.conf.broker_url` is
-    always truthy and would incorrectly skip bootstrapping.
-
-    Safe to call multiple times (idempotent).
-    """
-    if getattr(celery_service, '_flask_initialized', False):
-        # Already initialised (e.g. imported via app.celery_app) — skip.
-        return
-    try:
-        from app import create_app
-        flask_app = create_app()
-        # make_celery() is fully defined by the time _bootstrap() runs
-        # (it is called at the very bottom of this file, after all defs).
-        make_celery(flask_app)
-        logger.info("[celery_tasks] self-bootstrapped via create_app()")
-    except Exception as exc:
-        logger.error(f"[celery_tasks] bootstrap failed: {exc}")
-        raise
 
 
 @celery_service.task
@@ -199,7 +101,7 @@ def create_message(sender, to, subject, message_text):
 
             
 
-@celery_service.task
+@celery.task
 def send_async_email(subject, recipients, body, body_type="plain", attachments=None, username=None, password=None):
     """
     Send an email asynchronously using Celery and Flask-Mail.
@@ -207,7 +109,7 @@ def send_async_email(subject, recipients, body, body_type="plain", attachments=N
     """
 
     try:
-        app = create_celery_app(username, password)
+        app = create_app()
 
         with app.app_context():
             mail = Mail(app)
@@ -280,7 +182,7 @@ def send_email(
         files (list): List of dicts with 'url' and 'name' for attachments.
         partner_id (str): Partner ID for fetching Gmail credentials.
     """
-    app = create_celery_app()
+    app = create_app()
     with app.app_context():
         env = Environment(
                 loader=FileSystemLoader("app/templates"),
@@ -391,4 +293,3 @@ def create_message_with_attachment(sender, to, subject, html_message=None, text_
     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
     return {'raw': raw_message}
 
-_bootstrap()
