@@ -961,13 +961,13 @@ def send_async_email(
     does NOT call create_app() which would create a second SQLAlchemy
     engine and trigger mapper conflicts.
     """
-    from flask import current_app
+    app = create_app()
 
     try:
         smtp_user = username or os.environ.get("ADMIN_EMAIL", "")
         smtp_pass = password or os.environ.get("ADMIN_EMAIL_PASSWORD", "")
 
-        current_app.config.update({
+        app.config.update({
             "MAIL_SERVER":         os.environ.get("SMTP_HOST", "smtp.gmail.com"),
             "MAIL_PORT":           int(os.environ.get("SMTP_PORT", 587)),
             "MAIL_USE_TLS":        True,
@@ -976,7 +976,7 @@ def send_async_email(
             "MAIL_DEFAULT_SENDER": smtp_user,
         })
 
-        mail = Mail(current_app)
+        mail = Mail(app)
         msg  = Message(subject=subject, sender=smtp_user, recipients=recipients)
 
         if body_type == "html":
