@@ -22,7 +22,7 @@ class MetricsEvent(db.Model):
         db.Index("ix_me_event_time", "event", "recorded_at"),
     )
  
-    customer = db.relationship("Customer", back_populates="metrics_events")
+    user = db.relationship("Customer", back_populates="metrics_events")
  
     @classmethod
     def log(cls, event: str, user_id: int | None = None, tier: str | None = None,
