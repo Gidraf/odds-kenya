@@ -41,6 +41,8 @@ def _bootstrap():
     if getattr(celery, "_flask_initialized", False):
         return
     try:
+        from dotenv import load_dotenv
+        load_dotenv()                  # ensure DATABASE_URL etc. are in os.environ
         flask_app = create_app()
         make_celery(flask_app)
         logger.info("[celery_tasks] self-bootstrapped via create_app()")
