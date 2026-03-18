@@ -446,7 +446,7 @@ def harvest_b2b_page(
     bk_id   = bookmaker.get("id")
 
     try:
-        from app.workers.bookmaker_fetcher import fetch_bookmaker
+        from app.views.odds_feed.bookmaker_fetcher  import fetch_bookmaker
         matches = fetch_bookmaker(
             bookmaker, sport_name=sport, mode=mode,
             page=page, page_size=PAGE_SIZE, timeout=20,
@@ -576,7 +576,7 @@ def harvest_sbo_sport(self, sport_slug: str, max_matches: int = 60) -> dict:
     """
     t0 = time.perf_counter()
     try:
-        from app.workers.sbo_fetcher import OddsAggregator, SPORT_CONFIG
+        from app.views.sbo.sbo_fetcher import OddsAggregator, SPORT_CONFIG
         cfg = next((c for c in SPORT_CONFIG if c["sport"] == sport_slug), None)
         if not cfg:
             return {"ok": False, "error": f"Unknown sport: {sport_slug}"}
@@ -1024,7 +1024,7 @@ def health_check() -> dict:
     time_limit=45,
 )
 def probe_bookmaker_now(bookmaker: dict, sport: str, mode: str = "live") -> dict:
-    from app.workers.bookmaker_fetcher import fetch_bookmaker
+    from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
     t0 = time.perf_counter()
     try:
         matches = fetch_bookmaker(bookmaker, sport_name=sport, mode=mode, timeout=20)
