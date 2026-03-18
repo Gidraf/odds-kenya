@@ -24,7 +24,7 @@ def create_app() -> Flask:
     cors.init_app(flask_app, supports_credentials=True, origins="*")
     migrate.init_app(flask_app, db, compare_type=True)
 
-    redis_url = flask_app.config.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+    redis_url = flask_app.config["CELERY_BROKER_URL"]
 
     def _redis_available(url: str) -> bool:
         try:
@@ -37,7 +37,7 @@ def create_app() -> Flask:
 
     mq = redis_url if _redis_available(redis_url) else None
     if not mq:
-        print("⚠️  WARNING: Redis unavailable — Celery→SocketIO emits disabled. Run: brew services start redis")
+        print("WARNING: Redis unavailable - SocketIO cross-process emits disabled.")
 
     socketio.init_app(
         flask_app,
@@ -50,15 +50,15 @@ def create_app() -> Flask:
         **({"message_queue": mq, "channel": "flask-socketio"} if mq else {}),
     )
 
-    # ── Celery: bind the single global instance from extensions to this app ──
-    # init_celery() configures extensions.celery (broker, backend, ContextTask)
-    # and returns it.  All @celery.task decorators in celery_tasks.py already
-    # registered themselves on that same object, so they are immediately visible
-    # to the worker — no second Celery() instance is created.
-    from app.workers.celery_tasks import make_celery
-    flask_app.celery = make_celery(flask_app)
+    # Celery: call init_celery() directly.
+    # Do NOT import from celery_tasks here — that causes a circular import:
+    #   celery_tasks -> _bootstrap() -> create_app() -> celery_tasks (again)
+    #
+    # init_celery() sets celery._flask_initialized = True, which is the guard
+    # in celery_tasks._bootstrap() to prevent double-init.
+    flask_app.celery = init_celery(flask_app)
 
-    # ── Blueprints ────────────────────────────────────────────────────────────
+    # Blueprints
     from app.views.auth import authorization
     from app.views.research import bp_research
     from app.views.odds_feed import bp_odds as odds_bp
@@ -79,15 +79,14 @@ def create_app() -> Flask:
     flask_app.register_blueprint(odds_bp)
     flask_app.register_blueprint(bp_sbo)
     flask_app.register_blueprint(mapping_bp)
-    flask_app.register_blueprint(bp_vendor,      url_prefix="/api/vendors")
-    flask_app.register_blueprint(bp_onboarding,  url_prefix="/api/onboarding")
-    flask_app.register_blueprint(bp_playwright,  url_prefix="/api/playwright")
+    flask_app.register_blueprint(bp_vendor,     url_prefix="/api/vendors")
+    flask_app.register_blueprint(bp_onboarding, url_prefix="/api/onboarding")
+    flask_app.register_blueprint(bp_playwright, url_prefix="/api/playwright")
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
 
     init_playwright_manager()
 
-    # ── Model imports (ensures tables are known to Flask-Migrate) ─────────────
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,

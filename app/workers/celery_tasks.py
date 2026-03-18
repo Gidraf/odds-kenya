@@ -25,15 +25,25 @@ logger = get_task_logger(__name__)
 # make_celery(flask_app) explicitly — conf.broker_url is already set, so the
 # block below is skipped entirely (idempotent).
 def _bootstrap():
-    """Auto-initialise when loaded directly as a Celery -A target."""
-    if celery.conf.broker_url:
-        return  # already initialised by app.celery_app — nothing to do
+    """
+    Auto-initialise when loaded as the direct -A target:
+        celery -A app.workers.celery_tasks worker ...
+
+    Guard: uses a custom _flask_initialized flag set by init_celery().
+    This avoids the broker_url pitfall — Celery() sets a default amqp://
+    broker even when unconfigured, so `if celery.conf.broker_url` is
+    always truthy and would incorrectly skip bootstrapping.
+
+    Safe to call multiple times (idempotent).
+    """
+    if getattr(celery, '_flask_initialized', False):
+        # Already initialised (e.g. imported via app.celery_app) — skip.
+        return
     try:
         from app import create_app
         flask_app = create_app()
-        # make_celery() is defined later in this file but the module is
-        # already fully loaded by the time _bootstrap() runs (called at
-        # the END of the import, below), so the forward reference is fine.
+        # make_celery() is fully defined by the time _bootstrap() runs
+        # (it is called at the very bottom of this file, after all defs).
         make_celery(flask_app)
         logger.info("[celery_tasks] self-bootstrapped via create_app()")
     except Exception as exc:
