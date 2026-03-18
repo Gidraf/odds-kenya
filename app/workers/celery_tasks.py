@@ -961,6 +961,7 @@ def send_async_email(
     does NOT call create_app() which would create a second SQLAlchemy
     engine and trigger mapper conflicts.
     """
+    print(body)
     app = create_app()
 
     try:
