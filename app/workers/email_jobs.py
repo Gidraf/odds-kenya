@@ -8,7 +8,7 @@ from email.mime.text import MIMEText
 
 from flask import render_template
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from app.model.settings import Integrations
+
 from flask_mail import Mail, Message
 import io
 import mimetypes
@@ -195,7 +195,7 @@ def send_email(
                         web_url=os.environ.get("ADMIN_WEB_URL"),)
         # Load Google credentials from DB
         try:
-            token_raw = Integrations.query.filter_by(partner_id=partner_id, name="gmail").first()
+            # token_raw = Integrations.query.filter_by(partner_id=partner_id, name="gmail").first()
             if not token_raw:
                 return f"No credentials found for partner_id: {partner_id}"
 
