@@ -27,7 +27,7 @@ class NotificationPref(db.Model):
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
                            onupdate=lambda: datetime.now(timezone.utc))
  
-    user = db.relationship("User", back_populates="notification_pref")
+    user = db.relationship("Customer", back_populates="notification_pref")
  
     def to_dict(self) -> dict:
         return {

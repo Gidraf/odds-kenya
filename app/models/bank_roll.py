@@ -19,7 +19,7 @@ class BankrollAccount(db.Model):
     updated_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
                              onupdate=lambda: datetime.now(timezone.utc))
  
-    user = db.relationship("User", back_populates="bankroll_accounts")
+    user = db.relationship("Customer", back_populates="bankroll_accounts")
     bets = db.relationship("BankrollBet", back_populates="account", lazy="dynamic")
  
     def to_dict(self) -> dict:
@@ -61,7 +61,7 @@ class BankrollTarget(db.Model):
     achieved_at   = db.Column(db.DateTime, nullable=True)  # when target was hit
     stopped_at    = db.Column(db.DateTime, nullable=True)   # when stop-loss triggered
  
-    user = db.relationship("User", back_populates="bankroll_targets")
+    user = db.relationship("Customer", back_populates="bankroll_targets")
     bets = db.relationship("BankrollBet", back_populates="target", lazy="dynamic")
  
     @property

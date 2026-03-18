@@ -26,7 +26,7 @@ class ApiKey(db.Model):
     requests_limit   = db.Column(db.Integer, default=10_000, nullable=False)  # per day
     requests_reset   = db.Column(db.DateTime, nullable=True)  # next reset time
  
-    user = db.relationship("User", back_populates="api_keys")
+    user = db.relationship("Customer", back_populates="api_keys")
  
     def check_rate_limit(self) -> tuple[bool, int]:
         """Returns (allowed, remaining)."""
