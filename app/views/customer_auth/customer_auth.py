@@ -68,7 +68,7 @@ def _send_verification_email(user, raw_token: str) -> None:
         app_url          = app_url,
         year             = datetime.now(timezone.utc).year,
     )
-
+    print(html_body)
     send_async_email.apply_async(args=[
         "Welcome to OddsKenya — Please Verify Your Email ⚽",
         [user.email],
@@ -93,6 +93,7 @@ def _send_password_reset_email(user, raw_token: str) -> None:
         autoescape = select_autoescape(["html"]),
     )
     template  = env.get_template("password_reset_email.html")
+    print("password",template)
     html_body = template.render(
         display_name = user.display_name or user.email.split("@")[0],
         email        = user.email,

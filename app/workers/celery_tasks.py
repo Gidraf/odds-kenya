@@ -1048,7 +1048,9 @@ SCOPES = [
 
 
 
-@celery.task
+@celery.task( name="app.workers.celery_tasks.send_message",
+    soft_time_limit=30,
+    time_limit=45,)
 def send_message(msg, whatsapp_number):
     r = requests.post(message_url, json={"message":msg,"number":whatsapp_number})
     return r.text
@@ -1094,7 +1096,9 @@ def create_message(sender, to, subject, message_text):
 
             
 
-@celery.task
+@celery.task( name="app.workers.celery_tasks.send_async_email",
+    soft_time_limit=30,
+    time_limit=45,)
 def send_async_email(subject, recipients, body, body_type="plain", attachments=None, username=None, password=None):
     """
     Send an email asynchronously using Celery and Flask-Mail.
@@ -1154,7 +1158,9 @@ def send_async_email(subject, recipients, body, body_type="plain", attachments=N
 
 
 
-@celery.task
+@celery.task( name="app.workers.celery_tasks.send_email",
+    soft_time_limit=30,
+    time_limit=45,)
 def send_email(
     to,
     subject,
