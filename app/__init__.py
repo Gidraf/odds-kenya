@@ -116,6 +116,7 @@ def create_app() -> Flask:
         from app.models.api_key import ApiKey
         from app.models.bank_roll import BankrollAccount, BankrollTarget
         from app.models.customer import Customer
+        from app.models.email_tokens import EmailToken
 
     import app.sockets  # noqa: registers /admin namespace handlers
 
