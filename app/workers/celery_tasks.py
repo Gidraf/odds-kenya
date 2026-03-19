@@ -9,51 +9,31 @@ import mimetypes
 import os
 import time
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
-from flask_mail import Mail, Message          # ← Message from flask_mail, NOT mailbox
+# ── Load .env before any app imports ─────────────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    _here = Path(__file__).resolve()
+    for _parent in [_here.parent, _here.parent.parent, _here.parent.parent.parent]:
+        _env_file = _parent / ".env"
+        if _env_file.exists():
+            load_dotenv(_env_file, override=False)
+            break
+except ImportError:
+    pass
+
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app import create_app
 import requests
 
 from app.extensions import celery, init_celery
 from celery.utils.log import get_task_logger
-
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-import arrow
 
 logger = get_task_logger(__name__)
-
-
-# =============================================================================
-# Bootstrap
-# =============================================================================
-
-def _bootstrap():
-    """
-    Auto-initialise when loaded as the direct -A target:
-        celery -A app.workers.celery_tasks worker ...
-
-    Guard uses _flask_initialized flag set by init_celery() so this is
-    idempotent — safe to call multiple times.
-    """
-    if getattr(celery, "_flask_initialized", False):
-        return
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()                  # ensure DATABASE_URL etc. are in os.environ
-        flask_app = create_app()
-        make_celery(flask_app)
-        logger.info("[celery_tasks] self-bootstrapped via create_app()")
-    except Exception as exc:
-        logger.error(f"[celery_tasks] bootstrap failed: {exc}")
-        raise
-
-
-# =============================================================================
-# Sport lists + page size
-# =============================================================================
 
 _B2B_SPORTS = [
     "Football", "Basketball", "Tennis", "Ice Hockey",
@@ -68,16 +48,58 @@ PAGE_SIZE = 15
 
 
 # =============================================================================
+# Bootstrap
+# =============================================================================
+
+def _bootstrap():
+    if getattr(celery, "_flask_initialized", False):
+        return
+    try:
+        flask_app = create_app()
+        make_celery(flask_app)
+        logger.info("[celery_tasks] self-bootstrapped via create_app()")
+    except Exception as exc:
+        logger.error(f"[celery_tasks] bootstrap failed: {exc}")
+        raise
+
+
+# =============================================================================
+# Internal API helper
+# =============================================================================
+
+def _api_base_url() -> str:
+    """
+    Base URL for the internal REST API.
+    Set in .env:
+        INTERNAL_API_URL=http://127.0.0.1:5000
+    """
+    return os.environ.get("INTERNAL_API_URL", "http://127.0.0.1:5000").rstrip("/")
+
+
+def _api_post(path: str, payload: dict, timeout: int = 30) -> dict:
+    """
+    POST JSON to an internal API endpoint and return the parsed response.
+    Raises requests.exceptions.HTTPError on non-2xx responses.
+    """
+    url  = f"{_api_base_url()}{path}"
+    resp = requests.post(
+        url,
+        json    = payload,
+        timeout = timeout,
+        headers = {
+            "Content-Type": "application/json",
+            "X-Admin-Key":  os.environ.get("ADMIN_KEY", ""),
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# =============================================================================
 # Celery factory
 # =============================================================================
 
 def make_celery(app):
-    """
-    Bind the global Celery instance to the Flask app.
-    Calls extensions.init_celery() (sets broker/backend + ContextTask),
-    then layers on harvest-specific task_routes + beat_schedule.
-    Returns the same global celery object — NOT a new instance.
-    """
     init_celery(app)
     celery.conf.update(
         task_acks_late             = True,
@@ -97,6 +119,7 @@ def make_celery(app):
             "app.workers.celery_tasks.expire_subscriptions":     {"queue": "default"},
             "app.workers.celery_tasks.cache_finished_games":     {"queue": "results"},
             "app.workers.celery_tasks.send_async_email":         {"queue": "default"},
+            "app.workers.celery_tasks.send_async_template":      {"queue": "default"},
             "app.workers.celery_tasks.send_message":             {"queue": "default"},
             "app.workers.celery_tasks.send_gmail":               {"queue": "default"},
         },
@@ -172,15 +195,13 @@ def task_status_set(name: str, status: dict):
 def _load_bookmakers() -> list[dict]:
     try:
         from app.models.bookmakers_model import Bookmaker
-        bms = Bookmaker.query.filter_by(is_active=True).all()
+        bms    = Bookmaker.query.filter_by(is_active=True).all()
         result = []
         for bm in bms:
             cfg = getattr(bm, "harvest_config", None) or {}
             if isinstance(cfg, str):
-                try:
-                    cfg = json.loads(cfg)
-                except Exception:
-                    cfg = {}
+                try:    cfg = json.loads(cfg)
+                except Exception: cfg = {}
             result.append({
                 "id":          bm.id,
                 "name":        bm.name or bm.domain,
@@ -418,7 +439,7 @@ def harvest_b2b_page(self, bookmaker: dict, sport: str, mode: str, page: int) ->
 
     latency = int((time.perf_counter() - t0) * 1000)
 
-    cache_set(f"odds:{mode}:{sport.lower().replace(' ','_')}:{bk_id}:p{page}", {
+    cache_set(f"odds:{mode}:{sport.lower().replace(' ', '_')}:{bk_id}:p{page}", {
         "bookmaker_id": bk_id, "bookmaker_name": bk_name,
         "sport": sport, "mode": mode, "page": page,
         "match_count": len(matches),
@@ -577,8 +598,8 @@ def compute_ev_arb_for_match(self, match_id: int) -> dict:
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
 
-        unified: dict   = {}
-        bk_id_to_name   = {v: k for k, v in _bookmaker_id_map().items()}
+        unified: dict = {}
+        bk_id_to_name = {v: k for k, v in _bookmaker_id_map().items()}
 
         for mkt, spec_map in (um.markets_json or {}).items():
             unified.setdefault(mkt, {})
@@ -688,8 +709,7 @@ def cache_finished_games() -> dict:
                 hour=0, minute=0, second=0, microsecond=0
             )
             day_end  = day_start + timedelta(days=1)
-            date_str = day_start.strftime("%Y-%m-%d")
-            key      = f"results:finished:{date_str}"
+            key      = f"results:finished:{day_start.strftime('%Y-%m-%d')}"
 
             if cache_get(key):
                 continue
@@ -713,7 +733,7 @@ def cache_finished_games() -> dict:
 
 
 # =============================================================================
-# Notifications
+# Notifications — queues send_async_email which hits the internal API
 # =============================================================================
 
 @celery.task(
@@ -767,7 +787,6 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
                     continue
 
             try:
-                # Build a simple HTML alert and send via send_async_email
                 arb_lines = "".join(
                     f"<li>{a.market_definition.name if a.market_definition else '?'} "
                     f"— <strong>+{a.max_profit_percentage:.2f}%</strong></li>"
@@ -778,13 +797,13 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
                     f"@ {e.bookmaker_name} — <strong>+{e.edge_pct:.2f}%</strong></li>"
                     for e in qualifying_evs[:3]
                 )
-                html = f"""
-                <h2>⚡ OddsKenya Alert — {match_label}</h2>
-                {"<h3>Arbitrage</h3><ul>" + arb_lines + "</ul>" if arb_lines else ""}
-                {"<h3>+EV</h3><ul>" + ev_lines + "</ul>" if ev_lines else ""}
-                <p style='color:#888;font-size:12px'>
-                  Manage alerts at <a href='{os.environ.get("APP_URL","")}/settings/notifications'>Settings</a>
-                </p>"""
+                html = (
+                    f"<h2>⚡ OddsKenya Alert — {match_label}</h2>"
+                    + (f"<h3>Arbitrage</h3><ul>{arb_lines}</ul>" if arb_lines else "")
+                    + (f"<h3>+EV</h3><ul>{ev_lines}</ul>" if ev_lines else "")
+                    + f"<p style='color:#888;font-size:12px'>Manage alerts at "
+                    f"<a href='{os.environ.get('APP_URL', '')}/settings/notifications'>Settings</a></p>"
+                )
 
                 send_async_email.apply_async(
                     args=[
@@ -802,7 +821,7 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
             except Exception as e:
                 logger.warning(f"[notify] user {user.id}: {e}")
 
-        logger.info(f"[notify] match {match_id}: {sent} alerts sent")
+        logger.info(f"[notify] match {match_id}: {sent} alerts dispatched")
         return {"ok": True, "sent": sent}
 
     except Exception as exc:
@@ -833,8 +852,7 @@ def expire_subscriptions() -> dict:
             Subscription.trial_ends <= now,
         ).all()
         for sub in trials:
-            charged = _attempt_charge(sub)
-            if charged:
+            if _attempt_charge(sub):
                 sub.activate()
             else:
                 sub.status   = "expired"
@@ -848,8 +866,7 @@ def expire_subscriptions() -> dict:
             Subscription.period_end <= now,
         ).all()
         for sub in actives:
-            charged = _attempt_charge(sub)
-            if charged:
+            if _attempt_charge(sub):
                 sub.activate()
             else:
                 sub.status = "expired"
@@ -910,105 +927,186 @@ def probe_bookmaker_now(bookmaker: dict, sport: str, mode: str = "live") -> dict
 
 
 # =============================================================================
-# WhatsApp
+# WhatsApp — WA_BOT read lazily, never at module level
 # =============================================================================
-
-# ⚠ WA_BOT must NOT be read at module level — it would crash the worker
-#   on startup if the env var is missing.  Read it lazily inside the task.
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
-def _wa_message_url() -> str:
-    bot = os.environ.get("WA_BOT", "")
-    if not bot:
-        raise RuntimeError("WA_BOT environment variable is not set")
-    return f"{bot}/api/v1/send-message"
-
-
 @celery.task(
+    bind=True,
     name="app.workers.celery_tasks.send_message",
+    max_retries=2,
+    default_retry_delay=10,
     soft_time_limit=30,
     time_limit=45,
 )
-def send_message(msg, whatsapp_number):
-    r = requests.post(_wa_message_url(), json={"message": msg, "number": whatsapp_number})
-    return r.text
+def send_message(self, msg: str, whatsapp_number: str) -> str:
+    """Send a WhatsApp message via the WA bot API (URL from WA_BOT env var)."""
+    bot_url = os.environ.get("WA_BOT", "").rstrip("/")
+    if not bot_url:
+        logger.error("[send_message] WA_BOT env var not set")
+        return "error: WA_BOT not configured"
+    try:
+        resp = requests.post(
+            f"{bot_url}/api/v1/send-message",
+            json    = {"message": msg, "number": whatsapp_number},
+            timeout = 20,
+        )
+        resp.raise_for_status()
+        logger.info(f"[wa] sent to {whatsapp_number}")
+        return resp.text
+    except Exception as exc:
+        logger.error(f"[send_message] {exc}")
+        raise self.retry(exc=exc)
 
 
 # =============================================================================
-# Email via Flask-Mail  (SMTP — primary path for OddsKenya alerts)
+# send_async_email  ──  calls POST /api/email/send  (URL from INTERNAL_API_URL)
 # =============================================================================
 
 @celery.task(
+    bind=True,
     name="app.workers.celery_tasks.send_async_email",
+    max_retries=3,
+    default_retry_delay=30,
     soft_time_limit=60,
     time_limit=90,
 )
 def send_async_email(
-    subject,
-    recipients,
-    body,
-    body_type    = "plain",
-    attachments  = None,
-    username     = None,
-    password     = None,
-):
+    self,
+    subject:     str,
+    recipients:  list,
+    body:        str,
+    body_type:   str         = "plain",
+    attachments: list | None = None,
+    username:    str | None  = None,
+    password:    str | None  = None,
+) -> str:
     """
-    Send email via Flask-Mail.
+    Delegate email sending to the internal Flask API endpoint.
 
-    IMPORTANT: uses current_app (already available via ContextTask) —
-    does NOT call create_app() which would create a second SQLAlchemy
-    engine and trigger mapper conflicts.
+    Required .env vars:
+        INTERNAL_API_URL=http://127.0.0.1:5000   ← where Flask is running
+        ADMIN_EMAIL=you@gmail.com
+        ADMIN_EMAIL_PASSWORD=your-app-password
+        ADMIN_KEY=your-secret-key                 ← X-Admin-Key header
     """
-    print(body)
-    app = create_app()
-    with app.app_context():
-        try:
-            smtp_user = username or os.environ.get("ADMIN_EMAIL", "")
-            smtp_pass = password or os.environ.get("ADMIN_EMAIL_PASSWORD", "")
+    payload = {
+        "subject":     subject,
+        "recipients":  recipients,
+        "body":        body,
+        "body_type":   body_type,
+        "attachments": attachments or [],
+        "username":    username or os.environ.get("ADMIN_EMAIL", ""),
+        "password":    password or os.environ.get("ADMIN_EMAIL_PASSWORD", ""),
+    }
 
-            # app.config.update({
-            #     "MAIL_SERVER":         os.environ.get("SMTP_HOST", "smtp.gmail.com"),
-            #     "MAIL_PORT":           int(os.environ.get("SMTP_PORT", 587)),
-            #     "MAIL_USE_TLS":        True,
-            #     "MAIL_USERNAME":       smtp_user,
-            #     "MAIL_PASSWORD":       smtp_pass,
-            #     "MAIL_DEFAULT_SENDER": smtp_user,
-            # })
+    logger.info(f"[send_async_email] → POST {_api_base_url()}/api/email/send  to={recipients}")
 
-            mail = Mail(app)
-            msg  = Message(subject=subject, sender=smtp_user, recipients=recipients)
+    try:
+        result = _api_post("/api/email/send", payload, timeout=30)
 
-            if body_type == "html":
-                msg.html = body
-            else:
-                msg.body = body
+        if result.get("ok"):
+            logger.info(
+                f"[send_async_email] accepted ✓  "
+                f"api_task_id={result.get('task_id')}  recipients={recipients}"
+            )
+            return result.get("task_id", "ok")
 
-            if attachments:
-                for a in attachments:
-                    content_b64 = a.get("content")
-                    if not content_b64:
-                        continue
-                    try:
-                        msg.attach(
-                            a.get("filename", "file"),
-                            a.get("mimetype", "application/octet-stream"),
-                            base64.b64decode(content_b64),
-                        )
-                    except Exception as decode_err:
-                        logger.warning(f"[email] attachment decode error: {decode_err}")
+        # API returned 2xx but ok=False
+        err = result.get("error", "unknown API error")
+        logger.error(f"[send_async_email] API ok=False: {err}")
+        raise RuntimeError(err)
 
-            mail.send(msg)
-            logger.info(f"[email] sent to {recipients}")
+    except requests.exceptions.ConnectionError as exc:
+        # Flask app unreachable — retry with backoff
+        logger.warning(f"[send_async_email] connection error, will retry: {exc}")
+        raise self.retry(exc=exc)
 
-        except Exception as e:
-            logger.error(f"[email] send failed: {e}")
-            raise   # mark task FAILED so Celery can retry
+    except requests.exceptions.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else 0
+        logger.error(f"[send_async_email] HTTP {code}: {exc}")
+        if code in (429, 502, 503, 504):
+            raise self.retry(exc=exc)   # transient — retry
+        raise                           # 400/401/422 etc. — fail immediately
+
+    except Exception as exc:
+        logger.error(f"[send_async_email] unexpected error: {exc}")
+        raise self.retry(exc=exc)
 
 
 # =============================================================================
-# Email via Gmail OAuth2  (partner accounts)
+# send_async_template  ──  calls POST /api/email/send-template
+# =============================================================================
+
+@celery.task(
+    bind=True,
+    name="app.workers.celery_tasks.send_async_template",
+    max_retries=3,
+    default_retry_delay=30,
+    soft_time_limit=60,
+    time_limit=90,
+)
+def send_async_template(
+    self,
+    subject:    str,
+    recipients: list,
+    template:   str,
+    context:    dict | None = None,
+    username:   str | None  = None,
+    password:   str | None  = None,
+) -> str:
+    """
+    Render a server-side Jinja2 template and send via the internal API.
+
+    Required .env vars:
+        INTERNAL_API_URL=http://127.0.0.1:5000
+        ADMIN_EMAIL / ADMIN_EMAIL_PASSWORD / ADMIN_KEY
+    """
+    payload = {
+        "subject":    subject,
+        "recipients": recipients,
+        "template":   template,
+        "context":    context or {},
+        "username":   username or os.environ.get("ADMIN_EMAIL", ""),
+        "password":   password or os.environ.get("ADMIN_EMAIL_PASSWORD", ""),
+    }
+
+    logger.info(f"[send_async_template] → POST {_api_base_url()}/api/email/send-template  template={template}")
+
+    try:
+        result = _api_post("/api/email/send-template", payload, timeout=30)
+
+        if result.get("ok"):
+            logger.info(
+                f"[send_async_template] accepted ✓  "
+                f"api_task_id={result.get('task_id')}  template={template}"
+            )
+            return result.get("task_id", "ok")
+
+        err = result.get("error", "unknown API error")
+        logger.error(f"[send_async_template] API ok=False: {err}")
+        raise RuntimeError(err)
+
+    except requests.exceptions.ConnectionError as exc:
+        logger.warning(f"[send_async_template] connection error, will retry: {exc}")
+        raise self.retry(exc=exc)
+
+    except requests.exceptions.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else 0
+        logger.error(f"[send_async_template] HTTP {code}: {exc}")
+        if code in (429, 502, 503, 504):
+            raise self.retry(exc=exc)
+        raise
+
+    except Exception as exc:
+        logger.error(f"[send_async_template] unexpected error: {exc}")
+        raise self.retry(exc=exc)
+
+
+# =============================================================================
+# send_gmail  ──  Gmail OAuth2 for partner accounts (direct, no API hop)
 # =============================================================================
 
 def _gmail_send_raw(service, user_id, message):
@@ -1018,14 +1116,7 @@ def _gmail_send_raw(service, user_id, message):
         return result
     except Exception as error:
         logger.error(f"[gmail] send error: {error}")
-
-
-def _build_raw_message(sender, to, subject, message_text):
-    msg            = MIMEText(message_text, "html")
-    msg["to"]      = to
-    msg["from"]    = sender
-    msg["subject"] = subject
-    return {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+        raise
 
 
 def _build_raw_message_with_attachments(
@@ -1042,73 +1133,86 @@ def _build_raw_message_with_attachments(
 
     if files:
         for f in files:
-            resp = requests.get(f["url"], stream=True)
-            if resp.status_code != 200:
-                continue
-            ct, enc = mimetypes.guess_type(f["url"])
-            if not ct or enc:
-                ct = "application/octet-stream"
-            att = MIMEApplication(resp.content, _subtype=ct.split("/")[1])
-            att.add_header("Content-Disposition", "attachment", filename=f["name"])
-            msg.attach(att)
+            try:
+                resp = requests.get(f["url"], stream=True, timeout=30)
+                if resp.status_code != 200:
+                    continue
+                ct, enc = mimetypes.guess_type(f["url"])
+                if not ct or enc:
+                    ct = "application/octet-stream"
+                att = MIMEApplication(resp.content, _subtype=ct.split("/")[1])
+                att.add_header("Content-Disposition", "attachment", filename=f["name"])
+                msg.attach(att)
+            except Exception as exc:
+                logger.warning(f"[gmail] attachment error {f.get('name')}: {exc}")
 
     return {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
 
 
 @celery.task(
+    bind=True,
     name="app.workers.celery_tasks.send_gmail",
+    max_retries=2,
+    default_retry_delay=30,
     soft_time_limit=60,
     time_limit=90,
 )
 def send_gmail(
-    to,
-    subject,
-    html_message  = None,
-    text_message  = None,
-    files         = None,
-    partner_id    = None,
-    business_name = None,
-    partner_email = None,
-):
-    """
-    Send via Gmail OAuth2 for partner accounts that have connected Gmail.
-    Renamed from send_email → send_gmail to avoid the duplicate task name bug.
-    """
+    self,
+    to:            str,
+    subject:       str,
+    html_message:  str | None  = None,
+    text_message:  str | None  = None,
+    files:         list | None = None,
+    partner_id:    str | None  = None,
+    business_name: str | None  = None,
+    partner_email: str | None  = None,
+) -> str:
+    """Send via Gmail OAuth2 for partner accounts that have connected Gmail."""
     from app.extensions import db
 
     env = Environment(
         loader     = FileSystemLoader("app/templates"),
         autoescape = select_autoescape(["html"]),
     )
-    expiry_body = env.get_template("gmail-token-expiry.html").render(
-        customer_name = business_name,
-        web_url       = os.environ.get("ADMIN_WEB_URL"),
-    )
+    try:
+        expiry_body = env.get_template("gmail-token-expiry.html").render(
+            customer_name = business_name,
+            web_url       = os.environ.get("ADMIN_WEB_URL"),
+        )
+    except Exception:
+        expiry_body = "<p>Your Gmail credentials have expired. Please reconnect.</p>"
+
+    def _notify_expiry():
+        send_async_email.apply_async(
+            args=[
+                "Gmail Credentials Expired",
+                [partner_email] if partner_email else [],
+                expiry_body, "html", [],
+                os.environ.get("ADMIN_EMAIL"),
+                os.environ.get("ADMIN_EMAIL_PASSWORD"),
+            ],
+            queue="default",
+        )
 
     try:
         from app.models.settings import Integrations
         token_raw = Integrations.query.filter_by(partner_id=partner_id, name="gmail").first()
         if not token_raw:
+            logger.error(f"[gmail] no credentials for partner_id={partner_id}")
             return f"No Gmail credentials for partner_id: {partner_id}"
 
         creds = Credentials.from_authorized_user_info(
             json.loads(token_raw.credentials), SCOPES
         )
-
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
+                token_raw.credentials = creds.to_json()
+                db.session.commit()
             else:
-                send_async_email.delay(
-                    "Gmail Credentials Expired", [partner_email],
-                    expiry_body, "html", [],
-                    os.environ.get("ADMIN_EMAIL"),
-                    os.environ.get("ADMIN_EMAIL_PASSWORD"),
-                )
+                _notify_expiry()
                 raise RuntimeError("Gmail credentials invalid or expired.")
-
-        token_raw.credentials = creds.to_json()
-        db.session.commit()
 
         service = build("gmail", "v1", credentials=creds)
         message = _build_raw_message_with_attachments(
@@ -1120,18 +1224,13 @@ def send_gmail(
             files        = files,
         )
         _gmail_send_raw(service, "me", message)
-        return "Email sent successfully."
+        return "ok"
 
-    except Exception as e:
-        logger.error(f"[gmail] error: {e}")
-        send_async_email.delay(
-            "Gmail Credentials Expired", [partner_email],
-            expiry_body, "html", [],
-            os.environ.get("ADMIN_EMAIL"),
-            os.environ.get("ADMIN_EMAIL_PASSWORD"),
-        )
-        return str(e)
+    except Exception as exc:
+        logger.error(f"[gmail] error: {exc}")
+        _notify_expiry()
+        raise self.retry(exc=exc)
 
 
-# ── Auto-bootstrap when used as -A app.workers.celery_tasks ──────────────────
+# ── Auto-bootstrap when used as -A app.workers.celery_tasks:celery ───────────
 _bootstrap()
