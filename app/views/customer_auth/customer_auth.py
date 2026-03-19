@@ -153,21 +153,21 @@ def register():
     user = Customer(email=email, display_name=data.get("display_name", ""))
     user.set_password(password)
     user.is_verified = False          # must verify email before full access
-    # db.session.add(user)
-    # db.session.flush()
+    db.session.add(user)
+    db.session.flush()
 
     # Subscription.start_trial(user.id, tier)
 
     # Create verification token
     raw_token = _make_email_token("user.id", "verify")
-    # token_rec = EmailToken(
-    #     user_id    = user.id,
-    #     token_hash = _hash_token(raw_token),
-    #     purpose    = "verify",
-    #     expires_at = datetime.now(timezone.utc) + timedelta(hours=24),
-    # )
-    # db.session.add(token_rec)
-    # db.session.commit()
+    token_rec = EmailToken(
+        user_id    = user.id,
+        token_hash = _hash_token(raw_token),
+        purpose    = "verify",
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    db.session.add(token_rec)
+    db.session.commit()
 
     # Queue welcome + verification email
     try:
@@ -175,16 +175,16 @@ def register():
     except Exception as exc:
         current_app.logger.error(f"[auth] verification email failed for {email}: {exc}")
 
-    # MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
-    # db.session.commit()
+    MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
+    db.session.commit()
 
     access_token  = _issue_token(user.id, "access")
     refresh_token = _issue_token(user.id, "refresh")
 
     return _signed_response({
         "ok":            True,
-        # "user":          user.to_dict(),
-        # "subscription":  user.subscription.to_dict(),
+        "user":          user.to_dict(),
+        "subscription":  user.subscription.to_dict(),
         "access_token":  access_token,
         "refresh_token": refresh_token,
         "trial_message": f"You have a 3-day free trial of the {tier.title()} plan.",
