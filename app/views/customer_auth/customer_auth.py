@@ -153,7 +153,7 @@ def register():
     user = Customer(email=email, display_name=data.get("display_name", ""))
     user.set_password(password)
     user.is_verified = False          # must verify email before full access
-    db.session.add(user)
+    # db.session.add(user)
     # db.session.flush()
 
     # Subscription.start_trial(user.id, tier)
@@ -175,7 +175,7 @@ def register():
     except Exception as exc:
         current_app.logger.error(f"[auth] verification email failed for {email}: {exc}")
 
-    MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
+    # MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
     # db.session.commit()
 
     access_token  = _issue_token(user.id, "access")
