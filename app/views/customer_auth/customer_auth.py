@@ -159,7 +159,7 @@ def register():
     Subscription.start_trial(user.id, tier)
 
     # Create verification token
-    raw_token = _make_email_token("user.id", "verify")
+    raw_token = _make_email_token(user.id, "verify")
     token_rec = EmailToken(
         user_id    = user.id,
         token_hash = _hash_token(raw_token),
