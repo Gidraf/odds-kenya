@@ -1,76 +1,149 @@
-"""
-Drop-in replacement for send_async_email.
-Uses your self-hosted Docker SMTP via create_celery_app().
-No Gmail, no OAuth, no username/password args needed in the call.
-"""
+#!/usr/bin/env bash
+# Usage:
+#   ./celery_workers.sh start
+#   ./celery_workers.sh stop
+#   ./celery_workers.sh restart
+#   ./celery_workers.sh status
+#   ./celery_workers.sh logs harvest|live|ev_arb|results|notify|default|beat|all
 
-import base64
+APP="app.workers.celery_tasks"
+LOG_DIR="logs/celery"
+PID_DIR="run/celery"
 
-from flask_mail import Mail, Message
-from . import celery_service
-from app import create_celery_app
+mkdir -p "$LOG_DIR" "$PID_DIR"
 
+green()  { echo -e "\033[32m$*\033[0m"; }
+yellow() { echo -e "\033[33m$*\033[0m"; }
+red()    { echo -e "\033[31m$*\033[0m"; }
 
-@celery_service.task(
-    name="app.workers.celery_tasks.send_async_email",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-    soft_time_limit=60,
-    time_limit=90,
-)
-def send_async_email(
-    self,
-    subject,
-    recipients,
-    body,
-    body_type="plain",
-    attachments=None,
-    username=None,     # kept for backwards-compat — ignored, SMTP creds from env
-    password=None,     # kept for backwards-compat — ignored
-):
-    """
-    Send email via self-hosted Docker SMTP.
+pid_file() { echo "$PID_DIR/$1.pid"; }
+log_file() { echo "$LOG_DIR/$1.log"; }
 
-    Call it the same way as before:
-        send_async_email.delay(subject, [to], html_body, "html")
-        send_async_email.apply_async(args=[subject, [to], body, "html"])
-    """
-    try:
-        app  = create_celery_app()           # reads SMTP_HOST/PORT/USER/PASS from env
+is_running() {
+  local pf
+  pf=$(pid_file "$1")
+  [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2>/dev/null
+}
 
-        with app.app_context():
-            mail = Mail(app)
+start_worker() {
+  local name=$1 queues=$2 concurrency=$3
+  if is_running "$name"; then
+    yellow "[$name] already running (pid $(cat "$(pid_file "$name")"))"
+    return
+  fi
+  celery -A "$APP" worker \
+    --loglevel=info \
+    -c "$concurrency" \
+    -Q "$queues" \
+    -n "${name}@%h" \
+    --logfile="$(log_file "$name")" \
+    --pidfile="$(pid_file "$name")" \
+    --detach
+  green "[$name] started — queues=[$queues] concurrency=$concurrency"
+}
 
-            msg = Message(
-                subject    = subject,
-                recipients = recipients,
-                sender     = app.config["MAIL_DEFAULT_SENDER"],
-            )
+cmd_start() {
+  start_worker harvest  harvest  20
+  start_worker live     live     10
+  start_worker ev_arb   ev_arb   8
+  start_worker results  results  4
+  start_worker notify   notify   4
+  start_worker default  default  2
 
-            if body_type == "html":
-                msg.html = body
-            else:
-                msg.body = body
+  if is_running beat; then
+    yellow "[beat] already running (pid $(cat "$(pid_file "beat")"))"
+  else
+    celery -A "$APP" beat \
+      --loglevel=info \
+      --logfile="$(log_file "beat")" \
+      --pidfile="$(pid_file "beat")" \
+      --detach
+    green "[beat] started"
+  fi
 
-            if attachments:
-                for attachment in attachments:
-                    filename    = attachment.get("filename", "file")
-                    mimetype    = attachment.get("mimetype", "application/octet-stream")
-                    content_b64 = attachment.get("content")
+  echo ""
+  green "All workers running. Logs → $LOG_DIR/"
+}
 
-                    if not content_b64:
-                        print(f"⚠️  Skipping {filename}: no content")
-                        continue
+cmd_stop() {
+  for name in harvest live ev_arb results notify default beat; do
+    local pf
+    pf=$(pid_file "$name")
+    if is_running "$name"; then
+      kill "$(cat "$pf")" 2>/dev/null && rm -f "$pf"
+      green "[$name] stopped"
+    else
+      yellow "[$name] not running"
+    fi
+  done
+}
 
-                    try:
-                        msg.attach(filename, mimetype, base64.b64decode(content_b64))
-                    except Exception as e:
-                        print(f"⚠️  Attachment decode failed ({filename}): {e}")
+cmd_status() {
+  echo ""
+  printf "%-12s  %-10s  %s\n" "WORKER" "STATUS" "PID"
+  printf "%-12s  %-10s  %s\n" "------" "------" "---"
+  for name in harvest live ev_arb results notify default beat; do
+    if is_running "$name"; then
+      printf "%-12s  \033[32m%-10s\033[0m  %s\n" "$name" "running" "$(cat "$(pid_file "$name")")"
+    else
+      printf "%-12s  \033[31m%-10s\033[0m\n" "$name" "stopped"
+    fi
+  done
+  echo ""
+}
 
-            mail.send(msg)
-            print(f"✅ Email sent → {recipients}")
+cmd_logs() {
+  local target="${1:-all}"
 
-    except Exception as exc:
-        print(f"❌ Email failed: {exc}")
-        raise self.retry(exc=exc)
+  if [ "$target" = "all" ]; then
+    tail -f \
+      "$LOG_DIR/harvest.log" \
+      "$LOG_DIR/live.log" \
+      "$LOG_DIR/ev_arb.log" \
+      "$LOG_DIR/results.log" \
+      "$LOG_DIR/notify.log" \
+      "$LOG_DIR/default.log" \
+      "$LOG_DIR/beat.log" \
+      2>/dev/null | awk '
+        /==> .* <==/ { gsub(/.*\//, "", $2); gsub(/\.log/, "", $2); label=$2; next }
+        { print "[" label "] " $0 }
+      '
+    return
+  fi
+
+  local lf
+  lf=$(log_file "$target")
+  if [ ! -f "$lf" ]; then
+    red "No log file: $lf"
+    echo "Available: harvest | live | ev_arb | results | notify | default | beat | all"
+    exit 1
+  fi
+  green "=== $lf ==="
+  tail -f "$lf"
+}
+
+case "${1:-help}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_stop; sleep 2; cmd_start ;;
+  status)  cmd_status ;;
+  logs)    cmd_logs "${2:-all}" ;;
+  *)
+    echo ""
+    echo "Usage: $0 {start|stop|restart|status|logs [worker|all]}"
+    echo ""
+    echo "  start              Start all 6 workers + beat (detached)"
+    echo "  stop               Stop everything"
+    echo "  restart            Stop + start"
+    echo "  status             Show running status + PIDs"
+    echo "  logs harvest       Tail harvest worker"
+    echo "  logs live          Tail live worker"
+    echo "  logs ev_arb        Tail EV/Arb worker"
+    echo "  logs results       Tail results worker"
+    echo "  logs notify        Tail notify worker"
+    echo "  logs default       Tail default worker"
+    echo "  logs beat          Tail beat scheduler"
+    echo "  logs all           Tail all logs merged"
+    echo ""
+    ;;
+esac
