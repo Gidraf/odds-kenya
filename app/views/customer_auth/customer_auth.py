@@ -176,7 +176,7 @@ def register():
         current_app.logger.error(f"[auth] verification email failed for {email}: {exc}")
 
     MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
-    db.session.commit()
+    # db.session.commit()
 
     access_token  = _issue_token(user.id, "access")
     refresh_token = _issue_token(user.id, "refresh")
