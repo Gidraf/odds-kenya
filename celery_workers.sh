@@ -107,11 +107,11 @@ allocate_concurrency() {
   C_HARVEST=$(( C_HARVEST + REMAINDER ))
 
   # Absolute ceilings so a single queue can't monopolise a big machine
-  [ "$C_HARVEST" -gt 20 ] && C_HARVEST=20
-  [ "$C_LIVE"    -gt 12 ] && C_LIVE=12
-  [ "$C_EVARB"   -gt  8 ] && C_EVARB=8
-  [ "$C_RESULTS" -gt  4 ] && C_RESULTS=4
-  [ "$C_NOTIFY"  -gt  4 ] && C_NOTIFY=4
+  [ "$C_HARVEST" -gt 4 ] && C_HARVEST=4
+  [ "$C_LIVE"    -gt 2 ] && C_LIVE=2
+  [ "$C_EVARB"   -gt  1 ] && C_EVARB=1
+  [ "$C_RESULTS" -gt 1 ] && C_RESULTS=1
+  [ "$C_NOTIFY"  -gt  2 ] && C_NOTIFY=1
   [ "$C_DEFAULT" -gt  2 ] && C_DEFAULT=2
 }
 
