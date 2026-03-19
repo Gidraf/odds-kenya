@@ -152,13 +152,13 @@ def register():
     user = Customer(email=email, display_name=data.get("display_name", ""))
     user.set_password(password)
     user.is_verified = False          # must verify email before full access
-    # db.session.add(user)
-    # db.session.flush()
+    db.session.add(user)
+    db.session.flush()
 
     # Subscription.start_trial(user.id, tier)
 
     # Create verification token
-    # raw_token = _make_email_token(user.id, "verify")
+    raw_token = _make_email_token(user.id, "verify")
     # token_rec = EmailToken(
     #     user_id    = user.id,
     #     token_hash = _hash_token(raw_token),
