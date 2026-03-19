@@ -309,6 +309,7 @@ def verify_email():
         return _err("Account not found.", 404)
 
     user.is_verified = True
+    user.is_active = True
     rec.used         = True
     rec.used_at      = now
     db.session.commit()
