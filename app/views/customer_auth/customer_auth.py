@@ -156,7 +156,7 @@ def register():
     db.session.add(user)
     db.session.flush()
 
-    # Subscription.start_trial(user.id, tier)
+    Subscription.start_trial(user.id, tier)
 
     # Create verification token
     raw_token = _make_email_token("user.id", "verify")
