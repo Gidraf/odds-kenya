@@ -206,7 +206,7 @@ def login():
     from app.models.metrics  import MetricsEvent
     from app.extensions      import db
 
-    user = Customer.query.filter_by(email=email, is_active=True).first()
+    user = Customer.query.filter_by(email=email).first()
     if not user or not user.check_password(password):
         return _err("Invalid credentials", 401)
 
