@@ -165,7 +165,7 @@ def register():
     #     purpose    = "verify",
     #     expires_at = datetime.now(timezone.utc) + timedelta(hours=24),
     # )
-    db.session.add(token_rec)
+    # db.session.add(token_rec)
     # db.session.commit()
 
     # Queue welcome + verification email
