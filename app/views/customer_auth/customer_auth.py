@@ -149,16 +149,16 @@ def register():
     if Customer.query.filter_by(email=email).first():
         return _err("Email already registered", 409)
 
-    user = Customer(email=email, display_name=data.get("display_name", ""))
+    # user = Customer(email=email, display_name=data.get("display_name", ""))
     user.set_password(password)
     user.is_verified = False          # must verify email before full access
     db.session.add(user)
-    db.session.flush()
+    # db.session.flush()
 
     # Subscription.start_trial(user.id, tier)
 
     # Create verification token
-    raw_token = _make_email_token(user.id, "verify")
+    raw_token = _make_email_token("user.id", "verify")
     # token_rec = EmailToken(
     #     user_id    = user.id,
     #     token_hash = _hash_token(raw_token),
