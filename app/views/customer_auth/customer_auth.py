@@ -198,52 +198,38 @@ def register():
 
 @bp_customer.route("/auth/login", methods=["POST"])
 def login():
-        data     = request.get_json(force=True) or {}
-        email    = (data.get("email") or "").strip().lower()
-        password = data.get("password", "")
+    data     = request.get_json(force=True) or {}
+    email    = (data.get("email") or "").strip().lower()
+    password = data.get("password", "")
 
-        from app.models.customer import Customer
+    from app.models.customer import Customer
+    from app.models.metrics  import MetricsEvent
+    from app.extensions      import db
 
-        # Step 1: find user ignoring is_active to see what's actually stored
-        user = Customer.query.filter_by(email=email).first()
+    user = Customer.query.filter_by(email=email, is_active=True).first()
+    if not user or not user.check_password(password):
+        return _err("Invalid credentials", 401)
 
-        if not user:
-            current_app.logger.warning(f"[login] no user found for email={email}")
-            return _err("Invalid credentials", 401)
+    user.last_login_at = datetime.now(timezone.utc)
+    MetricsEvent.log("login", user_id=user.id, tier=user.tier, ip=request.remote_addr)
+    db.session.commit()
 
-        current_app.logger.info(
-            f"[login] user={user.id} is_active={user.is_active} "
-            f"is_verified={user.is_verified} has_hash={bool(user.password_hash)}"
+    resp = {
+        "ok":            True,
+        "user":          user.to_dict(),
+        "subscription":  user.subscription.to_dict() if user.subscription else None,
+        "access_token":  _issue_token(user.id, "access"),
+        "refresh_token": _issue_token(user.id, "refresh"),
+    }
+
+    # Warn if email not verified (still allow login but surface the notice)
+    if not user.is_verified:
+        resp["verify_notice"] = (
+            "Your email is not yet verified. "
+            "Some features may be limited until you verify."
         )
 
-        if not user.is_active:
-            current_app.logger.warning(f"[login] user {user.id} is_active=False/None")
-            return _err("Invalid credentials", 401)
-
-        if not user.check_password(password):
-            current_app.logger.warning(f"[login] password mismatch for user {user.id}")
-            return _err("Invalid credentials", 401)
-        
-        user.last_login_at = datetime.now(timezone.utc)
-        MetricsEvent.log("login", user_id=user.id, tier=user.tier, ip=request.remote_addr)
-        db.session.commit()
-
-        resp = {
-            "ok":            True,
-            "user":          user.to_dict(),
-            "subscription":  user.subscription.to_dict() if user.subscription else None,
-            "access_token":  _issue_token(user.id, "access"),
-            "refresh_token": _issue_token(user.id, "refresh"),
-        }
-
-        # Warn if email not verified (still allow login but surface the notice)
-        if not user.is_verified:
-            resp["verify_notice"] = (
-                "Your email is not yet verified. "
-                "Some features may be limited until you verify."
-            )
-
-        return _signed_response(resp)
+    return _signed_response(resp)
 
 
 # =============================================================================
