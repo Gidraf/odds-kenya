@@ -27,7 +27,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app import create_app
 import requests
 
-from app.extensions import celery, init_celery
+from app.extensions import celery as celery_service, init_celery
 from celery.utils.log import get_task_logger
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
@@ -61,7 +61,6 @@ def _bootstrap():
     except Exception as exc:
         logger.error(f"[celery_tasks] bootstrap failed: {exc}")
         raise
-
 
 # =============================================================================
 # Internal API helper
@@ -101,7 +100,7 @@ def _api_post(path: str, payload: dict, timeout: int = 30) -> dict:
 
 def make_celery(app):
     init_celery(app)
-    celery.conf.update(
+    celery_service.conf.update(
         task_acks_late             = True,
         worker_prefetch_multiplier = 1,
         task_reject_on_worker_lost = True,
@@ -134,9 +133,10 @@ def make_celery(app):
             "expire-subs-hourly":    {"task": "app.workers.celery_tasks.expire_subscriptions",     "schedule": 3600},
         },
     )
-    return celery
+    return celery_service
 
-
+flask_app = create_app()
+celery = make_celery(flask_app)
 # =============================================================================
 # Redis cache helpers
 # =============================================================================
@@ -1233,4 +1233,3 @@ def send_gmail(
 
 
 # ── Auto-bootstrap when used as -A app.workers.celery_tasks:celery ───────────
-# _bootstrap()
