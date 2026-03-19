@@ -1097,66 +1097,69 @@ def create_message(sender, to, subject, message_text):
 
             
 
-@celery.task( name="app.workers.celery_tasks.send_async_email",
-    soft_time_limit=30,
-    time_limit=45,)
-def send_async_email(subject, recipients, body, body_type="plain", attachments=None, username=None, password=None):
+@celery_service.task(
+    name="app.workers.celery_tasks.send_async_email",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+    soft_time_limit=60,
+    time_limit=90,
+)
+def send_async_email(
+    self,
+    subject,
+    recipients,
+    body,
+    body_type="plain",
+    attachments=None,
+    username=None,     # kept for backwards-compat — ignored, SMTP creds from env
+    password=None,     # kept for backwards-compat — ignored
+):
     """
-    Send an email asynchronously using Celery and Flask-Mail.
-    Supports base64-encoded attachments with varying MIME types.
+    Send email via self-hosted Docker SMTP.
+ 
+    Call it the same way as before:
+        send_async_email.delay(subject, [to], html_body, "html")
+        send_async_email.apply_async(args=[subject, [to], body, "html"])
     """
-
     try:
-        app = create_app()
-
+        app  = create_app()           # reads SMTP_HOST/PORT/USER/PASS from env
+ 
         with app.app_context():
             mail = Mail(app)
-
+ 
             msg = Message(
-                subject=subject,
-                sender=username,
-                recipients=recipients,
+                subject    = subject,
+                recipients = recipients,
+                sender     = app.config["MAIL_DEFAULT_SENDER"],
             )
-
-            # Set the body format (plain text or HTML)
+ 
             if body_type == "html":
                 msg.html = body
             else:
                 msg.body = body
-
-            # Handle attachments
+ 
             if attachments:
                 for attachment in attachments:
-                    """
-                    Expected attachment format:
-                    {
-                        "filename": "report.pdf",
-                        "content": "<base64 string>",
-                        "mimetype": "application/pdf"
-                    }
-                    """
-                    filename = attachment.get("filename", "file.pdf")
-                    mimetype = attachment.get("mimetype", "application/pdf")
+                    filename    = attachment.get("filename", "file")
+                    mimetype    = attachment.get("mimetype", "application/octet-stream")
                     content_b64 = attachment.get("content")
-
+ 
                     if not content_b64:
-                        print(f"⚠️ Skipping attachment {filename}: No content provided.")
+                        print(f"⚠️  Skipping {filename}: no content")
                         continue
-
+ 
                     try:
-                        file_data = base64.b64decode(content_b64)
-                        msg.attach(filename, mimetype, file_data)
-                    except Exception as decode_err:
-                        print(f"❌ Failed to decode attachment {filename}: {decode_err}")
-
-            # Send the email
+                        msg.attach(filename, mimetype, base64.b64decode(content_b64))
+                    except Exception as e:
+                        print(f"⚠️  Attachment decode failed ({filename}): {e}")
+ 
             mail.send(msg)
-            print(f"✅ Email sent successfully to {recipients}")
-
-    except Exception as e:
-        print("❌ Email sending failed:", e)
-
-
+            print(f"✅ Email sent → {recipients}")
+ 
+    except Exception as exc:
+        print(f"❌ Email failed: {exc}")
+        raise self.retry(exc=exc)
 
 
 @celery.task( name="app.workers.celery_tasks.expire_subscriptions",
