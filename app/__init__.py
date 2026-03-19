@@ -8,9 +8,17 @@ from app.views.onboarding.playwright_onboarding import init_playwright_manager
 load_dotenv()
 
 
+EMAIL_ADDRESS = os.environ.get("ADMIN_EMAIL")
+EMAIL_PASSWORD = os.environ.get("ADMIN_EMAIL_PASSWORD")
+SMTP_SERVER = f"mail.{os.environ.get('DOMAIN')}"
+IMAP_SERVER = f"mail.{os.environ.get('DOMAIN')}"
+SMTP_PORT = 587
+IMAP_PORT = 993
+
 def create_app() -> Flask:
     flask_app = Flask(__name__, instance_relative_config=True)
-
+    mail_username =  os.getenv("MAIL_USERNAME", EMAIL_ADDRESS)
+    mail_password = os.getenv("MAIL_PASSWORD", EMAIL_PASSWORD)
     flask_app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
     flask_app.config["SECRET_KEY"]              = os.environ.get("SECRET_KEY")
     flask_app.config["JWT_SECRET_KEY"]          = os.environ.get("JWT_SECRET_KEY")
@@ -18,6 +26,12 @@ def create_app() -> Flask:
     flask_app.config["CELERY_BROKER_URL"]       = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     flask_app.config["CELERY_RESULT_BACKEND"]   = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     flask_app.config["OPENAI_API_KEY"]          = os.environ.get("OPENAI_API_KEY")
+    flask_app.config["MAIL_SERVER"] = SMTP_SERVER
+    flask_app.config["MAIL_PORT"] = SMTP_PORT
+    flask_app.config["MAIL_USE_TLS"] = True
+    flask_app.config["MAIL_USERNAME"] = mail_username
+    flask_app.config["MAIL_PASSWORD"] = mail_password
+    flask_app.config["SQLALCHEMY_ECHO"] = False
 
     db.init_app(flask_app)
     jwt.init_app(flask_app)
