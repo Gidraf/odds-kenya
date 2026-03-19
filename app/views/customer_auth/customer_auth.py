@@ -77,7 +77,8 @@ def _send_verification_email(user, raw_token: str) -> None:
         app_url          = app_url,
         year             = datetime.now(timezone.utc).year,
     )
-    
+    print(html_body)
+    print(user.email)
     send_async_email.apply_async(args=[
         "Welcome to OddsKenya — Please Verify Your Email ⚽",
         [user.email],
