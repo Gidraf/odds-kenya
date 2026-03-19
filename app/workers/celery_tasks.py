@@ -1131,7 +1131,7 @@ def send_async_email(
             msg = Message(
                 subject    = subject,
                 recipients = recipients,
-                sender     = app.config["MAIL_DEFAULT_SENDER"],
+                sender     = os.environ.get("ADMIN_EMAIL"),
             )
  
             if body_type == "html":
