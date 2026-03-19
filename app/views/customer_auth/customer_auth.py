@@ -19,7 +19,7 @@ import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
 
-from flask import request, g, current_app
+from flask import render_template, request, g, current_app
 
 from app.utils.customer_jwt_helpers import (
     _decode_token, _err, _issue_token, _signed_response,
@@ -59,8 +59,17 @@ def _send_verification_email(user, raw_token: str) -> None:
         loader      = FileSystemLoader("app/templates"),
         autoescape  = select_autoescape(["html"]),
     )
-    template = env.get_template("welcome_email.html")
-    html_body = template.render(
+    # template = env.get_template("welcome_email.html")
+    # html_body = template.render(
+    #     display_name     = user.display_name or user.email.split("@")[0],
+    #     tier             = user.tier,
+    #     verification_url = verify_url,
+    #     trial_ends       = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%d %b %Y"),
+    #     app_url          = app_url,
+    #     year             = datetime.now(timezone.utc).year,
+    # )
+    html_body = render_template(
+        "welcome_email.html",
         display_name     = user.display_name or user.email.split("@")[0],
         tier             = user.tier,
         verification_url = verify_url,
