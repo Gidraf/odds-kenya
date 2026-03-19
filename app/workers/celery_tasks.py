@@ -9,31 +9,63 @@ import mimetypes
 import os
 import time
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
-# ── Load .env before any app imports ─────────────────────────────────────────
-try:
-    from dotenv import load_dotenv
-    _here = Path(__file__).resolve()
-    for _parent in [_here.parent, _here.parent.parent, _here.parent.parent.parent]:
-        _env_file = _parent / ".env"
-        if _env_file.exists():
-            load_dotenv(_env_file, override=False)
-            break
-except ImportError:
-    pass
-
+from flask_mail import Mail, Message
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app import create_app
 import requests
 
 from app.extensions import celery as celery_service, init_celery
 from celery.utils.log import get_task_logger
+import os
+import os
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+# from playwright.sync_api import sync_playwright
+import arrow
+import json
 
 logger = get_task_logger(__name__)
+
+# ── Self-bootstrap when used as the direct -A target ─────────────────────────
+# Allows BOTH entry points to work:
+#
+#   celery -A app.workers.celery_tasks worker ...   (direct — used by you)
+#   celery -A app.celery_app            worker ...   (via factory)
+#
+# When Celery loads this module as -A app.workers.celery_tasks it just imports
+# it.  At that point make_celery() hasn't been called, so the Celery instance
+# has no broker URL and no Flask app context.  The guard below detects this and
+# runs create_app() + make_celery() automatically.
+#
+# When the module is imported BY app.celery_app, that file calls
+# make_celery(flask_app) explicitly — conf.broker_url is already set, so the
+# block below is skipped entirely (idempotent).
+def _bootstrap():
+    """
+    Auto-initialise when loaded as the direct -A target:
+        celery -A app.workers.celery_tasks worker ...
+
+    Guard: uses a custom _flask_initialized flag set by init_celery().
+    This avoids the broker_url pitfall — Celery() sets a default amqp://
+    broker even when unconfigured, so `if celery.conf.broker_url` is
+    always truthy and would incorrectly skip bootstrapping.
+
+    Safe to call multiple times (idempotent).
+    """
+    if getattr(celery, '_flask_initialized', False):
+        # Already initialised (e.g. imported via app.celery_app) — skip.
+        return
+    try:
+        flask_app = create_app()
+        # make_celery() is fully defined by the time _bootstrap() runs
+        # (it is called at the very bottom of this file, after all defs).
+        make_celery(flask_app)
+        logger.info("[celery_tasks] self-bootstrapped via create_app()")
+    except Exception as exc:
+        logger.error(f"[celery_tasks] bootstrap failed: {exc}")
+        raise
 
 _B2B_SPORTS = [
     "Football", "Basketball", "Tennis", "Ice Hockey",
@@ -47,58 +79,13 @@ _SBO_SPORTS = [
 PAGE_SIZE = 15
 
 
-# =============================================================================
-# Bootstrap
-# =============================================================================
-
-def _bootstrap():
-    if getattr(celery, "_flask_initialized", False):
-        return
-    try:
-        flask_app = create_app()
-        make_celery(flask_app)
-        logger.info("[celery_tasks] self-bootstrapped via create_app()")
-    except Exception as exc:
-        logger.error(f"[celery_tasks] bootstrap failed: {exc}")
-        raise
-
-# =============================================================================
-# Internal API helper
-# =============================================================================
-
-def _api_base_url() -> str:
-    """
-    Base URL for the internal REST API.
-    Set in .env:
-        INTERNAL_API_URL=http://127.0.0.1:5000
-    """
-    return os.environ.get("INTERNAL_API_URL", "http://127.0.0.1:5000").rstrip("/")
-
-
-def _api_post(path: str, payload: dict, timeout: int = 30) -> dict:
-    """
-    POST JSON to an internal API endpoint and return the parsed response.
-    Raises requests.exceptions.HTTPError on non-2xx responses.
-    """
-    url  = f"{_api_base_url()}{path}"
-    resp = requests.post(
-        url,
-        json    = payload,
-        timeout = timeout,
-        headers = {
-            "Content-Type": "application/json",
-            "X-Admin-Key":  os.environ.get("ADMIN_KEY", ""),
-        },
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-# =============================================================================
-# Celery factory
-# =============================================================================
-
 def make_celery(app):
+    """
+    Bind the global Celery instance to the Flask app.
+    Calls extensions.init_celery() (sets broker/backend + ContextTask),
+    then layers on harvest-specific task_routes + beat_schedule.
+    Returns the same global celery object — NOT a new instance.
+    """
     init_celery(app)
     celery_service.conf.update(
         task_acks_late             = True,
@@ -117,10 +104,6 @@ def make_celery(app):
             "app.workers.celery_tasks.health_check":             {"queue": "default"},
             "app.workers.celery_tasks.expire_subscriptions":     {"queue": "default"},
             "app.workers.celery_tasks.cache_finished_games":     {"queue": "results"},
-            "app.workers.celery_tasks.send_async_email":         {"queue": "default"},
-            "app.workers.celery_tasks.send_async_template":      {"queue": "default"},
-            "app.workers.celery_tasks.send_message":             {"queue": "default"},
-            "app.workers.celery_tasks.send_gmail":               {"queue": "default"},
         },
         beat_schedule = {
             "b2b-upcoming-5min":     {"task": "app.workers.celery_tasks.harvest_all_upcoming",     "schedule": 300, "args": ["upcoming"]},
@@ -134,12 +117,11 @@ def make_celery(app):
         },
     )
     return celery_service
-
-flask_app = create_app()
-celery = make_celery(flask_app)
 # =============================================================================
 # Redis cache helpers
 # =============================================================================
+flask_app = create_app()
+celery = make_celery(flask_app)
 
 def _redis():
     import redis as _r
@@ -195,12 +177,12 @@ def task_status_set(name: str, status: dict):
 def _load_bookmakers() -> list[dict]:
     try:
         from app.models.bookmakers_model import Bookmaker
-        bms    = Bookmaker.query.filter_by(is_active=True).all()
+        bms = Bookmaker.query.filter_by(is_active=True).all()
         result = []
         for bm in bms:
             cfg = getattr(bm, "harvest_config", None) or {}
             if isinstance(cfg, str):
-                try:    cfg = json.loads(cfg)
+                try: cfg = json.loads(cfg)
                 except Exception: cfg = {}
             result.append({
                 "id":          bm.id,
@@ -216,20 +198,26 @@ def _load_bookmakers() -> list[dict]:
 
 
 def _bookmaker_id_map() -> dict[str, int]:
+    """Map bookmaker name → DB id for EV/Arb leg links."""
     try:
         from app.models.bookmakers_model import Bookmaker
-        return {bm.name: bm.id for bm in Bookmaker.query.all()}
+        bms = Bookmaker.query.all()
+        return {bm.name: bm.id for bm in bms}
     except Exception:
         return {}
 
 
 def _upsert_unified_match(match_data: dict, bookmaker_id: int,
                            bookmaker_name: str) -> int | None:
+    """
+    Write one parsed match to unified_matches + bookmaker_match_odds.
+    Returns the unified_match.id for downstream EV/Arb tasks.
+    """
     try:
         from app.extensions import db
         from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory
 
-        parent_id = str(match_data.get("match_id") or match_data.get("betradar_id") or "")
+        parent_id   = str(match_data.get("match_id") or match_data.get("betradar_id") or "")
         if not parent_id:
             return None
 
@@ -238,6 +226,7 @@ def _upsert_unified_match(match_data: dict, bookmaker_id: int,
         sport = str(match_data.get("sport")       or "")
         comp  = str(match_data.get("competition") or "")
 
+        # Parse start_time
         start_time = None
         if st := match_data.get("start_time"):
             try:
@@ -248,6 +237,7 @@ def _upsert_unified_match(match_data: dict, bookmaker_id: int,
             except Exception:
                 pass
 
+        # ── Find-or-create UnifiedMatch ────────────────────────────────────
         um = UnifiedMatch.query.filter_by(parent_match_id=parent_id).first()
         if not um:
             um = UnifiedMatch(
@@ -261,12 +251,14 @@ def _upsert_unified_match(match_data: dict, bookmaker_id: int,
             db.session.add(um)
             db.session.flush()
         else:
-            if home  and home  != um.home_team_name: um.home_team_name   = home
-            if away  and away  != um.away_team_name: um.away_team_name   = away
-            if sport and not um.sport_name:          um.sport_name       = sport
-            if comp  and not um.competition_name:    um.competition_name = comp
-            if start_time and not um.start_time:     um.start_time       = start_time
+            # Update metadata if changed
+            if home and home != um.home_team_name:  um.home_team_name   = home
+            if away and away != um.away_team_name:  um.away_team_name   = away
+            if sport and not um.sport_name:         um.sport_name       = sport
+            if comp and not um.competition_name:    um.competition_name = comp
+            if start_time and not um.start_time:    um.start_time       = start_time
 
+        # ── Find-or-create BookmakerMatchOdds ─────────────────────────────
         bmo = BookmakerMatchOdds.query.filter_by(
             match_id=um.id, bookmaker_id=bookmaker_id
         ).first()
@@ -275,9 +267,13 @@ def _upsert_unified_match(match_data: dict, bookmaker_id: int,
             db.session.add(bmo)
             db.session.flush()
 
+        # ── Write every market/outcome ─────────────────────────────────────
         markets = match_data.get("markets") or {}
+        now_str = datetime.now(timezone.utc).isoformat()
+
         for mkt_key, outcomes in markets.items():
             for outcome, odds_data in outcomes.items():
+                # odds_data can be float (raw fetcher) or {odds:float, bookmaker:str}
                 if isinstance(odds_data, (int, float)):
                     price = float(odds_data)
                 elif isinstance(odds_data, dict):
@@ -287,15 +283,20 @@ def _upsert_unified_match(match_data: dict, bookmaker_id: int,
                 if price <= 1.0:
                     continue
 
+                # Write to bookmaker_match_odds
                 price_changed, old_price = bmo.upsert_selection(
                     market=mkt_key, specifier=None, selection=outcome, price=price,
                 )
+
+                # Write to unified_match aggregated view
                 um.upsert_bookmaker_price(
                     market=mkt_key, specifier=None, selection=outcome,
                     price=price, bookmaker_id=bookmaker_id,
                 )
+
+                # Append history on price change
                 if price_changed:
-                    db.session.add(BookmakerOddsHistory(
+                    h = BookmakerOddsHistory(
                         bmo_id       = bmo.id,
                         bookmaker_id = bookmaker_id,
                         match_id     = um.id,
@@ -305,7 +306,8 @@ def _upsert_unified_match(match_data: dict, bookmaker_id: int,
                         old_price    = old_price,
                         new_price    = price,
                         price_delta  = round(price - old_price, 4) if old_price else None,
-                    ))
+                    )
+                    db.session.add(h)
 
         db.session.commit()
         return um.id
@@ -321,6 +323,10 @@ def _upsert_unified_match(match_data: dict, bookmaker_id: int,
 
 
 def _upsert_sbo_match(sbo_match: dict, bk_name_to_id: dict[str, int]) -> int | None:
+    """
+    Write a unified SBO match (from OddsAggregator) to the DB.
+    SBO matches have a different shape: bookmakers{} + best_odds + unified_markets.
+    """
     try:
         from app.extensions import db
         from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory
@@ -357,19 +363,21 @@ def _upsert_sbo_match(sbo_match: dict, bk_name_to_id: dict[str, int]) -> int | N
             db.session.add(um)
             db.session.flush()
         else:
-            if home  and home  != um.home_team_name: um.home_team_name   = home
-            if away  and away  != um.away_team_name: um.away_team_name   = away
-            if sport and not um.sport_name:          um.sport_name       = sport
-            if comp  and not um.competition_name:    um.competition_name = comp
-            if start_time and not um.start_time:     um.start_time       = start_time
+            if home  and home  != um.home_team_name:   um.home_team_name   = home
+            if away  and away  != um.away_team_name:   um.away_team_name   = away
+            if sport and not um.sport_name:            um.sport_name       = sport
+            if comp  and not um.competition_name:      um.competition_name = comp
+            if start_time and not um.start_time:       um.start_time       = start_time
 
+        # unified_markets: {market_key: {outcome: [{bookie, odd}]}}
         unified = sbo_match.get("unified_markets") or {}
+
         for mkt_key, outcome_map in unified.items():
             for outcome, entries in outcome_map.items():
                 for entry in entries:
-                    bookie = entry.get("bookie", "")
-                    price  = float(entry.get("odd", 0))
-                    bk_id  = bk_name_to_id.get(bookie)
+                    bookie   = entry.get("bookie", "")
+                    price    = float(entry.get("odd", 0))
+                    bk_id    = bk_name_to_id.get(bookie)
                     if not bk_id or price <= 1.0:
                         continue
 
@@ -389,12 +397,13 @@ def _upsert_sbo_match(sbo_match: dict, bk_name_to_id: dict[str, int]) -> int | N
                         price=price, bookmaker_id=bk_id,
                     )
                     if price_changed:
-                        db.session.add(BookmakerOddsHistory(
+                        h = BookmakerOddsHistory(
                             bmo_id=bmo.id, bookmaker_id=bk_id, match_id=um.id,
                             market=mkt_key, specifier=None, selection=outcome,
                             old_price=old_price, new_price=price,
                             price_delta=round(price - old_price, 4) if old_price else None,
-                        ))
+                        )
+                        db.session.add(h)
 
         db.session.commit()
         return um.id
@@ -410,7 +419,7 @@ def _upsert_sbo_match(sbo_match: dict, bk_name_to_id: dict[str, int]) -> int | N
 
 
 # =============================================================================
-# B2B Harvest
+# B2B Harvest — paginated per bookmaker × sport
 # =============================================================================
 
 @celery.task(
@@ -422,13 +431,23 @@ def _upsert_sbo_match(sbo_match: dict, bk_name_to_id: dict[str, int]) -> int | N
     time_limit=60,
     acks_late=True,
 )
-def harvest_b2b_page(self, bookmaker: dict, sport: str, mode: str, page: int) -> dict:
+def harvest_b2b_page(
+    self,
+    bookmaker: dict,
+    sport: str,
+    mode: str,
+    page: int,
+) -> dict:
+    """
+    Fetch one page (PAGE_SIZE records) from a B2B bookmaker.
+    Writes to Redis cache + DB.  Queues EV/Arb compute task.
+    """
     t0      = time.perf_counter()
     bk_name = bookmaker.get("name") or bookmaker.get("domain", "?")
     bk_id   = bookmaker.get("id")
 
     try:
-        from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
+        from app.views.odds_feed.bookmaker_fetcher  import fetch_bookmaker
         matches = fetch_bookmaker(
             bookmaker, sport_name=sport, mode=mode,
             page=page, page_size=PAGE_SIZE, timeout=20,
@@ -439,26 +458,42 @@ def harvest_b2b_page(self, bookmaker: dict, sport: str, mode: str, page: int) ->
 
     latency = int((time.perf_counter() - t0) * 1000)
 
-    cache_set(f"odds:{mode}:{sport.lower().replace(' ', '_')}:{bk_id}:p{page}", {
-        "bookmaker_id": bk_id, "bookmaker_name": bk_name,
-        "sport": sport, "mode": mode, "page": page,
-        "match_count": len(matches),
-        "harvested_at": datetime.now(timezone.utc).isoformat(),
-        "latency_ms": latency, "matches": matches,
+    # ── Redis cache (raw results for fast API response) ────────────────────
+    cache_key = f"odds:{mode}:{sport.lower().replace(' ','_')}:{bk_id}:p{page}"
+    cache_set(cache_key, {
+        "bookmaker_id":   bk_id,
+        "bookmaker_name": bk_name,
+        "sport":          sport,
+        "mode":           mode,
+        "page":           page,
+        "match_count":    len(matches),
+        "harvested_at":   datetime.now(timezone.utc).isoformat(),
+        "latency_ms":     latency,
+        "matches":        matches,
     }, ttl=90 if mode == "live" else 360)
 
+    # ── DB persistence ────────────────────────────────────────────────────
     match_ids: list[int] = []
     for m in matches:
         mid = _upsert_unified_match(m, bk_id, bk_name)
         if mid:
             match_ids.append(mid)
 
+    # ── Queue EV/Arb compute for each match ───────────────────────────────
     for match_id in match_ids:
-        compute_ev_arb_for_match.apply_async(args=[match_id], queue="ev_arb", countdown=1)
+        compute_ev_arb_for_match.apply_async(
+            args=[match_id],
+            queue="ev_arb",
+            countdown=1,   # 1-second delay so DB write lands first
+        )
 
     logger.info(f"[b2b] {bk_name}/{sport}/p{page}/{mode}: {len(matches)} matches, {latency}ms")
     return {"ok": True, "count": len(matches), "latency_ms": latency, "db_ids": match_ids}
 
+
+# =============================================================================
+# B2B Beat tasks
+# =============================================================================
 
 @celery.task(
     name="app.workers.celery_tasks.harvest_all_upcoming",
@@ -466,12 +501,19 @@ def harvest_b2b_page(self, bookmaker: dict, sport: str, mode: str, page: int) ->
     time_limit=150,
 )
 def harvest_all_upcoming(mode: str = "upcoming") -> dict:
+    """
+    Fan-out B2B upcoming harvest.
+    Creates 20 workers × PAGE_SIZE = 300 records per sport per bookmaker.
+    Stagger by 0.15 s so all 20 workers don't hammer Redis simultaneously.
+    """
     bookmakers = _load_bookmakers()
     if not bookmakers:
         task_status_set("beat_upcoming", {"state": "error", "error": "No bookmakers", "dispatched": 0})
         return {"dispatched": 0}
 
-    MAX_PAGES  = 4
+    # Estimate total pages needed (BetB2B returns up to 1000 per sport)
+    MAX_PAGES = 4   # 4 pages × 15 = 60 matches per sport per bookmaker
+
     dispatched = 0
     for bm in bookmakers:
         for sport in _B2B_SPORTS:
@@ -479,11 +521,11 @@ def harvest_all_upcoming(mode: str = "upcoming") -> dict:
                 harvest_b2b_page.apply_async(
                     args=[bm, sport, mode, page],
                     queue="harvest",
-                    countdown=dispatched * 0.15,
+                    countdown=dispatched * 0.15,  # 150ms stagger
                 )
                 dispatched += 1
 
-    logger.info(f"[beat:upcoming] {dispatched} tasks")
+    logger.info(f"[beat:upcoming] {dispatched} tasks ({len(bookmakers)} bk × {len(_B2B_SPORTS)} sports × {MAX_PAGES} pages)")
     task_status_set("beat_upcoming", {
         "state": "ok", "dispatched": dispatched,
         "bookmakers": len(bookmakers), "sports": len(_B2B_SPORTS),
@@ -497,19 +539,26 @@ def harvest_all_upcoming(mode: str = "upcoming") -> dict:
     time_limit=120,
 )
 def harvest_all_live() -> dict:
+    """Fan-out live B2B harvest — fires every 60 s."""
     bookmakers  = _load_bookmakers()
     live_sports = ["Football", "Basketball", "Ice Hockey", "Tennis"]
-    dispatched  = 0
+
+    dispatched = 0
     for bm in bookmakers:
         for sport in live_sports:
-            harvest_b2b_page.apply_async(args=[bm, sport, "live", 1], queue="live")
+            # Live is always page 1 (live events don't paginate the same way)
+            harvest_b2b_page.apply_async(
+                args=[bm, sport, "live", 1],
+                queue="live",
+            )
             dispatched += 1
+
     task_status_set("beat_live", {"state": "ok", "dispatched": dispatched})
     return {"dispatched": dispatched}
 
 
 # =============================================================================
-# SBO Harvest
+# SBO Harvest  (Sportpesa / Betika / Odibets)
 # =============================================================================
 
 @celery.task(
@@ -522,12 +571,17 @@ def harvest_all_live() -> dict:
     acks_late=True,
 )
 def harvest_sbo_sport(self, sport_slug: str, max_matches: int = 60) -> dict:
+    """
+    Fetch one sport from Sportpesa + Betika + Odibets and persist.
+    Runs the full OddsAggregator pipeline for PAGE_SIZE × max_pages matches.
+    """
     t0 = time.perf_counter()
     try:
         from app.views.sbo.sbo_fetcher import OddsAggregator, SPORT_CONFIG
         cfg = next((c for c in SPORT_CONFIG if c["sport"] == sport_slug), None)
         if not cfg:
             return {"ok": False, "error": f"Unknown sport: {sport_slug}"}
+
         agg     = OddsAggregator(cfg, fetch_full_sp_markets=True,
                                  fetch_full_bt_markets=True, fetch_od_markets=True)
         matches = agg.run(max_matches=max_matches)
@@ -537,12 +591,16 @@ def harvest_sbo_sport(self, sport_slug: str, max_matches: int = 60) -> dict:
 
     latency = int((time.perf_counter() - t0) * 1000)
 
+    # ── Redis cache ────────────────────────────────────────────────────────
     cache_set(f"sbo:upcoming:{sport_slug}", {
-        "sport": sport_slug, "match_count": len(matches),
+        "sport":       sport_slug,
+        "match_count": len(matches),
         "harvested_at": datetime.now(timezone.utc).isoformat(),
-        "latency_ms": latency, "matches": matches,
+        "latency_ms":  latency,
+        "matches":     matches,
     }, ttl=180)
 
+    # ── DB persistence ────────────────────────────────────────────────────
     bk_name_to_id = _bookmaker_id_map()
     match_ids: list[int] = []
     for m in matches:
@@ -550,35 +608,58 @@ def harvest_sbo_sport(self, sport_slug: str, max_matches: int = 60) -> dict:
         if mid:
             match_ids.append(mid)
 
+    # ── Queue EV/Arb ─────────────────────────────────────────────────────
     for match_id in match_ids:
-        compute_ev_arb_for_match.apply_async(args=[match_id], queue="ev_arb", countdown=2)
+        compute_ev_arb_for_match.apply_async(
+            args=[match_id],
+            queue="ev_arb",
+            countdown=2,
+        )
 
     arb_count = sum(1 for m in matches if m.get("arbitrage"))
     logger.info(f"[sbo] {sport_slug}: {len(matches)} matches, {arb_count} arb, {latency}ms")
     return {"ok": True, "count": len(matches), "arb_count": arb_count, "latency_ms": latency}
 
 
-@celery.task(name="app.workers.celery_tasks.harvest_all_sbo_upcoming", soft_time_limit=60, time_limit=90)
+@celery.task(
+    name="app.workers.celery_tasks.harvest_all_sbo_upcoming",
+    soft_time_limit=60,
+    time_limit=90,
+)
 def harvest_all_sbo_upcoming() -> dict:
+    """Fan-out SBO upcoming harvest — fires every 3 min."""
     dispatched = 0
     for i, sport in enumerate(_SBO_SPORTS):
-        harvest_sbo_sport.apply_async(args=[sport, 60], queue="harvest", countdown=i * 3)
+        harvest_sbo_sport.apply_async(
+            args=[sport, 60],
+            queue="harvest",
+            countdown=i * 3,   # 3-second stagger between sports
+        )
         dispatched += 1
     logger.info(f"[beat:sbo-upcoming] {dispatched} sport tasks")
     return {"dispatched": dispatched}
 
 
-@celery.task(name="app.workers.celery_tasks.harvest_all_sbo_live", soft_time_limit=60, time_limit=90)
+@celery.task(
+    name="app.workers.celery_tasks.harvest_all_sbo_live",
+    soft_time_limit=60,
+    time_limit=90,
+)
 def harvest_all_sbo_live() -> dict:
-    dispatched = 0
-    for sport in ["soccer", "basketball", "tennis"]:
-        harvest_sbo_sport.apply_async(args=[sport, 30], queue="live")
+    """SBO doesn't have a separate live endpoint — fetch soccer + basketball only."""
+    live_sports = ["soccer", "basketball", "tennis"]
+    dispatched  = 0
+    for sport in live_sports:
+        harvest_sbo_sport.apply_async(
+            args=[sport, 30],  # fewer matches for live
+            queue="live",
+        )
         dispatched += 1
     return {"dispatched": dispatched}
 
 
 # =============================================================================
-# EV / Arbitrage Compute
+# EV / Arbitrage Compute  (runs after each match is written to DB)
 # =============================================================================
 
 @celery.task(
@@ -590,6 +671,10 @@ def harvest_all_sbo_live() -> dict:
     acks_late=True,
 )
 def compute_ev_arb_for_match(self, match_id: int) -> dict:
+    """
+    Load unified_markets for one match, compute EV + Arb, persist results,
+    then queue notifications if thresholds met.
+    """
     try:
         from app.models.odds_model import UnifiedMatch
         from app.workers.ev_arb_service import EVArbPersistenceService
@@ -598,6 +683,9 @@ def compute_ev_arb_for_match(self, match_id: int) -> dict:
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
 
+        # Convert unified_match markets_json → ev_arb_service format
+        # markets_json: {market: {spec: {selection: {bookmakers: {bk_id: price}}}}}
+        # unified format: {market_key: {outcome: [{bookie, odd}]}}
         unified: dict = {}
         bk_id_to_name = {v: k for k, v in _bookmaker_id_map().items()}
 
@@ -613,8 +701,10 @@ def compute_ev_arb_for_match(self, match_id: int) -> dict:
                         if price > 1.0:
                             unified[mkt][sel].append({"bookie": bk_name, "odd": float(price)})
 
-        stats = EVArbPersistenceService.process_match(match_id, unified, _bookmaker_id_map())
+        bk_id_map = _bookmaker_id_map()
+        stats = EVArbPersistenceService.process_match(match_id, unified, bk_id_map)
 
+        # Queue notifications for active arbs and high-EV opportunities
         if stats.get("arb_new", 0) > 0 or stats.get("ev", 0) > 0:
             dispatch_notifications.apply_async(
                 args=[match_id, "arb" if stats.get("arb_new") else "ev"],
@@ -630,7 +720,7 @@ def compute_ev_arb_for_match(self, match_id: int) -> dict:
 
 
 # =============================================================================
-# Match results
+# Match result + metadata updates
 # =============================================================================
 
 @celery.task(
@@ -639,32 +729,45 @@ def compute_ev_arb_for_match(self, match_id: int) -> dict:
     time_limit=120,
 )
 def update_match_results() -> dict:
+    """
+    Update status and scores for matches that have started or finished.
+    Polls a results endpoint (configured per bookmaker) for score data.
+    Also settles bankroll bets.
+    """
     try:
         from app.extensions import db
         from app.models.odds_model import UnifiedMatch
 
-        now     = datetime.now(timezone.utc)
-        updated = 0
+        now        = datetime.now(timezone.utc)
+        updated    = 0
 
+        # Matches that started in the last 3 hours and aren't finished
         candidates = UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >= now - timedelta(hours=3),
             UnifiedMatch.status.in_(["PRE_MATCH", "IN_PLAY"]),
         ).all()
+
         for um in candidates:
+            # Mark as in-play if start time has passed
             if um.status == "PRE_MATCH":
                 um.status = "IN_PLAY"
-                updated  += 1
+                updated += 1
 
+        # Matches that started > 2.5 hours ago → mark as finished
         finished = UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now - timedelta(hours=2, minutes=30),
             UnifiedMatch.status == "IN_PLAY",
         ).all()
+
         for um in finished:
             um.status = "FINISHED"
             updated  += 1
+            # Collapse active arbs for this match
             from app.workers.ev_arb_service import EVArbPersistenceService
             EVArbPersistenceService.collapse_stale_arbs(now)
+
+            # Settle pending bankroll bets (mark as void — user settles manually for now)
             _settle_bankroll_bets(um.id)
 
         if updated:
@@ -679,17 +782,18 @@ def update_match_results() -> dict:
 
 
 def _settle_bankroll_bets(match_id: int) -> None:
+    """Stub — full result parsing requires bookmaker-specific result APIs."""
     try:
-        from app.models.bank_roll import BankrollBet
+        from app.models.subscription_models import BankrollBet
         pending = BankrollBet.query.filter_by(match_id=match_id, status="pending").all()
         for bet in pending:
-            bet.status = "manual_check"
+            bet.status = "manual_check"   # flag for user review
     except Exception:
         pass
 
 
 # =============================================================================
-# Cache finished games
+# Cache finished games (monthly cache to avoid DB reads on every request)
 # =============================================================================
 
 @celery.task(
@@ -698,30 +802,37 @@ def _settle_bankroll_bets(match_id: int) -> None:
     time_limit=150,
 )
 def cache_finished_games() -> dict:
+    """
+    Cache finished matches for the last 30 days into Redis.
+    Key: results:finished:{YYYY-MM-DD}
+    TTL: 30 days
+    """
     try:
         from app.models.odds_model import UnifiedMatch
 
-        now    = datetime.now(timezone.utc)
-        cached = 0
+        now      = datetime.now(timezone.utc)
+        cached   = 0
 
         for day_offset in range(0, 30):
             day_start = (now - timedelta(days=day_offset)).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-            day_end  = day_start + timedelta(days=1)
-            key      = f"results:finished:{day_start.strftime('%Y-%m-%d')}"
+            day_end = day_start + timedelta(days=1)
+            date_str = day_start.strftime("%Y-%m-%d")
+            cache_key = f"results:finished:{date_str}"
 
-            if cache_get(key):
-                continue
+            if cache_get(cache_key):
+                continue   # already cached
 
             matches = UnifiedMatch.query.filter(
-                UnifiedMatch.status     == "FINISHED",
+                UnifiedMatch.status == "FINISHED",
                 UnifiedMatch.start_time >= day_start,
                 UnifiedMatch.start_time <  day_end,
             ).all()
 
             if matches:
-                cache_set(key, [m.to_dict() for m in matches], ttl=30 * 86400)
+                data = [m.to_dict() for m in matches]
+                cache_set(cache_key, data, ttl=30 * 86400)  # 30 days
                 cached += 1
 
         logger.info(f"[cache] finished games: {cached} new days cached")
@@ -733,7 +844,7 @@ def cache_finished_games() -> dict:
 
 
 # =============================================================================
-# Notifications — queues send_async_email which hits the internal API
+# Notifications dispatch
 # =============================================================================
 
 @celery.task(
@@ -745,83 +856,70 @@ def cache_finished_games() -> dict:
     acks_late=True,
 )
 def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
+    """
+    Send email / push notifications to Pro + Premium users who have
+    eligible thresholds configured.
+    """
     try:
         from app.models.odds_model import UnifiedMatch, ArbitrageOpportunity, EVOpportunity
-        from app.models.notifications import NotificationPref
-        from app.models.customer import Customer
+        from app.models.subscription_models import User, NotificationPref, SubscriptionTier
+        from app.workers.notification_service import NotificationService
 
         um = UnifiedMatch.query.get(match_id)
         if not um:
             return {"ok": False}
 
         match_label = f"{um.home_team_name} v {um.away_team_name}"
+
+        # Collect active arbs + EV opps for this match
         arbs = ArbitrageOpportunity.query.filter_by(match_id=match_id, is_active=True).all()
         evs  = EVOpportunity.query.filter_by(match_id=match_id, is_active=True).all()
 
         if not arbs and not evs:
             return {"ok": True, "sent": 0}
 
+        # Find eligible subscribers
+        eligible_tiers = [SubscriptionTier.PRO.value, SubscriptionTier.PREMIUM.value]
         prefs = (
             NotificationPref.query
-            .join(Customer, Customer.id == NotificationPref.user_id)
-            .filter(Customer.is_active == True)
+            .join(User, User.id == NotificationPref.user_id)
+            .filter(User.is_active == True)
             .all()
         )
 
         sent = 0
         for pref in prefs:
             user = pref.user
-            if user.tier not in ("pro", "premium"):
+            if user.tier not in eligible_tiers:
                 continue
             if not pref.email_enabled:
                 continue
 
+            # Filter arbs by user threshold
             qualifying_arbs = [a for a in arbs if a.max_profit_percentage >= pref.arb_min_profit]
-            qualifying_evs  = [e for e in evs  if e.edge_pct              >= pref.ev_min_edge]
+            qualifying_evs  = [e for e in evs  if e.edge_pct >= pref.ev_min_edge]
 
             if not qualifying_arbs and not qualifying_evs:
                 continue
 
+            # Sports filter
             if pref.sports_filter and um.sport_name:
                 if um.sport_name.lower() not in [s.lower() for s in pref.sports_filter]:
                     continue
 
             try:
-                arb_lines = "".join(
-                    f"<li>{a.market_definition.name if a.market_definition else '?'} "
-                    f"— <strong>+{a.max_profit_percentage:.2f}%</strong></li>"
-                    for a in qualifying_arbs[:3]
-                )
-                ev_lines = "".join(
-                    f"<li>{e.market_definition.name if e.market_definition else '?'} "
-                    f"@ {e.bookmaker_name} — <strong>+{e.edge_pct:.2f}%</strong></li>"
-                    for e in qualifying_evs[:3]
-                )
-                html = (
-                    f"<h2>⚡ OddsKenya Alert — {match_label}</h2>"
-                    + (f"<h3>Arbitrage</h3><ul>{arb_lines}</ul>" if arb_lines else "")
-                    + (f"<h3>+EV</h3><ul>{ev_lines}</ul>" if ev_lines else "")
-                    + f"<p style='color:#888;font-size:12px'>Manage alerts at "
-                    f"<a href='{os.environ.get('APP_URL', '')}/settings/notifications'>Settings</a></p>"
-                )
-
-                send_async_email.apply_async(
-                    args=[
-                        f"⚡ OddsKenya: {event_type.upper()} on {match_label}",
-                        [user.email],
-                        html,
-                        "html",
-                        [],
-                        os.environ.get("ADMIN_EMAIL"),
-                        os.environ.get("ADMIN_EMAIL_PASSWORD"),
-                    ],
-                    queue="default",
+                NotificationService.send_alert(
+                    user         = user,
+                    match_label  = match_label,
+                    arbs         = qualifying_arbs,
+                    evs          = qualifying_evs,
+                    event_type   = event_type,
                 )
                 sent += 1
             except Exception as e:
                 logger.warning(f"[notify] user {user.id}: {e}")
 
-        logger.info(f"[notify] match {match_id}: {sent} alerts dispatched")
+        logger.info(f"[notify] match {match_id}: {sent} alerts sent")
         return {"ok": True, "sent": sent}
 
     except Exception as exc:
@@ -839,37 +937,46 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
     time_limit=45,
 )
 def expire_subscriptions() -> dict:
+    """
+    Expire subscriptions where trial_ends or period_end has passed.
+    Triggers billing webhook for auto-renew.
+    """
     try:
         from app.extensions import db
-        from app.models.subscriptions import Subscription
+        from app.models.subscription_models import Subscription, SubscriptionStatus
 
         now     = datetime.now(timezone.utc)
         expired = 0
 
+        # Trial expired
         trials = Subscription.query.filter(
-            Subscription.status     == "trial",
-            Subscription.is_trial   == True,
+            Subscription.status   == SubscriptionStatus.TRIAL.value,
+            Subscription.is_trial == True,
             Subscription.trial_ends <= now,
         ).all()
         for sub in trials:
-            if _attempt_charge(sub):
+            # Attempt to charge — if no payment method, expire
+            charged = _attempt_charge(sub)
+            if charged:
                 sub.activate()
             else:
-                sub.status   = "expired"
+                sub.status   = SubscriptionStatus.EXPIRED.value
                 sub.is_trial = False
                 sub._append_history("trial_expired_no_payment")
             expired += 1
 
+        # Active subscriptions past period_end
         actives = Subscription.query.filter(
-            Subscription.status     == "active",
+            Subscription.status     == SubscriptionStatus.ACTIVE.value,
             Subscription.auto_renew == True,
             Subscription.period_end <= now,
         ).all()
         for sub in actives:
-            if _attempt_charge(sub):
+            charged = _attempt_charge(sub)
+            if charged:
                 sub.activate()
             else:
-                sub.status = "expired"
+                sub.status = SubscriptionStatus.EXPIRED.value
                 sub._append_history("period_expired_no_payment")
             expired += 1
 
@@ -885,7 +992,9 @@ def expire_subscriptions() -> dict:
 
 
 def _attempt_charge(sub) -> bool:
-    # TODO: integrate M-Pesa / Stripe
+    """Stub — integrate with M-Pesa / Stripe here. Returns True if charged."""
+    # TODO: call payment gateway API
+    # For now, always return False so subscriptions expire naturally
     return False
 
 
@@ -900,12 +1009,14 @@ def _attempt_charge(sub) -> bool:
 )
 def health_check() -> dict:
     ts = datetime.now(timezone.utc).isoformat()
-    cache_set("worker_heartbeat", {"alive": True, "checked_at": ts, "pid": os.getpid()}, ttl=120)
+    cache_set("worker_heartbeat", {
+        "alive": True, "checked_at": ts, "pid": os.getpid(),
+    }, ttl=120)
     return {"ok": True, "ts": ts}
 
 
 # =============================================================================
-# Admin probe
+# On-demand probe (admin UI — synchronous)
 # =============================================================================
 
 @celery.task(
@@ -924,312 +1035,264 @@ def probe_bookmaker_now(bookmaker: dict, sport: str, mode: str = "live") -> dict
     except Exception as exc:
         latency = int((time.perf_counter() - t0) * 1000)
         return {"ok": False, "error": str(exc), "latency_ms": latency}
+    
+
+whatsapp_bot =  os.environ["WA_BOT"]
+message_url = f"{whatsapp_bot}/api/v1/send-message"
+SCOPES = [
+    # "openid",
+    # "email",
+    # "profile",
+    "https://www.googleapis.com/auth/gmail.modify",
+    # "https://www.googleapis.com/auth/calendar"
+]
 
 
-# =============================================================================
-# WhatsApp — WA_BOT read lazily, never at module level
-# =============================================================================
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
-
-
-@celery.task(
-    bind=True,
-    name="app.workers.celery_tasks.send_message",
-    max_retries=2,
-    default_retry_delay=10,
+@celery.task( name="app.workers.celery_tasks.send_message",
     soft_time_limit=30,
-    time_limit=45,
-)
-def send_message(self, msg: str, whatsapp_number: str) -> str:
-    """Send a WhatsApp message via the WA bot API (URL from WA_BOT env var)."""
-    bot_url = os.environ.get("WA_BOT", "").rstrip("/")
-    if not bot_url:
-        logger.error("[send_message] WA_BOT env var not set")
-        return "error: WA_BOT not configured"
-    try:
-        resp = requests.post(
-            f"{bot_url}/api/v1/send-message",
-            json    = {"message": msg, "number": whatsapp_number},
-            timeout = 20,
-        )
-        resp.raise_for_status()
-        logger.info(f"[wa] sent to {whatsapp_number}")
-        return resp.text
-    except Exception as exc:
-        logger.error(f"[send_message] {exc}")
-        raise self.retry(exc=exc)
+    time_limit=45,)
+def send_message(msg, whatsapp_number):
+    r = requests.post(message_url, json={"message":msg,"number":whatsapp_number})
+    return r.text
 
 
-# =============================================================================
-# send_async_email  ──  calls POST /api/email/send  (URL from INTERNAL_API_URL)
-# =============================================================================
+def send_email_message(service, user_id, message):
+    """Send an email message.
 
-@celery.task(
-    bind=True,
-    name="app.workers.celery_tasks.send_async_email",
-    max_retries=3,
-    default_retry_delay=30,
-    soft_time_limit=60,
-    time_limit=90,
-)
-def send_async_email(
-    self,
-    subject:     str,
-    recipients:  list,
-    body:        str,
-    body_type:   str         = "plain",
-    attachments: list | None = None,
-    username:    str | None  = None,
-    password:    str | None  = None,
-) -> str:
+    Args:
+    service: Authorized Gmail API service instance.
+    user_id: User's email address. The special value "me"
+    can be used to indicate the authenticated user.
+    message: Message to be sent.
+
+    Returns:
+    Sent Message.
     """
-    Delegate email sending to the internal Flask API endpoint.
-
-    Required .env vars:
-        INTERNAL_API_URL=http://127.0.0.1:5000   ← where Flask is running
-        ADMIN_EMAIL=you@gmail.com
-        ADMIN_EMAIL_PASSWORD=your-app-password
-        ADMIN_KEY=your-secret-key                 ← X-Admin-Key header
-    """
-    payload = {
-        "subject":     subject,
-        "recipients":  recipients,
-        "body":        body,
-        "body_type":   body_type,
-        "attachments": attachments or [],
-        "username":    username or os.environ.get("ADMIN_EMAIL", ""),
-        "password":    password or os.environ.get("ADMIN_EMAIL_PASSWORD", ""),
-    }
-
-    logger.info(f"[send_async_email] → POST {_api_base_url()}/api/email/send  to={recipients}")
-
     try:
-        result = _api_post("/api/email/send", payload, timeout=30)
-
-        if result.get("ok"):
-            logger.info(
-                f"[send_async_email] accepted ✓  "
-                f"api_task_id={result.get('task_id')}  recipients={recipients}"
-            )
-            return result.get("task_id", "ok")
-
-        # API returned 2xx but ok=False
-        err = result.get("error", "unknown API error")
-        logger.error(f"[send_async_email] API ok=False: {err}")
-        raise RuntimeError(err)
-
-    except requests.exceptions.ConnectionError as exc:
-        # Flask app unreachable — retry with backoff
-        logger.warning(f"[send_async_email] connection error, will retry: {exc}")
-        raise self.retry(exc=exc)
-
-    except requests.exceptions.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else 0
-        logger.error(f"[send_async_email] HTTP {code}: {exc}")
-        if code in (429, 502, 503, 504):
-            raise self.retry(exc=exc)   # transient — retry
-        raise                           # 400/401/422 etc. — fail immediately
-
-    except Exception as exc:
-        logger.error(f"[send_async_email] unexpected error: {exc}")
-        raise self.retry(exc=exc)
-
-
-# =============================================================================
-# send_async_template  ──  calls POST /api/email/send-template
-# =============================================================================
-
-@celery.task(
-    bind=True,
-    name="app.workers.celery_tasks.send_async_template",
-    max_retries=3,
-    default_retry_delay=30,
-    soft_time_limit=60,
-    time_limit=90,
-)
-def send_async_template(
-    self,
-    subject:    str,
-    recipients: list,
-    template:   str,
-    context:    dict | None = None,
-    username:   str | None  = None,
-    password:   str | None  = None,
-) -> str:
-    """
-    Render a server-side Jinja2 template and send via the internal API.
-
-    Required .env vars:
-        INTERNAL_API_URL=http://127.0.0.1:5000
-        ADMIN_EMAIL / ADMIN_EMAIL_PASSWORD / ADMIN_KEY
-    """
-    payload = {
-        "subject":    subject,
-        "recipients": recipients,
-        "template":   template,
-        "context":    context or {},
-        "username":   username or os.environ.get("ADMIN_EMAIL", ""),
-        "password":   password or os.environ.get("ADMIN_EMAIL_PASSWORD", ""),
-    }
-
-    logger.info(f"[send_async_template] → POST {_api_base_url()}/api/email/send-template  template={template}")
-
-    try:
-        result = _api_post("/api/email/send-template", payload, timeout=30)
-
-        if result.get("ok"):
-            logger.info(
-                f"[send_async_template] accepted ✓  "
-                f"api_task_id={result.get('task_id')}  template={template}"
-            )
-            return result.get("task_id", "ok")
-
-        err = result.get("error", "unknown API error")
-        logger.error(f"[send_async_template] API ok=False: {err}")
-        raise RuntimeError(err)
-
-    except requests.exceptions.ConnectionError as exc:
-        logger.warning(f"[send_async_template] connection error, will retry: {exc}")
-        raise self.retry(exc=exc)
-
-    except requests.exceptions.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else 0
-        logger.error(f"[send_async_template] HTTP {code}: {exc}")
-        if code in (429, 502, 503, 504):
-            raise self.retry(exc=exc)
-        raise
-
-    except Exception as exc:
-        logger.error(f"[send_async_template] unexpected error: {exc}")
-        raise self.retry(exc=exc)
-
-
-# =============================================================================
-# send_gmail  ──  Gmail OAuth2 for partner accounts (direct, no API hop)
-# =============================================================================
-
-def _gmail_send_raw(service, user_id, message):
-    try:
-        result = service.users().messages().send(userId=user_id, body=message).execute()
-        logger.info(f"[gmail] Message Id: {result['id']}")
-        return result
+        message = (service.users().messages().send(userId=user_id, body=message)
+                .execute())
+        print ('Message Id: %s' % message['id'])
+        return message
     except Exception as error:
-        logger.error(f"[gmail] send error: {error}")
-        raise
+        print ('An error occurred: %s' % error)
 
+def create_message(sender, to, subject, message_text):
+  """Create a message for an email.
+  Args:
+    sender: Email address of the sender.
+    to: Email address of the receiver.
+    subject: The subject of the email message.
+    message_text: The text of the email message.
+  Returns:
+    An object containing a base64url encoded email object.
+  """
+  message = MIMEText(message_text,"html")
+  message['to'] = to
+  message['from'] = sender
+  message['subject'] = subject
+  b64_bytes = base64.urlsafe_b64encode(message.as_bytes())
+  b64_string = b64_bytes.decode()
+  return {'raw': b64_string}
 
-def _build_raw_message_with_attachments(
-    sender, to, subject, html_message=None, text_message=None, files=None
-):
-    if not html_message and not text_message:
-        raise ValueError("html_message or text_message required.")
+            
 
-    msg            = MIMEMultipart()
-    msg["to"]      = to
-    msg["from"]    = sender
-    msg["subject"] = subject
-    msg.attach(MIMEText(html_message or text_message, "html" if html_message else "plain"))
-
-    if files:
-        for f in files:
-            try:
-                resp = requests.get(f["url"], stream=True, timeout=30)
-                if resp.status_code != 200:
-                    continue
-                ct, enc = mimetypes.guess_type(f["url"])
-                if not ct or enc:
-                    ct = "application/octet-stream"
-                att = MIMEApplication(resp.content, _subtype=ct.split("/")[1])
-                att.add_header("Content-Disposition", "attachment", filename=f["name"])
-                msg.attach(att)
-            except Exception as exc:
-                logger.warning(f"[gmail] attachment error {f.get('name')}: {exc}")
-
-    return {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
-
-
-@celery.task(
-    bind=True,
-    name="app.workers.celery_tasks.send_gmail",
-    max_retries=2,
-    default_retry_delay=30,
-    soft_time_limit=60,
-    time_limit=90,
-)
-def send_gmail(
-    self,
-    to:            str,
-    subject:       str,
-    html_message:  str | None  = None,
-    text_message:  str | None  = None,
-    files:         list | None = None,
-    partner_id:    str | None  = None,
-    business_name: str | None  = None,
-    partner_email: str | None  = None,
-) -> str:
-    """Send via Gmail OAuth2 for partner accounts that have connected Gmail."""
-    from app.extensions import db
-
-    env = Environment(
-        loader     = FileSystemLoader("app/templates"),
-        autoescape = select_autoescape(["html"]),
-    )
-    try:
-        expiry_body = env.get_template("gmail-token-expiry.html").render(
-            customer_name = business_name,
-            web_url       = os.environ.get("ADMIN_WEB_URL"),
-        )
-    except Exception:
-        expiry_body = "<p>Your Gmail credentials have expired. Please reconnect.</p>"
-
-    def _notify_expiry():
-        send_async_email.apply_async(
-            args=[
-                "Gmail Credentials Expired",
-                [partner_email] if partner_email else [],
-                expiry_body, "html", [],
-                os.environ.get("ADMIN_EMAIL"),
-                os.environ.get("ADMIN_EMAIL_PASSWORD"),
-            ],
-            queue="default",
-        )
+@celery.task( name="app.workers.celery_tasks.send_async_email",
+    soft_time_limit=30,
+    time_limit=45,)
+def send_async_email(subject, recipients, body, body_type="plain", attachments=None, username=None, password=None):
+    """
+    Send an email asynchronously using Celery and Flask-Mail.
+    Supports base64-encoded attachments with varying MIME types.
+    """
 
     try:
-        from app.models.settings import Integrations
-        token_raw = Integrations.query.filter_by(partner_id=partner_id, name="gmail").first()
-        if not token_raw:
-            logger.error(f"[gmail] no credentials for partner_id={partner_id}")
-            return f"No Gmail credentials for partner_id: {partner_id}"
+        app = create_app()
 
-        creds = Credentials.from_authorized_user_info(
-            json.loads(token_raw.credentials), SCOPES
-        )
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                token_raw.credentials = creds.to_json()
-                db.session.commit()
+        with app.app_context():
+            mail = Mail(app)
+
+            msg = Message(
+                subject=subject,
+                sender=username,
+                recipients=recipients,
+            )
+
+            # Set the body format (plain text or HTML)
+            if body_type == "html":
+                msg.html = body
             else:
-                _notify_expiry()
-                raise RuntimeError("Gmail credentials invalid or expired.")
+                msg.body = body
 
-        service = build("gmail", "v1", credentials=creds)
-        message = _build_raw_message_with_attachments(
-            sender       = token_raw.gmail,
-            to           = to,
-            subject      = subject,
-            html_message = html_message,
-            text_message = text_message,
-            files        = files,
+            # Handle attachments
+            if attachments:
+                for attachment in attachments:
+                    """
+                    Expected attachment format:
+                    {
+                        "filename": "report.pdf",
+                        "content": "<base64 string>",
+                        "mimetype": "application/pdf"
+                    }
+                    """
+                    filename = attachment.get("filename", "file.pdf")
+                    mimetype = attachment.get("mimetype", "application/pdf")
+                    content_b64 = attachment.get("content")
+
+                    if not content_b64:
+                        print(f"⚠️ Skipping attachment {filename}: No content provided.")
+                        continue
+
+                    try:
+                        file_data = base64.b64decode(content_b64)
+                        msg.attach(filename, mimetype, file_data)
+                    except Exception as decode_err:
+                        print(f"❌ Failed to decode attachment {filename}: {decode_err}")
+
+            # Send the email
+            mail.send(msg)
+            print(f"✅ Email sent successfully to {recipients}")
+
+    except Exception as e:
+        print("❌ Email sending failed:", e)
+
+
+
+
+@celery.task( name="app.workers.celery_tasks.expire_subscriptions",
+    soft_time_limit=30,
+    time_limit=45,)
+def send_email(
+    to,
+    subject,
+    html_message=None,
+    text_message=None,
+    files=None,
+    partner_id=None,
+    business_name=None,
+    partner_email=None,
+):
+    """
+    Send email with optional HTML content, plain text fallback, and attachments.
+    Args:
+        to (str): Recipient email address.
+        subject (str): Subject of the email.
+        html_message (str): HTML content for the email body (optional).
+        text_message (str): Plain text content for the email body (optional).
+        files (list): List of dicts with 'url' and 'name' for attachments.
+        partner_id (str): Partner ID for fetching Gmail credentials.
+    """
+    app = create_app()
+    with app.app_context():
+        env = Environment(
+                loader=FileSystemLoader("app/templates"),
+                    autoescape=select_autoescape(["html"])
         )
-        _gmail_send_raw(service, "me", message)
-        return "ok"
+        template = env.get_template("gmail-token-expiry.html")
+        body = template.render(
+                        customer_name=business_name,
+                        web_url=os.environ.get("ADMIN_WEB_URL"),)
+        # Load Google credentials from DB
+        try:
+            # token_raw = Integrations.query.filter_by(partner_id=partner_id, name="gmail").first()
+            if not token_raw:
+                return f"No credentials found for partner_id: {partner_id}"
 
-    except Exception as exc:
-        logger.error(f"[gmail] error: {exc}")
-        _notify_expiry()
-        raise self.retry(exc=exc)
+            token_data = json.loads(token_raw.credentials)
+            creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+
+            # Refresh if needed
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    task = send_async_email.apply_async(args=[
+                        "Credentials Has Expired",
+                        [partner_email],
+                        body,
+                        "html",
+                        [],
+                        os.environ.get("ADMIN_EMAIL"),
+                        os.environ.get("ADMIN_EMAIL_PASSWORD")
+                    ])
+                    raise RuntimeError("Credentials invalid or expired.")
+
+            # Save refreshed credentials
+            token_raw.credentials = creds.to_json()
+
+            service = build('gmail', 'v1', credentials=creds)
+
+            sender = token_raw.gmail
+            message = create_message_with_attachment(
+                sender=sender,
+                to=to,
+                subject=subject,
+                html_message=html_message,
+                text_message=text_message,
+                files=files
+            )
+
+            # Send email
+            send_email_message(service, "me", message)
+
+            return "Email sent successfully."
+        except Exception as e:
+            print("Error sending email:", e)
+            send_async_email.apply_async(args=[
+                    "Gmail Credentials Has Expired",
+                    [partner_email],
+                    body,
+                    "html",
+                    [],
+                    os.environ.get("ADMIN_EMAIL"),
+                    os.environ.get("ADMIN_EMAIL_PASSWORD")
+                ])
+            return str(e)
 
 
-# ── Auto-bootstrap when used as -A app.workers.celery_tasks:celery ───────────
+def create_message_with_attachment(sender, to, subject, html_message=None, text_message=None, files=None):
+    """
+    Create a Gmail API message with optional HTML/text body and attachments.
+    """
+    if not html_message and not text_message:
+        raise ValueError("Either html_message or text_message must be provided.")
+
+    message = MIMEMultipart()
+    message['to'] = to
+    message['from'] = sender
+    message['subject'] = subject
+
+    # Add HTML or plain text
+    if html_message:
+        msg_body = MIMEText(html_message, 'html')
+    else:
+        msg_body = MIMEText(text_message, 'plain')
+    message.attach(msg_body)
+
+    # Attach files if provided
+    if files:
+        for file in files:
+            response = requests.get(file['url'], stream=True)
+            if response.status_code != 200:
+                continue  # Skip failed download
+
+            content_type, encoding = mimetypes.guess_type(file['url'])
+            if content_type is None or encoding is not None:
+                content_type = 'application/octet-stream'
+            main_type, sub_type = content_type.split('/', 1)
+
+            attachment = MIMEApplication(response.content, _subtype=sub_type)
+            attachment.add_header(
+                'Content-Disposition',
+                'attachment',
+                filename=file['name']
+            )
+            message.attach(attachment)
+
+    # Encode message
+    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    return {'raw': raw_message}
+
+
+# ── Auto-bootstrap when used as -A app.workers.celery_tasks ──────────────────
+# _bootstrap()
