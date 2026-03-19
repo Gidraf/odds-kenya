@@ -155,16 +155,16 @@ def register():
     # db.session.add(user)
     # db.session.flush()
 
-    Subscription.start_trial(user.id, tier)
+    # Subscription.start_trial(user.id, tier)
 
     # Create verification token
-    raw_token = _make_email_token(user.id, "verify")
-    token_rec = EmailToken(
-        user_id    = user.id,
-        token_hash = _hash_token(raw_token),
-        purpose    = "verify",
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=24),
-    )
+    # raw_token = _make_email_token(user.id, "verify")
+    # token_rec = EmailToken(
+    #     user_id    = user.id,
+    #     token_hash = _hash_token(raw_token),
+    #     purpose    = "verify",
+    #     expires_at = datetime.now(timezone.utc) + timedelta(hours=24),
+    # )
     db.session.add(token_rec)
     # db.session.commit()
 
