@@ -182,8 +182,8 @@ def register():
 
     return _signed_response({
         "ok":            True,
-        "user":          user.to_dict(),
-        "subscription":  user.subscription.to_dict(),
+        # "user":          user.to_dict(),
+        # "subscription":  user.subscription.to_dict(),
         "access_token":  access_token,
         "refresh_token": refresh_token,
         "trial_message": f"You have a 3-day free trial of the {tier.title()} plan.",
