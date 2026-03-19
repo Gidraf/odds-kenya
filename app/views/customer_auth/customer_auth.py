@@ -203,11 +203,25 @@ def login():
     password = data.get("password", "")
 
     from app.models.customer import Customer
-    from app.models.metrics  import MetricsEvent
-    from app.extensions      import db
 
+    # Step 1: find user ignoring is_active to see what's actually stored
     user = Customer.query.filter_by(email=email).first()
-    if not user or not user.check_password(password):
+
+    if not user:
+        current_app.logger.warning(f"[login] no user found for email={email}")
+        return _err("Invalid credentials", 401)
+
+    current_app.logger.info(
+        f"[login] user={user.id} is_active={user.is_active} "
+        f"is_verified={user.is_verified} has_hash={bool(user.password_hash)}"
+    )
+
+    if not user.is_active:
+        current_app.logger.warning(f"[login] user {user.id} is_active=False/None")
+        return _err("Invalid credentials", 401)
+
+    if not user.check_password(password):
+        current_app.logger.warning(f"[login] password mismatch for user {user.id}")
         return _err("Invalid credentials", 401)
 
     user.last_login_at = datetime.now(timezone.utc)
