@@ -965,14 +965,7 @@ def send_message(self, msg: str, whatsapp_number: str) -> str:
 # send_async_email  ──  calls POST /api/email/send  (URL from INTERNAL_API_URL)
 # =============================================================================
 
-@celery.task(
-    bind=True,
-    name="app.workers.celery_tasks.send_async_email",
-    max_retries=3,
-    default_retry_delay=30,
-    soft_time_limit=60,
-    time_limit=90,
-)
+@celery.task
 def send_async_email(
     self,
     subject:     str,
