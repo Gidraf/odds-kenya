@@ -149,7 +149,7 @@ def register():
     if Customer.query.filter_by(email=email).first():
         return _err("Email already registered", 409)
 
-    # user = Customer(email=email, display_name=data.get("display_name", ""))
+    user = Customer(email=email, display_name=data.get("display_name", ""))
     user.set_password(password)
     user.is_verified = False          # must verify email before full access
     db.session.add(user)
