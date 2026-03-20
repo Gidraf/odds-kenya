@@ -367,6 +367,11 @@ def _new_context(p, storage_state=None):
             "--disable-dev-shm-usage",
             "--disable-notifications",
             "--disable-push-messaging-enforcement",
+             "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",   # ← add this for server environments
+        f"--remote-debugging-port={5900}",
+        "--remote-debugging-address=0.0.0.0",
         ],
     )
     ctx = browser.new_context(
