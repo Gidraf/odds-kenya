@@ -77,7 +77,7 @@ def create_app() -> Flask:
     from app.views.research import bp_research
     from app.views.odds_feed import bp_odds as odds_bp
     # from app.views.odds_feed.customer_odds_view import bp_odds as customer_odds
-    from app.views.onboarding.playwright_onboarding import bp_playwright
+    from app.views.onboarding.playwright_onboarding import bp_fetcher
     from app.views.bookmarkers import bookmarker
     from app.views.bookmakers_crud import bp_search
     from app.views.mapping import bp as mapping_bp
@@ -98,7 +98,7 @@ def create_app() -> Flask:
     # flask_app.register_blueprint()
     flask_app.register_blueprint(bp_vendor,     url_prefix="/api/vendors")
     flask_app.register_blueprint(bp_onboarding, url_prefix="/api/onboarding")
-    flask_app.register_blueprint(bp_playwright, url_prefix="/api/playwright")
+    # flask_app.register_blueprint(bp_playwright, url_prefix="/api/playwright")
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
