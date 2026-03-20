@@ -387,9 +387,8 @@ class PlaywrightFetcherManager:
                 # ── Launch ─────────────────────────────────────────────────────
                 try:
                     browser = await pw.chromium.launch(
-                        headless=True,
+                        headless=False,
                         args=[
-                            "headless=False",
                             "--no-sandbox",
                             "--disable-dev-shm-usage",
                             "--disable-gpu",
@@ -397,8 +396,10 @@ class PlaywrightFetcherManager:
                             "--disable-setuid-sandbox",
                             "--disable-background-networking",
                             f"--remote-debugging-port={cdp_port}",
-                            "--remote-debugging-address=0.0.0.0",
+                            "--r"
+                            "emote-debugging-address=0.0.0.0",
                         ],
+                         env={**os.environ, "DISPLAY": ":99"},
                     )
                 except Exception as e:
                     session.status = "error"
