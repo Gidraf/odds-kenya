@@ -389,6 +389,7 @@ class PlaywrightFetcherManager:
                     browser = await pw.chromium.launch(
                         headless=True,
                         args=[
+                            "headless=False",
                             "--no-sandbox",
                             "--disable-dev-shm-usage",
                             "--disable-gpu",
