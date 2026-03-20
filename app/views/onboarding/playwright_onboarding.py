@@ -6,15 +6,20 @@ Chromium instance, stores curl + response bodies to MinIO, streams state to
 frontend via polling REST API.
 
 Architecture:
-  • POST /fetcher/sessions          → launch Chromium (headless=False, VNC/CDP)
-  • GET  /fetcher/sessions/<id>/state  → poll for captured requests
-  • POST /fetcher/sessions/<id>/save   → save selected request(s) to MinIO
-  • GET  /fetcher/sessions/<id>/stream → CDP WS url for iframe embedding
-  • DELETE /fetcher/sessions/<id>   → kill session
+  • POST /api/fetcher/sessions              → launch Chromium
+  • GET  /api/fetcher/sessions/<id>/state   → poll for captured requests
+  • POST /api/fetcher/sessions/<id>/save    → save selected request(s) to MinIO
+  • POST /api/fetcher/sessions/<id>/navigate → tell browser to go to a URL
+  • POST /api/fetcher/sessions/<id>/label   → label a captured request
+  • POST /api/fetcher/sessions/<id>/clear   → clear all captures
+  • DELETE /api/fetcher/sessions/<id>       → kill session
+  • GET  /api/fetcher/sessions/<id>/request/<req_id>/curl  → raw curl text
+  • GET  /api/fetcher/sessions/<id>/request/<req_id>/body  → raw response body
 
 MinIO:
-  Stores under: fetcher/<session_id>/<phase_slug>/<ts>_curl.txt
-                fetcher/<session_id>/<phase_slug>/<ts>_response.json|bin
+  Stores under: fetcher/<session_id>/<label>/<ts>_curl.txt
+                fetcher/<session_id>/<label>/<ts>_response.json|bin
+                fetcher/<session_id>/<label>/<ts>_meta.json
 
 Requirements:
   pip install playwright minio
@@ -24,10 +29,10 @@ Requirements:
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
+import io
 import json
-import mimetypes
+import os
 import re
 import shlex
 import threading
@@ -38,7 +43,7 @@ from typing import Any
 
 # ─── Playwright ───────────────────────────────────────────────────────────────
 try:
-    from playwright.async_api import async_playwright, Response as PwResponse, Request as PwRequest
+    from playwright.async_api import async_playwright
     _PW_OK = True
 except ImportError:
     _PW_OK = False
@@ -46,15 +51,11 @@ except ImportError:
 # ─── MinIO ────────────────────────────────────────────────────────────────────
 try:
     from minio import Minio
-    from minio.error import S3Error
     _MINIO_OK = True
 except ImportError:
     _MINIO_OK = False
 
-# ─── Flask ────────────────────────────────────────────────────────────────────
-from flask import Blueprint, request as flask_request, jsonify
-
-import os
+from flask import Blueprint, request as flask_request, jsonify, make_response
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config  (override via env)
@@ -66,14 +67,15 @@ MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET     = os.environ.get("MINIO_BUCKET",     "fetcher")
 MINIO_SECURE     = os.environ.get("MINIO_SECURE",     "false").lower() == "true"
 
-# CDP remote debugging port per session  (base + session index)
 _CDP_PORT_BASE = int(os.environ.get("CDP_PORT_BASE", "9222"))
 
-# Patterns to silently ignore (images, fonts, analytics…)
+# ── Noise filter — skip these entirely ────────────────────────────────────────
 _NOISE = re.compile(
     r"\.(png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|otf|css|js\.map)"
     r"|google-analytics|googletagmanager|doubleclick|facebook\.net"
-    r"|hotjar|sentry|beacon|pixel|cdn\.jsdelivr|cdnjs\.cloudflare",
+    r"|hotjar|sentry\.io|beacon|cdn\.jsdelivr|cdnjs\.cloudflare"
+    r"|snapchat\.com/cm|adservice\.google|adnxs\.com|connextra\.com"
+    r"|bidr\.io|eskimi\.com|sc-static\.net|zdassets\.com",
     re.I,
 )
 
@@ -95,8 +97,8 @@ class CapturedRequest:
     size:         int
     ts:           float = field(default_factory=time.time)
     saved:        bool  = False
-    minio_paths:  dict  = field(default_factory=dict)   # {curl, response}
-    label:        str   = ""   # user-editable friendly name
+    minio_paths:  dict  = field(default_factory=dict)
+    label:        str   = ""
 
     @property
     def body_text(self) -> str:
@@ -107,7 +109,7 @@ class CapturedRequest:
 
     @property
     def body_preview(self) -> str:
-        return self.body_text[:1200]
+        return self.body_text[:2000]
 
     @property
     def is_json(self) -> bool:
@@ -128,7 +130,6 @@ class CapturedRequest:
             return None
 
     def to_wire(self) -> dict:
-        """Safe dict for JSON serialisation."""
         return {
             "req_id":       self.req_id,
             "url":          self.url,
@@ -149,9 +150,8 @@ class CapturedRequest:
         }
 
     def to_curl(self) -> str:
-        """Build a ready-to-paste curl command."""
         parts = ["curl", "-X", self.method, shlex.quote(self.url)]
-        skip = {":method", ":path", ":authority", ":scheme", "content-length"}
+        skip  = {":method", ":path", ":authority", ":scheme", "content-length"}
         for k, v in self.req_headers.items():
             if k.lower() not in skip:
                 parts += ["-H", shlex.quote(f"{k}: {v}")]
@@ -163,22 +163,25 @@ class CapturedRequest:
 
 @dataclass
 class FetcherSession:
-    session_id:  str
-    domain:      str
-    status:      str   = "launching"   # launching|active|error|stopped
-    error:       str   = ""
-    page_url:    str   = ""
-    page_title:  str   = ""
-    cdp_port:    int   = 0
-    captures:    list  = field(default_factory=list)   # list[CapturedRequest]
-    logs:        list  = field(default_factory=list)   # list[dict]
-    is_active:   bool  = True
-    started_at:  float = field(default_factory=time.time)
+    session_id:   str
+    domain:       str
+    status:       str   = "launching"
+    error:        str   = ""
+    page_url:     str   = ""
+    page_title:   str   = ""
+    cdp_port:     int   = 0
+    captures:     list  = field(default_factory=list)
+    logs:         list  = field(default_factory=list)
+    is_active:    bool  = True
+    started_at:   float = field(default_factory=time.time)
+    _seen:        set   = field(default_factory=set)    # dedup: method:url
+    _pending_url: str   = ""                            # queued navigation
 
     def add_log(self, level: str, msg: str):
-        self.logs.append({"level": level, "msg": msg, "ts": time.time()})
-        if len(self.logs) > 300:
-            self.logs = self.logs[-300:]
+        entry = {"level": level, "msg": msg, "ts": time.time()}
+        self.logs.append(entry)
+        if len(self.logs) > 400:
+            self.logs = self.logs[-400:]
 
     def get_state(self) -> dict:
         return {
@@ -190,16 +193,24 @@ class FetcherSession:
             "page_title": self.page_title,
             "cdp_port":   self.cdp_port,
             "captures":   [c.to_wire() for c in self.captures],
-            "logs":       self.logs[-80:],
+            "logs":       self.logs[-100:],
             "count":      len(self.captures),
         }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MinIO helper
+# Session store
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _minio_client() -> "Minio | None":
+_SESSIONS:      dict[str, FetcherSession] = {}
+_PORT_COUNTER = [0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MinIO
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _minio_client():
     if not _MINIO_OK:
         return None
     try:
@@ -215,88 +226,49 @@ def _minio_client() -> "Minio | None":
         return None
 
 
-def _save_to_minio(session_id: str, cap: CapturedRequest, label: str) -> dict[str, str]:
-    """
-    Save curl.txt and response body to MinIO.
-    Returns {curl: <object_path>, response: <object_path>}
-    """
+def _save_to_minio(session_id: str, cap: CapturedRequest, label: str) -> dict:
     client = _minio_client()
     if client is None:
         return {}
 
-    slug = re.sub(r"[^a-z0-9_]", "_", label.lower())[:40] or "request"
-    ts   = int(cap.ts)
+    slug   = re.sub(r"[^a-z0-9_]", "_", label.lower())[:40] or "request"
+    ts     = int(cap.ts)
     prefix = f"fetcher/{session_id}/{slug}/{ts}"
-
     paths: dict[str, str] = {}
 
-    # ── 1. Save curl command ──────────────────────────────────────────────────
-    curl_txt  = cap.to_curl().encode()
-    curl_path = f"{prefix}_curl.txt"
+    # curl
+    curl_bytes = cap.to_curl().encode()
+    curl_path  = f"{prefix}_curl.txt"
     try:
-        import io
-        client.put_object(
-            MINIO_BUCKET, curl_path,
-            io.BytesIO(curl_txt), len(curl_txt),
-            content_type="text/plain",
-        )
+        client.put_object(MINIO_BUCKET, curl_path, io.BytesIO(curl_bytes), len(curl_bytes), content_type="text/plain")
         paths["curl"] = f"{MINIO_BUCKET}/{curl_path}"
     except Exception as e:
-        print(f"[Fetcher] MinIO curl upload error: {e}")
+        print(f"[Fetcher] MinIO curl error: {e}")
 
-    # ── 2. Save response body ─────────────────────────────────────────────────
+    # response body
     if cap.body_raw:
-        ext = ".json" if cap.is_json else ".bin"
+        ext       = ".json" if cap.is_json else ".bin"
         resp_path = f"{prefix}_response{ext}"
-        ct        = cap.content_type or "application/octet-stream"
         try:
-            import io
-            client.put_object(
-                MINIO_BUCKET, resp_path,
-                io.BytesIO(cap.body_raw), len(cap.body_raw),
-                content_type=ct,
-            )
+            client.put_object(MINIO_BUCKET, resp_path, io.BytesIO(cap.body_raw), len(cap.body_raw), content_type=cap.content_type or "application/octet-stream")
             paths["response"] = f"{MINIO_BUCKET}/{resp_path}"
         except Exception as e:
-            print(f"[Fetcher] MinIO response upload error: {e}")
+            print(f"[Fetcher] MinIO body error: {e}")
 
-    # ── 3. Save metadata JSON ─────────────────────────────────────────────────
-    meta = {
-        "session_id":   session_id,
-        "url":          cap.url,
-        "method":       cap.method,
-        "status":       cap.status,
-        "content_type": cap.content_type,
-        "size":         cap.size,
-        "ts":           cap.ts,
-        "req_headers":  cap.req_headers,
-        "resp_headers": cap.resp_headers,
-        "post_data":    cap.post_data,
-        "label":        label,
-        "minio_paths":  paths,
-    }
+    # meta
+    meta       = {"session_id": session_id, "url": cap.url, "method": cap.method, "status": cap.status,
+                  "content_type": cap.content_type, "size": cap.size, "ts": cap.ts,
+                  "req_headers": cap.req_headers, "resp_headers": cap.resp_headers,
+                  "post_data": cap.post_data, "label": label, "minio_paths": paths}
     meta_bytes = json.dumps(meta, indent=2).encode()
     meta_path  = f"{prefix}_meta.json"
     try:
-        import io
-        client.put_object(
-            MINIO_BUCKET, meta_path,
-            io.BytesIO(meta_bytes), len(meta_bytes),
-            content_type="application/json",
-        )
+        client.put_object(MINIO_BUCKET, meta_path, io.BytesIO(meta_bytes), len(meta_bytes), content_type="application/json")
         paths["meta"] = f"{MINIO_BUCKET}/{meta_path}"
     except Exception as e:
-        print(f"[Fetcher] MinIO meta upload error: {e}")
+        print(f"[Fetcher] MinIO meta error: {e}")
 
     return paths
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Session store
-# ─────────────────────────────────────────────────────────────────────────────
-
-_SESSIONS: dict[str, FetcherSession] = {}
-_PORT_COUNTER = [0]  # simple atomic-ish counter
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +276,8 @@ _PORT_COUNTER = [0]  # simple atomic-ish counter
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PlaywrightFetcherManager:
+
+    # ── Public API ─────────────────────────────────────────────────────────────
 
     def start_session(self, session_id: str, domain: str) -> dict:
         if not _PW_OK:
@@ -314,7 +288,7 @@ class PlaywrightFetcherManager:
         _PORT_COUNTER[0] += 1
         cdp_port = _CDP_PORT_BASE + _PORT_COUNTER[0]
 
-        session          = FetcherSession(session_id=session_id, domain=domain, cdp_port=cdp_port)
+        session = FetcherSession(session_id=session_id, domain=domain, cdp_port=cdp_port)
         _SESSIONS[session_id] = session
 
         threading.Thread(
@@ -330,27 +304,33 @@ class PlaywrightFetcherManager:
         s = _SESSIONS.get(session_id)
         return s.get_state() if s else None
 
-    def save_requests(self, session_id: str, req_ids: list[str], label: str) -> dict:
+    def navigate(self, session_id: str, url: str) -> dict:
         s = _SESSIONS.get(session_id)
         if not s:
             return {"ok": False, "error": "session not found"}
+        if s.status != "active":
+            return {"ok": False, "error": "session not active"}
+        nav_url = url if url.startswith("http") else f"https://{url}"
+        s._pending_url = nav_url
+        s.add_log("INFO", f"Navigation queued: {nav_url}")
+        return {"ok": True}
 
-        saved = []
-        errors = []
+    def save_requests(self, session_id: str, req_ids: list, label: str) -> dict:
+        s = _SESSIONS.get(session_id)
+        if not s:
+            return {"ok": False, "error": "session not found"}
+        saved, errors = [], []
         for req_id in req_ids:
             cap = next((c for c in s.captures if c.req_id == req_id), None)
             if not cap:
-                errors.append(f"{req_id}: not found")
-                continue
+                errors.append(f"{req_id}: not found"); continue
             cap_label = label or cap.label or _url_slug(cap.url)
             paths = _save_to_minio(session_id, cap, cap_label)
             if paths:
-                cap.saved        = True
-                cap.minio_paths  = paths
+                cap.saved = True; cap.minio_paths = paths
                 saved.append({"req_id": req_id, "paths": paths})
             else:
                 errors.append(f"{req_id}: minio unavailable")
-
         return {"ok": True, "saved": saved, "errors": errors}
 
     def label_request(self, session_id: str, req_id: str, label: str) -> dict:
@@ -368,6 +348,7 @@ class PlaywrightFetcherManager:
         if not s:
             return {"ok": False}
         s.captures.clear()
+        s._seen.clear()
         s.add_log("INFO", "Captures cleared")
         return {"ok": True}
 
@@ -378,7 +359,7 @@ class PlaywrightFetcherManager:
             s.status    = "stopped"
         _SESSIONS.pop(session_id, None)
 
-    # ── Playwright async ───────────────────────────────────────────────────────
+    # ── Playwright thread ──────────────────────────────────────────────────────
 
     def _run_thread(self, session_id: str, cdp_port: int):
         loop = asyncio.new_event_loop()
@@ -389,7 +370,7 @@ class PlaywrightFetcherManager:
             if s:
                 s.status = "error"
                 s.error  = str(e)
-                s.add_log("ERROR", str(e))
+                s.add_log("ERROR", f"Fatal thread error: {str(e)}")
         finally:
             loop.close()
 
@@ -398,21 +379,33 @@ class PlaywrightFetcherManager:
         if not session:
             return
 
-        session.add_log("INFO", f"Launching Chromium on CDP port {cdp_port}…")
+        session.add_log("INFO", f"Launching Chromium (headless) on CDP :{cdp_port}…")
 
         try:
             async with async_playwright() as pw:
-                browser = await pw.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        f"--remote-debugging-port={cdp_port}",
-                        "--remote-debugging-address=0.0.0.0",
-                    ],
-                )
+
+                # ── Launch ─────────────────────────────────────────────────────
+                try:
+                    browser = await pw.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--disable-gpu",
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-setuid-sandbox",
+                            "--disable-background-networking",
+                            f"--remote-debugging-port={cdp_port}",
+                            "--remote-debugging-address=0.0.0.0",
+                        ],
+                    )
+                except Exception as e:
+                    session.status = "error"
+                    session.error  = f"Failed to launch Chromium: {str(e)}"
+                    session.add_log("ERROR", session.error)
+                    return
+
+                session.add_log("SUCCESS", "Chromium launched")
 
                 context = await browser.new_context(
                     viewport={"width": 1440, "height": 900},
@@ -431,67 +424,90 @@ class PlaywrightFetcherManager:
 
                 page = await context.new_page()
 
-                # ── Response interceptor ────────────────────────────────────────
+                # ── Response interceptor ───────────────────────────────────────
                 async def on_response(response):
                     try:
                         url = response.url
+
+                        # Skip noise
                         if _NOISE.search(url):
                             return
-                        req = response.request
+
+                        req    = response.request
+                        method = req.method
+
+                        # Dedup: same method+URL = skip (keep first only)
+                        dedup_key = f"{method}:{url}"
+                        if dedup_key in session._seen:
+                            return
+                        session._seen.add(dedup_key)
+
+                        # Read body
                         try:
                             body = await response.body()
                         except Exception:
                             body = b""
+
                         ct = (response.headers.get("content-type") or "").lower()
+
+                        # Skip tiny non-JSON responses
                         if len(body) < 20 and "json" not in ct:
                             return
-                        req_id = hashlib.md5(f"{url}:{req.method}:{time.time()}".encode()).hexdigest()[:12]
+
+                        req_id = hashlib.md5(f"{method}:{url}".encode()).hexdigest()[:12]
+
                         cap = CapturedRequest(
-                            req_id=req_id, url=url, method=req.method,
-                            status=response.status,
-                            req_headers=dict(req.headers),
-                            resp_headers=dict(response.headers),
-                            post_data=req.post_data,
-                            body_raw=body, content_type=ct, size=len(body),
+                            req_id       = req_id,
+                            url          = url,
+                            method       = method,
+                            status       = response.status,
+                            req_headers  = dict(req.headers),
+                            resp_headers = dict(response.headers),
+                            post_data    = req.post_data,
+                            body_raw     = body,
+                            content_type = ct,
+                            size         = len(body),
                         )
                         session.captures.append(cap)
+
+                        kb = len(body) // 1024
                         session.add_log(
                             "CAPTURE",
-                            f"{req.method} {url[:90]} → {response.status} "
-                            f"({len(body)//1024}KB) [{ct.split(';')[0]}]"
+                            f"{method} {url[:85]} → {response.status} "
+                            f"({'%dKB' % kb if kb else '%dB' % len(body)}) [{ct.split(';')[0].strip()}]"
                         )
-                        # update page url on every capture too
+
+                        # Keep page_url fresh
                         try:
                             session.page_url = page.url
                         except Exception:
                             pass
+
                     except Exception as e:
-                        session.add_log("DEBUG", f"response handler: {e}")
+                        session.add_log("DEBUG", f"response handler err: {e}")
 
                 page.on("response", on_response)
 
-                # ── Nav tracker ─────────────────────────────────────────────────
+                # ── URL change tracker (sync callback) ─────────────────────────
                 def on_url(url: str):
                     if not url.startswith("data:"):
                         session.page_url = url
-                        session.add_log("INFO", f"Navigated: {url[:80]}")
+                        session.add_log("INFO", f"URL: {url[:100]}")
 
                 page.on("url", on_url)
 
-                # ── Load initial URL ─────────────────────────────────────────────
-                domain = session.domain
+                # ── Initial navigation ─────────────────────────────────────────
+                domain    = session.domain
                 start_url = domain if domain.startswith("http") else f"https://{domain}"
-
-                session.add_log("INFO", f"Navigating to {start_url}…")
+                session.add_log("INFO", f"Navigating → {start_url}")
 
                 try:
                     await page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
                 except Exception as e:
-                    # domcontentloaded may fire but goto still throws on slow SPAs — 
-                    # check if page actually loaded before giving up
-                    session.add_log("WARN", f"goto warning (continuing): {str(e)[:120]}")
+                    # SPA sites often trigger timeout on domcontentloaded — continue anyway
+                    session.add_log("WARN", f"goto warning (continuing): {str(e)[:100]}")
 
-                # Always mark active after goto attempt — page may have partially loaded
+                # Mark active regardless — page likely loaded enough
                 try:
                     session.page_url   = page.url
                     session.page_title = await page.title()
@@ -500,19 +516,38 @@ class PlaywrightFetcherManager:
                     session.page_title = ""
 
                 session.status = "active"
-                session.add_log("SUCCESS", f"Active: {session.page_url} — {session.page_title or '(no title)'}")
+                session.add_log("SUCCESS", f"Active — {session.page_url} · \"{session.page_title or 'no title'}\"")
 
-                # ── Keep alive ──────────────────────────────────────────────────
+                # ── Keep-alive loop ────────────────────────────────────────────
                 while session.is_active:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.8)
+
+                    # Check if page is still alive
                     try:
-                        # refresh url + title periodically
                         session.page_url   = page.url
                         session.page_title = await page.title()
                     except Exception:
-                        session.add_log("INFO", "Page closed or crashed")
+                        session.add_log("WARN", "Page unresponsive — session ended")
                         break
 
+                    # Handle pending navigation from UI
+                    pending = session._pending_url
+                    if pending:
+                        session._pending_url = ""
+                        try:
+                            session.add_log("INFO", f"Navigating → {pending}")
+                            await page.goto(pending, wait_until="domcontentloaded", timeout=25_000)
+                            session.page_url   = page.url
+                            session.page_title = await page.title()
+                            session.add_log("SUCCESS", f"Navigated → {session.page_url} · \"{session.page_title}\"")
+                        except Exception as e:
+                            session.add_log("WARN", f"Navigation warning: {str(e)[:100]}")
+                            try:
+                                session.page_url = page.url
+                            except Exception:
+                                pass
+
+                # ── Cleanup ────────────────────────────────────────────────────
                 try:
                     await browser.close()
                 except Exception:
@@ -520,19 +555,22 @@ class PlaywrightFetcherManager:
 
                 if session.status not in ("error", "stopped"):
                     session.status = "stopped"
-                    session.add_log("INFO", "Session ended")
+                    session.add_log("INFO", "Session ended cleanly")
 
         except Exception as e:
-            session.status = "error"
-            session.error  = str(e)
-            session.add_log("ERROR", f"Fatal: {str(e)}")
+            if session:
+                session.status = "error"
+                session.error  = str(e)
+                session.add_log("ERROR", f"Unhandled: {str(e)}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _url_slug(url: str) -> str:
     try:
-        p = urllib.parse.urlparse(url)
+        p    = urllib.parse.urlparse(url)
         path = p.path.strip("/").replace("/", "_")[-40:]
         return path or p.netloc.replace(".", "_")[:30]
     except Exception:
@@ -560,12 +598,12 @@ def _mgr() -> PlaywrightFetcherManager:
 
 @bp_fetcher.route("/sessions", methods=["POST"])
 def start_session():
-    d            = flask_request.json or {}
-    domain       = (d.get("domain") or "").strip().lstrip("https://").lstrip("http://").rstrip("/")
+    d      = flask_request.json or {}
+    domain = (d.get("domain") or "").strip().lstrip("https://").lstrip("http://").rstrip("/")
     if not domain:
         return jsonify({"ok": False, "error": "domain required"}), 400
-    session_id   = f"fetch-{int(time.time())}"
-    result       = _mgr().start_session(session_id, domain)
+    sid    = f"fetch-{int(time.time())}"
+    result = _mgr().start_session(sid, domain)
     return jsonify(result), (201 if result["ok"] else 400)
 
 
@@ -575,6 +613,15 @@ def get_state(sid: str):
     if not state:
         return jsonify({"ok": False, "error": "Session not found"}), 404
     return jsonify({"ok": True, **state})
+
+
+@bp_fetcher.route("/sessions/<sid>/navigate", methods=["POST"])
+def navigate(sid: str):
+    d   = flask_request.json or {}
+    url = (d.get("url") or "").strip()
+    if not url:
+        return jsonify({"ok": False, "error": "url required"}), 400
+    return jsonify(_mgr().navigate(sid, url))
 
 
 @bp_fetcher.route("/sessions/<sid>/save", methods=["POST"])
@@ -608,8 +655,6 @@ def stop_session(sid: str):
 
 @bp_fetcher.route("/sessions/<sid>/request/<req_id>/curl", methods=["GET"])
 def get_curl(sid: str, req_id: str):
-    """Return the raw curl command for a captured request."""
-    from flask import make_response
     s = _SESSIONS.get(sid)
     if not s:
         return jsonify({"ok": False, "error": "session not found"}), 404
@@ -623,8 +668,6 @@ def get_curl(sid: str, req_id: str):
 
 @bp_fetcher.route("/sessions/<sid>/request/<req_id>/body", methods=["GET"])
 def get_body(sid: str, req_id: str):
-    """Return raw response body."""
-    from flask import make_response
     s = _SESSIONS.get(sid)
     if not s:
         return jsonify({"ok": False, "error": "session not found"}), 404
