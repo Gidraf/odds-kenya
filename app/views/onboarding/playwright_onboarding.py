@@ -543,7 +543,7 @@ def _url_slug(url: str) -> str:
 # Flask Blueprint
 # ─────────────────────────────────────────────────────────────────────────────
 
-bp_fetcher = Blueprint("playwright_fetcher", __name__)
+bp_fetcher = Blueprint("playwright_fetcher", __name__, url_prefix="/api/fetcher")
 _manager: PlaywrightFetcherManager | None = None
 
 
