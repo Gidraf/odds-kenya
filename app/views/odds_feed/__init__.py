@@ -1237,7 +1237,7 @@ def _sse_stream(channel: str):
         es.onmessage = e => console.log(JSON.parse(e.data));
     """
     import redis as _redis_lib
-
+    from app.workers.celery_tasks import celery
     url  = celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     r    = _redis_lib.Redis.from_url(f"{base}/2", decode_responses=True)
