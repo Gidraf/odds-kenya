@@ -393,139 +393,139 @@ class PlaywrightFetcherManager:
         finally:
             loop.close()
 
-        async def _async_session(self, session_id: str, cdp_port: int):
-            session = _SESSIONS.get(session_id)
-            if not session:
-                return
+    async def _async_session(self, session_id: str, cdp_port: int):
+        session = _SESSIONS.get(session_id)
+        if not session:
+            return
 
-            session.add_log("INFO", f"Launching Chromium on CDP port {cdp_port}…")
+        session.add_log("INFO", f"Launching Chromium on CDP port {cdp_port}…")
 
-            try:
-                async with async_playwright() as pw:
-                    browser = await pw.chromium.launch(
-                        headless=True,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-dev-shm-usage",
-                            "--disable-gpu",
-                            f"--remote-debugging-port={cdp_port}",
-                            "--remote-debugging-address=0.0.0.0",
-                        ],
-                    )
+        try:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        f"--remote-debugging-port={cdp_port}",
+                        "--remote-debugging-address=0.0.0.0",
+                    ],
+                )
 
-                    context = await browser.new_context(
-                        viewport={"width": 1440, "height": 900},
-                        user_agent=(
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/131.0.0.0 Safari/537.36"
-                        ),
-                        locale="en-US",
-                        ignore_https_errors=True,
-                    )
+                context = await browser.new_context(
+                    viewport={"width": 1440, "height": 900},
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    locale="en-US",
+                    ignore_https_errors=True,
+                )
 
-                    await context.add_init_script(
-                        "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-                    )
+                await context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+                )
 
-                    page = await context.new_page()
+                page = await context.new_page()
 
-                    # ── Response interceptor ────────────────────────────────────────
-                    async def on_response(response):
+                # ── Response interceptor ────────────────────────────────────────
+                async def on_response(response):
+                    try:
+                        url = response.url
+                        if _NOISE.search(url):
+                            return
+                        req = response.request
                         try:
-                            url = response.url
-                            if _NOISE.search(url):
-                                return
-                            req = response.request
-                            try:
-                                body = await response.body()
-                            except Exception:
-                                body = b""
-                            ct = (response.headers.get("content-type") or "").lower()
-                            if len(body) < 20 and "json" not in ct:
-                                return
-                            req_id = hashlib.md5(f"{url}:{req.method}:{time.time()}".encode()).hexdigest()[:12]
-                            cap = CapturedRequest(
-                                req_id=req_id, url=url, method=req.method,
-                                status=response.status,
-                                req_headers=dict(req.headers),
-                                resp_headers=dict(response.headers),
-                                post_data=req.post_data,
-                                body_raw=body, content_type=ct, size=len(body),
-                            )
-                            session.captures.append(cap)
-                            session.add_log(
-                                "CAPTURE",
-                                f"{req.method} {url[:90]} → {response.status} "
-                                f"({len(body)//1024}KB) [{ct.split(';')[0]}]"
-                            )
-                            # update page url on every capture too
-                            try:
-                                session.page_url = page.url
-                            except Exception:
-                                pass
-                        except Exception as e:
-                            session.add_log("DEBUG", f"response handler: {e}")
-
-                    page.on("response", on_response)
-
-                    # ── Nav tracker ─────────────────────────────────────────────────
-                    def on_url(url: str):
-                        if not url.startswith("data:"):
-                            session.page_url = url
-                            session.add_log("INFO", f"Navigated: {url[:80]}")
-
-                    page.on("url", on_url)
-
-                    # ── Load initial URL ─────────────────────────────────────────────
-                    domain = session.domain
-                    start_url = domain if domain.startswith("http") else f"https://{domain}"
-
-                    session.add_log("INFO", f"Navigating to {start_url}…")
-
-                    try:
-                        await page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
+                            body = await response.body()
+                        except Exception:
+                            body = b""
+                        ct = (response.headers.get("content-type") or "").lower()
+                        if len(body) < 20 and "json" not in ct:
+                            return
+                        req_id = hashlib.md5(f"{url}:{req.method}:{time.time()}".encode()).hexdigest()[:12]
+                        cap = CapturedRequest(
+                            req_id=req_id, url=url, method=req.method,
+                            status=response.status,
+                            req_headers=dict(req.headers),
+                            resp_headers=dict(response.headers),
+                            post_data=req.post_data,
+                            body_raw=body, content_type=ct, size=len(body),
+                        )
+                        session.captures.append(cap)
+                        session.add_log(
+                            "CAPTURE",
+                            f"{req.method} {url[:90]} → {response.status} "
+                            f"({len(body)//1024}KB) [{ct.split(';')[0]}]"
+                        )
+                        # update page url on every capture too
+                        try:
+                            session.page_url = page.url
+                        except Exception:
+                            pass
                     except Exception as e:
-                        # domcontentloaded may fire but goto still throws on slow SPAs — 
-                        # check if page actually loaded before giving up
-                        session.add_log("WARN", f"goto warning (continuing): {str(e)[:120]}")
+                        session.add_log("DEBUG", f"response handler: {e}")
 
-                    # Always mark active after goto attempt — page may have partially loaded
+                page.on("response", on_response)
+
+                # ── Nav tracker ─────────────────────────────────────────────────
+                def on_url(url: str):
+                    if not url.startswith("data:"):
+                        session.page_url = url
+                        session.add_log("INFO", f"Navigated: {url[:80]}")
+
+                page.on("url", on_url)
+
+                # ── Load initial URL ─────────────────────────────────────────────
+                domain = session.domain
+                start_url = domain if domain.startswith("http") else f"https://{domain}"
+
+                session.add_log("INFO", f"Navigating to {start_url}…")
+
+                try:
+                    await page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
+                except Exception as e:
+                    # domcontentloaded may fire but goto still throws on slow SPAs — 
+                    # check if page actually loaded before giving up
+                    session.add_log("WARN", f"goto warning (continuing): {str(e)[:120]}")
+
+                # Always mark active after goto attempt — page may have partially loaded
+                try:
+                    session.page_url   = page.url
+                    session.page_title = await page.title()
+                except Exception:
+                    session.page_url   = start_url
+                    session.page_title = ""
+
+                session.status = "active"
+                session.add_log("SUCCESS", f"Active: {session.page_url} — {session.page_title or '(no title)'}")
+
+                # ── Keep alive ──────────────────────────────────────────────────
+                while session.is_active:
+                    await asyncio.sleep(1)
                     try:
+                        # refresh url + title periodically
                         session.page_url   = page.url
                         session.page_title = await page.title()
                     except Exception:
-                        session.page_url   = start_url
-                        session.page_title = ""
+                        session.add_log("INFO", "Page closed or crashed")
+                        break
 
-                    session.status = "active"
-                    session.add_log("SUCCESS", f"Active: {session.page_url} — {session.page_title or '(no title)'}")
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
-                    # ── Keep alive ──────────────────────────────────────────────────
-                    while session.is_active:
-                        await asyncio.sleep(1)
-                        try:
-                            # refresh url + title periodically
-                            session.page_url   = page.url
-                            session.page_title = await page.title()
-                        except Exception:
-                            session.add_log("INFO", "Page closed or crashed")
-                            break
+                if session.status not in ("error", "stopped"):
+                    session.status = "stopped"
+                    session.add_log("INFO", "Session ended")
 
-                    try:
-                        await browser.close()
-                    except Exception:
-                        pass
-
-                    if session.status not in ("error", "stopped"):
-                        session.status = "stopped"
-                        session.add_log("INFO", "Session ended")
-
-            except Exception as e:
-                session.status = "error"
-                session.error  = str(e)
-                session.add_log("ERROR", f"Fatal: {str(e)}")
+        except Exception as e:
+            session.status = "error"
+            session.error  = str(e)
+            session.add_log("ERROR", f"Fatal: {str(e)}")
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
