@@ -3,7 +3,7 @@ from flask import Flask
 from dotenv import load_dotenv
 
 from app.extensions import db, init_celery, jwt, socketio, migrate, cors
-from app.views.onboarding.playwright_onboarding import init_playwright_manager
+from app.views.onboarding.playwright_onboarding import bp_fetcher
 
 load_dotenv()
 
@@ -102,8 +102,9 @@ def create_app() -> Flask:
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
+    flask_app.register_blueprint(bp_fetcher)
 
-    init_playwright_manager()
+    # init_playwright_manager()
 
     with flask_app.app_context():
         from app.models.bookmakers_model import (
