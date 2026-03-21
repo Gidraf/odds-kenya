@@ -18,7 +18,7 @@ from flask import Blueprint, request as flask_request, jsonify, make_response
 MINIO_ENDPOINT   = os.environ.get("MINIO_ENDPOINT",   "localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET     = os.environ.get("MINIO_BUCKET",     "interceptor")
+MINIO_BUCKET     = "interceptor"
 MINIO_SECURE     = os.environ.get("MINIO_SECURE",     "false").lower() == "true"
 MAX_ENTRIES      = 2000
 
@@ -102,22 +102,27 @@ def _get_or_create_session(sid):
     return _SESSIONS[sid]
 
 def _minio_client():
-    """Returns (client, error_str). error_str is '' on success."""
     if not _MINIO_OK:
         return None, "minio not installed — pip install minio"
     try:
-        c = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
-                  secret_key=MINIO_SECRET_KEY, secure=MINIO_SECURE)
-        c.list_buckets()  # verify connection
+        c = Minio(
+            MINIO_ENDPOINT,
+            access_key=MINIO_ACCESS_KEY,
+            secret_key=MINIO_SECRET_KEY,
+            secure=MINIO_SECURE,
+            region=os.environ.get("STORAGE_REGION", "us-east-1"),
+        )
+        c.list_buckets()
         if not c.bucket_exists(MINIO_BUCKET):
             c.make_bucket(MINIO_BUCKET)
             print(f"[Interceptor] Created bucket: {MINIO_BUCKET}")
         return c, ""
     except Exception as e:
-        msg = f"MinIO error: {e}"
+        import traceback
+        msg = f"MinIO error ({MINIO_ENDPOINT}): {type(e).__name__}: {e}"
         print(f"[Interceptor] {msg}")
+        print(traceback.format_exc())
         return None, msg
-
 def _put(client, key, data_bytes, content_type):
     client.put_object(MINIO_BUCKET, key, io.BytesIO(data_bytes),
                       len(data_bytes), content_type=content_type)
