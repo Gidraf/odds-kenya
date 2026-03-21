@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Match Day Cinematic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --gold: #c9a84c;
+  --gold2: #f0d060;
+  --dark: #060810;
+  --dark2: #0d1220;
+  --white: #f0eeea;
+  --red: #e63030;
+  --blue: #1a50c8;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { width:100vw; height:100vh; overflow:hidden; background:#000; font-family:'Barlow Condensed',sans-serif; }
+
+/* === SCENE CONTAINERS ======================================================= */
+.scene {
+  position:fixed; inset:0; opacity:0; pointer-events:none;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden;
+}
+.scene.active { opacity:1; pointer-events:auto; }
+
+/* === BG LAYERS ============================================================== */
+.cinematic-bg {
+  position:absolute; inset:0;
+  background: radial-gradient(ellipse at 50% 30%, #1a2444 0%, #060810 60%);
+}
+.grid-overlay {
+  position:absolute; inset:0; opacity:0.07;
+  background-image: linear-gradient(rgba(255,255,255,0.3) 1px,transparent 1px),
+                    linear-gradient(90deg,rgba(255,255,255,0.3) 1px,transparent 1px);
+  background-size:60px 60px;
+}
+.grain {
+  position:absolute; inset:0; opacity:0.04;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-size:200px;
+}
+canvas#three-canvas {
+  position:fixed; inset:0; width:100%; height:100%; z-index:1; pointer-events:none;
+}
+.vignette {
+  position:fixed; inset:0; pointer-events:none; z-index:99;
+  background: radial-gradient(ellipse at center, transparent 35%, rgba(0,0,0,0.85) 100%);
+}
+.scanlines {
+  position:fixed; inset:0; pointer-events:none; z-index:98; opacity:0.025;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,1) 2px, rgba(0,0,0,1) 4px);
+}
+.gold-line-h {
+  position:absolute; left:0; right:0; height:1px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+}
+.gold-line-v {
+  position:absolute; top:0; bottom:0; width:1px;
+  background: linear-gradient(180deg, transparent, var(--gold), transparent);
+}
+
+/* === SCENE 1  -  TITLE CLASH ================================================= */
+#s1 { z-index:10; flex-direction:column; }
+.clash-wrap {
+  position:relative; width:100vw; height:100vh;
+  display:flex; align-items:center; justify-content:center;
+}
+.team-side {
+  position:absolute; top:0; bottom:0; width:50%;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:18px;
+}
+.team-side.left { left:0; background: linear-gradient(90deg, rgba(6,8,16,0) 0%, rgba(26,80,200,0.12) 100%); }
+.team-side.right { right:0; background: linear-gradient(270deg, rgba(6,8,16,0) 0%, rgba(230,48,48,0.12) 100%); }
+
+.team-logo-3d-wrap {
+  width:180px; height:180px; position:relative;
+  filter: drop-shadow(0 0 30px rgba(255,255,255,0.15));
+}
+.team-logo-3d-wrap canvas { width:100%!important; height:100%!important; }
+
+.team-name-big {
+  font-family:'Bebas Neue',sans-serif; font-size:clamp(42px,5vw,72px);
+  letter-spacing:0.12em; color:var(--white);
+  text-shadow: 0 0 40px rgba(255,255,255,0.2);
+}
+.team-tag { font-size:13px; letter-spacing:0.4em; color:rgba(201,168,76,0.7); text-transform:uppercase; }
+
+.vs-center {
+  position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+  display:flex; flex-direction:column; align-items:center; gap:8px; z-index:5;
+}
+.vs-text {
+  font-family:'Bebas Neue',sans-serif; font-size:clamp(60px,9vw,110px);
+  color:var(--gold2); letter-spacing:0.05em;
+  text-shadow: 0 0 60px rgba(240,208,96,0.5), 0 0 120px rgba(240,208,96,0.2);
+}
+.match-meta { font-size:12px; letter-spacing:0.4em; color:rgba(255,255,255,0.45); text-align:center; text-transform:uppercase; }
+.competition-badge {
+  background: rgba(201,168,76,0.15); border:1px solid rgba(201,168,76,0.3);
+  padding:4px 14px; border-radius:2px; font-size:11px; letter-spacing:0.3em; color:var(--gold);
+  text-transform:uppercase;
+}
+.divider-v {
+  position:absolute; left:50%; top:10%; bottom:10%; width:1px;
+  background: linear-gradient(180deg, transparent, rgba(201,168,76,0.4) 30%, rgba(201,168,76,0.4) 70%, transparent);
+}
+
+/* === SCENE 2  -  HEAD TO HEAD ================================================ */
+#s2 { z-index:10; flex-direction:column; }
+.h2h-container {
+  width:min(800px,96vw); display:flex; flex-direction:column; gap:0; position:relative;
+}
+.section-title {
+  font-family:'Bebas Neue',sans-serif; font-size:clamp(24px,4vw,42px);
+  letter-spacing:0.25em; color:var(--gold); text-align:center; margin-bottom:28px;
+  position:relative;
+}
+.section-title::after {
+  content:''; position:absolute; bottom:-8px; left:50%; transform:translateX(-50%);
+  width:60px; height:2px; background:var(--gold);
+}
+.h2h-banner {
+  display:flex; align-items:center; justify-content:space-between;
+  background: rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
+  padding:12px 20px; margin-bottom:3px; position:relative; overflow:hidden;
+}
+.h2h-banner::before {
+  content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
+}
+.h2h-banner.home::before { background:var(--blue); }
+.h2h-banner.draw::before { background:var(--gold); }
+.h2h-banner.away::before { background:var(--red); }
+.h2h-date { font-size:11px; letter-spacing:0.2em; color:rgba(255,255,255,0.35); min-width:90px; }
+.h2h-teams { flex:1; text-align:center; font-size:15px; font-weight:600; color:var(--white); letter-spacing:0.05em; }
+.h2h-score { font-family:'Bebas Neue',sans-serif; font-size:26px; color:var(--gold2); min-width:60px; text-align:center; }
+.h2h-comp { font-size:10px; letter-spacing:0.25em; color:rgba(255,255,255,0.3); min-width:100px; text-align:right; }
+
+.h2h-stats-row {
+  display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center;
+  margin-bottom:4px;
+}
+.stat-bar-wrap { display:flex; align-items:center; gap:8px; }
+.stat-bar-wrap.rev { flex-direction:row-reverse; }
+.stat-name { font-size:12px; letter-spacing:0.2em; color:rgba(255,255,255,0.45); text-align:center; }
+.stat-num { font-family:'Bebas Neue',sans-serif; font-size:22px; color:var(--white); min-width:28px; text-align:center; }
+.stat-track { flex:1; height:4px; background:rgba(255,255,255,0.08); border-radius:2px; overflow:hidden; }
+.stat-fill-blue { height:100%; border-radius:2px; background:linear-gradient(90deg,#1a50c8,#4080ff); width:0; }
+.stat-fill-red  { height:100%; border-radius:2px; background:linear-gradient(90deg,#ff4040,#e63030); width:0; }
+
+/* === SCENE 3  -  FORM GUIDE ================================================== */
+#s3 { z-index:10; flex-direction:column; }
+.form-container { width:min(760px,96vw); }
+.form-row {
+  display:flex; align-items:center; gap:16px; margin-bottom:20px;
+  padding:18px 20px;
+  background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);
+}
+.form-team-name { font-family:'Bebas Neue',sans-serif; font-size:22px; letter-spacing:0.1em; color:var(--white); min-width:160px; }
+.form-badges { display:flex; gap:8px; }
+.form-badge {
+  width:42px; height:42px; border-radius:2px;
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Bebas Neue',sans-serif; font-size:20px; letter-spacing:0.05em;
+  opacity:0; transform:scale(0.3) rotate(-15deg);
+}
+.form-badge.W { background:rgba(40,180,80,0.2); border:1px solid rgba(40,180,80,0.5); color:#50e080; }
+.form-badge.D { background:rgba(201,168,76,0.2); border:1px solid rgba(201,168,76,0.5); color:var(--gold2); }
+.form-badge.L { background:rgba(230,48,48,0.2); border:1px solid rgba(230,48,48,0.5); color:#ff5050; }
+.form-pts { margin-left:auto; font-family:'Bebas Neue',sans-serif; font-size:32px; color:var(--gold); }
+.form-pts-label { font-size:10px; letter-spacing:0.3em; color:rgba(255,255,255,0.3); display:block; line-height:1; }
+
+/* === SCENE 4  -  LEAGUE TABLE / BRACKET ===================================== */
+#s4 { z-index:10; flex-direction:column; }
+.table-wrap { width:min(780px,96vw); }
+.league-table {
+  width:100%; border-collapse:collapse;
+}
+.league-table th {
+  font-size:10px; letter-spacing:0.35em; color:rgba(201,168,76,0.6);
+  padding:8px 12px; text-align:center; border-bottom:1px solid rgba(255,255,255,0.08);
+  text-transform:uppercase;
+}
+.league-table th:first-child { text-align:left; }
+.league-table td {
+  padding:10px 12px; text-align:center; font-size:14px; color:rgba(255,255,255,0.75);
+  border-bottom:1px solid rgba(255,255,255,0.04); opacity:0;
+}
+.league-table td:first-child { text-align:left; }
+.league-table tr.highlight td { color:var(--white); background:rgba(201,168,76,0.07); }
+.league-table tr.highlight td:nth-child(2) { color:var(--gold2); font-family:'Bebas Neue',sans-serif; font-size:18px; }
+.team-cell { display:flex; align-items:center; gap:10px; }
+.team-dot { width:8px; height:8px; border-radius:50%; }
+.pos-num { font-family:'Bebas Neue',sans-serif; font-size:18px; color:rgba(255,255,255,0.3); min-width:22px; }
+
+/* Bracket */
+.bracket-wrap { width:min(900px,96vw); }
+.bracket {
+  display:flex; align-items:center; justify-content:center; gap:0;
+  padding:10px 0;
+}
+.bracket-round { display:flex; flex-direction:column; gap:0; }
+.bracket-round-title {
+  font-size:10px; letter-spacing:0.3em; color:var(--gold);
+  text-align:center; margin-bottom:12px; text-transform:uppercase;
+}
+.bracket-match {
+  display:flex; flex-direction:column; gap:2px;
+  background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
+  padding:8px 12px; min-width:150px;
+  opacity:0; transform:translateX(-20px);
+}
+.bracket-team {
+  display:flex; justify-content:space-between; align-items:center;
+  font-size:13px; font-weight:600; letter-spacing:0.05em; color:var(--white);
+  padding:3px 0;
+}
+.bracket-team.winner { color:var(--gold2); }
+.bracket-team .bscore { font-family:'Bebas Neue',sans-serif; font-size:18px; }
+.bracket-connector {
+  width:30px; align-self:center; height:1px;
+  background:rgba(201,168,76,0.25); flex-shrink:0;
+}
+.cup-icon {
+  font-size:48px; margin:0 20px;
+  filter: drop-shadow(0 0 20px rgba(240,208,96,0.6));
+  animation: cupPulse 2s ease-in-out infinite;
+}
+@keyframes cupPulse {
+  0%,100%{ filter: drop-shadow(0 0 20px rgba(240,208,96,0.6)); transform:scale(1); }
+  50%{ filter: drop-shadow(0 0 40px rgba(240,208,96,0.9)); transform:scale(1.05); }
+}
+
+/* === SCENE 5  -  MANAGERS ==================================================== */
+#s5 { z-index:10; }
+.managers-wrap {
+  width:min(900px,96vw); display:flex; gap:30px; align-items:flex-start;
+  justify-content:center;
+}
+.manager-card {
+  flex:1; max-width:380px; position:relative;
+  background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
+  overflow:hidden; opacity:0;
+}
+.manager-card::before {
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,0.03) 0%,transparent 60%);
+}
+.manager-top {
+  display:flex; gap:16px; padding:20px; align-items:flex-start;
+}
+.manager-face-wrap {
+  width:90px; height:110px; flex-shrink:0; overflow:hidden; position:relative;
+  background:rgba(255,255,255,0.05);
+  clip-path: polygon(0 0, 100% 0, 100% 85%, 85% 100%, 0 100%);
+}
+.manager-face-wrap img {
+  width:100%; height:100%; object-fit:cover; object-position:top center;
+  filter: grayscale(20%) contrast(1.1);
+}
+.manager-face-svg {
+  width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+}
+.mgr-name { font-family:'Bebas Neue',sans-serif; font-size:26px; letter-spacing:0.08em; color:var(--white); line-height:1; }
+.mgr-title { font-size:10px; letter-spacing:0.35em; color:var(--gold); margin:4px 0 10px; text-transform:uppercase; }
+.mgr-nationality { font-size:12px; color:rgba(255,255,255,0.45); letter-spacing:0.1em; }
+.mgr-stat-grid { display:grid; grid-template-columns:1fr 1fr 1fr; border-top:1px solid rgba(255,255,255,0.06); }
+.mgr-stat { padding:12px; text-align:center; border-right:1px solid rgba(255,255,255,0.06); }
+.mgr-stat:last-child { border-right:none; }
+.mgr-stat-val { font-family:'Bebas Neue',sans-serif; font-size:28px; color:var(--gold2); }
+.mgr-stat-lbl { font-size:9px; letter-spacing:0.25em; color:rgba(255,255,255,0.35); text-transform:uppercase; margin-top:2px; }
+.mgr-team-strip {
+  height:4px;
+}
+
+/* === SCENE 6  -  THREE.JS PITCH LINEUP ======================================= */
+#s6 { z-index:2; }
+
+/* === HUD ELEMENTS =========================================================== */
+#player-hud {
+  position:fixed; bottom:0; left:0; right:0; z-index:50;
+  pointer-events:none; opacity:0;
+}
+.player-hud-inner {
+  display:flex; align-items:flex-end; gap:0;
+  max-width:100vw; overflow:hidden;
+}
+.player-face-big {
+  width:160px; height:200px; flex-shrink:0; overflow:hidden; position:relative;
+  background:linear-gradient(180deg,transparent 0%,rgba(6,8,16,1) 100%);
+}
+.player-face-big img {
+  width:100%; height:100%; object-fit:cover; object-position:top;
+  mask-image:linear-gradient(to bottom,rgba(0,0,0,1) 60%,transparent 100%);
+  -webkit-mask-image:linear-gradient(to bottom,rgba(0,0,0,1) 60%,transparent 100%);
+  filter: contrast(1.15) saturate(0.8);
+}
+.player-face-big .face-placeholder {
+  width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+  font-size:70px;
+}
+.player-info-panel {
+  flex:1; padding:16px 22px 20px;
+  background:linear-gradient(90deg, rgba(6,8,16,0.98) 0%, rgba(13,18,32,0.95) 100%);
+  border-top:2px solid var(--gold);
+  position:relative; overflow:hidden;
+}
+.player-info-panel::after {
+  content:''; position:absolute; top:0; left:0; right:0; bottom:0;
+  background:linear-gradient(90deg,transparent,rgba(201,168,76,0.03),transparent);
+  animation:shimmer 2s linear infinite;
+}
+@keyframes shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+.hud-pos { font-size:10px; letter-spacing:0.4em; color:var(--gold); text-transform:uppercase; margin-bottom:2px; }
+.hud-name { font-family:'Bebas Neue',sans-serif; font-size:clamp(28px,4vw,48px); color:var(--white); letter-spacing:0.08em; line-height:1; }
+.hud-club { font-size:11px; letter-spacing:0.25em; color:rgba(255,255,255,0.35); margin-bottom:12px; }
+.hud-stats-row { display:flex; gap:20px; flex-wrap:wrap; }
+.hud-stat { text-align:center; }
+.hud-stat-val { font-family:'Bebas Neue',sans-serif; font-size:28px; color:var(--white); line-height:1; }
+.hud-stat-bar { width:40px; height:2px; background:rgba(255,255,255,0.1); margin:3px auto; overflow:hidden; border-radius:1px; }
+.hud-stat-fill { height:100%; border-radius:1px; }
+.hud-stat-lbl { font-size:8px; letter-spacing:0.25em; color:rgba(201,168,76,0.6); text-transform:uppercase; }
+.hud-rating { font-family:'Bebas Neue',sans-serif; font-size:56px; color:var(--gold2); line-height:1; margin-right:16px; }
+.hud-rating-label { font-size:9px; letter-spacing:0.3em; color:rgba(255,255,255,0.35); margin-top:2px; }
+
+.pitch-float-label {
+  position:fixed; z-index:30; pointer-events:none;
+  opacity:0; transform:translateY(12px);
+  text-align:center; white-space:nowrap;
+}
+.pfl-name {
+  font-family:'Bebas Neue',sans-serif; font-size:clamp(11px,1.5vw,16px);
+  color:#fff; letter-spacing:0.1em;
+  text-shadow:0 1px 12px rgba(0,0,0,1),0 0 20px rgba(0,0,0,0.9);
+}
+.pfl-pos { font-size:9px; letter-spacing:0.3em; color:var(--gold); margin-top:1px; }
+
+#labels-container { position:fixed; inset:0; z-index:30; pointer-events:none; }
+
+/* === PROGRESS BAR =========================================================== */
+#timeline-bar {
+  position:fixed; bottom:0; left:0; right:0; height:2px; z-index:200;
+  background:rgba(255,255,255,0.05);
+}
+#timeline-fill {
+  height:100%; background:linear-gradient(90deg,var(--gold),var(--gold2));
+  width:0; transition:width 0.1s linear;
+}
+
+/* Scene indicator */
+#scene-indicator {
+  position:fixed; top:20px; right:20px; z-index:200;
+  display:flex; gap:6px; align-items:center;
+}
+.scene-dot {
+  width:6px; height:6px; border-radius:50%;
+  background:rgba(255,255,255,0.15); transition:all 0.3s;
+}
+.scene-dot.active { background:var(--gold); width:18px; border-radius:3px; }
+
+/* Particle canvas */
+#particles { position:fixed; inset:0; z-index:2; pointer-events:none; }
+</style>
+</head>
+<body>
+
+<canvas id="three-canvas"></canvas>
+<canvas id="particles"></canvas>
+<div class="vignette"></div>
+<div class="scanlines"></div>
+<div id="labels-container"></div>
+
+<!-- Timeline -->
+<div id="timeline-bar"><div id="timeline-fill"></div></div>
+
+<!-- Scene dots -->
+<div id="scene-indicator">
+  <div class="scene-dot active" id="dot-0"></div>
+  <div class="scene-dot" id="dot-1"></div>
+  <div class="scene-dot" id="dot-2"></div>
+  <div class="scene-dot" id="dot-3"></div>
+  <div class="scene-dot" id="dot-4"></div>
+  <div class="scene-dot" id="dot-5"></div>
+</div>
+
+<!-- -- SCENE 1: TITLE CLASH ------------------------------------------------- -->
+<div class="scene active" id="s1">
+  <div class="cinematic-bg"></div>
+  <div class="grid-overlay"></div>
+  <div class="grain"></div>
+  <div class="clash-wrap">
+    <div class="team-side left" id="home-side">
+      <div class="team-logo-3d-wrap" id="logo3d-home"></div>
+      <div class="team-name-big" id="home-name" style="opacity:0;transform:translateX(-40px)">ARSENAL</div>
+      <div class="team-tag" id="home-tag" style="opacity:0">The Gunners &middot; London</div>
+    </div>
+    <div class="divider-v" id="div-v" style="opacity:0"></div>
+    <div class="vs-center" id="vs-center" style="opacity:0;transform:scale(0.5)">
+      <div class="competition-badge">UEFA Champions League &middot; Quarter Final</div>
+      <div class="vs-text">VS</div>
+      <div class="match-meta">Emirates Stadium &middot; 19 March 2025 &middot; 20:00 UTC</div>
+    </div>
+    <div class="team-side right" id="away-side">
+      <div class="team-logo-3d-wrap" id="logo3d-away"></div>
+      <div class="team-name-big" id="away-name" style="opacity:0;transform:translateX(40px)">REAL MADRID</div>
+      <div class="team-tag" id="away-tag" style="opacity:0">Los Blancos &middot; Madrid</div>
+    </div>
+    <div class="gold-line-h" style="top:0"></div>
+    <div class="gold-line-h" style="bottom:0"></div>
+  </div>
+</div>
+
+<!-- -- SCENE 2: HEAD TO HEAD ----------------------------------------------- -->
+<div class="scene" id="s2">
+  <div class="cinematic-bg"></div>
+  <div class="grain"></div>
+  <div class="h2h-container">
+    <div class="section-title" id="h2h-title" style="opacity:0">Head to Head</div>
+    <div style="display:flex; gap:8px; margin-bottom:20px;" id="h2h-summary" style="opacity:0">
+      <div style="flex:1;text-align:center;padding:14px;background:rgba(26,80,200,0.12);border:1px solid rgba(26,80,200,0.3);">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:40px;color:#4080ff">8</div>
+        <div style="font-size:10px;letter-spacing:0.3em;color:rgba(255,255,255,0.4);text-transform:uppercase">Arsenal Wins</div>
+      </div>
+      <div style="flex:1;text-align:center;padding:14px;background:rgba(201,168,76,0.08);border:1px solid rgba(201,168,76,0.25);">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:40px;color:var(--gold2)">4</div>
+        <div style="font-size:10px;letter-spacing:0.3em;color:rgba(255,255,255,0.4);text-transform:uppercase">Draws</div>
+      </div>
+      <div style="flex:1;text-align:center;padding:14px;background:rgba(230,48,48,0.12);border:1px solid rgba(230,48,48,0.3);">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:40px;color:#ff5050">12</div>
+        <div style="font-size:10px;letter-spacing:0.3em;color:rgba(255,255,255,0.4);text-transform:uppercase">Madrid Wins</div>
+      </div>
+    </div>
+    <div id="h2h-matches"></div>
+    <div style="margin-top:20px;" id="h2h-bars">
+      <div class="h2h-stats-row">
+        <div class="stat-bar-wrap">
+          <div class="stat-num" id="sb-gf">42</div>
+          <div class="stat-track"><div class="stat-fill-blue" id="sf-gf" style="width:0"></div></div>
+        </div>
+        <div class="stat-name">Goals Scored</div>
+        <div class="stat-bar-wrap rev">
+          <div class="stat-num">58</div>
+          <div class="stat-track"><div class="stat-fill-red" style="width:0" id="sr-gf"></div></div>
+        </div>
+      </div>
+      <div class="h2h-stats-row">
+        <div class="stat-bar-wrap">
+          <div class="stat-num">68%</div>
+          <div class="stat-track"><div class="stat-fill-blue" style="width:0" id="sf-poss"></div></div>
+        </div>
+        <div class="stat-name">Avg Possession</div>
+        <div class="stat-bar-wrap rev">
+          <div class="stat-num">32%</div>
+          <div class="stat-track"><div class="stat-fill-red" style="width:0" id="sr-poss"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- -- SCENE 3: FORM GUIDE ------------------------------------------------- -->
+<div class="scene" id="s3">
+  <div class="cinematic-bg"></div>
+  <div class="grain"></div>
+  <div class="form-container">
+    <div class="section-title" style="opacity:0" id="form-title">Recent Form</div>
+    <div class="form-row" id="form-home" style="opacity:0">
+      <div class="form-team-name">Arsenal</div>
+      <div class="form-badges" id="badges-home"></div>
+      <div class="form-pts"><span id="pts-home">13</span><span class="form-pts-label">pts / 5</span></div>
+    </div>
+    <div class="form-row" id="form-away" style="opacity:0">
+      <div class="form-team-name">Real Madrid</div>
+      <div class="form-badges" id="badges-away"></div>
+      <div class="form-pts"><span id="pts-away">11</span><span class="form-pts-label">pts / 5</span></div>
+    </div>
+    <div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:16px;" id="form-extra" style="opacity:0">
+      <div style="padding:16px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);">
+        <div style="font-size:10px;letter-spacing:0.3em;color:var(--gold);margin-bottom:12px;text-transform:uppercase">Arsenal Avg</div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:13px;color:rgba(255,255,255,0.5)">Goals/game</span>
+          <span style="font-family:'Bebas Neue',sans-serif;font-size:20px;color:#4080ff">2.4</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;">
+          <span style="font-size:13px;color:rgba(255,255,255,0.5)">Clean sheets</span>
+          <span style="font-family:'Bebas Neue',sans-serif;font-size:20px;color:#4080ff">3</span>
+        </div>
+      </div>
+      <div style="padding:16px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);">
+        <div style="font-size:10px;letter-spacing:0.3em;color:var(--gold);margin-bottom:12px;text-transform:uppercase">Madrid Avg</div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:13px;color:rgba(255,255,255,0.5)">Goals/game</span>
+          <span style="font-family:'Bebas Neue',sans-serif;font-size:20px;color:#ff5050">2.8</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;">
+          <span style="font-size:13px;color:rgba(255,255,255,0.5)">Clean sheets</span>
+          <span style="font-family:'Bebas Neue',sans-serif;font-size:20px;color:#ff5050">2</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- -- SCENE 4: TABLE / BRACKET ------------------------------------------- -->
+<div class="scene" id="s4">
+  <div class="cinematic-bg"></div>
+  <div class="grain"></div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:24px;width:min(900px,96vw)">
+    <div class="section-title" style="opacity:0" id="bracket-title">UCL Quarter-Finals 2025</div>
+    <div style="text-align:center;margin-bottom:8px;opacity:0" id="cup-wrap">
+      <div class="cup-icon">🏆</div>
+    </div>
+    <div class="bracket-wrap">
+      <div class="bracket" id="bracket-el">
+        <!-- QF Left -->
+        <div class="bracket-round" id="qf-left" style="gap:32px">
+          <div class="bracket-round-title">Quarter Finals</div>
+          <div class="bracket-match">
+            <div class="bracket-team winner"><span>Arsenal</span><span class="bscore">3</span></div>
+            <div class="bracket-team"><span>Porto</span><span class="bscore">1</span></div>
+          </div>
+          <div class="bracket-match">
+            <div class="bracket-team winner"><span>Man City</span><span class="bscore">2</span></div>
+            <div class="bracket-team"><span>Juventus</span><span class="bscore">0</span></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:68px;align-items:center;justify-content:center;margin:0 8px;padding-top:36px">
+          <div class="bracket-connector"></div>
+          <div class="bracket-connector"></div>
+        </div>
+        <!-- SF Left -->
+        <div class="bracket-round" id="sf-left" style="gap:0;justify-content:center;display:flex;flex-direction:column;">
+          <div class="bracket-round-title">Semi Finals</div>
+          <div class="bracket-match" style="margin-top:32px">
+            <div class="bracket-team winner"><span>Arsenal</span><span class="bscore">2</span></div>
+            <div class="bracket-team"><span>Man City</span><span class="bscore">1</span></div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;margin:0 12px;padding-top:36px">
+          <div class="bracket-connector" style="width:40px"></div>
+          <div class="cup-icon" style="font-size:36px;margin:0 8px;animation-delay:0.5s">🏆</div>
+          <div class="bracket-connector" style="width:40px"></div>
+        </div>
+        <!-- SF Right -->
+        <div class="bracket-round" id="sf-right" style="gap:0;justify-content:center;display:flex;flex-direction:column;">
+          <div class="bracket-round-title">Semi Finals</div>
+          <div class="bracket-match" style="margin-top:32px">
+            <div class="bracket-team winner"><span>Real Madrid</span><span class="bscore">3</span></div>
+            <div class="bracket-team"><span>Bayern</span><span class="bscore">2</span></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:68px;align-items:center;justify-content:center;margin:0 8px;padding-top:36px">
+          <div class="bracket-connector"></div>
+          <div class="bracket-connector"></div>
+        </div>
+        <!-- QF Right -->
+        <div class="bracket-round" id="qf-right" style="gap:32px">
+          <div class="bracket-round-title">Quarter Finals</div>
+          <div class="bracket-match">
+            <div class="bracket-team winner"><span>Real Madrid</span><span class="bscore">4</span></div>
+            <div class="bracket-team"><span>PSG</span><span class="bscore">2</span></div>
+          </div>
+          <div class="bracket-match">
+            <div class="bracket-team winner"><span>Bayern</span><span class="bscore">3</span></div>
+            <div class="bracket-team"><span>Atletico</span><span class="bscore">1</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- -- SCENE 5: MANAGERS --------------------------------------------------- -->
+<div class="scene" id="s5">
+  <div class="cinematic-bg"></div>
+  <div class="grain"></div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:24px;">
+    <div class="section-title" style="opacity:0" id="mgr-title">The Tacticians</div>
+    <div class="managers-wrap">
+      <!-- Home Manager -->
+      <div class="manager-card" id="mgr-home">
+        <div class="mgr-team-strip" style="background:linear-gradient(90deg,#e63030,#e63030)"></div>
+        <div class="manager-top">
+          <div class="manager-face-wrap">
+            <svg class="manager-face-svg" viewBox="0 0 90 110">
+              <!-- Mikel Arteta silhouette -->
+              <defs><clipPath id="fc1"><rect width="90" height="110"/></clipPath></defs>
+              <rect width="90" height="110" fill="#1a1a2a"/>
+              <ellipse cx="45" cy="38" rx="20" ry="22" fill="#c4856a"/>
+              <ellipse cx="45" cy="32" rx="21" ry="18" fill="#2a1f14"/>
+              <rect x="22" y="55" width="46" height="55" rx="4" fill="#e63030"/>
+              <ellipse cx="45" cy="57" rx="12" ry="8" fill="#c4856a"/>
+              <rect x="15" y="60" width="12" height="35" rx="6" fill="#e63030"/>
+              <rect x="63" y="60" width="12" height="35" rx="6" fill="#e63030"/>
+              <ellipse cx="38" cy="40" rx="3" ry="3.5" fill="#1a1008"/>
+              <ellipse cx="52" cy="40" rx="3" ry="3.5" fill="#1a1008"/>
+              <path d="M39 48 Q45 52 51 48" stroke="#8a5a4a" stroke-width="1.5" fill="none"/>
+              <rect x="30" y="24" width="30" height="6" rx="3" fill="#2a1f14"/>
+            </svg>
+          </div>
+          <div>
+            <div class="mgr-name">Mikel Arteta</div>
+            <div class="mgr-title">Head Coach &middot; Arsenal</div>
+            <div class="mgr-nationality">🇪🇸 Spanish</div>
+            <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.4);line-height:1.6;font-style:italic">
+              "We're going to compete with everything we have. This is what we've been building for."
+            </div>
+          </div>
+        </div>
+        <div class="mgr-stat-grid">
+          <div class="mgr-stat"><div class="mgr-stat-val">68%</div><div class="mgr-stat-lbl">Win Rate</div></div>
+          <div class="mgr-stat"><div class="mgr-stat-val">3.2</div><div class="mgr-stat-lbl">Yrs Tenure</div></div>
+          <div class="mgr-stat"><div class="mgr-stat-val">142</div><div class="mgr-stat-lbl">Matches</div></div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;font-family:'Bebas Neue',sans-serif;font-size:32px;color:var(--gold);padding:0 8px;align-self:center;margin-top:30px">VS</div>
+
+      <!-- Away Manager -->
+      <div class="manager-card" id="mgr-away">
+        <div class="mgr-team-strip" style="background:linear-gradient(90deg,#c8a200,#c8a200)"></div>
+        <div class="manager-top">
+          <div class="manager-face-wrap">
+            <svg class="manager-face-svg" viewBox="0 0 90 110">
+              <rect width="90" height="110" fill="#1a1a2a"/>
+              <ellipse cx="45" cy="38" rx="20" ry="22" fill="#b8784a"/>
+              <ellipse cx="45" cy="30" rx="22" ry="16" fill="#1a1408"/>
+              <rect x="22" y="55" width="46" height="55" rx="4" fill="#c8a200"/>
+              <ellipse cx="45" cy="57" rx="12" ry="8" fill="#b8784a"/>
+              <rect x="15" y="60" width="12" height="35" rx="6" fill="#c8a200"/>
+              <rect x="63" y="60" width="12" height="35" rx="6" fill="#c8a200"/>
+              <ellipse cx="38" cy="40" rx="3" ry="3.5" fill="#0d0a00"/>
+              <ellipse cx="52" cy="40" rx="3" ry="3.5" fill="#0d0a00"/>
+              <path d="M39 49 Q45 53 51 49" stroke="#7a4a2a" stroke-width="1.5" fill="none"/>
+              <path d="M26 34 Q45 28 64 34" stroke="#1a1408" stroke-width="3" fill="none"/>
+            </svg>
+          </div>
+          <div>
+            <div class="mgr-name">Carlo Ancelotti</div>
+            <div class="mgr-title">Head Coach &middot; Real Madrid</div>
+            <div class="mgr-nationality">🇮🇹 Italian</div>
+            <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.4);line-height:1.6;font-style:italic">
+              "Real Madrid always finds a way. The history of this club speaks for itself."
+            </div>
+          </div>
+        </div>
+        <div class="mgr-stat-grid">
+          <div class="mgr-stat"><div class="mgr-stat-val">72%</div><div class="mgr-stat-lbl">Win Rate</div></div>
+          <div class="mgr-stat"><div class="mgr-stat-val">2.1</div><div class="mgr-stat-lbl">Yrs Tenure</div></div>
+          <div class="mgr-stat"><div class="mgr-stat-val">98</div><div class="mgr-stat-lbl">Matches</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- -- SCENE 6: THREE.JS LINEUP -------------------------------------------- -->
+<div class="scene" id="s6"></div>
+
+<!-- Player HUD -->
+<div id="player-hud">
+  <div class="player-hud-inner">
+    <div class="player-face-big" id="hud-face">
+      <div class="face-placeholder" id="hud-face-placeholder">👤</div>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:12px;padding-right:16px">
+      <div>
+        <div class="hud-rating" id="hud-rating">88</div>
+        <div class="hud-rating-label">OVR</div>
+      </div>
+      <div class="player-info-panel">
+        <div class="hud-pos" id="hud-pos">ST</div>
+        <div class="hud-name" id="hud-name">Player Name</div>
+        <div class="hud-club" id="hud-club">Club &middot; Country</div>
+        <div class="hud-stats-row" id="hud-stats"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ==============================================================================
+// DATA
+// ==============================================================================
+const MATCH = {
+  home: { name:'Arsenal', short:'ARS', color1:'#e63030', color2:'#ffffff', city:'London' },
+  away: { name:'Real Madrid', short:'RMA', color1:'#c8a200', color2:'#ffffff', city:'Madrid' },
+  competition: 'UEFA Champions League', stage: 'Quarter Final',
+  venue: 'Emirates Stadium', date: '19 March 2025'
+};
+
+const H2H = [
+  { date:'Nov 2023', home:'Arsenal', away:'Real Madrid', score:'1-0', comp:'UCL GS', result:'home' },
+  { date:'Apr 2022', home:'Real Madrid', away:'Arsenal', score:'2-1', comp:'Friendly', result:'home' },
+  { date:'Oct 2019', home:'Arsenal', away:'Real Madrid', score:'0-0', comp:'Friendly', result:'draw' },
+  { date:'Mar 2018', home:'Real Madrid', away:'Arsenal', score:'3-1', comp:'UCL R16', result:'home' },
+  { date:'Oct 2017', home:'Arsenal', away:'Real Madrid', score:'0-2', comp:'UCL R16', result:'away' },
+];
+
+const FORM_HOME = ['W','W','D','W','L'];
+const FORM_AWAY = ['W','W','W','L','W'];
+
+const PLAYERS = [
+  { name:'David Raya',      number:22, rating:86, pos:'GK',  nat:'🇪🇸', stats:{DIV:87,REF:85,HAN:84,SPD:50,KCK:80,POS:88}, emoji:'🧤' },
+  { name:'Ben White',       number:4,  rating:83, pos:'RB',  nat:'ENG', stats:{PAC:80,DEF:83,PHY:78,DRI:72,PAS:74,SHO:58}, emoji:'🛡' },
+  { name:'William Saliba',  number:12, rating:87, pos:'CB',  nat:'🇫🇷', stats:{PAC:78,DEF:89,PHY:86,DRI:68,PAS:76,SHO:50}, emoji:'🏆' },
+  { name:'Gabriel',         number:6,  rating:86, pos:'CB',  nat:'🇧🇷', stats:{PAC:72,DEF:87,PHY:88,DRI:66,PAS:72,SHO:54}, emoji:'⚡' },
+  { name:'Zinchenko',       number:35, rating:82, pos:'LB',  nat:'🇺🇦', stats:{PAC:78,DEF:79,PHY:74,DRI:76,PAS:82,SHO:62}, emoji:'🌟' },
+  { name:'Thomas Partey',   number:5,  rating:85, pos:'CDM', nat:'🇬🇭', stats:{PAC:74,DEF:82,PHY:83,DRI:78,PAS:84,SHO:72}, emoji:'💪' },
+  { name:'Martin Odegaard', number:8,  rating:90, pos:'CAM', nat:'🇳🇴', stats:{PAC:76,DEF:60,PHY:66,DRI:90,PAS:92,SHO:83}, emoji:'🎯' },
+  { name:'Declan Rice',     number:41, rating:88, pos:'CM',  nat:'ENG', stats:{PAC:72,DEF:85,PHY:84,DRI:80,PAS:86,SHO:74}, emoji:'🔥' },
+  { name:'Bukayo Saka',     number:7,  rating:91, pos:'RW',  nat:'ENG', stats:{PAC:92,DEF:55,PHY:72,DRI:92,PAS:84,SHO:87}, emoji:'⚡' },
+  { name:'Kai Havertz',     number:29, rating:84, pos:'ST',  nat:'🇩🇪', stats:{PAC:80,DEF:48,PHY:82,DRI:82,PAS:78,SHO:82}, emoji:'🎯' },
+  { name:'Gabriel Martinelli',number:11,rating:86,pos:'LW', nat:'🇧🇷', stats:{PAC:94,DEF:52,PHY:74,DRI:88,PAS:76,SHO:82}, emoji:'🚀' },
+];
+
+// 4-3-3 formation positions
+const FORMATION = [
+  {x:0,   z:0.82}, // GK
+  {x:-0.55,z:0.50},{x:-0.18,z:0.55},{x:0.18,z:0.55},{x:0.55,z:0.50}, // DEF
+  {x:-0.32,z:0.10},{x:0,z:0.02},{x:0.32,z:0.10}, // MID
+  {x:-0.42,z:-0.44},{x:0,z:-0.56},{x:0.42,z:-0.44}, // FWD
+];
+
+// ==============================================================================
+// PARTICLE CANVAS
+// ==============================================================================
+const pc = document.getElementById('particles');
+const pctx = pc.getContext('2d');
+pc.width = window.innerWidth; pc.height = window.innerHeight;
+const pArr = Array.from({length:120},()=>({
+  x:Math.random()*pc.width, y:Math.random()*pc.height,
+  vx:(Math.random()-0.5)*0.3, vy:-Math.random()*0.4-0.1,
+  size:Math.random()*1.5+0.3, alpha:Math.random()*0.5+0.1,
+  color: Math.random()>0.5 ? '#c9a84c' : '#ffffff'
+}));
+function animParticles(){
+  requestAnimationFrame(animParticles);
+  pctx.clearRect(0,0,pc.width,pc.height);
+  pArr.forEach(p=>{
+    p.x+=p.vx; p.y+=p.vy;
+    if(p.y<0){p.y=pc.height;p.x=Math.random()*pc.width;}
+    pctx.beginPath(); pctx.arc(p.x,p.y,p.size,0,Math.PI*2);
+    pctx.fillStyle=p.color; pctx.globalAlpha=p.alpha; pctx.fill();
+  });
+  pctx.globalAlpha=1;
+}
+animParticles();
+
+// ==============================================================================
+// 3D LOGO RENDERER (mini Three.js per logo)
+// ==============================================================================
+function make3DLogo(containerId, colorHex, letter, ringColor) {
+  const wrap = document.getElementById(containerId);
+  const r = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  r.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  r.setSize(180,180);
+  wrap.appendChild(r.domElement);
+  const s = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(40,1,0.1,100);
+  cam.position.set(0,0,5);
+
+  // Shield shape
+  const shieldShape = new THREE.Shape();
+  shieldShape.moveTo(-1.2,1.6); shieldShape.lineTo(1.2,1.6);
+  shieldShape.lineTo(1.2,-0.5); shieldShape.quadraticCurveTo(1.2,-1.8,0,-2.2);
+  shieldShape.quadraticCurveTo(-1.2,-1.8,-1.2,-0.5); shieldShape.lineTo(-1.2,1.6);
+
+  const extOpts = { depth:0.22, bevelEnabled:true, bevelThickness:0.06, bevelSize:0.04, bevelSegments:3 };
+  const shieldGeo = new THREE.ExtrudeGeometry(shieldShape, extOpts);
+  const shieldMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(colorHex), metalness:0.7, roughness:0.25,
+    envMapIntensity:1.2
+  });
+  const shield = new THREE.Mesh(shieldGeo, shieldMat);
+  shield.position.set(-0,0,-0.1);
+  s.add(shield);
+
+  // Emblem ring
+  const ringGeo = new THREE.TorusGeometry(0.9,0.06,8,32);
+  const ringMat = new THREE.MeshStandardMaterial({color:new THREE.Color(ringColor),metalness:0.9,roughness:0.1});
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.position.z = 0.14;
+  s.add(ring);
+
+  // Star on top
+  const starGeo = new THREE.OctahedronGeometry(0.18,0);
+  const starMat = new THREE.MeshStandardMaterial({color:new THREE.Color(ringColor),metalness:1,roughness:0.05});
+  const star = new THREE.Mesh(starGeo, starMat);
+  star.position.set(0,1.8,0.25); star.rotation.z = Math.PI/4;
+  s.add(star);
+
+  // Lights
+  s.add(new THREE.AmbientLight(0x334466,0.5));
+  const dl = new THREE.DirectionalLight(0xfff5e0,2);
+  dl.position.set(3,5,4); s.add(dl);
+  const bl = new THREE.DirectionalLight(new THREE.Color(ringColor),0.8);
+  bl.position.set(-3,-2,2); s.add(bl);
+  const fl = new THREE.PointLight(0xffffff,0.6,10);
+  fl.position.set(0,0,4); s.add(fl);
+
+  let t=0;
+  function loop(){
+    requestAnimationFrame(loop); t+=0.012;
+    shield.rotation.y = Math.sin(t*0.6)*0.35;
+    shield.rotation.x = Math.sin(t*0.4)*0.08;
+    ring.rotation.z = t*0.5;
+    star.rotation.y = t*2;
+    r.render(s,cam);
+  }
+  loop();
+}
+
+make3DLogo('logo3d-home','#e63030','A','#ffd700');
+make3DLogo('logo3d-away','#c8a200','R','#ffffff');
+
+// ==============================================================================
+// THREE.JS PITCH
+// ==============================================================================
+const canvas3d = document.getElementById('three-canvas');
+const renderer = new THREE.WebGLRenderer({canvas:canvas3d,antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.15;
+
+const scene3 = new THREE.Scene();
+scene3.background = new THREE.Color(0x060810);
+scene3.fog = new THREE.FogExp2(0x050a14,0.022);
+
+const cam3 = new THREE.PerspectiveCamera(52,window.innerWidth/window.innerHeight,0.1,300);
+cam3.position.set(0,24,40); cam3.lookAt(0,0,0);
+
+// Pitch
+const PW=34,PL=52;
+scene3.add(Object.assign(new THREE.Mesh(new THREE.PlaneGeometry(PW,PL),new THREE.MeshLambertMaterial({color:0x1a4a1a})),{rotation:{x:-Math.PI/2},receiveShadow:true}));
+for(let i=0;i<10;i++){
+  const s=new THREE.Mesh(new THREE.PlaneGeometry(PW,PL/10-0.2),new THREE.MeshLambertMaterial({color:i%2?0x183d18:0x1e5520,transparent:true,opacity:0.8}));
+  s.rotation.x=-Math.PI/2; s.position.set(0,0.01,-PL/2+(i+0.5)*(PL/10)); scene3.add(s);
+}
+const lm=new THREE.LineBasicMaterial({color:0xffffff,opacity:0.8,transparent:true});
+function addL(pts){const g=new THREE.BufferGeometry().setFromPoints(pts.map(([x,z])=>new THREE.Vector3(x,0.04,z)));scene3.add(new THREE.Line(g,lm));}
+addL([[-PW/2,PL/2],[PW/2,PL/2],[PW/2,-PL/2],[-PW/2,-PL/2],[-PW/2,PL/2]]);
+addL([[-PW/2,0],[PW/2,0]]);
+const cc=[];for(let a=0;a<=360;a+=5)cc.push([Math.cos(a*Math.PI/180)*4.5,Math.sin(a*Math.PI/180)*4.5]);addL(cc);
+addL([[-9.16,PL/2],[-9.16,PL/2-16.5],[9.16,PL/2-16.5],[9.16,PL/2]]);
+addL([[-9.16,-PL/2],[-9.16,-PL/2+16.5],[9.16,-PL/2+16.5],[9.16,-PL/2]]);
+const cdot=new THREE.Mesh(new THREE.CircleGeometry(0.2,16),new THREE.MeshBasicMaterial({color:0xffffff,opacity:0.7,transparent:true}));
+cdot.rotation.x=-Math.PI/2;cdot.position.y=0.05;scene3.add(cdot);
+
+// Lights
+scene3.add(new THREE.AmbientLight(0x334466,0.5));
+[[-20,28,-20],[20,28,-20],[-20,28,20],[20,28,20]].forEach(([x,y,z])=>{
+  const sl=new THREE.SpotLight(0xfff8f0,0.8,140,Math.PI/5,0.3,1.1);
+  sl.position.set(x,y,z);sl.target.position.set(0,0,0);sl.castShadow=true;
+  sl.shadow.mapSize.set(512,512);scene3.add(sl);scene3.add(sl.target);
+});
+const focusSpot=new THREE.SpotLight(0xffe8a0,0,50,Math.PI/7,0.15,1.5);
+focusSpot.position.set(0,20,8);scene3.add(focusSpot);
+
+// Player meshes
+const meshes=[], floatLabels=[];
+const lc=document.getElementById('labels-container');
+
+function buildPlayer(p,fp,idx){
+  const g=new THREE.Group();
+  const bodyM=new THREE.MeshLambertMaterial({color:new THREE.Color(MATCH.home.color1)});
+  const body=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.28,1.1,8),bodyM);
+  body.position.y=0.85;body.castShadow=true;g.add(body);
+
+  // Face texture from emoji placeholder
+  const hGeo=new THREE.SphereGeometry(0.28,12,10);
+  const hMat=new THREE.MeshLambertMaterial({color:0xd4956a});
+  const head=new THREE.Mesh(hGeo,hMat);head.position.y=1.68;head.castShadow=true;g.add(head);
+
+  // Eyes
+  [-0.1,0.1].forEach(xo=>{
+    const eye=new THREE.Mesh(new THREE.SphereGeometry(0.04,6,6),new THREE.MeshBasicMaterial({color:0x111111}));
+    eye.position.set(xo,1.72,0.25);g.add(eye);
+  });
+
+  // Hair
+  const hairGeo=new THREE.SphereGeometry(0.29,12,10,0,Math.PI*2,0,Math.PI*0.45);
+  const hair=new THREE.Mesh(hairGeo,new THREE.MeshLambertMaterial({color:0x1a1008}));
+  hair.position.y=1.72;g.add(hair);
+
+  // Legs
+  [-0.14,0.14].forEach(xo=>{
+    const leg=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.10,0.72,6),new THREE.MeshLambertMaterial({color:0xf0e0c0}));
+    leg.position.set(xo,0.36,0);g.add(leg);
+    const boot=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.1,0.28),new THREE.MeshLambertMaterial({color:0x111111}));
+    boot.position.set(xo,0.05,0.06);g.add(boot);
+  });
+
+  // Number
+  const nc=document.createElement('canvas'); nc.width=64;nc.height=48;
+  const nx=nc.getContext('2d'); nx.fillStyle=MATCH.home.color2;
+  nx.font='bold 30px Impact,Arial'; nx.textAlign='center'; nx.textBaseline='middle';
+  nx.fillText(p.number,32,24);
+  const numM=new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(nc),transparent:true});
+  const num=new THREE.Mesh(new THREE.PlaneGeometry(0.28,0.22),numM);
+  num.position.set(0,0.96,0.33);g.add(num);
+
+  // Shadow disc
+  const sd=new THREE.Mesh(new THREE.CircleGeometry(0.44,16),new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:0.3}));
+  sd.rotation.x=-Math.PI/2;sd.position.y=0.01;g.add(sd);
+
+  const px=fp.x*(PW/2-2), pz=fp.z*(PL/2-2);
+  g.position.set(px,-10,pz);
+  g.userData={tx:px,tz:pz,idx,player:p,pos:FORMATION[idx]};
+  scene3.add(g); meshes.push(g);
+
+  // Float label
+  const lbl=document.createElement('div'); lbl.className='pitch-float-label';
+  lbl.innerHTML=`<div class="pfl-name">${p.name.split(' ').slice(-1)[0]}</div><div class="pfl-pos">${p.pos}</div>`;
+  lc.appendChild(lbl); floatLabels.push(lbl);
+}
+
+PLAYERS.forEach((p,i)=>buildPlayer(p,FORMATION[i],i));
+
+function project(v3){
+  const v=v3.clone().project(cam3);
+  return{x:(v.x*.5+.5)*window.innerWidth,y:(-v.y*.5+.5)*window.innerHeight};
+}
+function updateFloatLabels(){
+  meshes.forEach((m,i)=>{
+    const wp=new THREE.Vector3();m.getWorldPosition(wp);wp.y+=2.4;
+    const sp=project(wp);
+    floatLabels[i].style.left=sp.x+'px';floatLabels[i].style.top=sp.y+'px';
+  });
+}
+
+// Render loop
+let t3=0;
+function loop3(){
+  requestAnimationFrame(loop3); t3+=0.016;
+  meshes.forEach((m,i)=>{
+    if(m.position.y>=-0.5){
+      m.rotation.y=Math.sin(t3*0.7+i*1.1)*0.05;
+      const h=m.children[1];
+      if(h)h.position.y=1.68+Math.sin(t3*1.1+i*0.8)*0.012;
+    }
+  });
+  updateFloatLabels();
+  renderer.render(scene3,cam3);
+}
+loop3();
+
+// ==============================================================================
+// HUD
+// ==============================================================================
+function showHUD(player,pos){
+  document.getElementById('hud-rating').textContent=player.rating;
+  document.getElementById('hud-pos').textContent=player.pos;
+  document.getElementById('hud-name').textContent=player.name;
+  document.getElementById('hud-club').textContent=`Arsenal FC &middot; ${player.nat}`;
+  document.getElementById('hud-face-placeholder').textContent=player.emoji;
+
+  const sc=document.getElementById('hud-stats'); sc.innerHTML='';
+  const keys=Object.keys(player.stats).slice(0,6);
+  const ratingColors=['#50e080','#4080ff','#ff8040','#e0e050','#c050e0','#50c0e0'];
+  keys.forEach((k,i)=>{
+    const v=player.stats[k];
+    const color=ratingColors[i%ratingColors.length];
+    const el=document.createElement('div');
+    el.className='hud-stat';
+    el.innerHTML=`<div class="hud-stat-val">${v}</div>
+    <div class="hud-stat-bar"><div class="hud-stat-fill" style="width:0%;background:${color}" data-w="${v}"></div></div>
+    <div class="hud-stat-lbl">${k}</div>`;
+    sc.appendChild(el);
+    setTimeout(()=>{el.querySelector('.hud-stat-fill').style.width=v+'%';},200);
+  });
+  gsap.fromTo('#player-hud',{opacity:0,y:30},{opacity:1,y:0,duration:0.5,ease:'back.out(1.5)'});
+}
+function hideHUD(){gsap.to('#player-hud',{opacity:0,y:20,duration:0.4,ease:'power2.in'});}
+
+// ==============================================================================
+// SCENE TRANSITIONS
+// ==============================================================================
+const scenes=['s1','s2','s3','s4','s5','s6'];
+let currentScene=0;
+
+function goScene(idx){
+  document.querySelectorAll('.scene').forEach(s=>{s.style.opacity=0;s.style.pointerEvents='none';});
+  document.querySelectorAll('.scene-dot').forEach((d,i)=>{
+    d.classList.toggle('active',i===idx);
+  });
+  const el=document.getElementById(scenes[idx]);
+  el.style.opacity=1; el.style.pointerEvents='auto';
+  currentScene=idx;
+  if(idx===5) startLineup();
+}
+
+// Scene 1 animations
+function animScene1(){
+  const tl=gsap.timeline();
+  tl.to(['#home-name','#home-tag'],{opacity:1,x:0,duration:0.8,stagger:0.15,ease:'power3.out'},0.3);
+  tl.to('#vs-center',{opacity:1,scale:1,duration:0.8,ease:'back.out(1.4)'},0.6);
+  tl.to(['#away-name','#away-tag'],{opacity:1,x:0,duration:0.8,stagger:0.15,ease:'power3.out'},0.5);
+  tl.to('#div-v',{opacity:1,duration:0.6},0.4);
+  // Flicker gold on VS
+  tl.to('.vs-text',{textShadow:'0 0 80px rgba(240,208,96,0.9)',duration:0.3,yoyo:true,repeat:3},1.2);
+}
+
+// Scene 2 animations
+function animScene2(){
+  document.getElementById('h2h-matches').innerHTML='';
+  H2H.forEach((m,i)=>{
+    const d=document.createElement('div');
+    d.className=`h2h-banner ${m.result==='home'?'home':m.result==='draw'?'draw':'away'}`;
+    d.style.opacity=0;d.style.transform='translateX(-30px)';
+    d.innerHTML=`<span class="h2h-date">${m.date}</span>
+    <span class="h2h-teams">${m.home} vs ${m.away}</span>
+    <span class="h2h-score">${m.score}</span>
+    <span class="h2h-comp">${m.comp}</span>`;
+    document.getElementById('h2h-matches').appendChild(d);
+  });
+
+  gsap.to('#h2h-title',{opacity:1,y:0,duration:0.6});
+  gsap.to('#h2h-summary',{opacity:1,duration:0.6,delay:0.3});
+  gsap.to('.h2h-banner',{opacity:1,x:0,duration:0.5,stagger:0.12,delay:0.5,ease:'power3.out'});
+  setTimeout(()=>{
+    document.querySelector('#sf-gf').style.width='72%';
+    document.querySelector('#sr-gf').style.width='100%';
+    document.querySelector('#sf-poss').style.width='68%';
+    document.querySelector('#sr-poss').style.width='32%';
+  },900);
+}
+
+// Scene 3 animations
+function animScene3(){
+  const bh=document.getElementById('badges-home'),ba=document.getElementById('badges-away');
+  bh.innerHTML='';ba.innerHTML='';
+  FORM_HOME.forEach(r=>{const d=document.createElement('div');d.className=`form-badge ${r}`;d.textContent=r;bh.appendChild(d);});
+  FORM_AWAY.forEach(r=>{const d=document.createElement('div');d.className=`form-badge ${r}`;d.textContent=r;ba.appendChild(d);});
+  gsap.to('#form-title',{opacity:1,duration:0.5});
+  gsap.to('#form-home',{opacity:1,x:0,duration:0.6,delay:0.3});
+  gsap.to('#form-away',{opacity:1,x:0,duration:0.6,delay:0.5});
+  gsap.to('#form-extra',{opacity:1,duration:0.5,delay:0.7});
+  gsap.to('.form-badge',{opacity:1,scale:1,rotation:0,duration:0.45,stagger:0.1,delay:0.6,ease:'back.out(2)'});
+}
+
+// Scene 4 animations
+function animScene4(){
+  gsap.to('#bracket-title',{opacity:1,duration:0.5});
+  gsap.to('#cup-wrap',{opacity:1,duration:0.6,delay:0.3});
+  gsap.to('.bracket-match',{opacity:1,x:0,duration:0.5,stagger:0.1,delay:0.5,ease:'back.out(1.4)'});
+}
+
+// Scene 5 animations
+function animScene5(){
+  gsap.to('#mgr-title',{opacity:1,duration:0.5});
+  gsap.fromTo('#mgr-home',{opacity:0,x:-50},{opacity:1,x:0,duration:0.7,delay:0.4,ease:'power3.out'});
+  gsap.fromTo('#mgr-away',{opacity:0,x:50},{opacity:1,x:0,duration:0.7,delay:0.6,ease:'power3.out'});
+}
+
+// Scene 6: Lineup
+function startLineup(){
+  const tl=gsap.timeline();
+
+  // Camera: wide overhead
+  tl.to(cam3.position,{y:34,z:48,duration:2,ease:'power2.inOut',onUpdate:()=>cam3.lookAt(0,0,0)},0);
+
+  // Players rise up
+  const stagger=0.35;
+  meshes.forEach((m,i)=>{
+    const delay=0.5+i*stagger;
+    tl.to(m.position,{y:0,duration:1,ease:'back.out(1.2)'},delay);
+    tl.to(m.position,{y:0.3,duration:0.2,ease:'power2.out'},delay+0.6);
+    tl.to(m.position,{y:0,duration:0.3,ease:'bounce.out'},delay+0.8);
+    tl.to(floatLabels[i],{opacity:1,y:0,duration:0.35,ease:'back.out(2)'},delay+0.65);
+  });
+
+  // Sweep camera
+  const allIn=0.5+meshes.length*stagger+0.8;
+  tl.to(cam3.position,{x:0,y:40,z:18,duration:3,ease:'power2.inOut',onUpdate:()=>cam3.lookAt(0,0,0)},allIn);
+  tl.to(cam3.position,{x:10,z:20,duration:3.5,ease:'power1.inOut',onUpdate:()=>cam3.lookAt(0,0,0)},allIn+3);
+
+  // Individual player focus
+  const focusStart=allIn+7;
+  const focusDur=3.5;
+  meshes.forEach((m,i)=>{
+    const d=focusStart+i*focusDur;
+    const px=m.userData.tx, pz=m.userData.tz;
+    tl.to(cam3.position,{x:px+1.5,y:5,z:pz+8,duration:1,ease:'power3.inOut',onUpdate:()=>cam3.lookAt(px,1.2,pz)},d);
+    tl.to(focusSpot,{intensity:3,duration:0.4},d);
+    tl.to(focusSpot.position,{x:px,z:pz+4,duration:0.6},d);
+    tl.to(m.scale,{x:1.1,y:1.08,z:1.1,duration:0.3},d+0.7);
+    tl.to(m.scale,{x:1,y:1,z:1,duration:0.4},d+1.0);
+    tl.call(()=>showHUD(PLAYERS[i],FORMATION[i]),null,d+0.7);
+    tl.call(()=>hideHUD(),null,d+focusDur-0.5);
+    tl.to(focusSpot,{intensity:0,duration:0.5},d+focusDur-0.7);
+  });
+
+  // Final wide shot
+  const finalT=focusStart+meshes.length*focusDur;
+  tl.to(cam3.position,{x:0,y:30,z:45,duration:3,ease:'power2.inOut',onUpdate:()=>cam3.lookAt(0,0,0)},finalT);
+}
+
+// ==============================================================================
+// AUTOPLAY SEQUENCER
+// ==============================================================================
+const SCENE_DURATIONS=[6,7,6,7,6,PLAYERS.length*3.5+25];
+
+let sceneTimeout=null;
+function runScene(idx){
+  goScene(idx);
+  switch(idx){
+    case 0: animScene1(); break;
+    case 1: animScene2(); break;
+    case 2: animScene3(); break;
+    case 3: animScene4(); break;
+    case 4: animScene5(); break;
+  }
+  // Timeline bar
+  gsap.fromTo('#timeline-fill',{width:'0%'},{width:'100%',duration:SCENE_DURATIONS[idx],ease:'none'});
+
+  if(idx<scenes.length-1){
+    sceneTimeout=setTimeout(()=>runScene(idx+1), SCENE_DURATIONS[idx]*1000);
+  }
+}
+
+// Start
+setTimeout(()=>runScene(0),300);
+
+// Resize
+window.addEventListener('resize',()=>{
+  cam3.aspect=window.innerWidth/window.innerHeight;
+  cam3.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+  pc.width=window.innerWidth; pc.height=window.innerHeight;
+});
+</script>
+</body>
+</html>
