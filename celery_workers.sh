@@ -43,8 +43,8 @@ start_worker() {
 }
 
 cmd_start() {
-  start_worker harvest  harvest  8
-  start_worker live     live     4
+  start_worker harvest  harvest  4
+  start_worker live     live     2
   start_worker ev_arb   ev_arb   1
   start_worker results  results  1
   start_worker notify   notify   1
