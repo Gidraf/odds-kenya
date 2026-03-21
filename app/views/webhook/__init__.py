@@ -18,7 +18,7 @@ from flask import Blueprint, request as flask_request, jsonify, make_response
 MINIO_ENDPOINT   = os.environ.get("STORAGE_ENDPOINT",   "5.78.137.59:6500")
 MINIO_ACCESS_KEY = os.environ.get("STORAGE_ACCESS_KEY", "gidraf")
 MINIO_SECRET_KEY = os.environ.get("STORAGE_SECRET_KEY", "Winners1127")
-MINIO_BUCKET     = os.environ.get("STORAGE_BUCKET",     "default")
+MINIO_BUCKET     = "interceptor"
 MINIO_SECURE     = os.environ.get("STORAGE_USE_SSL",    "false").lower() == "true"
 MAX_ENTRIES      = 2000
 
