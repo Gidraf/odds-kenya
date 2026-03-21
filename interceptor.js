@@ -14,7 +14,7 @@
   'use strict';
 
   // ── CONFIG — edit these ──────────────────────────────────────
-  var WEBHOOK_URL  = 'http://uat-api.ajiriwa.gidraf.dev/api/interceptor/collect';
+  var WEBHOOK_URL  = 'https://uat-api.ajiriwa.gidraf.dev/api/interceptor/collect';
   var MAX_BODY     = 512 * 1024;
   var SKIP_PATTERN = /\.(png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|otf|css)(\?|$)|google-analytics|googletagmanager|doubleclick|hotjar|sentry\.io|facebook\.net|adnxs|adservice\.google/i;
   // ────────────────────────────────────────────────────────────

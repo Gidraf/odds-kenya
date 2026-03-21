@@ -48,7 +48,7 @@ from flask import Blueprint, request as flask_request, jsonify, make_response
 MINIO_ENDPOINT   = os.environ.get("MINIO_ENDPOINT",   "localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET     = os.environ.get("MINIO_BUCKET",     "interceptor")
+MINIO_BUCKET     = "interceptor"
 MINIO_SECURE     = os.environ.get("MINIO_SECURE",     "false").lower() == "true"
 
 # Max entries kept per session before oldest are dropped
