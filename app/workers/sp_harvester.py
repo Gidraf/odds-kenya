@@ -1,404 +1,781 @@
 """
-app/workers/sp_mapper.py
-=========================
-Sportpesa market ID → canonical slug mapper — SPORT-AWARE edition.
+app/workers/sp_harvester.py
+============================
+Sportpesa Kenya harvester — single-file edition.
 
-The core problem
-─────────────────
-SP reuses the same market IDs across sports.  The SAME numeric ID means
-completely different things depending on which sport you are parsing:
-
-  ID 51  → asian_handicap      (football)
-         → point_spread        (basketball)
-         → game_handicap       (tennis)
-         → puck_line           (ice hockey)
-         → set_handicap        (volleyball)
-
-  ID 52  → over_under_goals    (football)
-         → total_points        (basketball)
-         → total_goals         (ice hockey / handball)
-         → total_runs          (cricket)
-
-  ID 45  → odd_even            (football — goals)
-         → odd_even_points     (basketball, volleyball, table tennis)
-         → odd_even_games      (tennis)
-         → odd_even_goals      (ice hockey, handball)
-
-  ID 382 → match_winner        (basketball, tennis, all 2-way sports)
-           (not used in football — football uses ID 1 / 10)
-
-  ID 353 → total_goals_home    (football)
-         → total_points_home   (basketball)
-         → total_games_player1 (tennis)
-
-  ID 352 → total_goals_away    (football)
-         → total_points_away   (basketball)
-         → total_games_player2 (tennis)
+Self-contained: only requires sp_mapper + canonical_mapper.
+No sp_harvester_base.py or sp_sports/ package needed.
 
 Public API
 ──────────
-  normalize_sp_market(mkt_id, spec_val=None, sport_id=1) → str
-
-  The sport_id defaults to 1 (football) for backwards compatibility.
-  Pass the sport.id integer from the SP listing response.
-
-  slug_with_line(base, raw_line) → str   (re-exported from canonical_mapper)
-
-Sport IDs (SP)
-───────────────
-  1   Football / Soccer
-  2   Basketball
-  4   Ice Hockey
-  5   Tennis
-  6   Handball
-  10  Boxing
-  12  Rugby
-  15  American Football
-  16  Table Tennis
-  21  Cricket
-  23  Volleyball
-  49  Darts
-  117 MMA / UFC
-  126 eFootball / eSoccer
-
-Canonical output format
-───────────────────────
-Non-line market:  "match_winner", "1x2", "btts", "double_chance" …
-Line market:      "over_under_goals_2.5", "point_spread_-5.5",
-                  "total_points_173.5", "game_handicap_-1.5" …
-
-All slugs use lowercase snake_case.  Line suffix is appended by
-slug_with_line() which accepts the raw specValue (float, int, str).
-specValue=0 is kept as a suffix for handicap markets (level ball).
+  fetch_upcoming(sport_slug, ...)       → list[dict]
+  fetch_live(sport_slug, ...)           → list[dict]
+  fetch_upcoming_stream(sport_slug, …)  → Generator[dict]
+  fetch_live_stream(sport_slug, …)      → Generator[dict]
+  fetch_match_markets(game_id, …)       → dict
+  fetch_sport_ids()                     → dict
 """
 
 from __future__ import annotations
-from typing import Any
 
-# Re-export slug_with_line so harvesters only need one import
-from app.workers.canonical_mapper import normalize_line, slug_with_line  # noqa: F401
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Generator
 
-# ── Type alias ─────────────────────────────────────────────────────────────────
-_Entry = tuple[str, bool]   # (base_slug, uses_line)
+import requests
+
+from app.workers.sp_mapper        import normalize_sp_market
+from app.workers.canonical_mapper import normalize_outcome
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+_BASE = "https://www.ke.sportpesa.com"
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept":           "application/json, text/plain, */*",
+    "Accept-Language":  "en-GB,en-US;q=0.9,en;q=0.8",
+    "X-Requested-With": "XMLHttpRequest",
+    "X-App-Timezone":   "Africa/Nairobi",
+    "Origin":           "https://www.ke.sportpesa.com",
+    "Referer":          "https://www.ke.sportpesa.com/",
+}
+
+# ── Sport slug → SP sport_id ──────────────────────────────────────────────────
+SP_SPORT_ID: dict[str, str] = {
+    "soccer":            "1",
+    "football":          "1",
+    "esoccer":           "126",
+    "efootball":         "126",
+    "e-football":        "126",
+    "virtual-football":  "126",
+    "basketball":        "2",
+    "tennis":            "5",
+    "ice-hockey":        "4",
+    "icehockey":         "4",
+    "volleyball":        "23",
+    "cricket":           "21",
+    "rugby":             "12",
+    "rugby-league":      "12",
+    "rugby-union":       "12",
+    "boxing":            "10",
+    "handball":          "6",
+    "table-tennis":      "16",
+    "tabletennis":       "16",
+    "mma":               "117",
+    "ufc":               "117",
+    "darts":             "49",
+    "american-football": "15",
+    "americanfootball":  "15",
+    "nfl":               "15",
+}
+
+# ── Sport slug → market IDs to request ────────────────────────────────────────
+_SPORT_MARKET_IDS: dict[str, str] = {
+    "1": (                          # Football / Soccer
+        "10,1,46,47,"               # 1X2, Double Chance, Draw No Bet
+        "43,29,386,"                # BTTS, BTTS+Result
+        "52,18,"                    # O/U Goals (multi-line via specValue)
+        "353,352,"                  # Home / Away team goals O/U
+        "208,"                      # Result + O/U
+        "258,202,"                  # Exact Goals, Goal Groups
+        "332,"                      # Correct Score
+        "51,53,"                    # Asian HC FT + HT
+        "55,"                       # European HC
+        "45,"                       # Odd/Even Goals
+        "41,"                       # First Team to Score
+        "207,"                      # Highest Scoring Half
+        "42,60,"                    # HT 1X2
+        "15,54,68,"                 # HT O/U
+        "44,"                       # HT/FT
+        "328,"                      # HT BTTS
+        "203,"                      # HT Correct Score
+        "162,166,"                  # Total Corners
+        "136,139"                   # Total Bookings / Cards
+    ),
+    "126": (                        # eFootball / eSoccer
+        "381,1,10,"                 # 1X2
+        "56,52,"                    # O/U Goals
+        "46,47,"                    # Double Chance, Draw No Bet
+        "43,"                       # BTTS
+        "51,"                       # Asian Handicap
+        "45,"                       # Odd/Even
+        "208,258,202"               # Result+O/U, Exact Goals
+    ),
+    "2": (                          # Basketball
+        "382,"                      # Match Winner (2-way, OT incl.)
+        "51,"                       # Point Spread (multi-line)
+        "52,"                       # Total Points O/U (multi-line)
+        "353,"                      # Home Team Total Points O/U
+        "352,"                      # Away Team Total Points O/U
+        "45,"                       # Odd/Even Points
+        "222,"                      # Winning Margin
+        "42,"                       # 3 Way - First Half
+        "53,"                       # Handicap - First Half
+        "54,"                       # Total Points - First Half
+        "224,"                      # Highest Scoring Quarter
+        "362,363,364,365,"          # Q1-Q4 O/U Total Points
+        "366,367,368,369"           # Q1-Q4 Handicap
+    ),
+    "5": (                          # Tennis
+        "382,"                      # Match Winner
+        "204,231,"                  # First / Second Set Winner
+        "51,"                       # Game Handicap (multi-line)
+        "226,"                      # Total Games O/U
+        "233,"                      # Set Betting
+        "439,"                      # Set Handicap
+        "45,"                       # Odd/Even Games
+        "339,340,"                  # 1st Set Game HC / 1st Set Total Games
+        "433,"                      # 1st Set / Match Winner combo
+        "353,352"                   # Player 1/2 Games O/U
+    ),
+    "4": (                          # Ice Hockey
+        "1,10,"                     # 1X2
+        "382,"                      # Match Winner (2-way OT/SO)
+        "52,"                       # Total Goals O/U
+        "51,"                       # Puck Line
+        "45,"                       # Odd/Even Goals
+        "46,"                       # Double Chance
+        "353,352,"                  # Home / Away Goals O/U
+        "208,43"                    # Result+O/U, BTTS
+    ),
+    "23": (                         # Volleyball
+        "382,"                      # Match Winner
+        "51,"                       # Set Handicap
+        "226,"                      # Total Sets O/U
+        "233,"                      # Set Betting
+        "45,"                       # Odd/Even Points
+        "353,352"                   # Home / Away Points O/U
+    ),
+    "6": (                          # Handball
+        "1,10,382,"                 # 1X2 / Match Winner
+        "52,"                       # Total Goals O/U
+        "51,"                       # Asian Handicap
+        "45,"                       # Odd/Even Goals
+        "46,47,"                    # Double Chance, Draw No Bet
+        "353,352,"                  # Home / Away Goals O/U
+        "208,43"                    # Result+O/U, BTTS
+    ),
+    "16": (                         # Table Tennis
+        "382,"                      # Match Winner
+        "51,"                       # Game Handicap
+        "226,"                      # Total Games O/U
+        "45,233,340"                # Odd/Even, Set Betting, 1st Set Games
+    ),
+    "12": (                         # Rugby
+        "382,1,10,46,"              # Match Winner / 1X2
+        "51,"                       # Asian Handicap
+        "52,"                       # Total Points O/U
+        "45,353,352"                # Odd/Even, Home/Away Points
+    ),
+    "21": (                         # Cricket
+        "382,1,"                    # Match Winner
+        "51,"                       # Handicap
+        "52,353,352"                # Total Runs O/U
+    ),
+    "10": (                         # Boxing
+        "382,51,52"                 # Fight Winner, Round Betting, Total Rounds
+    ),
+    "117": (                        # MMA
+        "382,51,52"                 # Fight Winner, Round Betting, Total Rounds
+    ),
+    "49": (                         # Darts
+        "382,226,45,51"             # Match Winner, Total Legs, Odd/Even, Handicap
+    ),
+    "15": (                         # American Football
+        "382,51,52,45,353,352"      # Moneyline, Spread, Total, Odd/Even
+    ),
+}
+
+_DEFAULT_MARKET_IDS = "382,1,10,51,52,45,46"  # generic fallback
+
+_ESOCCER_IDS = {"126"}
 
 
 # =============================================================================
-# PER-SPORT MARKET TABLES
-# Each entry: market_id → (canonical_base_slug, uses_line_suffix)
+# HTTP
 # =============================================================================
 
-# ── Football (sportId=1) ──────────────────────────────────────────────────────
-_FOOTBALL: dict[int, _Entry] = {
-    1:   ("1x2",                       False),
-    10:  ("1x2",                       False),
-    46:  ("double_chance",             False),
-    47:  ("draw_no_bet",               False),
-    43:  ("btts",                      False),
-    29:  ("btts_and_result",           False),
-    386: ("btts_and_result",           False),
-    328: ("first_half_btts",           False),
-    52:  ("over_under_goals",          True),
-    18:  ("over_under_goals",          True),
-    353: ("total_goals_home",          True),
-    352: ("total_goals_away",          True),
-    208: ("result_and_over_under",     True),
-    202: ("number_of_goals",           False),  # "Number of Goals in Groups" (0-1, 2-3, 4-5, 6+)
-    258: ("exact_goals",               False),  # "Total Goals Exactly" (0, 1, 2, 3…)
-    332: ("correct_score",             False),  # "Correct Score" (0:0, 1:0, 2:1…)
-    203: ("first_half_correct_score",  False),
-    51:  ("asian_handicap",            True),
-    53:  ("first_half_asian_handicap", True),
-    55:  ("european_handicap",         True),
-    45:  ("odd_even",                  False),
-    207: ("highest_scoring_half",      False),
-    41:  ("first_team_to_score",       False),
-    42:  ("first_half_1x2",            False),
-    60:  ("first_half_1x2",            False),
-    15:  ("first_half_over_under",     True),
-    54:  ("first_half_over_under",     True),
-    68:  ("first_half_over_under",     True),
-    44:  ("ht_ft",                     False),
-    162: ("total_corners",             False),
-    166: ("total_corners",             True),
-    136: ("total_bookings",            False),
-    139: ("total_bookings",            True),
-}
+def _get(
+    path:    str,
+    params:  dict | None = None,
+    timeout: int         = 20,
+) -> tuple[Any, dict]:
+    url = f"{_BASE}{path}"
+    try:
+        r = requests.get(url, headers=_HEADERS, params=params,
+                         timeout=timeout, allow_redirects=True)
+        if r.status_code == 304:
+            return None, {}
+        if not r.ok:
+            print(f"[sp] HTTP {r.status_code} → {url}")
+            return None, dict(r.headers)
+        return r.json(), dict(r.headers)
+    except requests.exceptions.JSONDecodeError as e:
+        print(f"[sp] JSON decode {url}: {e}")
+        return None, {}
+    except Exception as exc:
+        print(f"[sp] request error {url}: {exc}")
+        return None, {}
 
-# ── eFootball / eSoccer (sportId=126) ─────────────────────────────────────────
-_EFOOTBALL: dict[int, _Entry] = {
-    381: ("1x2",                       False),
-    1:   ("1x2",                       False),
-    10:  ("1x2",                       False),
-    56:  ("over_under_goals",          True),
-    52:  ("over_under_goals",          True),
-    46:  ("double_chance",             False),
-    47:  ("draw_no_bet",               False),
-    43:  ("btts",                      False),
-    51:  ("asian_handicap",            True),
-    45:  ("odd_even",                  False),
-    208: ("result_and_over_under",     True),
-    258: ("correct_score",             False),
-    202: ("exact_goals",               False),
-}
 
-# ── Basketball (sportId=2) ─────────────────────────────────────────────────────
-_BASKETBALL: dict[int, _Entry] = {
-    382: ("match_winner",              False),   # 2 Way - OT incl.
-    51:  ("point_spread",              True),    # Handicap - OT incl. (multi-line: -9.5, -8.5…)
-    52:  ("total_points",              True),    # Total Points - OT incl. (multi-line: 176.5, 177.5…)
-    353: ("total_points_home",         True),    # Home Team O/U Total Points (multi-line)
-    352: ("total_points_away",         True),    # Away Team O/U Total Points (multi-line)
-    45:  ("odd_even_points",           False),   # Odd/Even Points - OT incl.
-    222: ("winning_margin",            False),   # Winning Margin (H15, H610, H_10…)
-    # ── First Half ──────────────────────────────────────────────────────────
-    42:  ("first_half_3way",           False),   # 3 Way - First Half (Home/Draw/Away)
-    53:  ("first_half_point_spread",   True),    # Handicap - First Half (multi-line)
-    54:  ("first_half_total_points",   True),    # Total Points - First Half (multi-line)
-    # ── Quarter markets ─────────────────────────────────────────────────────
-    224: ("highest_scoring_quarter",   False),   # Highest Scoring Quarter (1stq/2ndq/3rdq/4thq/eql)
-    362: ("q1_total_points",           True),    # 1st Quarter O/U Total Points
-    363: ("q2_total_points",           True),    # 2nd Quarter O/U Total Points
-    364: ("q3_total_points",           True),    # 3rd Quarter O/U Total Points
-    365: ("q4_total_points",           True),    # 4th Quarter O/U Total Points
-    366: ("q1_point_handicap",         True),    # 1st Quarter Points Handicap
-    367: ("q2_point_handicap",         True),    # 2nd Quarter Points Handicap
-    368: ("q3_point_handicap",         True),    # 3rd Quarter Points Handicap
-    369: ("q4_point_handicap",         True),    # 4th Quarter Points Handicap
-}
-
-# ── Tennis (sportId=5) ────────────────────────────────────────────────────────
-_TENNIS: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    204: ("first_set_winner",          False),
-    231: ("second_set_winner",         False),
-    51:  ("game_handicap",             True),
-    226: ("total_games",               True),
-    233: ("set_betting",               False),
-    439: ("set_handicap",              True),
-    45:  ("odd_even_games",            False),
-    339: ("first_set_game_handicap",   True),
-    340: ("first_set_total_games",     True),
-    433: ("first_set_match_winner",    False),
-    353: ("total_games_player1",       True),
-    352: ("total_games_player2",       True),
-}
-
-# ── Ice Hockey (sportId=4) ────────────────────────────────────────────────────
-_ICE_HOCKEY: dict[int, _Entry] = {
-    1:   ("1x2",                       False),
-    10:  ("1x2",                       False),
-    382: ("match_winner",              False),
-    52:  ("total_goals",               True),
-    51:  ("puck_line",                 True),
-    45:  ("odd_even_goals",            False),
-    46:  ("double_chance",             False),
-    353: ("total_goals_home",          True),
-    352: ("total_goals_away",          True),
-    208: ("result_and_over_under",     True),
-    43:  ("btts",                      False),
-}
-
-# ── Table Tennis (sportId=16) ─────────────────────────────────────────────────
-_TABLE_TENNIS: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    51:  ("game_handicap",             True),
-    226: ("total_games",               True),
-    45:  ("odd_even_points",           False),
-    233: ("set_betting",               False),
-    340: ("first_set_total_games",     True),
-}
-
-# ── Volleyball (sportId=23) ───────────────────────────────────────────────────
-_VOLLEYBALL: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    51:  ("set_handicap",              True),
-    226: ("total_sets",                True),
-    233: ("set_betting",               False),
-    45:  ("odd_even_points",           False),
-    353: ("total_points_home",         True),
-    352: ("total_points_away",         True),
-}
-
-# ── Handball (sportId=6) ──────────────────────────────────────────────────────
-_HANDBALL: dict[int, _Entry] = {
-    1:   ("1x2",                       False),
-    10:  ("1x2",                       False),
-    382: ("match_winner",              False),
-    52:  ("total_goals",               True),
-    51:  ("asian_handicap",            True),
-    45:  ("odd_even_goals",            False),
-    46:  ("double_chance",             False),
-    47:  ("draw_no_bet",               False),
-    353: ("total_goals_home",          True),
-    352: ("total_goals_away",          True),
-    208: ("result_and_over_under",     True),
-    43:  ("btts",                      False),
-}
-
-# ── American Football (sportId=15) ────────────────────────────────────────────
-_AMERICAN_FOOTBALL: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    51:  ("point_spread",              True),
-    52:  ("total_points",              True),
-    45:  ("odd_even_points",           False),
-    353: ("total_points_home",         True),
-    352: ("total_points_away",         True),
-}
-
-# ── Cricket (sportId=21) ──────────────────────────────────────────────────────
-_CRICKET: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    1:   ("match_winner",              False),
-    51:  ("asian_handicap",            True),
-    52:  ("total_runs",                True),
-    353: ("total_runs_home",           True),
-    352: ("total_runs_away",           True),
-}
-
-# ── Rugby (sportId=12) ────────────────────────────────────────────────────────
-_RUGBY: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    1:   ("1x2",                       False),
-    10:  ("1x2",                       False),
-    46:  ("double_chance",             False),
-    51:  ("asian_handicap",            True),
-    52:  ("total_points",              True),
-    45:  ("odd_even_points",           False),
-    353: ("total_points_home",         True),
-    352: ("total_points_away",         True),
-}
-
-# ── Boxing (sportId=10) ───────────────────────────────────────────────────────
-_BOXING: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    51:  ("round_betting",             True),
-    52:  ("total_rounds",              True),
-}
-
-# ── MMA (sportId=117) ─────────────────────────────────────────────────────────
-_MMA: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    51:  ("round_betting",             True),
-    52:  ("total_rounds",              True),
-}
-
-# ── Darts (sportId=49) ────────────────────────────────────────────────────────
-_DARTS: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    226: ("total_legs",                True),
-    45:  ("odd_even_legs",             False),
-    51:  ("leg_handicap",              True),
-}
+def _parse_content_range(header: str | None) -> int | None:
+    if not header:
+        return None
+    try:
+        return int(header.split("/")[-1].strip())
+    except (IndexError, ValueError):
+        return None
 
 
 # =============================================================================
-# REGISTRY — sport_id → market table
-# =============================================================================
-_SPORT_TABLE: dict[int, dict[int, _Entry]] = {
-    1:   _FOOTBALL,
-    2:   _BASKETBALL,
-    4:   _ICE_HOCKEY,
-    5:   _TENNIS,
-    6:   _HANDBALL,
-    10:  _BOXING,
-    12:  _RUGBY,
-    15:  _AMERICAN_FOOTBALL,
-    16:  _TABLE_TENNIS,
-    21:  _CRICKET,
-    23:  _VOLLEYBALL,
-    49:  _DARTS,
-    117: _MMA,
-    126: _EFOOTBALL,
-}
-
-# Fallback for any sport not in the registry — generic 2-way / O/U
-_GENERIC: dict[int, _Entry] = {
-    382: ("match_winner",  False),
-    1:   ("1x2",           False),
-    10:  ("1x2",           False),
-    51:  ("handicap",      True),
-    52:  ("total",         True),
-    45:  ("odd_even",      False),
-    46:  ("double_chance", False),
-}
-
-
-# =============================================================================
-# PUBLIC FUNCTION
+# RAW SP API FETCHERS
 # =============================================================================
 
-def normalize_sp_market(
-    mkt_id:   int,
-    spec_val: Any   = None,
-    sport_id: int   = 1,
-) -> str:
+def _fetch_upcoming_page(
+    sport_id:   str,
+    ts_start:   int,
+    ts_end:     int,
+    page_size:  int,
+    offset:     int,
+    is_esoccer: bool = False,
+) -> tuple[list[dict], int | None]:
+    raw, headers = _get("/api/upcoming/games", params={
+        "type":           "prematch",
+        "sportId":        sport_id,
+        "section":        "upcoming",
+        "markets_layout": "single" if is_esoccer else "multiple",
+        "o":              "leagues",
+        "pag_count":      str(page_size),
+        "pag_min":        str(offset + 1),
+        "from":           str(ts_start),
+        "to":             str(ts_end),
+    })
+    total = _parse_content_range(
+        headers.get("content-range") or headers.get("Content-Range")
+    )
+    if isinstance(raw, list):
+        return raw, total
+    if isinstance(raw, dict):
+        for key in ("data", "games", "items", "results"):
+            if isinstance(raw.get(key), list):
+                return raw[key], total
+    return [], total
+
+
+def _fetch_live_list(sport_id: str) -> list[dict]:
+    raw, _ = _get("/api/live/games", params={"sportId": sport_id})
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("data", "games", "items"):
+            if isinstance(raw.get(key), list):
+                return raw[key]
+    return []
+
+
+def _extract_market_list(raw: Any, gid: str) -> list[dict]:
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        if gid in raw and isinstance(raw[gid], list):
+            return raw[gid]
+        try:
+            ikey = int(gid)
+            if ikey in raw and isinstance(raw[ikey], list):
+                return raw[ikey]
+        except (ValueError, TypeError):
+            pass
+        for wrapper in ("data", "result"):
+            inner = raw.get(wrapper)
+            if isinstance(inner, dict):
+                if gid in inner and isinstance(inner[gid], list):
+                    return inner[gid]
+                for v in inner.values():
+                    if isinstance(v, list) and v:
+                        return v
+        if isinstance(raw.get("markets"), list):
+            return raw["markets"]
+        for v in raw.values():
+            if isinstance(v, list) and v:
+                return v
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def _fetch_markets(
+    game_id:    str | int,
+    market_ids: str,
+    debug:      bool = False,
+    max_tries:  int  = 2,
+) -> list[dict]:
+    gid     = str(game_id)
+    backoff = [0, 1.5]
+
+    for attempt in range(max_tries):
+        if attempt > 0:
+            time.sleep(backoff[min(attempt, len(backoff) - 1)])
+
+        raw, headers = _get("/api/games/markets", params={
+            "games":   gid,
+            "markets": market_ids,
+        })
+
+        rl = headers.get("x-rate-limit-remaining") or headers.get("X-RateLimit-Remaining")
+        if rl == "0":
+            print(f"[sp:mkts] rate-limit=0 game={gid} — sleeping 2s")
+            time.sleep(2.0)
+
+        result = _extract_market_list(raw, gid)
+
+        if not result:
+            print(f"[sp:mkts] empty game={gid} attempt={attempt}")
+            continue
+
+        if debug:
+            mkt_ids = [m.get("id") for m in result]
+            ou_ids  = [i for i in mkt_ids if i in (52, 18, 56)]
+            print(f"[sp:mkts] OK game={gid}  {len(result)} mkts  "
+                  f"ou_ids={ou_ids}  ids={mkt_ids[:12]}")
+        return result
+
+    print(f"[sp:mkts] all {max_tries} attempts empty for game={gid}")
+    return []
+
+
+# =============================================================================
+# PARSERS
+# =============================================================================
+
+def _str_field(v: Any) -> str:
+    if isinstance(v, dict):
+        return str(v.get("name") or v.get("title") or v.get("short") or "")
+    return str(v) if v else ""
+
+
+def _parse_timestamp(item: dict) -> str | None:
+    for key in ("dateTimestamp", "startTimestamp", "timestamp"):
+        ts = item.get(key)
+        if ts is not None:
+            try:
+                t = int(ts)
+                if t > 1_000_000_000_000:
+                    t //= 1000
+                return datetime.utcfromtimestamp(t).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            except Exception:
+                pass
+    for key in ("date", "startTime", "start_time"):
+        dt = item.get(key)
+        if dt:
+            return str(dt)
+    return None
+
+
+def _parse_match_item(item: dict) -> dict | None:
+    sp_game_id = str(item.get("id") or "")
+    if not sp_game_id:
+        return None
+
+    betradar_id = str(
+        item.get("betradarId") or item.get("betradar_id") or
+        item.get("betRadarId") or ""
+    )
+
+    comps = item.get("competitors") or item.get("teams") or []
+    if isinstance(comps, list) and len(comps) >= 2:
+        home = _str_field(comps[0].get("name") or comps[0])
+        away = _str_field(comps[1].get("name") or comps[1])
+    else:
+        home = _str_field(item.get("home") or item.get("homeName") or "")
+        away = _str_field(item.get("away") or item.get("awayName") or "")
+
+    comp_raw    = item.get("competition") or item.get("league") or {}
+    competition = _str_field(comp_raw) or _str_field(
+        item.get("leagueName") or item.get("competitionName") or ""
+    )
+
+    sport_raw   = item.get("sport") or {}
+    sport_name  = _str_field(sport_raw)
+    sp_sport_id: int = 1
+    if isinstance(sport_raw, dict):
+        try:
+            sp_sport_id = int(sport_raw.get("id") or 1)
+        except (TypeError, ValueError):
+            pass
+    elif isinstance(sport_raw, int):
+        sp_sport_id = sport_raw
+
+    inline = item.get("markets") or item.get("odds") or []
+    if isinstance(inline, dict):
+        inline = list(inline.values())
+
+    return {
+        "betradar_id":  betradar_id,
+        "sp_game_id":   sp_game_id,
+        "home_team":    home,
+        "away_team":    away,
+        "start_time":   _parse_timestamp(item),
+        "competition":  competition,
+        "sport":        sport_name,
+        "sp_sport_id":  sp_sport_id,
+        "_inline_mkts": inline,
+    }
+
+
+def _parse_markets(
+    raw_list: list[dict],
+    game_id:  str = "",
+    sport_id: int = 1,
+) -> dict[str, dict[str, float]]:
+    markets: dict[str, dict[str, float]] = {}
+    ou_seen = False
+
+    for mkt in raw_list:
+        if not isinstance(mkt, dict):
+            continue
+        mkt_id = mkt.get("id") or mkt.get("marketId") or mkt.get("typeId")
+        if mkt_id is None:
+            continue
+        try:
+            mkt_id = int(mkt_id)
+        except (TypeError, ValueError):
+            continue
+
+        if mkt_id in (52, 18, 56):
+            ou_seen = True
+
+        # MUST use is None — specValue=0 is a valid line (Asian HC level ball)
+        spec_val = mkt.get("specValue")
+        if spec_val is None:
+            spec_val = mkt.get("spec") or mkt.get("handicap")
+
+        mkt_key = normalize_sp_market(mkt_id, spec_val, sport_id)
+        markets.setdefault(mkt_key, {})
+
+        sels = mkt.get("selections") or mkt.get("outcomes") or mkt.get("odds") or []
+        if isinstance(sels, dict):
+            sels = list(sels.values())
+
+        for sel in sels:
+            if not isinstance(sel, dict):
+                continue
+            short = str(
+                sel.get("shortName") or sel.get("name") or
+                sel.get("label")    or sel.get("outcome") or ""
+            )
+            try:
+                price = float(
+                    sel.get("odds") or sel.get("price") or sel.get("value") or 0
+                )
+            except (TypeError, ValueError):
+                price = 0.0
+
+            if price <= 1.0:
+                continue
+
+            out_key = normalize_outcome(mkt_key, short)
+            if price > markets[mkt_key].get(out_key, 0.0):
+                markets[mkt_key][out_key] = round(price, 3)
+
+    result = {k: v for k, v in markets.items() if v}
+
+    if game_id:
+        ou_keys = [k for k in result if "total" in k or "over_under" in k]
+        if not ou_seen:
+            print(f"[sp:ou] {game_id}: IDs 52/18/56 NOT in raw ({len(raw_list)} mkts) — SP doesn't offer O/U")
+        elif not ou_keys:
+            print(f"[sp:ou] {game_id}: O/U IDs present but no total* keys after parse — check shortNames")
+        else:
+            print(f"[sp:ou] {game_id}: O/U OK → {ou_keys[:5]}")
+
+    return result
+
+
+def _build_match(
+    parsed:     dict,
+    markets:    dict,
+    sport_slug: str,
+    status:     str = "upcoming",
+) -> dict:
+    return {
+        "betradar_id":  parsed["betradar_id"],
+        "sp_game_id":   parsed["sp_game_id"],
+        "home_team":    parsed["home_team"],
+        "away_team":    parsed["away_team"],
+        "start_time":   parsed["start_time"],
+        "competition":  parsed["competition"],
+        "sport":        parsed["sport"] or sport_slug,
+        "sp_sport_id":  parsed.get("sp_sport_id", 1),
+        "source":       "sportpesa",
+        "status":       status,
+        "markets":      markets,
+        "market_count": len(markets),
+        "harvested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+# =============================================================================
+# RAW ITEM COLLECTOR
+# =============================================================================
+
+def _collect_raw_items(
+    sport_id:   str,
+    days:       int,
+    page_size:  int,
+    max_items:  int | None,
+    is_esoccer: bool = False,
+) -> list[dict]:
+    raw_items: list[dict] = []
+    seen_ids:  set[str]   = set()
+    now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
+
+    for day_off in range(days):
+        day  = now_eat + timedelta(days=day_off)
+        ts_s = int(day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        ts_e = ts_s + 86400
+        offset = 0
+
+        while True:
+            items, total_hint = _fetch_upcoming_page(
+                sport_id, ts_s, ts_e, page_size, offset, is_esoccer=is_esoccer
+            )
+            if not items:
+                break
+            added = 0
+            for it in items:
+                gid = str(it.get("id") or "")
+                if gid and gid not in seen_ids:
+                    seen_ids.add(gid)
+                    raw_items.append(it)
+                    added += 1
+            offset += page_size
+            if added < page_size:
+                break
+            if total_hint and len(seen_ids) >= total_hint:
+                break
+            if max_items and len(raw_items) >= max_items:
+                break
+
+        if max_items and len(raw_items) >= max_items:
+            break
+
+    return raw_items[:max_items] if max_items else raw_items
+
+
+def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
     """
-    Convert a Sportpesa market ID to a canonical slug.
-
-    Parameters
-    ──────────
-    mkt_id    int   The numeric market ID from the SP API response.
-    spec_val  Any   The specValue field (float, int, str, or None).
-                    Used to append the line suffix for handicap / O/U markets.
-                    specValue=0 is kept for Asian Handicap (level ball).
-    sport_id  int   SP sport.id integer (default 1 = football).
-                    MUST be passed for non-football sports or IDs will map
-                    to wrong markets (e.g. ID 52 → goals vs points).
-
-    Returns
-    ───────
-    str   Canonical snake_case slug, e.g.:
-            "match_winner"
-            "over_under_goals_2.5"
-            "point_spread_-5.5"
-            "total_points_173.5"
-            "game_handicap_-1.5"
-            "total_games_22.5"
-            "first_set_total_games_9.5"
-            "set_handicap_-1.5"
-            "sp_2_999"            ← unknown market, prefixed for traceability
-
-    Examples
-    ────────
-    >>> normalize_sp_market(382, sport_id=2)          # basketball
-    'match_winner'
-    >>> normalize_sp_market(52, 173.5, sport_id=2)    # basketball
-    'total_points_173.5'
-    >>> normalize_sp_market(52, 2.5, sport_id=1)      # football
-    'over_under_goals_2.5'
-    >>> normalize_sp_market(51, -1.5, sport_id=5)     # tennis
-    'game_handicap_-1.5'
-    >>> normalize_sp_market(51, 0, sport_id=1)        # football AHC level ball
-    'asian_handicap_0'
-    >>> normalize_sp_market(382, sport_id=5)          # tennis
-    'match_winner'
-    >>> normalize_sp_market(999, sport_id=2)          # unknown
-    'sp_2_999'
+    Returns (sport_id_str, market_ids, is_esoccer, days_default, max_default).
     """
-    table = _SPORT_TABLE.get(sport_id, _GENERIC)
-    entry = table.get(mkt_id)
-
-    if entry is None:
-        # Try generic as last resort before giving up
-        entry = _GENERIC.get(mkt_id)
-
-    if entry is None:
-        return f"sp_{sport_id}_{mkt_id}"
-
-    base, uses_line = entry
-    if uses_line:
-        return slug_with_line(base, spec_val)
-    return base
+    slug      = sport_slug.lower().replace(" ", "-")
+    sport_id  = SP_SPORT_ID.get(slug)
+    if not sport_id:
+        print(f"[sp] unknown sport: {sport_slug!r}")
+        return "", "", False, 3, 150
+    is_esoccer   = sport_id in _ESOCCER_IDS
+    market_ids   = _SPORT_MARKET_IDS.get(sport_id, _DEFAULT_MARKET_IDS)
+    # Clean concatenated string
+    market_ids   = market_ids.replace("\n", "").replace(" ", "")
+    days_default = 1 if is_esoccer else 3
+    max_default  = 60 if is_esoccer else 150
+    return sport_id, market_ids, is_esoccer, days_default, max_default
 
 
-def get_sport_table(sport_id: int) -> dict[int, _Entry]:
-    """Return the raw market table for a sport (for introspection / testing)."""
-    return _SPORT_TABLE.get(sport_id, _GENERIC)
+# =============================================================================
+# PUBLIC API — STREAMING GENERATORS
+# =============================================================================
 
-
-def list_all_slugs(sport_id: int) -> list[str]:
+def fetch_upcoming_stream(
+    sport_slug:         str,
+    days:               int | None   = None,
+    max_matches:        int | None   = None,
+    fetch_full_markets: bool         = True,
+    sleep_between:      float        = 0.3,
+    debug_ou:           bool         = False,
+    **_,
+) -> Generator[dict, None, None]:
     """
-    Return all possible canonical base slugs for a sport (ignoring lines).
-    Useful for building frontend market filters.
+    Yield one normalised match dict at a time as markets are fetched.
+    Used by SSE endpoints in sp_module.py.
     """
-    return sorted({base for base, _ in get_sport_table(sport_id).values()})
+    sport_id, market_ids, is_esoccer, days_default, max_default = _get_config(sport_slug)
+    if not sport_id:
+        return
+
+    days    = days        or days_default
+    max_m   = max_matches or max_default
+
+    raw_items = _collect_raw_items(sport_id, days, 30, max_m, is_esoccer=is_esoccer)
+    print(f"[sp:{sport_slug}] {len(raw_items)} raw items (sportId={sport_id})")
+
+    inline_count = 0
+    for item in raw_items:
+        parsed = _parse_match_item(item)
+        if not parsed:
+            continue
+
+        if fetch_full_markets and parsed["sp_game_id"]:
+            raw_mkts = _fetch_markets(
+                parsed["sp_game_id"], market_ids, debug=debug_ou
+            )
+            if not raw_mkts:
+                raw_mkts = parsed["_inline_mkts"]
+                inline_count += 1
+            time.sleep(sleep_between)
+        else:
+            raw_mkts = parsed["_inline_mkts"]
+
+        markets = _parse_markets(
+            raw_mkts,
+            game_id  = parsed["sp_game_id"] if debug_ou else "",
+            sport_id = parsed.get("sp_sport_id") or int(sport_id),
+        )
+        yield _build_match(parsed, markets, sport_slug)
+
+    if inline_count:
+        print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} used inline fallback")
+
+
+def fetch_live_stream(
+    sport_slug:         str,
+    fetch_full_markets: bool  = True,
+    sleep_between:      float = 0.3,
+    debug_ou:           bool  = False,
+    **_,
+) -> Generator[dict, None, None]:
+    """Yield live matches one at a time."""
+    sport_id, market_ids, _, _, _ = _get_config(sport_slug)
+    if not sport_id:
+        return
+
+    raw_items = _fetch_live_list(sport_id)
+    print(f"[sp:{sport_slug}:live] {len(raw_items)} live (sportId={sport_id})")
+
+    for item in raw_items:
+        parsed = _parse_match_item(item)
+        if not parsed:
+            continue
+
+        if fetch_full_markets and parsed["sp_game_id"]:
+            raw_mkts = _fetch_markets(
+                parsed["sp_game_id"], market_ids, debug=debug_ou
+            )
+            if not raw_mkts:
+                raw_mkts = parsed["_inline_mkts"]
+            time.sleep(sleep_between)
+        else:
+            raw_mkts = parsed["_inline_mkts"]
+
+        markets = _parse_markets(
+            raw_mkts,
+            game_id  = parsed["sp_game_id"] if debug_ou else "",
+            sport_id = parsed.get("sp_sport_id") or int(sport_id),
+        )
+        yield _build_match(parsed, markets, sport_slug, status="live")
+
+
+# =============================================================================
+# PUBLIC API — BLOCKING
+# =============================================================================
+
+def fetch_upcoming(
+    sport_slug:         str,
+    days:               int | None = None,
+    max_matches:        int | None = None,
+    fetch_full_markets: bool       = True,
+    sleep_between:      float      = 0.3,
+    debug_ou:           bool       = False,
+    **_,
+) -> list[dict]:
+    results = list(fetch_upcoming_stream(
+        sport_slug,
+        days               = days,
+        max_matches        = max_matches,
+        fetch_full_markets = fetch_full_markets,
+        sleep_between      = sleep_between,
+        debug_ou           = debug_ou,
+    ))
+    print(f"[sp] {sport_slug}: {len(results)} normalised")
+    return results
+
+
+def fetch_live(
+    sport_slug:         str,
+    fetch_full_markets: bool  = True,
+    sleep_between:      float = 0.3,
+    debug_ou:           bool  = False,
+    **_,
+) -> list[dict]:
+    results = list(fetch_live_stream(
+        sport_slug,
+        fetch_full_markets = fetch_full_markets,
+        sleep_between      = sleep_between,
+        debug_ou           = debug_ou,
+    ))
+    print(f"[sp:live] {sport_slug}: {len(results)} live")
+    return results
+
+
+# =============================================================================
+# PUBLIC API — ON-DEMAND SINGLE MATCH
+# =============================================================================
+
+def fetch_match_markets(
+    game_id:    str | int,
+    sport_slug: str = "soccer",
+) -> dict[str, dict[str, float]]:
+    """Full market book for one SP game ID."""
+    sport_id, market_ids, _, _, _ = _get_config(sport_slug)
+    if not sport_id:
+        sport_id   = "1"
+        market_ids = _SPORT_MARKET_IDS["1"]
+
+    raw    = _fetch_markets(game_id, market_ids, debug=True)
+    result = _parse_markets(raw, game_id=str(game_id), sport_id=int(sport_id))
+    print(f"[sp:match] {game_id}: {len(result)} slugs → {list(result.keys())[:8]}")
+    return result
+
+
+# =============================================================================
+# INTERNAL — used by /debug endpoint in sp_module.py
+# =============================================================================
+
+def _fetch_markets_for_debug(
+    game_id:    str,
+    sport_slug: str  = "soccer",
+    debug:      bool = True,
+) -> list[dict]:
+    sport_id, market_ids, _, _, _ = _get_config(sport_slug)
+    if not sport_id:
+        market_ids = _SPORT_MARKET_IDS["1"]
+    return _fetch_markets(game_id, market_ids, debug=debug)
+
+
+def _parse_markets_for_debug(
+    raw_list:   list[dict],
+    game_id:    str = "",
+    sport_slug: str = "soccer",
+) -> dict[str, dict[str, float]]:
+    sport_id, _, _, _, _ = _get_config(sport_slug)
+    sid = int(sport_id) if sport_id else 1
+    return _parse_markets(raw_list, game_id=game_id, sport_id=sid)
+
+
+# =============================================================================
+# PUBLIC API — SPORT EVENT COUNTS
+# =============================================================================
+
+def fetch_sport_ids() -> dict[str, int]:
+    """Return {sport_name: live_event_count} from the SP live sports API."""
+    raw, _ = _get("/api/live/sports")
+    if not isinstance(raw, dict):
+        return {}
+    sports = raw.get("sports") or raw.get("data") or []
+    if isinstance(sports, list):
+        return {s.get("name", ""): s.get("eventNumber", 0) for s in sports}
+    return {}
