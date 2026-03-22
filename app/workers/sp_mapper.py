@@ -155,22 +155,37 @@ _BASKETBALL: dict[int, _Entry] = {
 }
 
 # ── Tennis (sportId=5) ────────────────────────────────────────────────────────
-_TENNIS: dict[int, _Entry] = {
-    382: ("match_winner",              False),
-    204: ("first_set_winner",          False),
-    231: ("second_set_winner",         False),
-    51:  ("game_handicap",             True),
-    226: ("total_games",               True),
-    233: ("set_betting",               False),
-    439: ("set_handicap",              True),
-    45:  ("odd_even_games",            False),
-    339: ("first_set_game_handicap",   True),
-    340: ("first_set_total_games",     True),
-    433: ("first_set_match_winner",    False),
-    353: ("total_games_player1",       True),
-    352: ("total_games_player2",       True),
-}
+# ── Tennis (sportId=5) ────────────────────────────────────────────────────────
+# Drop this block into sp_mapper.py replacing the existing _TENNIS dict.
+#
+# Grid columns rendered in SportspesaTab (left → right):
+#   match_winner  |  first_set_winner  |  second_set_winner
+#   game_handicap_<line>  |  total_games_<line>  |  set_handicap_<line>
+#   set_betting  |  odd_even_games
+#   first_set_game_handicap_<line>  |  first_set_total_games_<line>
+#   first_set_match_winner  |  total_games_player1_<line>  |  total_games_player2_<line>
 
+_TENNIS: dict[int, "_Entry"] = {
+    # ── Core ────────────────────────────────────────────────────────────────
+    382: ("match_winner",              False),   # 2-way match result
+    204: ("first_set_winner",          False),   # 1st set winner
+    231: ("second_set_winner",         False),   # 2nd set winner
+    # ── Full-match handicap / totals ─────────────────────────────────────────
+    51:  ("game_handicap",             True),    # Game HC  (spec: -1.5 / -0.5 / +1.5)
+    226: ("total_games",               True),    # Total games O/U  (spec: 20.5–24.5)
+    439: ("set_handicap",              True),    # Set HC  (spec: -1.5 / +1.5)
+    # ── Set score ────────────────────────────────────────────────────────────
+    233: ("set_betting",               False),   # 2:0 / 2:1 / 1:2 / 0:2
+    # ── Misc full-match ──────────────────────────────────────────────────────
+    45:  ("odd_even_games",            False),   # Odd / Even total games
+    # ── 1st-set markets ──────────────────────────────────────────────────────
+    339: ("first_set_game_handicap",   True),    # 1st set game HC  (spec: -1.5/-0.5/+1.5)
+    340: ("first_set_total_games",     True),    # 1st set total games O/U (spec: 8.5/9.5/10.5)
+    433: ("first_set_match_winner",    False),   # 1st set + match winner combo (11/12/21/22)
+    # ── Per-player games totals ──────────────────────────────────────────────
+    353: ("total_games_player1",       True),    # P1 games O/U (spec: 11.5/12.5/13.5)
+    352: ("total_games_player2",       True),    # P2 games O/U (spec: 11.5/12.5/13.5)
+}
 # ── Ice Hockey (sportId=4) ────────────────────────────────────────────────────
 _ICE_HOCKEY: dict[int, _Entry] = {
     1:   ("1x2",                       False),
