@@ -6,6 +6,7 @@ Shared normalisation utilities used by ALL bookmaker harvesters.
 Exports
 -------
   normalize_line(raw_value)                              → clean line string e.g. "2.5"
+  slug_with_line(base, raw_line)                         → "over_under_goals_2.5"
   normalize_outcome(market_slug, raw_key, display="")   → canonical outcome key
   normalize_od_market(sub_type_id, specifiers)          → Odibets
   normalize_bt_market(name, sub_type_id)                → Betika
@@ -17,6 +18,22 @@ Exports
 Import in your harvester
 ------------------------
   from app.workers.canonical_mapper import normalize_outcome, normalize_line
+
+Changelog
+---------
+  v2 — slug_with_line fix
+    OLD: if line and line not in ("0", ""):
+    NEW: if line and line != "":
+
+    Reason: Asian Handicap specValue=0 is a valid "level ball" line.
+    The old code excluded "0", so asian_handicap with specValue=0 was
+    stored as "asian_handicap" (no suffix) instead of "asian_handicap_0".
+    This caused the inline-fallback matches (where the full market fetch
+    rate-limited) to show only the specValue=0 snapshot with no O/U lines.
+    Removing "0" from the exclusion set is safe because all O/U markets
+    (market IDs 52, 18, 353, 352, 208, 15, 54, 68) never have specValue=0
+    — their lines are 0.5, 0.75, 1.0, 1.25 … 5.5.  Only asian_handicap
+    (IDs 51, 53) uses specValue=0 as a meaningful line.
 """
 
 from __future__ import annotations
@@ -32,7 +49,14 @@ from typing import Any, Callable
 def normalize_line(raw_value: Any) -> str:
     """
     Coerce a handicap / over-under line to a clean string.
-      2.5  → "2.5"  |  2.0  → "2"  |  -0.5 → "-0.5"  |  "0:1" → "0:1"
+
+    Examples
+    --------
+      2.5   → "2.5"
+      2.0   → "2"
+      0     → "0"      ← kept (Asian HC level ball)
+      -0.5  → "-0.5"
+      "0:1" → "0:1"    ← Betradar hcp notation passed through
     """
     if raw_value is None:
         return ""
@@ -51,9 +75,25 @@ def normalize_line(raw_value: Any) -> str:
 
 
 def slug_with_line(base: str, raw_line: Any) -> str:
-    """Append a line suffix to a base market slug, e.g. 'over_under_goals_2.5'."""
+    """
+    Append a numeric line suffix to a base market slug.
+
+    Examples
+    --------
+      slug_with_line("over_under_goals",  2.5)  → "over_under_goals_2.5"
+      slug_with_line("asian_handicap",    0)    → "asian_handicap_0"   ← v2 fix
+      slug_with_line("asian_handicap",   -0.75) → "asian_handicap_-0.75"
+      slug_with_line("asian_handicap",    None) → "asian_handicap"     (no line)
+
+    v2 FIX: "0" is now a valid line suffix.
+    Previously "0" was excluded alongside "" which caused asian_handicap
+    with specValue=0 to be stored without a suffix, colliding with any
+    other asian_handicap entry and losing the level-ball line entirely.
+    """
     line = normalize_line(raw_line)
-    if line and line not in ("0", ""):
+    # Only skip the suffix when line is truly empty (absent/None).
+    # "0" is a valid line (Asian HC level ball / scratch line).
+    if line and line != "":
         return f"{base}_{line}"
     return base
 
@@ -63,9 +103,9 @@ def slug_with_line(base: str, raw_line: Any) -> str:
 # =============================================================================
 
 _OUT_EXACT: dict[str, str] = {
-    # 3-way
-    "1": "1",  "x": "X",  "2": "2",
-    "home": "1",  "draw": "X",  "away": "2",
+    # 3-way result
+    "1":    "1",   "x":    "X",   "2":    "2",
+    "home": "1",   "draw": "X",   "away": "2",
     # Over / Under
     "over":  "over",   "under":  "under",
     "ov":    "over",   "un":     "under",
@@ -74,12 +114,12 @@ _OUT_EXACT: dict[str, str] = {
     "gg":   "yes",   "ng":   "no",
     "odd":  "odd",   "even": "even",
     "od":   "odd",   "ev":   "even",
-    # Double Chance
-    "1x":         "1X",  "x2":         "X2",  "12":         "12",
-    "2x":         "X2",
-    "1/x":        "1X",  "x/2":        "X2",  "1/2":        "12",
-    "1 or x":     "1X",  "1 or 2":     "12",  "x or 2":     "X2",
-    "home or draw":"1X", "home or away":"12", "draw or away":"X2",
+    # Double Chance — all notations (B2B uses "2X" which means "X2")
+    "1x":          "1X",   "x2":          "X2",   "12":          "12",
+    "2x":          "X2",   # B2B gap fix
+    "1/x":         "1X",   "x/2":         "X2",   "1/2":         "12",
+    "1 or x":      "1X",   "1 or 2":      "12",   "x or 2":      "X2",
+    "home or draw":"1X",   "home or away":"12",   "draw or away":"X2",
     # No-goal / none
     "none":    "none",
     "no goal": "none",
@@ -109,8 +149,8 @@ _HTFT_MAP: dict[str, str] = {
     "2/1": "2/1", "2/x": "2/X", "2/2": "2/2",
 }
 
-_OUT_OVER_RE  = re.compile(r"^over\s+([\d.]+)$",  re.I)
-_OUT_UNDER_RE = re.compile(r"^under\s+([\d.]+)$", re.I)
+_OUT_OVER_RE  = re.compile(r"^over\s+([\d.]+)$",   re.I)
+_OUT_UNDER_RE = re.compile(r"^under\s+([\d.]+)$",  re.I)
 _OUT_SCORE_RE = re.compile(r"^\d+:\d+$")
 _OUT_HCP_RE   = re.compile(r"^([12X])\s*[\(\[].*[\)\]]$", re.I)
 
@@ -121,25 +161,40 @@ def normalize_outcome(
     display:     str = "",
 ) -> str:
     """
-    Return a canonical outcome key for any bookmaker's raw outcome.
+    Return a canonical outcome key for any bookmaker's raw outcome string.
 
-    Special handling per market_slug:
-    • ht_ft       → "11"/"1X"/"X2" etc. mapped via _HTFT_MAP (not double_chance)
-    • highest_scoring_half → "Eql" → "equal"
-    • over/under  → line already in slug, so "over 2.5" → "over"
-    • handicap    → "1 (0:1)" → "1"
-    • correct_score → "2:1" passes through
+    Special handling per market_slug
+    ─────────────────────────────────
+    ht_ft
+        SP shortNames are "11","1X","X2" etc. (no slash).
+        These must be resolved via _HTFT_MAP BEFORE the general _OUT_EXACT
+        lookup, because "12" in double_chance means "both teams win" (12)
+        but in ht_ft means "Home at HT / Away at FT" (1/2).
+
+    highest_scoring_half
+        SP shortName "Eql" → "equal"
+
+    over_under_goals_*
+        Line is already in the slug; "OVER 2.50" → "over" (line stripped).
+
+    asian/european_handicap_*
+        SP shortName "1 (0:1)" → "1"  (handicap notation stripped).
+
+    correct_score
+        "2:1" passes through unchanged.
+
+    result_and_over_under / btts_and_result
+        SP shortNames "OV_1","XGG" etc. → resolved via _SP_COMBO.
     """
     kl = raw_key.strip().lower()
 
-    # ── HT/FT market — must resolve before general _OUT_EXACT ────────────────
-    # "12" in double_chance = "12" (both teams win), but in ht_ft = "1/2"
+    # ── HT/FT: resolve BEFORE general lookup to avoid "12"/"x2" collision ──
     if "ht_ft" in market_slug:
         v = _HTFT_MAP.get(kl)
         if v:
             return v
 
-    # ── General exact match ───────────────────────────────────────────────────
+    # ── General exact match ──────────────────────────────────────────────────
     for raw in (raw_key, display):
         if not raw:
             continue
@@ -154,22 +209,24 @@ def normalize_outcome(
         if _OUT_UNDER_RE.match(kl2):
             return "under"
 
+        # Correct score "2:1", "0:0" etc.
         if _OUT_SCORE_RE.match(raw.strip()):
             return raw.strip()
 
+        # Handicap notation "1 (0:1)" → "1"
         m = _OUT_HCP_RE.match(raw.strip())
         if m:
             return m.group(1).upper()
 
-    # ── SP combo outcomes ─────────────────────────────────────────────────────
+    # ── SP combo outcomes ────────────────────────────────────────────────────
     if kl in _SP_COMBO:
         return _SP_COMBO[kl]
 
-    # ── Numeric ranges (goal groups) "0-1", "2-3" ────────────────────────────
+    # ── Numeric goal ranges "0-1", "2-3", "6+" ──────────────────────────────
     if re.match(r"^\d+[-–+]\d*$", raw_key.strip()):
         return raw_key.strip()
 
-    # ── Fallback — sanitise ───────────────────────────────────────────────────
+    # ── Fallback — sanitise to snake_case ────────────────────────────────────
     raw = raw_key.strip() or display.strip()
     return re.sub(r"[^a-z0-9_:+./\-]+", "_", raw.lower()).strip("_") or "unknown"
 
@@ -301,99 +358,99 @@ def normalize_od_market(sub_type_id: str | int, specifiers: str = "") -> str:
 # =============================================================================
 
 _BT_SUBTYPE: dict[int, str] = {
-    1:   "1x2",             7:   "match_winner",        8:   "next_goal",
-    10:  "double_chance",   11:  "draw_no_bet",         14:  "european_handicap",
-    15:  "winning_margin",  18:  "over_under_goals",    19:  "total_goals_home",
-    20:  "total_goals_away",21:  "exact_goals",         23:  "exact_goals",
-    24:  "exact_goals",     29:  "btts",                31:  "clean_sheet_home",
-    32:  "clean_sheet_away",33:  "win_to_nil_home",     34:  "win_to_nil_away",
-    35:  "btts_and_result", 36:  "btts_and_result",     37:  "result_and_over_under",
-    41:  "correct_score",   45:  "correct_score",       47:  "ht_ft",
-    48:  "score_both_halves",49: "score_both_halves",   50:  "score_both_halves",
-    51:  "score_both_halves",55: "goal_both_halves",    56:  "score_both_halves",
-    57:  "score_both_halves",58: "goal_both_halves",    59:  "goal_both_halves",
-    60:  "first_half_1x2",  62:  "next_goal",           63:  "double_chance",
-    65:  "european_handicap",68: "first_half_over_under",75: "btts",
-    78:  "btts_and_result", 79:  "result_and_over_under",81: "correct_score",
-    83:  "second_half_result",85:"double_chance",        90: "second_half_over_under",
-    95:  "btts",            105: "1x2",                 136: "total_bookings",
-    137: "total_corners",   139: "total_bookings",      142: "total_bookings",
-    162: "total_corners_away",163:"total_corners",      165: "total_corners_home",
-    166: "total_bookings",  168: "1x2",                 184: "btts_and_result",
-    223: "basketball_moneyline",340:"match_winner",     342: "asian_handicap",
-    546: "btts_and_result", 547: "result_and_over_under",548:"number_of_goals",
-    549: "total_goals_home",550: "total_goals_away",    552: "number_of_goals",
-    638: "anytime_goalscorer",639:"first_goalscorer",   640: "last_goalscorer",
-    643: "player_booked",   647: "clean_sheet_home",    648: "clean_sheet_away",
-    654: "win_to_nil_home", 655: "win_to_nil_away",     662: "player_hattrick",
-    682: "score_both_halves",701:"anytime_goalscorer",  775: "player_score_2plus",
+    1:   "1x2",               7:   "match_winner",        8:   "next_goal",
+    10:  "double_chance",     11:  "draw_no_bet",         14:  "european_handicap",
+    15:  "winning_margin",    18:  "over_under_goals",    19:  "total_goals_home",
+    20:  "total_goals_away",  21:  "exact_goals",         23:  "exact_goals",
+    24:  "exact_goals",       29:  "btts",                31:  "clean_sheet_home",
+    32:  "clean_sheet_away",  33:  "win_to_nil_home",     34:  "win_to_nil_away",
+    35:  "btts_and_result",   36:  "btts_and_result",     37:  "result_and_over_under",
+    41:  "correct_score",     45:  "correct_score",       47:  "ht_ft",
+    48:  "score_both_halves", 49:  "score_both_halves",   50:  "score_both_halves",
+    51:  "score_both_halves", 55:  "goal_both_halves",    56:  "score_both_halves",
+    57:  "score_both_halves", 58:  "goal_both_halves",    59:  "goal_both_halves",
+    60:  "first_half_1x2",    62:  "next_goal",           63:  "double_chance",
+    65:  "european_handicap", 68:  "first_half_over_under",75: "btts",
+    78:  "btts_and_result",   79:  "result_and_over_under",81: "correct_score",
+    83:  "second_half_result",85:  "double_chance",        90: "second_half_over_under",
+    95:  "btts",              105: "1x2",                 136: "total_bookings",
+    137: "total_corners",     139: "total_bookings",      142: "total_bookings",
+    162: "total_corners_away",163: "total_corners",       165: "total_corners_home",
+    166: "total_bookings",    168: "1x2",                 184: "btts_and_result",
+    223: "basketball_moneyline", 340:"match_winner",      342: "asian_handicap",
+    546: "btts_and_result",   547: "result_and_over_under",548:"number_of_goals",
+    549: "total_goals_home",  550: "total_goals_away",    552: "number_of_goals",
+    638: "anytime_goalscorer",639: "first_goalscorer",    640: "last_goalscorer",
+    643: "player_booked",     647: "clean_sheet_home",    648: "clean_sheet_away",
+    654: "win_to_nil_home",   655: "win_to_nil_away",     662: "player_hattrick",
+    682: "score_both_halves", 701: "anytime_goalscorer",  775: "player_score_2plus",
     818: "ht_ft",
 }
 
 _BT_NAME: dict[str, str] = {
-    "1X2":                                 "1x2",
-    "MATCH WINNER":                        "1x2",
-    "DOUBLE CHANCE":                       "double_chance",
-    "DRAW NO BET":                         "draw_no_bet",
-    "WHO WILL WIN? (IF DRAW, MONEY BACK)": "draw_no_bet",
-    "TOTAL":                               "over_under_goals",
-    "TOTAL GOALS":                         "over_under_goals",
-    "OVER/UNDER":                          "over_under_goals",
-    "MULTIGOALS":                          "number_of_goals",
-    "EXACT GOALS":                         "exact_goals",
-    "NUMBER OF GOALS":                     "number_of_goals",
-    "BOTH TEAMS TO SCORE":                 "btts",
-    "BOTH TEAMS TO SCORE (GG/NG)":         "btts",
-    "GG/NG":                               "btts",
-    "BOTH TEAMS TO SCORE & RESULT":        "btts_and_result",
-    "1X2 & BOTH TEAMS TO SCORE":          "btts_and_result",
-    "CORRECT SCORE":                       "correct_score",
-    "HALFTIME/FULLTIME":                   "ht_ft",
-    "HALF TIME / FULL TIME":               "ht_ft",
-    "HANDICAP":                            "european_handicap",
-    "EUROPEAN HANDICAP":                   "european_handicap",
-    "ASIAN HANDICAP":                      "asian_handicap",
-    "1X2 & TOTAL":                         "result_and_over_under",
-    "MATCH RESULT & OVER/UNDER":           "result_and_over_under",
-    "1ST HALF - 1X2":                      "first_half_1x2",
-    "FIRST HALF 1X2":                      "first_half_1x2",
-    "HALF TIME RESULT":                    "first_half_1x2",
-    "1ST HALF - TOTAL":                    "first_half_over_under",
-    "FIRST HALF OVER/UNDER":               "first_half_over_under",
-    "2ND HALF - 1X2":                      "second_half_result",
-    "2ND HALF - TOTAL":                    "second_half_over_under",
-    "FIRST GOALSCORER":                    "first_goalscorer",
-    "LAST GOALSCORER":                     "last_goalscorer",
-    "ANYTIME GOALSCORER":                  "anytime_goalscorer",
-    "FIRST TEAM TO SCORE":                 "first_team_to_score",
-    "LAST TEAM TO SCORE":                  "last_team_to_score",
-    "NEXT GOAL":                           "next_goal",
-    "CLEAN SHEET":                         "clean_sheet_home",
-    "WIN TO NIL":                          "win_to_nil_home",
-    "WINNING MARGIN":                      "winning_margin",
-    "TOTAL CORNERS":                       "total_corners",
-    "ASIAN CORNERS":                       "asian_corners",
-    "FIRST CORNER":                        "first_corner",
-    "LAST CORNER":                         "last_corner",
-    "TOTAL BOOKINGS":                      "total_bookings",
-    "TOTAL CARDS":                         "total_bookings",
-    "FIRST BOOKING":                       "first_booking",
-    "DOUBLE CHANCE & BOTH TEAMS TO SCORE": "btts_and_result",
-    "DOUBLE CHANCE & TOTAL":               "result_and_over_under",
-    "GOAL IN BOTH HALVES":                 "goal_both_halves",
-    "BOTH HALVES OVER 1.5":               "goal_both_halves",
-    "1ST/2ND HALF BOTH TEAMS TO SCORE":   "btts",
+    "1X2":                                  "1x2",
+    "MATCH WINNER":                         "1x2",
+    "DOUBLE CHANCE":                        "double_chance",
+    "DRAW NO BET":                          "draw_no_bet",
+    "WHO WILL WIN? (IF DRAW, MONEY BACK)":  "draw_no_bet",
+    "TOTAL":                                "over_under_goals",
+    "TOTAL GOALS":                          "over_under_goals",
+    "OVER/UNDER":                           "over_under_goals",
+    "MULTIGOALS":                           "number_of_goals",
+    "EXACT GOALS":                          "exact_goals",
+    "NUMBER OF GOALS":                      "number_of_goals",
+    "BOTH TEAMS TO SCORE":                  "btts",
+    "BOTH TEAMS TO SCORE (GG/NG)":          "btts",
+    "GG/NG":                                "btts",
+    "BOTH TEAMS TO SCORE & RESULT":         "btts_and_result",
+    "1X2 & BOTH TEAMS TO SCORE":           "btts_and_result",
+    "CORRECT SCORE":                        "correct_score",
+    "HALFTIME/FULLTIME":                    "ht_ft",
+    "HALF TIME / FULL TIME":                "ht_ft",
+    "HANDICAP":                             "european_handicap",
+    "EUROPEAN HANDICAP":                    "european_handicap",
+    "ASIAN HANDICAP":                       "asian_handicap",
+    "1X2 & TOTAL":                          "result_and_over_under",
+    "MATCH RESULT & OVER/UNDER":            "result_and_over_under",
+    "1ST HALF - 1X2":                       "first_half_1x2",
+    "FIRST HALF 1X2":                       "first_half_1x2",
+    "HALF TIME RESULT":                     "first_half_1x2",
+    "1ST HALF - TOTAL":                     "first_half_over_under",
+    "FIRST HALF OVER/UNDER":                "first_half_over_under",
+    "2ND HALF - 1X2":                       "second_half_result",
+    "2ND HALF - TOTAL":                     "second_half_over_under",
+    "FIRST GOALSCORER":                     "first_goalscorer",
+    "LAST GOALSCORER":                      "last_goalscorer",
+    "ANYTIME GOALSCORER":                   "anytime_goalscorer",
+    "FIRST TEAM TO SCORE":                  "first_team_to_score",
+    "LAST TEAM TO SCORE":                   "last_team_to_score",
+    "NEXT GOAL":                            "next_goal",
+    "CLEAN SHEET":                          "clean_sheet_home",
+    "WIN TO NIL":                           "win_to_nil_home",
+    "WINNING MARGIN":                       "winning_margin",
+    "TOTAL CORNERS":                        "total_corners",
+    "ASIAN CORNERS":                        "asian_corners",
+    "FIRST CORNER":                         "first_corner",
+    "LAST CORNER":                          "last_corner",
+    "TOTAL BOOKINGS":                       "total_bookings",
+    "TOTAL CARDS":                          "total_bookings",
+    "FIRST BOOKING":                        "first_booking",
+    "DOUBLE CHANCE & BOTH TEAMS TO SCORE":  "btts_and_result",
+    "DOUBLE CHANCE & TOTAL":                "result_and_over_under",
+    "GOAL IN BOTH HALVES":                  "goal_both_halves",
+    "BOTH HALVES OVER 1.5":                "goal_both_halves",
+    "1ST/2ND HALF BOTH TEAMS TO SCORE":    "btts",
     "WHICH TEAM WINS THE REST OF THE MATCH":"match_winner",
-    "HALFTIME/FULLTIME & TOTAL":           "ht_ft",
-    "MONEYLINE":                           "basketball_moneyline",
-    "POINT SPREAD":                        "point_spread",
-    "TOTAL POINTS":                        "total_points",
-    "WILL THERE BE OVERTIME":              "overtime",
-    "SET BETTING":                         "set_betting",
-    "TOTAL SETS":                          "total_sets",
-    "TOTAL GAMES":                         "total_games",
-    "FIRST SET WINNER":                    "first_set_winner",
-    "TIEBREAK IN MATCH":                   "tiebreak_in_match",
+    "HALFTIME/FULLTIME & TOTAL":            "ht_ft",
+    "MONEYLINE":                            "basketball_moneyline",
+    "POINT SPREAD":                         "point_spread",
+    "TOTAL POINTS":                         "total_points",
+    "WILL THERE BE OVERTIME":               "overtime",
+    "SET BETTING":                          "set_betting",
+    "TOTAL SETS":                           "total_sets",
+    "TOTAL GAMES":                          "total_games",
+    "FIRST SET WINNER":                     "first_set_winner",
+    "TIEBREAK IN MATCH":                    "tiebreak_in_match",
 }
 
 _BT_PATTERNS: list[tuple[re.Pattern, str]] = [
@@ -478,6 +535,17 @@ _B2B_LINE_RE = re.compile(r"^(.+?)_(-?[\d.]+)$")
 
 
 def normalize_b2b_market(mkt_name: str) -> str:
+    """
+    Normalise a B2B family market name to a canonical slug.
+
+    Examples
+    --------
+      "1X2"           → "1x2"
+      "Total_2.5"     → "over_under_goals_2.5"
+      "Handicap_-1.5" → "asian_handicap_-1.5"
+      "GG/NG"         → "btts"
+      "1H Total_1.5"  → "first_half_over_under_1.5"
+    """
     exact = _B2B_BASE_NAME.get(mkt_name.strip().lower())
     if exact:
         return exact
@@ -485,20 +553,20 @@ def normalize_b2b_market(mkt_name: str) -> str:
     if m:
         base_raw = m.group(1).strip()
         line     = m.group(2)
-        s        = _B2B_BASE_NAME.get(base_raw.lower())
-        if s:
-            return f"{s}_{line}"
+        slug     = _B2B_BASE_NAME.get(base_raw.lower())
+        if slug:
+            return f"{slug}_{line}"
     return re.sub(r"[^a-z0-9]+", "_", mkt_name.strip().lower()).strip("_") or "unknown"
 
 
 # =============================================================================
-# STUB BOOKMAKERS
+# STUB BOOKMAKERS  (populate dicts from intercepted traffic when available)
 # =============================================================================
 
 def _generic_normalizer(
-    id_map: dict[str, tuple[str, bool]],
+    id_map:   dict[str, tuple[str, bool]],
     name_map: dict[str, str],
-    prefix: str,
+    prefix:   str,
 ) -> Callable[[str, Any, str], str]:
     def _fn(name: str, sub_type_id: Any = None, specifiers: str = "") -> str:
         if sub_type_id is not None:
@@ -524,26 +592,38 @@ normalize_betin_market      = _generic_normalizer({}, {}, "betin")
 # =============================================================================
 
 def get_normalizer(source_name: str) -> Callable | None:
-    """Return the normalizer for a bookmaker slug, or None if unknown."""
-    # Import here to avoid circular dependency with sp_mapper
+    """
+    Return the market normalizer callable for a given bookmaker source name.
+
+    Usage
+    -----
+      fn = get_normalizer("odibets")
+      slug = fn(market_name, sub_type_id, specifiers)
+
+    Returns None if the source name is unknown.
+    """
+    # Lazy import to avoid circular dependency (canonical_mapper ← sp_mapper ← canonical_mapper)
     from app.workers.sp_mapper import normalize_sp_market   # noqa: PLC0415
 
     registry: dict[str, Callable] = {
-        "sportpesa":        lambda name, sid, spec="": normalize_sp_market(int(sid or 0), spec or None),
-        "betika_upcoming":  lambda name, sid, spec="": normalize_bt_market(name, sid),
-        "betika_live":      lambda name, sid, spec="": normalize_bt_market(name, sid),
-        "betika":           lambda name, sid, spec="": normalize_bt_market(name, sid),
-        "odibets":          lambda name, sid, spec="": normalize_od_market(sid, spec),
-        "b2b":              lambda name, sid, spec="": normalize_b2b_market(name),
-        "1xbet":            lambda name, sid, spec="": normalize_b2b_market(name),
-        "22bet":            lambda name, sid, spec="": normalize_b2b_market(name),
-        "helabet":          lambda name, sid, spec="": normalize_b2b_market(name),
-        "paripesa":         lambda name, sid, spec="": normalize_b2b_market(name),
-        "melbet":           lambda name, sid, spec="": normalize_b2b_market(name),
-        "betwinner":        lambda name, sid, spec="": normalize_b2b_market(name),
-        "megapari":         lambda name, sid, spec="": normalize_b2b_market(name),
-        "mozzartbet":       lambda name, sid, spec="": normalize_mozzartbet_market(name, sid, spec),
-        "betin":            lambda name, sid, spec="": normalize_betin_market(name, sid, spec),
+        # Local Kenyan bookmakers
+        "sportpesa":       lambda name, sid, spec="": normalize_sp_market(int(sid or 0), spec or None),
+        "betika_upcoming": lambda name, sid, spec="": normalize_bt_market(name, sid),
+        "betika_live":     lambda name, sid, spec="": normalize_bt_market(name, sid),
+        "betika":          lambda name, sid, spec="": normalize_bt_market(name, sid),
+        "odibets":         lambda name, sid, spec="": normalize_od_market(sid, spec),
+        # B2B family (share the same market naming convention)
+        "b2b":             lambda name, sid, spec="": normalize_b2b_market(name),
+        "1xbet":           lambda name, sid, spec="": normalize_b2b_market(name),
+        "22bet":           lambda name, sid, spec="": normalize_b2b_market(name),
+        "helabet":         lambda name, sid, spec="": normalize_b2b_market(name),
+        "paripesa":        lambda name, sid, spec="": normalize_b2b_market(name),
+        "melbet":          lambda name, sid, spec="": normalize_b2b_market(name),
+        "betwinner":       lambda name, sid, spec="": normalize_b2b_market(name),
+        "megapari":        lambda name, sid, spec="": normalize_b2b_market(name),
+        # Stubs (populate id_map / name_map from intercepted traffic)
+        "mozzartbet":      lambda name, sid, spec="": normalize_mozzartbet_market(name, sid, spec),
+        "betin":           lambda name, sid, spec="": normalize_betin_market(name, sid, spec),
     }
     return registry.get(
         source_name.lower().replace(" ", "").replace("-", "")

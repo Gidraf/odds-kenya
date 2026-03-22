@@ -248,64 +248,136 @@ def _fetch_live_list(sport_id: str) -> list[dict]:
     return []
 
 
-def _fetch_markets(game_id: str | int, debug: bool = False) -> list[dict]:
+def _parse_markets_response(raw: Any, gid: str) -> list[dict]:
     """
-    Full market book for one SP game.
-
-    Handles 4 response shapes:
-      A  { "8614677": [{id, specValue, name, selections:[...]}, ...] }
-      B  { "data": { "8614677": [...] } }
-      C  [ {id, name, selections:[...]} ]
-      D  { "markets": [...] }
-
-    IMPORTANT: always pass the exact game_id string from the SP listing.
+    Extract the market list from a /api/games/markets response.
+    Handles 4 shapes; returns empty list if no known shape matches.
     """
-    raw, _ = _get("/api/games/markets", params={
-        "games":   str(game_id),
-        "markets": _CORE_MARKET_IDS,
-    })
-
-    if debug:
-        print(f"[sp:debug] game_id={game_id} raw_type={type(raw).__name__} "
-              f"keys={list(raw.keys()) if isinstance(raw, dict) else 'N/A'}")
-
     if raw is None:
         return []
 
-    gid = str(game_id)
-
     if isinstance(raw, dict):
-        # Shape A — string key
+        # Shape A — game_id as string key  {"7966057": [...]}
         if gid in raw and isinstance(raw[gid], list):
             return raw[gid]
-        # Shape A — int key
+        # Shape A — game_id as integer key
         try:
             ikey = int(gid)
             if ikey in raw and isinstance(raw[ikey], list):
                 return raw[ikey]
         except (ValueError, TypeError):
             pass
-        # Shape B — nested
+        # Shape B — nested under "data" or "result"  {"data": {"7966057": [...]}}
         for wrapper in ("data", "result"):
-            data = raw.get(wrapper)
-            if isinstance(data, dict):
-                if gid in data and isinstance(data[gid], list):
-                    return data[gid]
-                for v in data.values():
+            inner = raw.get(wrapper)
+            if isinstance(inner, dict):
+                if gid in inner and isinstance(inner[gid], list):
+                    return inner[gid]
+                for v in inner.values():
                     if isinstance(v, list) and v:
                         return v
-        # Shape D
+        # Shape D — {"markets": [...]}
         if isinstance(raw.get("markets"), list):
             return raw["markets"]
-        # Last resort: first list value
+        # Last resort: first non-empty list value
         for v in raw.values():
             if isinstance(v, list) and v:
                 return v
 
-    # Shape C — already a flat list
+    # Shape C — already a flat list  [{id:10,...}, {id:52,...}, ...]
     if isinstance(raw, list):
         return raw
 
+    return []
+
+
+def _has_line_markets(mkt_list: list[dict]) -> bool:
+    """
+    Return True if the market list contains at least one line market
+    (specValue ≠ 0 and ≠ None) — i.e. it came from the full market
+    endpoint, not just the inline listing data.
+
+    This is used to detect the "inline-only fallback" situation where
+    _fetch_markets succeeded but only returned the specValue=0 snapshot.
+    """
+    for mkt in mkt_list:
+        sv = mkt.get("specValue")
+        if sv is not None and sv != 0:
+            return True
+    return False
+
+
+def _fetch_markets(
+    game_id:   str | int,
+    debug:     bool = False,
+    max_tries: int  = 3,
+) -> list[dict]:
+    """
+    Full market book for one SP game — with retry on empty / inline-only responses.
+
+    WHY RETRY?
+    ──────────
+    SP rate-limits the /api/games/markets endpoint.  When streaming 100+
+    matches the endpoint often returns:
+      • HTTP 429 / 503 — handled by returning None → retry
+      • An empty dict  {} → retry
+      • An inline-only response (specValue=0 only, no market 52 lines) → retry
+
+    Backoff: 0 s, 1 s, 3 s between tries.  After max_tries the inline
+    listing markets are used as a last resort by the caller.
+
+    Response shapes handled (see _parse_markets_response):
+      A  { "7966057": [{id, specValue, name, selections}, ...] }
+      B  { "data": { "7966057": [...] } }
+      C  [ {id, name, selections} ]
+      D  { "markets": [...] }
+    """
+    gid     = str(game_id)
+    backoff = [0, 1.0, 3.0]  # seconds before each attempt
+
+    for attempt in range(max_tries):
+        if attempt > 0:
+            delay = backoff[min(attempt, len(backoff) - 1)]
+            if debug:
+                print(f"[sp:mkts] retry {attempt}/{max_tries - 1} "
+                      f"game={gid} (wait {delay}s)")
+            time.sleep(delay)
+
+        raw, _ = _get("/api/games/markets", params={
+            "games":   gid,
+            "markets": _CORE_MARKET_IDS,
+        })
+
+        if debug:
+            t = type(raw).__name__
+            k = list(raw.keys()) if isinstance(raw, dict) else "N/A"
+            print(f"[sp:mkts] attempt={attempt} game={gid} "
+                  f"type={t} keys={k}")
+
+        result = _parse_markets_response(raw, gid)
+
+        if not result:
+            # Empty response — likely transient error or rate limit
+            print(f"[sp:mkts] empty response game={gid} attempt={attempt}")
+            continue
+
+        if not _has_line_markets(result):
+            # Got data but only specValue=0 entries — inline-only response,
+            # not the full market book.  Retry to get the real O/U lines.
+            print(f"[sp:mkts] inline-only ({len(result)} mkts, no lines) "
+                  f"game={gid} attempt={attempt} — retrying for full markets")
+            continue
+
+        # ✓ Got a proper full-market response
+        if debug:
+            ids_seen = sorted({m.get("id") for m in result if isinstance(m, dict)})
+            has_ou   = 52 in ids_seen or 18 in ids_seen
+            print(f"[sp:mkts] OK game={gid} {len(result)} mkts "
+                  f"ids={ids_seen} has_ou={has_ou}")
+        return result
+
+    print(f"[sp:mkts] FAILED all {max_tries} attempts for game={gid} "
+          f"— will use inline fallback")
     return []
 
 
@@ -566,22 +638,26 @@ def fetch_upcoming(
     page_size:           int   = 30,
     fetch_full_markets:  bool  = True,
     max_matches:         int | None = None,
-    sleep_between:       float = 0.08,
+    sleep_between:       float = 0.5,   # 0.5s default — SP rate-limits at ~30 req/min
     debug_ou:            bool  = False,
 ) -> list[dict]:
     """
     Fetch upcoming matches (blocking).  Returns list of normalised match dicts.
     fetch_full_markets=True is required to get O/U and all 33 markets.
+
+    sleep_between default is 0.5s.  SP's /api/games/markets endpoint rate-limits
+    at approximately 30 requests/minute.  At 0.5s sleep + ~0.3s request time we
+    stay well under that limit.  You can lower it to 0.2s for fast local testing.
     """
     sport_id = SP_SPORT_ID.get(sport_slug.lower().replace(" ", "-"))
     if not sport_id:
         print(f"[sp] unknown sport: {sport_slug!r}")
         return []
 
-    is_virtual = sport_id in _ESOCCER_IDS
-    raw_items  = _collect_raw_items(sport_id, days, page_size, max_matches)
+    raw_items = _collect_raw_items(sport_id, days, page_size, max_matches)
     print(f"[sp] {sport_slug}: {len(raw_items)} raw items (sportId={sport_id})")
 
+    inline_fallback_count = 0
     results = []
     for item in raw_items:
         parsed = _parse_match_item(item)
@@ -589,10 +665,10 @@ def fetch_upcoming(
             continue
 
         if fetch_full_markets and parsed["sp_game_id"]:
-            raw_mkts = _fetch_markets(parsed["sp_game_id"])
+            raw_mkts = _fetch_markets(parsed["sp_game_id"], debug=debug_ou)
             if not raw_mkts:
                 raw_mkts = parsed["_inline_mkts"]
-                print(f"[sp] fallback inline: {parsed['sp_game_id']}")
+                inline_fallback_count += 1
             time.sleep(sleep_between)
         else:
             raw_mkts = parsed["_inline_mkts"]
@@ -601,6 +677,9 @@ def fetch_upcoming(
                                   debug_ou=debug_ou)
         results.append(_build_match(parsed, markets, sport_slug))
 
+    if inline_fallback_count:
+        print(f"[sp] WARNING: {inline_fallback_count}/{len(raw_items)} matches "
+              f"used inline fallback (no full market data from SP API)")
     print(f"[sp] {sport_slug}: {len(results)} normalised  full_mkts={fetch_full_markets}")
     return results
 
@@ -608,7 +687,7 @@ def fetch_upcoming(
 def fetch_live(
     sport_slug:          str,
     fetch_full_markets:  bool  = True,
-    sleep_between:       float = 0.06,
+    sleep_between:       float = 0.5,
     debug_ou:            bool  = False,
 ) -> list[dict]:
     """Fetch live matches (blocking)."""
@@ -619,15 +698,17 @@ def fetch_live(
     raw_items = _fetch_live_list(sport_id)
     print(f"[sp:live] {sport_slug}: {len(raw_items)} live (sportId={sport_id})")
 
+    inline_fallback_count = 0
     results = []
     for item in raw_items:
         parsed = _parse_match_item(item)
         if not parsed:
             continue
         if fetch_full_markets and parsed["sp_game_id"]:
-            raw_mkts = _fetch_markets(parsed["sp_game_id"])
+            raw_mkts = _fetch_markets(parsed["sp_game_id"], debug=debug_ou)
             if not raw_mkts:
                 raw_mkts = parsed["_inline_mkts"]
+                inline_fallback_count += 1
             time.sleep(sleep_between)
         else:
             raw_mkts = parsed["_inline_mkts"]
@@ -635,6 +716,8 @@ def fetch_live(
                                   debug_ou=debug_ou)
         results.append(_build_match(parsed, markets, sport_slug, status="live"))
 
+    if inline_fallback_count:
+        print(f"[sp:live] WARNING: {inline_fallback_count} fallbacks to inline mkts")
     return results
 
 
@@ -648,7 +731,7 @@ def fetch_upcoming_stream(
     page_size:           int   = 30,
     fetch_full_markets:  bool  = True,
     max_matches:         int | None = None,
-    sleep_between:       float = 0.08,
+    sleep_between:       float = 0.5,   # same rate-limit budget as blocking version
     debug_ou:            bool  = False,
 ) -> Generator[dict, None, None]:
     """
@@ -661,7 +744,10 @@ def fetch_upcoming_stream(
         for match in fetch_upcoming_stream(sport_slug, ...):
             yield sse_event({"type": "match", "match": match})
 
-    This is what makes the streaming progress bar work.
+    sleep_between=0.5s: critical to avoid SP rate-limiting the /api/games/markets
+    endpoint.  The inline fallback produces 17 markets (specValue=0 only, NO O/U
+    lines) — if you see market_count=17 with no over_under_goals_* keys, increase
+    this value or check server logs for "[sp:mkts] FAILED" messages.
     """
     sport_id = SP_SPORT_ID.get(sport_slug.lower().replace(" ", "-"))
     if not sport_id:
@@ -671,6 +757,7 @@ def fetch_upcoming_stream(
     raw_items = _collect_raw_items(sport_id, days, page_size, max_matches)
     print(f"[sp:stream] {sport_slug}: {len(raw_items)} raw items")
 
+    inline_count = 0
     for item in raw_items:
         parsed = _parse_match_item(item)
         if not parsed:
@@ -680,6 +767,7 @@ def fetch_upcoming_stream(
             raw_mkts = _fetch_markets(parsed["sp_game_id"], debug=debug_ou)
             if not raw_mkts:
                 raw_mkts = parsed["_inline_mkts"]
+                inline_count += 1
             time.sleep(sleep_between)
         else:
             raw_mkts = parsed["_inline_mkts"]
@@ -688,11 +776,15 @@ def fetch_upcoming_stream(
                                   debug_ou=debug_ou)
         yield _build_match(parsed, markets, sport_slug)
 
+    if inline_count:
+        print(f"[sp:stream] WARNING: {inline_count}/{len(raw_items)} used inline "
+              f"fallback — consider increasing sleep_between or checking rate limits")
+
 
 def fetch_live_stream(
     sport_slug:          str,
     fetch_full_markets:  bool  = True,
-    sleep_between:       float = 0.06,
+    sleep_between:       float = 0.5,
     debug_ou:            bool  = False,
 ) -> Generator[dict, None, None]:
     """
