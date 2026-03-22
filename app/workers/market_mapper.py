@@ -7,12 +7,12 @@ All code that previously imported from market_mapper will continue to work
 unchanged because this module re-exports everything from the two split files:
 
   canonical_mapper.py  — shared outcome/line logic + Odibets / Betika / B2B
-  sp_mapper.py         — Sportpesa-specific market ID table
+  sp_mapper.py         — Sportpesa market ID tables (one per sport)
 
 New code should import directly from the specific module:
 
   # Preferred
-  from app.workers.sp_mapper       import normalize_sp_market
+  from app.workers.sp_mapper        import normalize_sp_market
   from app.workers.canonical_mapper import normalize_outcome, normalize_line
 
   # Also works (backwards-compat)
@@ -33,6 +33,23 @@ from app.workers.canonical_mapper import (   # noqa: F401
 
 from app.workers.sp_mapper import (          # noqa: F401
     normalize_sp_market,
-    is_line_market,
-    known_market_ids,
+    get_sport_table,
+    list_all_slugs,
 )
+
+
+# ── Compatibility aliases for old code that used these names ──────────────────
+def is_line_market(mkt_id: int, sport_id: int = 1) -> bool:
+    """
+    Return True if this market ID uses a line suffix for the given sport.
+    Equivalent to looking up the (base, uses_line) tuple in the sport table.
+    """
+    from app.workers.sp_mapper import get_sport_table, _GENERIC
+    table = get_sport_table(sport_id)
+    entry = table.get(mkt_id) or _GENERIC.get(mkt_id)
+    return bool(entry and entry[1])
+
+
+def known_market_ids(sport_id: int = 1) -> list[int]:
+    """Return all market IDs known for a given sport."""
+    return list(get_sport_table(sport_id).keys())

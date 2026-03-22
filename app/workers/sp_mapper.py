@@ -89,63 +89,52 @@ _Entry = tuple[str, bool]   # (base_slug, uses_line)
 
 # ── Football (sportId=1) ──────────────────────────────────────────────────────
 _FOOTBALL: dict[int, _Entry] = {
-    # ── Result markets ──
     1:   ("1x2",                       False),
-    10:  ("1x2",                       False),   # alt ID for same market
+    10:  ("1x2",                       False),
     46:  ("double_chance",             False),
     47:  ("draw_no_bet",               False),
-    # ── BTTS ──
     43:  ("btts",                      False),
     29:  ("btts_and_result",           False),
     386: ("btts_and_result",           False),
     328: ("first_half_btts",           False),
-    # ── Over / Under goals ──
     52:  ("over_under_goals",          True),
-    18:  ("over_under_goals",          True),    # alt ID
+    18:  ("over_under_goals",          True),
     353: ("total_goals_home",          True),
     352: ("total_goals_away",          True),
     208: ("result_and_over_under",     True),
-    # ── Goals shape ──
     202: ("exact_goals",               False),
     332: ("number_of_goals",           False),
-    # ── Score ──
     258: ("correct_score",             False),
     203: ("first_half_correct_score",  False),
-    # ── Handicap ──
     51:  ("asian_handicap",            True),
     53:  ("first_half_asian_handicap", True),
     55:  ("european_handicap",         True),
-    # ── Misc full-time ──
     45:  ("odd_even",                  False),
     207: ("highest_scoring_half",      False),
     41:  ("first_team_to_score",       False),
-    # ── Half-time ──
     42:  ("first_half_1x2",            False),
-    60:  ("first_half_1x2",            False),   # alt ID
+    60:  ("first_half_1x2",            False),
     15:  ("first_half_over_under",     True),
-    54:  ("first_half_over_under",     True),    # alt ID
-    68:  ("first_half_over_under",     True),    # alt ID
+    54:  ("first_half_over_under",     True),
+    68:  ("first_half_over_under",     True),
     44:  ("ht_ft",                     False),
-    # ── Corners ──
     162: ("total_corners",             False),
     166: ("total_corners",             True),
-    # ── Bookings / cards ──
     136: ("total_bookings",            False),
     139: ("total_bookings",            True),
 }
 
 # ── eFootball / eSoccer (sportId=126) ─────────────────────────────────────────
-# Same rules as football but uses ID 381 for 1x2 and ID 56 for O/U.
 _EFOOTBALL: dict[int, _Entry] = {
-    381: ("1x2",                       False),   # 3 Way
-    1:   ("1x2",                       False),   # fallback if SP ever sends ID 1
+    381: ("1x2",                       False),
+    1:   ("1x2",                       False),
     10:  ("1x2",                       False),
-    56:  ("over_under_goals",          True),    # Total Goals Over/Under - Full Time
-    52:  ("over_under_goals",          True),    # alt (some eSoccer leagues)
+    56:  ("over_under_goals",          True),
+    52:  ("over_under_goals",          True),
     46:  ("double_chance",             False),
     47:  ("draw_no_bet",               False),
     43:  ("btts",                      False),
-    51:  ("asian_handicap",            True),    # Asian Handicap - Full Time
+    51:  ("asian_handicap",            True),
     45:  ("odd_even",                  False),
     208: ("result_and_over_under",     True),
     258: ("correct_score",             False),
@@ -154,41 +143,41 @@ _EFOOTBALL: dict[int, _Entry] = {
 
 # ── Basketball (sportId=2) ─────────────────────────────────────────────────────
 _BASKETBALL: dict[int, _Entry] = {
-    382: ("match_winner",              False),   # 2 Way - OT incl.
-    51:  ("point_spread",              True),    # Handicap - OT incl.
-    52:  ("total_points",              True),    # Total Points - OT incl.
-    353: ("total_points_home",         True),    # Home Team O/U Total Points
-    352: ("total_points_away",         True),    # Away Team O/U Total Points
-    45:  ("odd_even_points",           False),   # Odd/Even Points
-    222: ("winning_margin",            False),   # Winning Margin (1-5, 6-10, 11+)
-    99:  ("total_points_q1",           True),    # Q1 total (if offered)
-    100: ("point_spread_alt",          True),    # alt spread line
+    382: ("match_winner",              False),
+    51:  ("point_spread",              True),
+    52:  ("total_points",              True),
+    353: ("total_points_home",         True),
+    352: ("total_points_away",         True),
+    45:  ("odd_even_points",           False),
+    222: ("winning_margin",            False),
+    99:  ("total_points_q1",           True),
+    100: ("point_spread_alt",          True),
 }
 
 # ── Tennis (sportId=5) ────────────────────────────────────────────────────────
 _TENNIS: dict[int, _Entry] = {
-    382: ("match_winner",              False),   # 2 Way - Who will win?
-    204: ("first_set_winner",          False),   # First Set Winner
-    231: ("second_set_winner",         False),   # 2nd Set Winner
-    51:  ("game_handicap",             True),    # Game Handicap (full match)
-    226: ("total_games",               True),    # Total Games O/U
-    233: ("set_betting",               False),   # Correct Score per set  e.g. 2:0, 2:1
-    439: ("set_handicap",              True),    # Set Handicap ±1.5
-    45:  ("odd_even_games",            False),   # Odd/Even Number of Games
-    339: ("first_set_game_handicap",   True),    # 1st Set Game Handicap
-    340: ("first_set_total_games",     True),    # 1st Set O/U Number of Games
-    433: ("first_set_match_winner",    False),   # 1st Set/Match Winner combo (11,12,21,22)
-    353: ("total_games_player1",       True),    # Player 1 Games O/U Full Time
-    352: ("total_games_player2",       True),    # Player 2 Games O/U Full Time
+    382: ("match_winner",              False),
+    204: ("first_set_winner",          False),
+    231: ("second_set_winner",         False),
+    51:  ("game_handicap",             True),
+    226: ("total_games",               True),
+    233: ("set_betting",               False),
+    439: ("set_handicap",              True),
+    45:  ("odd_even_games",            False),
+    339: ("first_set_game_handicap",   True),
+    340: ("first_set_total_games",     True),
+    433: ("first_set_match_winner",    False),
+    353: ("total_games_player1",       True),
+    352: ("total_games_player2",       True),
 }
 
 # ── Ice Hockey (sportId=4) ────────────────────────────────────────────────────
 _ICE_HOCKEY: dict[int, _Entry] = {
     1:   ("1x2",                       False),
     10:  ("1x2",                       False),
-    382: ("match_winner",              False),   # 2-way (OT / SO incl.)
+    382: ("match_winner",              False),
     52:  ("total_goals",               True),
-    51:  ("puck_line",                 True),    # hockey handicap = puck line
+    51:  ("puck_line",                 True),
     45:  ("odd_even_goals",            False),
     46:  ("double_chance",             False),
     353: ("total_goals_home",          True),

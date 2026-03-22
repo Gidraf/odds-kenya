@@ -539,15 +539,17 @@ def debug_markets(game_id: str):
       has_ou_parsed: whether any over_under_goals_* key exists after parse
     """
     t0 = time.perf_counter()
+    sport_slug = request.args.get("sport", "soccer")
     try:
-        from app.workers.sp_harvester import _fetch_markets, _parse_markets  # noqa
-        raw = _fetch_markets(game_id, debug=True)
-        parsed = _parse_markets(raw, game_id=game_id)
+        from app.workers.sp_harvester import _fetch_markets_for_debug, _parse_markets_for_debug  # noqa
+        raw    = _fetch_markets_for_debug(game_id, sport_slug=sport_slug, debug=True)
+        parsed = _parse_markets_for_debug(raw, game_id=game_id, sport_slug=sport_slug)
         mkt_ids = [m.get("id") for m in raw if isinstance(m, dict)]
 
         return _signed_response({
             "ok":           True,
             "game_id":      game_id,
+            "sport_slug":   sport_slug,
             "raw_count":    len(raw),
             "market_ids":   mkt_ids,
             "has_ou_raw":   any(i in mkt_ids for i in [52, 18]),
