@@ -105,6 +105,9 @@ _OUT_EXACT: dict[str, str] = {
     # Tennis player shortNames
     "p1":   "1",       "p2":    "2",
     "player 1": "1",   "player 2": "2",
+    # Basketball highest-scoring-quarter shortNames (market 224)
+    "1stq": "1st_quarter",  "2ndq": "2nd_quarter",
+    "3rdq": "3rd_quarter",  "4thq": "4th_quarter",
     # "1st" and "2nd" fall through to sanitised return → "1st"/"2nd" ✓
 }
 

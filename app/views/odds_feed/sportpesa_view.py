@@ -73,6 +73,7 @@ bp_sp = Blueprint("sp", __name__, url_prefix="/api/sp")
 _SPORTS = [
     "soccer", "esoccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis", "boxing", "handball", "mma",
+    "darts", "american-football",
 ]
 _FOOTBALL_SPORTS = {"soccer", "esoccer", "football", "efootball"}
 _ESOCCER_SLUGS   = {"esoccer", "efootball", "e-football"}
