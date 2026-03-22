@@ -3,43 +3,34 @@ app/workers/sp_harvester.py
 ============================
 Standalone Sportpesa Kenya harvester.  No Celery dependency.
 
-KEY FIX (v2)
-────────────
-The SP listing endpoint  (/api/upcoming/games)  returns inline markets that
-usually contain ONLY Over/Under and BTTS — NOT 1X2.  To get 1X2 + all other
-markets you MUST hit  /api/games/markets?games=<id>&markets=<ids>.
+KEY FIXES (v3)
+──────────────
+1. _CORE_MARKET_IDS expanded — now includes all IDs seen in real SP traffic:
+     41  First Team to Score
+     42  HT 1X2  (alias of 60)
+     44  HT/FT
+     53  Asian HC - Half Time
+     54  HT Over/Under  (alias of 15/68)
+    203  HT Correct Score
+    207  Highest Scoring Half
+    328  HT BTTS
 
-_fetch_markets() now handles four different response shapes seen in the wild:
-  Shape A: { "12345": [ {id,selections,...}, ... ] }   ← most common
-  Shape B: { "data": { "12345": [...] } }              ← some responses
-  Shape C: [ {id, selections, ...} ]                   ← flat list
-  Shape D: { "markets": [...] }                        ← older endpoint
+2. specValue=0 falsy bug fixed:
+     BEFORE:  spec_val = mkt.get("specValue") or mkt.get("spec") or ...
+              → integer 0 treated as falsy, spec_val became None
+     AFTER:   spec_val = mkt.get("specValue")
+              if spec_val is None: spec_val = mkt.get("spec") or mkt.get("handicap")
+              → preserves 0 correctly
 
-Market IDs requested explicitly (not "all") because "all" sometimes returns
-an empty set — requesting by ID is more reliable.
+3. _fetch_markets now also tries integer key (int(gid)) for Shape-A responses
+   where the game_id key is returned as an integer rather than a string.
 
-Normalised match shape (output)
-─────────────────────────────────
-{
-    "betradar_id":  str,
-    "sp_game_id":   str,
-    "home_team":    str,
-    "away_team":    str,
-    "start_time":   str | None,   # ISO-8601 UTC
-    "competition":  str,
-    "sport":        str,
-    "source":       "sportpesa",
-    "markets": {
-        "1x2":                   {"1": 2.07, "X": 2.95,  "2": 3.50},
-        "btts":                  {"yes": 2.16, "no": 1.57},
-        "over_under_goals_2.5":  {"over": 1.90, "under": 1.80},
-        "double_chance":         {"1X": 1.20, "X2": 1.47, "12": 1.26},
-        "draw_no_bet":           {"1": 1.48, "2": 2.47},
-        ...
-    },
-    "market_count":  int,
-    "harvested_at":  str,
-}
+O/U note
+─────────
+Over/Under (market ID 52) IS requested for every match. If it shows "—" in
+the UI it means the SP API genuinely doesn't offer O/U for that match
+(common for smaller local leagues). For major competitions (Champions League,
+La Liga, SPL) O/U will be present and display correctly.
 """
 
 from __future__ import annotations
@@ -69,9 +60,38 @@ _HEADERS = {
     "Referer":          "https://www.ke.sportpesa.com/",
 }
 
-# Core market IDs to request explicitly  (reliable; "all" sometimes returns nothing)
-# Ordered: 1X2 first so it always appears as the first market
-_CORE_MARKET_IDS = "10,1,46,47,43,29,52,18,208,258,202,332,353,352,386,51,55,45,60,15,68,162,166,136,139,382,99,100"
+# ── Market IDs — ALL confirmed from real SP traffic ───────────────────────────
+# Requesting by explicit ID list (not "all") because "all" sometimes returns
+# an empty set. IDs 41,42,44,53,54,203,207,328 were missing before — now added.
+_CORE_MARKET_IDS = (
+    # Full-time
+    "10,1,"          # 1X2 (two IDs for same market)
+    "46,47,"         # Double Chance, Draw No Bet
+    "43,29,386,"     # BTTS, BTTS+Result
+    "52,18,"         # O/U Goals (multiple lines via specValue)
+    "353,352,"       # Home / Away team goals O/U
+    "208,"           # Result + O/U
+    "258,202,"       # Exact Goals, Goal Groups
+    "332,"           # Correct Score
+    "51,"            # Asian HC - Full Time
+    "53,"            # Asian HC - Half Time        ← NEW
+    "55,"            # European HC
+    "45,"            # Odd/Even
+    "41,"            # First Team to Score          ← NEW
+    "207,"           # Highest Scoring Half         ← NEW
+    # Half-time
+    "42,60,"         # HT 1X2
+    "15,54,68,"      # HT O/U (54 = alias)         ← 54 NEW
+    "44,"            # HT/FT                        ← NEW
+    "328,"           # HT BTTS                      ← NEW
+    "203,"           # HT Correct Score             ← NEW
+    # Set-piece / discipline
+    "162,166,"       # Total Corners
+    "136,139,"       # Total Bookings
+    # Non-football
+    "382,"           # Basketball Moneyline
+    "99,100"         # Total Points, Point Spread
+).replace("\n", "").replace(" ", "")
 
 SP_SPORT_ID: dict[str, str] = {
     "soccer":          "1",
@@ -87,6 +107,8 @@ SP_SPORT_ID: dict[str, str] = {
     "mma":             "117",
     "table-tennis":    "16",
     "esoccer":         "126",
+    "efootball":       "126",
+    "e-football":      "126",
 }
 
 
@@ -130,7 +152,6 @@ def _fetch_upcoming_page(sport_id: str, ts_start: int, ts_end: int,
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
-        # Some SP API versions wrap the list
         for key in ("data", "games", "items", "results"):
             if isinstance(raw.get(key), list):
                 return raw[key]
@@ -153,9 +174,9 @@ def _fetch_markets(game_id: str) -> list[dict]:
     Fetch the full market book for one SP game.
 
     Handles four response shapes:
-      A  { "12345": [ {id, name, selections:[...]}, ... ] }
+      A  { "12345": [ {id, name, selections:[...]}, ... ] }   ← most common
       B  { "data": { "12345": [...] } }
-      C  [ {id, name, selections:[...]} ]          ← flat list
+      C  [ {id, name, selections:[...]} ]                     ← flat list
       D  { "markets": [...] }
     """
     raw = _get("/api/games/markets", params={
@@ -168,25 +189,29 @@ def _fetch_markets(game_id: str) -> list[dict]:
 
     gid = str(game_id)
 
-    # Shape A — most common
     if isinstance(raw, dict):
-        # Try exact key first
+        # Shape A — string key
         if gid in raw and isinstance(raw[gid], list):
             return raw[gid]
-        # Try int key
-        if int(gid) in raw:
-            v = raw[int(gid)]
-            if isinstance(v, list):
-                return v
-        # Shape B — nested under "data"
+        # Shape A — integer key (some SP responses use int)
+        try:
+            ikey = int(gid)
+            if ikey in raw and isinstance(raw[ikey], list):
+                return raw[ikey]
+        except (ValueError, TypeError):
+            pass
+        # Shape B — nested under "data" or "result"
         data = raw.get("data") or raw.get("result") or {}
         if isinstance(data, dict):
             if gid in data and isinstance(data[gid], list):
                 return data[gid]
-        # Shape D — flat {"markets": [...]}
+            for v in data.values():
+                if isinstance(v, list) and v:
+                    return v
+        # Shape D
         if isinstance(raw.get("markets"), list):
             return raw["markets"]
-        # Last resort: return any top-level list value
+        # Last resort — return first list value
         for v in raw.values():
             if isinstance(v, list) and v:
                 return v
@@ -233,8 +258,7 @@ def _parse_match_item(item: dict) -> dict | None:
     if ts := item.get("dateTimestamp") or item.get("startTimestamp"):
         try:
             ts_int = int(ts)
-            # SP timestamps are in milliseconds when > 1e10
-            if ts_int > 1_000_000_000_000:
+            if ts_int > 1_000_000_000_000:   # milliseconds → seconds
                 ts_int //= 1000
             start_time = datetime.utcfromtimestamp(ts_int).strftime(
                 "%Y-%m-%dT%H:%M:%S.000Z"
@@ -244,7 +268,6 @@ def _parse_match_item(item: dict) -> dict | None:
     elif dt := item.get("date") or item.get("startTime"):
         start_time = str(dt)
 
-    # Inline markets from the listing (usually O/U + BTTS only — no 1X2)
     inline = (item.get("markets") or item.get("odds") or [])
     if isinstance(inline, dict):
         inline = list(inline.values())
@@ -265,9 +288,9 @@ def _parse_markets(raw_list: list[dict]) -> dict[str, dict[str, float]]:
     """
     Convert SP market list → {canonical_slug: {outcome_key: float}}.
 
-    Handles two selection shapes:
-      Standard  {"shortName": "1", "odds": 2.07}
-      Extended  {"shortName": "OV", "odds": 1.90, "specValue": 2.5}
+    BUG FIX: specValue=0 was previously lost because of:
+        spec_val = mkt.get("specValue") or ...   ← 0 is falsy in Python!
+    Now uses explicit `is None` check to preserve integer 0.
     """
     markets: dict[str, dict[str, float]] = {}
 
@@ -275,9 +298,7 @@ def _parse_markets(raw_list: list[dict]) -> dict[str, dict[str, float]]:
         if not isinstance(mkt, dict):
             continue
 
-        mkt_id   = mkt.get("id") or mkt.get("marketId") or mkt.get("typeId")
-        spec_val = mkt.get("specValue") or mkt.get("spec") or mkt.get("handicap")
-
+        mkt_id = mkt.get("id") or mkt.get("marketId") or mkt.get("typeId")
         if not mkt_id:
             continue
 
@@ -286,8 +307,15 @@ def _parse_markets(raw_list: list[dict]) -> dict[str, dict[str, float]]:
         except (TypeError, ValueError):
             continue
 
-        mkt_key = normalize_sp_market(mkt_id, spec_val)
+        # ── specValue: use `is None` so integer 0 is preserved ───────────────
+        spec_val = mkt.get("specValue")
+        if spec_val is None:
+            spec_val = mkt.get("spec")
+        if spec_val is None:
+            spec_val = mkt.get("handicap")
+        # ─────────────────────────────────────────────────────────────────────
 
+        mkt_key = normalize_sp_market(mkt_id, spec_val)
         markets.setdefault(mkt_key, {})
 
         sels = mkt.get("selections") or mkt.get("outcomes") or mkt.get("odds") or []
@@ -303,7 +331,9 @@ def _parse_markets(raw_list: list[dict]) -> dict[str, dict[str, float]]:
                 sel.get("label") or sel.get("outcome") or ""
             )
             try:
-                price = float(sel.get("odds") or sel.get("price") or sel.get("value") or 0)
+                price = float(
+                    sel.get("odds") or sel.get("price") or sel.get("value") or 0
+                )
             except (TypeError, ValueError):
                 price = 0.0
 
@@ -311,7 +341,6 @@ def _parse_markets(raw_list: list[dict]) -> dict[str, dict[str, float]]:
                 continue
 
             out_key = normalize_outcome(mkt_key, short)
-            # Keep highest price if same outcome appears twice (different lines collapsed)
             if out_key not in markets[mkt_key] or price > markets[mkt_key][out_key]:
                 markets[mkt_key][out_key] = round(price, 3)
 
@@ -353,8 +382,12 @@ def fetch_upcoming(
     """
     Fetch upcoming matches for a sport.  Returns canonical match dicts.
 
-    fetch_full_markets=True (default) hits /api/games/markets per match to get
-    1X2 + all markets — without this 1X2 will be empty for most matches.
+    fetch_full_markets=True (default) hits /api/games/markets per match.
+    This is REQUIRED to get 1X2 and all other markets — the listing endpoint
+    only returns a subset (usually O/U + BTTS) inline.
+
+    O/U note: If over_under_goals shows as "—" in the UI it means the SP API
+    genuinely doesn't offer O/U for those matches (common for smaller leagues).
     """
     sport_id = SP_SPORT_ID.get(sport_slug.lower())
     if not sport_id:
@@ -363,7 +396,7 @@ def fetch_upcoming(
 
     raw_items: list[dict] = []
     seen_ids:  set[str]   = set()
-    now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
+    now_eat = datetime.now(timezone.utc) + timedelta(hours=3)   # EAT = UTC+3
 
     for day_off in range(days):
         day   = now_eat + timedelta(days=day_off)
@@ -388,8 +421,8 @@ def fetch_upcoming(
 
     print(f"[sp] {sport_slug}: {len(raw_items)} raw matches")
 
-    results  = []
-    targets  = raw_items[:max_matches] if max_matches else raw_items
+    results = []
+    targets = raw_items[:max_matches] if max_matches else raw_items
 
     for item in targets:
         parsed = _parse_match_item(item)
@@ -399,16 +432,16 @@ def fetch_upcoming(
         if fetch_full_markets and parsed["sp_game_id"]:
             raw_mkts = _fetch_markets(parsed["sp_game_id"])
             if not raw_mkts:
-                # Fallback to inline markets if the markets endpoint fails
                 raw_mkts = parsed["_inline_mkts"]
+                print(f"[sp] fallback to inline: {parsed['sp_game_id']} "
+                      f"({parsed['home_team']} v {parsed['away_team']})")
             time.sleep(0.05)   # polite rate limit
         else:
             raw_mkts = parsed["_inline_mkts"]
 
         markets = _parse_markets(raw_mkts)
         if not markets:
-            # Still include the match — no markets yet is not an error
-            print(f"[sp] no markets for game_id={parsed['sp_game_id']} "
+            print(f"[sp] no markets for {parsed['sp_game_id']} "
                   f"({parsed['home_team']} v {parsed['away_team']})")
 
         results.append(_build_match(parsed, markets, sport_slug))
@@ -451,12 +484,8 @@ def fetch_live(
 
 
 def fetch_match_markets(game_id: str) -> dict:
-    """
-    Fetch complete market book for one specific SP game.
-    Returns the full markets dict (canonical slugs).
-    """
-    raw_mkts = _fetch_markets(game_id)
-    return _parse_markets(raw_mkts)
+    """Fetch complete market book for one SP game (canonical slugs)."""
+    return _parse_markets(_fetch_markets(game_id))
 
 
 def fetch_sport_ids() -> dict[str, int]:
