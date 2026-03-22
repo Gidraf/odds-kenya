@@ -68,7 +68,8 @@ def normalize_line(raw_value: Any) -> str:
 def slug_with_line(base: str, raw_line: Any) -> str:
     """Append a line suffix to a base market slug, e.g. 'over_under_goals_2.5'."""
     line = normalize_line(raw_line)
-    if line and line not in ("0", ""):
+    # "0" is a valid line (Asian HC level ball — do NOT exclude it)
+    if line and line != "":
         return f"{base}_{line}"
     return base
 

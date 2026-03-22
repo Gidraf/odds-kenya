@@ -102,9 +102,9 @@ _FOOTBALL: dict[int, _Entry] = {
     353: ("total_goals_home",          True),
     352: ("total_goals_away",          True),
     208: ("result_and_over_under",     True),
-    202: ("exact_goals",               False),
-    332: ("number_of_goals",           False),
-    258: ("correct_score",             False),
+    202: ("number_of_goals",           False),  # "Number of Goals in Groups" (0-1, 2-3, 4-5, 6+)
+    258: ("exact_goals",               False),  # "Total Goals Exactly" (0, 1, 2, 3…)
+    332: ("correct_score",             False),  # "Correct Score" (0:0, 1:0, 2:1…)
     203: ("first_half_correct_score",  False),
     51:  ("asian_handicap",            True),
     53:  ("first_half_asian_handicap", True),
