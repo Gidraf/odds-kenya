@@ -2,20 +2,27 @@
 app/workers/market_mapper.py
 =============================
 Single source of truth for market/outcome normalisation across ALL harvesters.
-All public functions return slugs that exist in market_seeds.MARKETS_BY_SPORT.
 
 Bookmakers covered
 ------------------
   Sportpesa   normalize_sp_market(sp_mkt_id, spec_value)
   Odibets     normalize_od_market(sub_type_id, specifiers)
   Betika      normalize_bt_market(name, sub_type_id)
-  B2B family  normalize_b2b_market(mkt_name)   ← 1xBet/22Bet/Helabet/Paripesa…
+  B2B family  normalize_b2b_market(mkt_name)
 
 Shared
 ------
   normalize_outcome(market_slug, raw_key, display="") → canonical outcome key
   normalize_line(raw_value)                           → clean line string "2.5"
   get_normalizer(source_name)                         → callable or None
+
+CHANGELOG
+---------
+v2 fixes (from real SP API response, game 8614677 Real Madrid v Atletico):
+  • Added missing SP market IDs: 41 42 44 53 54 203 207 328
+  • Fixed HT/FT outcome normalisation: "11"→"1/1", "1X"→"1/X", "X2"→"X/2" etc.
+  • Fixed "Eql"/"eql" → "equal" for highest_scoring_half market
+  • Fixed specValue=0 falsy bug in callers (use `is None` check — see harvester)
 """
 
 from __future__ import annotations
@@ -31,7 +38,7 @@ from typing import Any, Callable
 def normalize_line(raw_value: Any) -> str:
     """
     Coerce a handicap / over-under line to a clean string.
-      2.5   → "2.5"   |  2.0  → "2"  |  -0.5 → "-0.5"  |  "0:1" → "0:1"
+      2.5  → "2.5"  |  2.0  → "2"  |  -0.5 → "-0.5"  |  "0:1" → "0:1"
     """
     if raw_value is None:
         return ""
@@ -59,36 +66,85 @@ def _slug_with_line(base: str, raw_line: Any) -> str:
 # =============================================================================
 # 1.  SPORTPESA
 # =============================================================================
+#
+# IDs confirmed from intercepted SP API traffic (game 8614677 + others):
+#
+#  10 / 1   1X2
+#  46       Double Chance
+#  47       Draw No Bet
+#  43 / 29  BTTS
+#  386      BTTS + Result
+#  52 / 18  Over/Under Goals (multiple lines via specValue)
+#  353      Total Goals Home
+#  352      Total Goals Away
+#  208      Result + O/U
+#  258      Exact Goals
+#  202      Number of Goals (groups)
+#  332      Correct Score
+#  51       Asian HC - Full Time
+#  53       Asian HC - Half Time          ← ADDED
+#  55       European HC
+#  45       Odd/Even
+#  41       First Team to Score           ← ADDED
+#  42       HT 1X2                        ← ADDED  (alias of 60)
+#  60       HT 1X2
+#  15 / 68  HT Over/Under
+#  54       HT Over/Under (alias)         ← ADDED
+#  44       HT/FT (Half Time / Full Time) ← ADDED
+#  328      HT BTTS                       ← ADDED
+#  203      HT Correct Score              ← ADDED
+#  207      Highest Scoring Half          ← ADDED
+#  162/166  Total Corners
+#  136/139  Total Bookings
+#  382      Basketball Moneyline
+#  99/100   Total Points / Point Spread
 
 _SP_MKT: dict[int, tuple[str, bool]] = {
-    1:   ("1x2",                    False),
-    10:  ("1x2",                    False),
-    46:  ("double_chance",          False),
-    47:  ("draw_no_bet",            False),
-    43:  ("btts",                   False),
-    29:  ("btts",                   False),
-    386: ("btts_and_result",        False),
-    51:  ("asian_handicap",         True),
-    55:  ("european_handicap",      True),
-    52:  ("over_under_goals",       True),
-    18:  ("over_under_goals",       True),
-    353: ("total_goals_home",       True),
-    352: ("total_goals_away",       True),
-    258: ("exact_goals",            False),
-    202: ("number_of_goals",        False),
-    332: ("correct_score",          False),
-    208: ("result_and_over_under",  True),
-    45:  ("odd_even",               False),
-    60:  ("first_half_1x2",         False),
-    15:  ("first_half_over_under",  True),
-    68:  ("first_half_over_under",  True),
-    162: ("total_corners",          False),
-    166: ("total_corners",          True),
-    136: ("total_bookings",         False),
-    139: ("total_bookings",         True),
-    382: ("basketball_moneyline",   False),
-    99:  ("total_points",           True),
-    100: ("point_spread",           True),
+    # Full-time core
+    1:   ("1x2",                       False),
+    10:  ("1x2",                       False),
+    46:  ("double_chance",             False),
+    47:  ("draw_no_bet",               False),
+    43:  ("btts",                      False),
+    29:  ("btts",                      False),
+    386: ("btts_and_result",           False),
+    # O/U Goals — multiple lines via specValue
+    52:  ("over_under_goals",          True),
+    18:  ("over_under_goals",          True),
+    # Team goals O/U
+    353: ("total_goals_home",          True),
+    352: ("total_goals_away",          True),
+    # Combo markets
+    208: ("result_and_over_under",     True),
+    258: ("exact_goals",               False),
+    202: ("number_of_goals",           False),
+    332: ("correct_score",             False),
+    # Handicaps
+    51:  ("asian_handicap",            True),
+    53:  ("first_half_asian_handicap", True),   # ← ADDED
+    55:  ("european_handicap",         True),
+    # Special
+    45:  ("odd_even",                  False),
+    41:  ("first_team_to_score",       False),  # ← ADDED
+    207: ("highest_scoring_half",      False),  # ← ADDED
+    # Half-time markets
+    42:  ("first_half_1x2",            False),  # ← ADDED (alias of 60)
+    60:  ("first_half_1x2",            False),
+    15:  ("first_half_over_under",     True),
+    54:  ("first_half_over_under",     True),   # ← ADDED (alias of 15/68)
+    68:  ("first_half_over_under",     True),
+    44:  ("ht_ft",                     False),  # ← ADDED
+    328: ("first_half_btts",           False),  # ← ADDED
+    203: ("first_half_correct_score",  False),  # ← ADDED
+    # Corners / Bookings
+    162: ("total_corners",             False),
+    166: ("total_corners",             True),
+    136: ("total_bookings",            False),
+    139: ("total_bookings",            True),
+    # Non-football
+    382: ("basketball_moneyline",      False),
+    99:  ("total_points",              True),
+    100: ("point_spread",              True),
 }
 
 
@@ -363,12 +419,6 @@ def normalize_bt_market(name: str, sub_type_id: int | str | None = None) -> str:
 # =============================================================================
 # 4.  B2B FAMILY  (1xBet, 22Bet, Helabet, Paripesa, Melbet, Betwinner, Megapari)
 # =============================================================================
-# Markets arrive from bookmaker_fetcher with lines already embedded in the name:
-#   "Total_2.5"      → "over_under_goals_2.5"
-#   "Handicap_-1.5"  → "asian_handicap_-1.5"
-#   "1H Total_1.5"   → "first_half_over_under_1.5"
-#   "1X2"            → "1x2"
-#   "GG/NG"          → "btts"
 
 _B2B_BASE_NAME: dict[str, str] = {
     "1x2":               "1x2",
@@ -408,27 +458,13 @@ _B2B_BASE_NAME: dict[str, str] = {
     "odd/even":          "odd_even",
 }
 
-# Regex to split e.g. "Total_2.5" → base="Total", line="2.5"
 _B2B_LINE_RE = re.compile(r"^(.+?)_(-?[\d.]+)$")
 
 
 def normalize_b2b_market(mkt_name: str) -> str:
-    """
-    Normalize a B2B market name (from bookmaker_fetcher) to canonical slug.
-
-    Examples:
-        normalize_b2b_market("1X2")          → "1x2"
-        normalize_b2b_market("Total_2.5")    → "over_under_goals_2.5"
-        normalize_b2b_market("Handicap_-1.5")→ "asian_handicap_-1.5"
-        normalize_b2b_market("GG/NG")        → "btts"
-        normalize_b2b_market("1H Total_1.5") → "first_half_over_under_1.5"
-    """
-    # Exact match first
     exact = _B2B_BASE_NAME.get(mkt_name.strip().lower())
     if exact:
         return exact
-
-    # Split base + numeric line
     m = _B2B_LINE_RE.match(mkt_name.strip())
     if m:
         base_raw = m.group(1).strip()
@@ -436,13 +472,11 @@ def normalize_b2b_market(mkt_name: str) -> str:
         slug     = _B2B_BASE_NAME.get(base_raw.lower())
         if slug:
             return f"{slug}_{line}"
-
-    # Sanitised fallback
     return re.sub(r"[^a-z0-9]+", "_", mkt_name.strip().lower()).strip("_") or "unknown"
 
 
 # =============================================================================
-# 5.  STUB BOOKMAKERS  (populate _MKT / _NAME dicts from intercepted traffic)
+# 5.  STUB BOOKMAKERS
 # =============================================================================
 
 def _generic_normalizer(
@@ -478,29 +512,29 @@ _OUT_EXACT: dict[str, str] = {
     "1": "1",  "x": "X",  "2": "2",
     "home": "1",  "draw": "X",  "away": "2",
     # Over / Under
-    "over": "over",   "under": "under",
-    "ov":   "over",   "un":    "under",
+    "over":  "over",   "under":  "under",
+    "ov":    "over",   "un":     "under",
     # BTTS / Odd-Even
     "yes":  "yes",   "no":   "no",
     "gg":   "yes",   "ng":   "no",
     "odd":  "odd",   "even": "even",
     "od":   "odd",   "ev":   "even",
-    # Double Chance — all notations (B2B uses "2X", others use "X2")
+    # Double Chance
     "1x":         "1X",  "x2":         "X2",  "12":         "12",
-    "2x":         "X2",  # ← B2B gap fixed
+    "2x":         "X2",
     "1/x":        "1X",  "x/2":        "X2",  "1/2":        "12",
     "1 or x":     "1X",  "1 or 2":     "12",  "x or 2":     "X2",
     "home or draw":"1X", "home or away":"12", "draw or away":"X2",
-    # No-goal
+    # No-goal / none
     "none":    "none",
     "no goal": "none",
+    # Highest scoring half (market 207)
+    # shortName: "1st" → stored as "1st", "2nd" → "2nd", "Eql" → "equal"
+    "eql":  "equal",   "equal": "equal",           # ← FIXED: Eql → equal
+    # "1st" and "2nd" fall through to sanitised return which gives "1st"/"2nd" ✓
 }
 
-_OUT_OVER_RE  = re.compile(r"^over\s+([\d.]+)$",  re.I)
-_OUT_UNDER_RE = re.compile(r"^under\s+([\d.]+)$", re.I)
-_OUT_SCORE_RE = re.compile(r"^\d+:\d+$")
-_OUT_HCP_RE   = re.compile(r"^([12X])\s*[\(\[].*[\)\]]$", re.I)
-
+# SP-specific combo outcomes (Result + O/U, BTTS + Result)
 _SP_COMBO: dict[str, str] = {
     "ov_1": "1_over",   "ov_x": "X_over",   "ov_2": "2_over",
     "un_1": "1_under",  "un_x": "X_under",  "un_2": "2_under",
@@ -508,34 +542,61 @@ _SP_COMBO: dict[str, str] = {
     "1ng":  "1_no",     "xng":  "X_no",     "2ng":  "2_no",
 }
 
+# HT/FT outcomes — SP shortNames use "11","1X","X2" style (no slash)
+# These ONLY apply to the ht_ft market to avoid collision with double_chance.
+_HTFT_MAP: dict[str, str] = {
+    "11": "1/1",  "1x": "1/X",  "12": "1/2",
+    "x1": "X/1",  "xx": "X/X",  "x2": "X/2",
+    "21": "2/1",  "2x": "2/X",  "22": "2/2",
+    # slash variants (already correct if SP ever returns them)
+    "1/1": "1/1", "1/x": "1/X", "1/2": "1/2",
+    "x/1": "X/1", "x/x": "X/X", "x/2": "X/2",
+    "2/1": "2/1", "2/x": "2/X", "2/2": "2/2",
+}
+
+_OUT_OVER_RE  = re.compile(r"^over\s+([\d.]+)$",  re.I)
+_OUT_UNDER_RE = re.compile(r"^under\s+([\d.]+)$", re.I)
+_OUT_SCORE_RE = re.compile(r"^\d+:\d+$")
+_OUT_HCP_RE   = re.compile(r"^([12X])\s*[\(\[].*[\)\]]$", re.I)
+
 
 def normalize_outcome(
     market_slug: str,
-    raw_key: str,
-    display: str = "",
+    raw_key:     str,
+    display:     str = "",
 ) -> str:
     """
     Return a canonical outcome key for any bookmaker's raw outcome.
 
-    For Over/Under markets the line is already in market_slug
-    so "over 2.5" → "over" (line stripped).
-    For handicaps "1 (0:1)" → "1".
-    For correct score "2:1" passes through.
-    For B2B "2X" → "X2".
-    Unknown T-prefixed B2B codes (T731, T3786) are sanitised.
+    Special handling per market_slug:
+    • ht_ft       → "11"/"1X"/"X2" etc. mapped via _HTFT_MAP (not double_chance)
+    • highest_scoring_half → "Eql" → "equal"
+    • over/under  → line already in slug, so "over 2.5" → "over"
+    • handicap    → "1 (0:1)" → "1"
+    • correct_score → "2:1" passes through
     """
-    for raw in (raw_key, display):
-        if not raw:
-            continue
-        kl = raw.strip().lower()
+    kl = raw_key.strip().lower()
 
-        v = _OUT_EXACT.get(kl)
+    # ── HT/FT market — must resolve before general _OUT_EXACT ────────────────
+    # "12" in double_chance = "12" (both teams win), but in ht_ft = "1/2"
+    if "ht_ft" in market_slug:
+        v = _HTFT_MAP.get(kl)
         if v:
             return v
 
-        if _OUT_OVER_RE.match(kl):
+    # ── General exact match ───────────────────────────────────────────────────
+    for raw in (raw_key, display):
+        if not raw:
+            continue
+        kl2 = raw.strip().lower()
+
+        v = _OUT_EXACT.get(kl2)
+        if v:
+            return v
+
+        if _OUT_OVER_RE.match(kl2):
             return "over"
-        if _OUT_UNDER_RE.match(kl):
+        if _OUT_UNDER_RE.match(kl2):
             return "under"
 
         if _OUT_SCORE_RE.match(raw.strip()):
@@ -545,14 +606,15 @@ def normalize_outcome(
         if m:
             return m.group(1).upper()
 
-    kl = raw_key.strip().lower()
+    # ── SP combo outcomes ─────────────────────────────────────────────────────
     if kl in _SP_COMBO:
         return _SP_COMBO[kl]
 
+    # ── Numeric ranges (goal groups) "0-1", "2-3" ────────────────────────────
     if re.match(r"^\d+[-–+]\d*$", raw_key.strip()):
         return raw_key.strip()
 
-    # T-prefixed B2B internal codes — sanitise but keep
+    # ── Fallback — sanitise ───────────────────────────────────────────────────
     raw = raw_key.strip() or display.strip()
     return re.sub(r"[^a-z0-9_:+./\-]+", "_", raw.lower()).strip("_") or "unknown"
 
@@ -562,13 +624,11 @@ def normalize_outcome(
 # =============================================================================
 
 BOOKMAKER_NORMALIZERS: dict[str, Callable] = {
-    # Local Kenyan bookmakers
     "sportpesa":        lambda name, sid, spec="": normalize_sp_market(int(sid or 0), spec or None),
     "betika_upcoming":  lambda name, sid, spec="": normalize_bt_market(name, sid),
     "betika_live":      lambda name, sid, spec="": normalize_bt_market(name, sid),
     "betika":           lambda name, sid, spec="": normalize_bt_market(name, sid),
     "odibets":          lambda name, sid, spec="": normalize_od_market(sid, spec),
-    # B2B family (all share the same market naming convention)
     "b2b":              lambda name, sid, spec="": normalize_b2b_market(name),
     "1xbet":            lambda name, sid, spec="": normalize_b2b_market(name),
     "22bet":            lambda name, sid, spec="": normalize_b2b_market(name),
@@ -577,18 +637,12 @@ BOOKMAKER_NORMALIZERS: dict[str, Callable] = {
     "melbet":           lambda name, sid, spec="": normalize_b2b_market(name),
     "betwinner":        lambda name, sid, spec="": normalize_b2b_market(name),
     "megapari":         lambda name, sid, spec="": normalize_b2b_market(name),
-    # Stubs
     "mozzartbet":       lambda name, sid, spec="": normalize_mozzartbet_market(name, sid, spec),
     "betin":            lambda name, sid, spec="": normalize_betin_market(name, sid, spec),
 }
 
 
 def get_normalizer(source_name: str) -> Callable | None:
-    """
-    Return the market normalizer for the given source/bookmaker name.
-
-    Usage:
-        fn = get_normalizer("odibets")
-        slug = fn(market_name, sub_type_id, specifiers)
-    """
-    return BOOKMAKER_NORMALIZERS.get(source_name.lower().replace(" ", "").replace("-", ""))
+    return BOOKMAKER_NORMALIZERS.get(
+        source_name.lower().replace(" ", "").replace("-", "")
+    )
