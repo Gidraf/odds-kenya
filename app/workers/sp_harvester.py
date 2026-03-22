@@ -291,93 +291,106 @@ def _parse_markets_response(raw: Any, gid: str) -> list[dict]:
     return []
 
 
-def _has_line_markets(mkt_list: list[dict]) -> bool:
+def _is_from_markets_endpoint(result: list[dict], mkt_list_from_inline: list[dict]) -> bool:
     """
-    Return True if the market list contains at least one line market
-    (specValue ≠ 0 and ≠ None) — i.e. it came from the full market
-    endpoint, not just the inline listing data.
+    Return True if `result` came from /api/games/markets (i.e. is the full book)
+    rather than being literally identical to the inline listing data.
 
-    This is used to detect the "inline-only fallback" situation where
-    _fetch_markets succeeded but only returned the specValue=0 snapshot.
+    We distinguish by market count: the inline listing embeds at most ~5 markets
+    (usually just O/U + BTTS).  The markets endpoint returns everything that match
+    offers — for some lower-league games this is genuinely only specValue=0 entries,
+    but there are typically 15+ of them.
+
+    Note: specValue=0 for ALL markets is VALID — it means SP doesn't offer
+    multi-line O/U for this fixture.  That is correct data, not an error.
+    Only retry when the response is completely empty (network/rate-limit failure).
     """
-    for mkt in mkt_list:
-        sv = mkt.get("specValue")
-        if sv is not None and sv != 0:
-            return True
-    return False
+    return len(result) >= len(mkt_list_from_inline)
 
 
 def _fetch_markets(
-    game_id:   str | int,
-    debug:     bool = False,
-    max_tries: int  = 3,
+    game_id:         str | int,
+    debug:           bool = False,
+    max_tries:       int  = 2,
+    inline_mkt_count: int = 0,
 ) -> list[dict]:
     """
-    Full market book for one SP game — with retry on empty / inline-only responses.
+    Fetch the full market book for one SP game from /api/games/markets.
 
-    WHY RETRY?
-    ──────────
-    SP rate-limits the /api/games/markets endpoint.  When streaming 100+
-    matches the endpoint often returns:
-      • HTTP 429 / 503 — handled by returning None → retry
-      • An empty dict  {} → retry
-      • An inline-only response (specValue=0 only, no market 52 lines) → retry
+    RETRY POLICY (corrected)
+    ─────────────────────────
+    Only retry when the response is EMPTY (network failure, rate-limit 429/503).
 
-    Backoff: 0 s, 1 s, 3 s between tries.  After max_tries the inline
-    listing markets are used as a last resort by the caller.
+    Do NOT retry when SP returns non-empty data that contains only specValue=0
+    markets — this is valid!  Many lower-league, esoccer, and youth matches
+    genuinely do not offer multi-line O/U.  The previous code retried 3×
+    (burning 0+1+3 = 4 seconds per match) before accepting the same data,
+    making 147-match streams take 10+ minutes and triggering SSE timeouts.
+
+    Behaviour:
+      • Empty response  → retry (up to max_tries=2)
+      • Non-empty       → accept immediately (even if all specValue=0)
+      • HTTP error      → retry
+
+    The caller (_fetch_upcoming_stream etc.) still falls back to _inline_mkts
+    if ALL attempts return empty.
 
     Response shapes handled (see _parse_markets_response):
-      A  { "7966057": [{id, specValue, name, selections}, ...] }
+      A  { "7966057": [{id, specValue, name, selections}, ...] }   ← most common
       B  { "data": { "7966057": [...] } }
       C  [ {id, name, selections} ]
       D  { "markets": [...] }
     """
     gid     = str(game_id)
-    backoff = [0, 1.0, 3.0]  # seconds before each attempt
+    backoff = [0, 1.5]     # seconds before each attempt (shorter — we only retry on empty)
 
     for attempt in range(max_tries):
         if attempt > 0:
             delay = backoff[min(attempt, len(backoff) - 1)]
             if debug:
                 print(f"[sp:mkts] retry {attempt}/{max_tries - 1} "
-                      f"game={gid} (wait {delay}s)")
+                      f"game={gid} (wait {delay}s — empty response)")
             time.sleep(delay)
 
-        raw, _ = _get("/api/games/markets", params={
+        raw, headers = _get("/api/games/markets", params={
             "games":   gid,
             "markets": _CORE_MARKET_IDS,
         })
 
+        # Detect HTTP-level rate limiting
+        status = headers.get("x-rate-limit-remaining") or headers.get("X-RateLimit-Remaining")
+        if status == "0":
+            print(f"[sp:mkts] rate-limit remaining=0 game={gid} — waiting 2s")
+            time.sleep(2.0)
+
         if debug:
             t = type(raw).__name__
-            k = list(raw.keys()) if isinstance(raw, dict) else "N/A"
-            print(f"[sp:mkts] attempt={attempt} game={gid} "
-                  f"type={t} keys={k}")
+            k = list(raw.keys()) if isinstance(raw, dict) else len(raw) if isinstance(raw, list) else "N/A"
+            print(f"[sp:mkts] attempt={attempt} game={gid} type={t} keys={k}")
 
         result = _parse_markets_response(raw, gid)
 
         if not result:
-            # Empty response — likely transient error or rate limit
-            print(f"[sp:mkts] empty response game={gid} attempt={attempt}")
+            # Truly empty — network error, 429, or malformed response
+            print(f"[sp:mkts] empty game={gid} attempt={attempt} — will retry")
             continue
 
-        if not _has_line_markets(result):
-            # Got data but only specValue=0 entries — inline-only response,
-            # not the full market book.  Retry to get the real O/U lines.
-            print(f"[sp:mkts] inline-only ({len(result)} mkts, no lines) "
-                  f"game={gid} attempt={attempt} — retrying for full markets")
-            continue
-
-        # ✓ Got a proper full-market response
+        # ── Accept any non-empty response ─────────────────────────────────
+        # SP returns only specValue=0 markets for many legitimate matches —
+        # this is correct data (no multi-line O/U offered), NOT an error.
+        ou_keys = [m.get("id") for m in result if m.get("id") in (52, 18)]
+        any_multiline = any(
+            m.get("specValue") not in (0, None)
+            for m in result
+        )
         if debug:
-            ids_seen = sorted({m.get("id") for m in result if isinstance(m, dict)})
-            has_ou   = 52 in ids_seen or 18 in ids_seen
-            print(f"[sp:mkts] OK game={gid} {len(result)} mkts "
-                  f"ids={ids_seen} has_ou={has_ou}")
+            print(f"[sp:mkts] OK game={gid}  {len(result)} mkts  "
+                  f"ou_present={'yes' if ou_keys else 'no'}  "
+                  f"multi_line={'yes' if any_multiline else 'no (all specValue=0)'}")
+
         return result
 
-    print(f"[sp:mkts] FAILED all {max_tries} attempts for game={gid} "
-          f"— will use inline fallback")
+    print(f"[sp:mkts] all {max_tries} attempts empty for game={gid} — using inline fallback")
     return []
 
 
@@ -638,7 +651,7 @@ def fetch_upcoming(
     page_size:           int   = 30,
     fetch_full_markets:  bool  = True,
     max_matches:         int | None = None,
-    sleep_between:       float = 0.5,   # 0.5s default — SP rate-limits at ~30 req/min
+    sleep_between:       float = 0.3,   # 0.3s ≈ 3 req/s — well under SP's ~30 req/min limit
     debug_ou:            bool  = False,
 ) -> list[dict]:
     """
@@ -687,7 +700,7 @@ def fetch_upcoming(
 def fetch_live(
     sport_slug:          str,
     fetch_full_markets:  bool  = True,
-    sleep_between:       float = 0.5,
+    sleep_between:       float = 0.3,
     debug_ou:            bool  = False,
 ) -> list[dict]:
     """Fetch live matches (blocking)."""
@@ -731,23 +744,24 @@ def fetch_upcoming_stream(
     page_size:           int   = 30,
     fetch_full_markets:  bool  = True,
     max_matches:         int | None = None,
-    sleep_between:       float = 0.5,   # same rate-limit budget as blocking version
+    sleep_between:       float = 0.3,   # 0.3s ≈ 3 req/s — fast enough for SSE, safe for SP rate limit
     debug_ou:            bool  = False,
 ) -> Generator[dict, None, None]:
     """
     Generator version of fetch_upcoming.  Yields each normalised match dict
-    as soon as its market book is fetched, rather than waiting for all matches.
+    as soon as its market book is fetched.
 
-    The SSE endpoint in sp_module.py iterates this and pushes each match
-    to the browser in real time:
+    With the corrected _fetch_markets (no inline-only retries), each match
+    takes ~0.3-0.6s (sleep + request).  150 matches ≈ 60-90s total — well
+    within SSE connection timeout.
 
-        for match in fetch_upcoming_stream(sport_slug, ...):
-            yield sse_event({"type": "match", "match": match})
-
-    sleep_between=0.5s: critical to avoid SP rate-limiting the /api/games/markets
-    endpoint.  The inline fallback produces 17 markets (specValue=0 only, NO O/U
-    lines) — if you see market_count=17 with no over_under_goals_* keys, increase
-    this value or check server logs for "[sp:mkts] FAILED" messages.
+    SSE TIMEOUT NOTE:
+    ─────────────────
+    Nginx default proxy_read_timeout is 60s.  For large fetches (150+ matches)
+    add a heartbeat comment in sp_module.py's stream_upcoming endpoint, or
+    configure nginx:
+        proxy_read_timeout 300s;
+        proxy_buffering off;
     """
     sport_id = SP_SPORT_ID.get(sport_slug.lower().replace(" ", "-"))
     if not sport_id:
@@ -784,7 +798,7 @@ def fetch_upcoming_stream(
 def fetch_live_stream(
     sport_slug:          str,
     fetch_full_markets:  bool  = True,
-    sleep_between:       float = 0.5,
+    sleep_between:       float = 0.3,
     debug_ou:            bool  = False,
 ) -> Generator[dict, None, None]:
     """
