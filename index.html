@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Match Results · 3D Stadium</title>
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@400;500;600;700&family=Barlow+Condensed:wght@300;400;600;700;900&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100vw;height:100vh;overflow:hidden;background:#000;
+  font-family:'Barlow Condensed',sans-serif;}
+
+#c{position:fixed;inset:0;z-index:0;width:100%;height:100%;}
+
+/* heavy vignette to frame stadium */
+.vig{position:fixed;inset:0;z-index:2;pointer-events:none;
+  background:
+    radial-gradient(ellipse 70% 65% at 50% 48%, transparent 30%, rgba(0,0,0,0.65) 75%, rgba(0,0,0,0.92) 100%);}
+.scanlines{position:fixed;inset:0;z-index:3;pointer-events:none;opacity:0.025;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,#000 2px,#000 4px);}
+
+/* ── ALL HUD OVER 3D ── */
+#hud{position:fixed;inset:0;z-index:10;pointer-events:none;}
+
+/* ── SCENE PANELS ── */
+.panel{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;opacity:0;transition:opacity 0.05s;}
+.panel.show{opacity:1;}
+
+/* ── COMPETITION RIBBON (always visible) ── */
+#ribbon{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 32px;
+  background:linear-gradient(180deg,rgba(0,0,0,0.82) 0%,transparent 100%);
+  opacity:0;
+}
+#ribbon::after{content:'';position:absolute;bottom:0;left:5%;right:5%;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,200,50,0.5),transparent);}
+.rib-left{display:flex;align-items:center;gap:10px;}
+.live-dot{width:8px;height:8px;border-radius:50%;background:#1adf6e;
+  box-shadow:0 0 8px #1adf6e;animation:ldot 1.5s ease-in-out infinite;}
+@keyframes ldot{0%,100%{opacity:1}50%{opacity:0.3}}
+.rib-comp{font-family:'Teko',sans-serif;font-size:clamp(13px,1.8vw,18px);
+  letter-spacing:0.3em;color:rgba(255,255,255,0.8);text-transform:uppercase;}
+.rib-venue{font-size:11px;letter-spacing:0.25em;color:rgba(255,255,255,0.4);text-transform:uppercase;}
+.rib-time{font-family:'Teko',sans-serif;font-size:clamp(16px,2vw,22px);
+  letter-spacing:0.15em;color:rgba(255,200,50,0.85);}
+
+/* ── SCENE NAV DOTS ── */
+#nav{position:absolute;top:50%;right:20px;transform:translateY(-50%);
+  display:flex;flex-direction:column;gap:8px;opacity:0;}
+.ndot{width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.2);
+  transition:all 0.35s;}
+.ndot.on{background:#f5c842;height:18px;border-radius:3px;}
+
+/* ── SCENE 1: SCORE ── */
+#p1{gap:clamp(12px,2vh,24px);}
+.p1-top{font-size:10px;letter-spacing:0.5em;color:rgba(255,200,50,0.75);
+  text-transform:uppercase;opacity:0;}
+.teams-row{display:flex;align-items:center;justify-content:center;
+  gap:clamp(20px,5vw,60px);}
+.team-block{display:flex;flex-direction:column;align-items:center;gap:8px;opacity:0;}
+.team-badge{
+  width:clamp(70px,10vw,120px);height:clamp(70px,10vw,120px);
+  position:relative;
+}
+.team-badge canvas{width:100%!important;height:100%!important;}
+.team-nm{font-family:'Teko',sans-serif;font-size:clamp(20px,3.5vw,42px);
+  letter-spacing:0.12em;font-weight:600;color:#fff;text-align:center;
+  text-shadow:0 2px 20px rgba(0,0,0,0.8);}
+.team-sub{font-size:9px;letter-spacing:0.3em;color:rgba(255,255,255,0.45);
+  text-transform:uppercase;}
+
+.score-center{display:flex;flex-direction:column;align-items:center;gap:6px;opacity:0;}
+.sc-nums{display:flex;align-items:center;gap:clamp(8px,2vw,20px);}
+/* 3D-STYLE SCORE DIGITS via CSS text-shadow depth */
+.sc-d{
+  font-family:'Teko',sans-serif;
+  font-size:clamp(72px,12vw,140px);
+  font-weight:700;color:#fff;line-height:1;
+  text-shadow:
+    1px 1px 0 rgba(200,150,30,0.9),
+    2px 2px 0 rgba(180,130,20,0.8),
+    3px 3px 0 rgba(160,110,15,0.7),
+    4px 4px 0 rgba(140,90,10,0.6),
+    5px 5px 0 rgba(120,70,5,0.5),
+    6px 6px 8px rgba(0,0,0,0.6),
+    0 0 60px rgba(255,210,60,0.25);
+}
+.sc-dash{font-family:'Teko',sans-serif;font-size:clamp(40px,7vw,80px);
+  font-weight:300;color:rgba(255,200,50,0.7);line-height:1;}
+.result-chip{padding:4px 18px;border:1px solid rgba(255,200,50,0.4);
+  font-size:11px;letter-spacing:0.4em;text-transform:uppercase;
+  color:rgba(255,200,50,0.9);background:rgba(255,200,50,0.06);}
+
+/* ── SCENE 2: GOAL REEL ── */
+#p2{gap:0;justify-content:center;padding:20px clamp(20px,5vw,80px);}
+.sec-hdr{
+  font-family:'Teko',sans-serif;
+  font-size:clamp(30px,5vw,56px);
+  letter-spacing:0.25em;
+  text-transform:uppercase;
+  text-align:center;
+  color:#fff;
+  text-shadow:
+    2px 2px 0 rgba(200,150,30,0.8),
+    4px 4px 0 rgba(150,100,10,0.6),
+    6px 6px 10px rgba(0,0,0,0.7);
+  margin-bottom:clamp(12px,2vh,24px);
+  opacity:0;
+}
+.goal-card{
+  display:flex;align-items:center;gap:0;
+  background:rgba(255,255,255,0.04);
+  border-left:3px solid transparent;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  padding:clamp(8px,1.4vh,14px) clamp(12px,2vw,22px);
+  margin-bottom:2px;
+  opacity:0;transform:translateX(-50px);
+  backdrop-filter:blur(4px);
+}
+.goal-card.home{border-left-color:#3a7fff;}
+.goal-card.away{border-left-color:#ff4040;}
+.gc-min{font-family:'Teko',sans-serif;font-size:clamp(24px,3.5vw,38px);
+  color:#f5c842;min-width:clamp(50px,6vw,70px);line-height:1;}
+.gc-ball{font-size:clamp(18px,2.5vw,24px);margin:0 clamp(8px,1.5vw,14px);}
+.gc-info{flex:1;}
+.gc-name{font-family:'Teko',sans-serif;font-size:clamp(18px,2.8vw,30px);
+  color:#fff;letter-spacing:0.06em;line-height:1;font-weight:500;}
+.gc-detail{font-size:10px;letter-spacing:0.2em;color:rgba(255,255,255,0.45);
+  text-transform:uppercase;margin-top:2px;}
+.gc-assist{font-size:11px;color:rgba(255,255,255,0.4);margin-top:2px;letter-spacing:0.12em;}
+
+/* ── SCENE 3: DISCIPLINARY ── */
+#p3{padding:20px clamp(20px,5vw,80px);}
+.disc-grid{display:grid;grid-template-columns:1fr 1fr;gap:clamp(16px,3vw,32px);
+  width:min(820px,96vw);}
+.disc-col-title{font-size:10px;letter-spacing:0.4em;text-transform:uppercase;
+  padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:10px;}
+.disc-col-title.yc{color:#f5c842;}
+.disc-col-title.rc{color:#f03535;}
+.disc-item{
+  display:flex;align-items:center;gap:10px;
+  padding:clamp(8px,1.2vh,12px) clamp(10px,1.5vw,16px);
+  background:rgba(255,255,255,0.03);
+  border:1px solid rgba(255,255,255,0.06);
+  margin-bottom:4px;
+  opacity:0;transform:translateY(20px);
+}
+.card-rect{
+  width:clamp(16px,2.5vw,24px);height:clamp(22px,3.2vw,32px);
+  border-radius:2px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:9px;font-weight:900;letter-spacing:0;
+}
+.card-rect.yc{background:#f5c842;color:#000;}
+.card-rect.rc{background:#f03535;color:#fff;}
+.card-rect.y2r{background:linear-gradient(135deg,#f5c842 50%,#f03535 50%);}
+.di-name{font-family:'Teko',sans-serif;font-size:clamp(16px,2.4vw,24px);
+  color:#fff;letter-spacing:0.06em;line-height:1;}
+.di-meta{font-size:9px;letter-spacing:0.2em;color:rgba(255,255,255,0.4);text-transform:uppercase;margin-top:1px;}
+.di-min{font-family:'Teko',sans-serif;font-size:clamp(18px,2.5vw,28px);
+  color:#f5c842;margin-left:auto;flex-shrink:0;}
+
+/* ── SCENE 4: STATS ── */
+#p4{padding:20px clamp(20px,5vw,80px);}
+.stats-table{width:min(720px,96vw);}
+.stat-row{
+  display:grid;grid-template-columns:1fr 130px 1fr;
+  align-items:center;gap:10px;
+  padding:clamp(5px,1vh,9px) 0;
+  border-bottom:1px solid rgba(255,255,255,0.04);
+  opacity:0;
+}
+.sv-home{font-family:'Teko',sans-serif;font-size:clamp(18px,2.8vw,32px);
+  color:#4a90ff;text-align:right;line-height:1;}
+.sv-away{font-family:'Teko',sans-serif;font-size:clamp(18px,2.8vw,32px);
+  color:#ff5050;text-align:left;line-height:1;}
+.sl-center{font-size:9px;letter-spacing:0.28em;color:rgba(255,255,255,0.45);
+  text-align:center;text-transform:uppercase;}
+.dual-bar{display:flex;height:4px;margin-top:3px;}
+.db-h{height:100%;background:linear-gradient(90deg,#4a90ff,rgba(74,144,255,0.4));
+  border-radius:2px 0 0 2px;width:0%;transition:width 1.3s cubic-bezier(0.16,1,0.3,1);}
+.db-a{height:100%;background:linear-gradient(90deg,rgba(255,80,80,0.4),#ff5050);
+  border-radius:0 2px 2px 0;width:0%;transition:width 1.3s cubic-bezier(0.16,1,0.3,1);}
+.db-h-wrap{display:flex;justify-content:flex-end;}
+.db-a-wrap{display:flex;}
+
+/* ── SCENE 5: POTM ── */
+#p5{gap:clamp(10px,1.8vh,20px);}
+.potm-eyebrow{font-size:10px;letter-spacing:0.6em;color:rgba(255,200,50,0.8);
+  text-transform:uppercase;opacity:0;}
+.potm-nm{
+  font-family:'Teko',sans-serif;
+  font-size:clamp(48px,9vw,120px);
+  font-weight:700;letter-spacing:0.06em;
+  color:#fff;line-height:0.9;text-align:center;
+  text-shadow:
+    2px 2px 0 rgba(200,150,20,0.9),
+    4px 4px 0 rgba(160,110,10,0.7),
+    6px 6px 0 rgba(120,80,5,0.5),
+    8px 8px 14px rgba(0,0,0,0.7),
+    0 0 80px rgba(245,200,66,0.3);
+  opacity:0;transform:scale(0.6) translateY(30px);
+}
+.potm-ring{
+  width:clamp(90px,13vw,145px);height:clamp(90px,13vw,145px);
+  border-radius:50%;
+  border:2px solid rgba(245,200,66,0.5);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(0,0,0,0.6);
+  box-shadow:0 0 50px rgba(245,200,66,0.15),inset 0 0 30px rgba(245,200,66,0.06);
+  opacity:0;
+}
+.potm-ov{font-family:'Teko',sans-serif;font-size:clamp(38px,5.5vw,64px);
+  color:#f5c842;line-height:1;font-weight:700;}
+.potm-ovl{font-size:8px;letter-spacing:0.35em;color:rgba(255,255,255,0.45);}
+.potm-pos{font-size:11px;letter-spacing:0.35em;color:rgba(255,200,50,0.6);
+  text-transform:uppercase;opacity:0;}
+.potm-stats{display:flex;gap:clamp(20px,4vw,48px);opacity:0;}
+.ps-val{font-family:'Teko',sans-serif;font-size:clamp(28px,4.5vw,52px);color:#fff;line-height:1;text-align:center;}
+.ps-lbl{font-size:8px;letter-spacing:0.3em;color:rgba(255,255,255,0.4);text-transform:uppercase;margin-top:2px;text-align:center;}
+
+/* ── GOAL CELEBRATION ── */
+#gcelebration{
+  position:fixed;inset:0;z-index:500;pointer-events:none;
+  display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;
+  opacity:0;
+}
+.gcstamp{
+  font-family:'Teko',sans-serif;font-size:clamp(90px,17vw,200px);font-weight:700;
+  color:#f5c842;line-height:0.9;
+  text-shadow:
+    3px 3px 0 rgba(180,120,0,1),
+    6px 6px 0 rgba(140,90,0,0.8),
+    9px 9px 0 rgba(100,60,0,0.6),
+    12px 12px 20px rgba(0,0,0,0.8),
+    0 0 100px rgba(245,200,66,0.7);
+  transform:scale(0.2);
+}
+.gcsub{font-family:'Teko',sans-serif;font-size:clamp(16px,2.5vw,28px);
+  letter-spacing:0.4em;color:#fff;text-transform:uppercase;opacity:0;
+  text-shadow:0 0 20px rgba(255,255,255,0.4);}
+
+/* progress */
+#pg{position:fixed;bottom:0;left:0;right:0;height:2px;z-index:200;background:rgba(255,255,255,0.05);}
+#pgf{height:100%;background:linear-gradient(90deg,#c8922a,#f5c842);width:0%;}
+
+/* confetti canvas */
+#cfc{position:fixed;inset:0;z-index:490;pointer-events:none;}
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<canvas id="cfc"></canvas>
+<div class="vig"></div>
+<div class="scanlines"></div>
+
+<!-- GOAL CELEBRATION -->
+<div id="gcelebration">
+  <div class="gcstamp">GOAL!</div>
+  <div class="gcsub" id="gcsub-txt">Scorer · Min</div>
+</div>
+
+<div id="hud">
+  <!-- Ribbon -->
+  <div id="ribbon">
+    <div class="rib-left">
+      <div class="live-dot"></div>
+      <div class="rib-comp">UEFA Champions League &nbsp;·&nbsp; Quarter Final</div>
+    </div>
+    <div class="rib-venue">Emirates Stadium · London</div>
+    <div class="rib-time" id="clock-el">21:00</div>
+  </div>
+
+  <!-- Nav dots -->
+  <div id="nav">
+    <div class="ndot on"></div>
+    <div class="ndot"></div>
+    <div class="ndot"></div>
+    <div class="ndot"></div>
+    <div class="ndot"></div>
+  </div>
+
+  <!-- ── PANEL 1: SCORE ── -->
+  <div class="panel show" id="p1">
+    <div class="p1-top">Full Time Result</div>
+    <div class="teams-row">
+      <div class="team-block" id="tb-home">
+        <div class="team-badge" id="badge3d-home"></div>
+        <div class="team-nm">ARSENAL</div>
+        <div class="team-sub">Home · London</div>
+      </div>
+      <div class="score-center" id="sc-block">
+        <div class="sc-nums">
+          <span class="sc-d" id="sd-h">3</span>
+          <span class="sc-dash">-</span>
+          <span class="sc-d" id="sd-a">2</span>
+        </div>
+        <div class="result-chip" id="res-chip">Arsenal Win</div>
+      </div>
+      <div class="team-block" id="tb-away">
+        <div class="team-badge" id="badge3d-away"></div>
+        <div class="team-nm">REAL MADRID</div>
+        <div class="team-sub">Away · Madrid</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PANEL 2: GOALS ── -->
+  <div class="panel" id="p2">
+    <div class="sec-hdr" id="gh-title">Goalscorers</div>
+    <div id="goals-list" style="width:min(720px,96vw)"></div>
+  </div>
+
+  <!-- ── PANEL 3: CARDS ── -->
+  <div class="panel" id="p3">
+    <div class="sec-hdr" style="opacity:0" id="dc-title">Disciplinary</div>
+    <div class="disc-grid">
+      <div>
+        <div class="disc-col-title yc">Yellow Cards</div>
+        <div id="yc-list"></div>
+      </div>
+      <div>
+        <div class="disc-col-title rc">Red Cards</div>
+        <div id="rc-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PANEL 4: STATS ── -->
+  <div class="panel" id="p4">
+    <div class="sec-hdr" style="opacity:0" id="st-title">Match Statistics</div>
+    <div class="stats-table" id="stats-list"></div>
+  </div>
+
+  <!-- ── PANEL 5: POTM ── -->
+  <div class="panel" id="p5">
+    <div class="potm-eyebrow">Player of the Match</div>
+    <div class="potm-ring">
+      <div class="potm-ov">9.2</div>
+      <div class="potm-ovl">Rating</div>
+    </div>
+    <div class="potm-nm">BUKAYO<br>SAKA</div>
+    <div class="potm-pos">Arsenal FC &nbsp;·&nbsp; Right Wing &nbsp;·&nbsp; #7</div>
+    <div class="potm-stats">
+      <div><div class="ps-val">2</div><div class="ps-lbl">Goals</div></div>
+      <div><div class="ps-val">1</div><div class="ps-lbl">Assist</div></div>
+      <div><div class="ps-val">5</div><div class="ps-lbl">Shots</div></div>
+      <div><div class="ps-val">92%</div><div class="ps-lbl">Pass Acc</div></div>
+      <div><div class="ps-val">7</div><div class="ps-lbl">Dribbles</div></div>
+    </div>
+  </div>
+</div>
+
+<div id="pg"><div id="pgf"></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// MATCH DATA
+// ═══════════════════════════════════════════════════════════════════
+const GOALS = [
+  {min:'23',scorer:'Bukayo Saka',team:'home',type:'Right Foot',assist:'Assist: M. Odegaard'},
+  {min:'41',scorer:'Vinicius Jr.',team:'away',type:'Left Foot',assist:'Assist: Bellingham'},
+  {min:'58',scorer:'Kai Havertz',team:'home',type:'Header',assist:'Assist: B. Saka'},
+  {min:'67',scorer:'Bukayo Saka',team:'home',type:'Right Foot',assist:'Assist: Zinchenko'},
+  {min:'74',scorer:'Jude Bellingham',team:'away',type:'Right Foot',assist:'Assist: Vinicius'},
+];
+const YC = [
+  {min:'34',player:'Thomas Partey',team:'home',reason:'Tactical Foul',type:'yc'},
+  {min:'52',player:'Luka Modric',team:'away',reason:'Dissent',type:'yc'},
+  {min:'71',player:'Ferland Mendy',team:'away',reason:'Reckless Tackle',type:'yc'},
+  {min:'89',player:'Declan Rice',team:'home',reason:'Time Wasting',type:'yc'},
+];
+const RC = [
+  {min:'78',player:'Eder Militao',team:'away',reason:'Violent Conduct',type:'rc'},
+  {min:'85',player:'Gabriel',team:'home',reason:'2nd Yellow Card',type:'y2r'},
+];
+const STATS = [
+  {label:'Possession',   home:'58%',away:'42%',hv:58,av:42},
+  {label:'Shots',        home:'14', away:'9',  hv:61,av:39},
+  {label:'On Target',    home:'7',  away:'4',  hv:64,av:36},
+  {label:'Corners',      home:'8',  away:'5',  hv:62,av:38},
+  {label:'Fouls',        home:'11', away:'15', hv:42,av:58},
+  {label:'Pass Accuracy',home:'88%',away:'84%',hv:51,av:49},
+  {label:'Saves',        home:'3',  away:'6',  hv:33,av:67},
+  {label:'Offsides',     home:'2',  away:'4',  hv:33,av:67},
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// THREE.JS FULL STADIUM
+// ═══════════════════════════════════════════════════════════════════
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:false});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+
+const scene = new THREE.Scene();
+// Night sky gradient via fog
+scene.background = new THREE.Color(0x080c1a);
+scene.fog = new THREE.Fog(0x060810, 60, 180);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 400);
+camera.position.set(0, 28, 55);
+camera.lookAt(0, 0, 0);
+
+// ── PITCH ──
+const PW = 68, PH = 105;
+const pitchMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(PW, PH),
+  new THREE.MeshLambertMaterial({color:0x1a5c1a})
+);
+pitchMesh.rotation.x = -Math.PI/2;
+pitchMesh.receiveShadow = true;
+scene.add(pitchMesh);
+
+// Stripes
+for(let i=0;i<14;i++){
+  const stripe = new THREE.Mesh(
+    new THREE.PlaneGeometry(PW, PH/14 - 0.15),
+    new THREE.MeshLambertMaterial({color:i%2?0x185818:0x1e6e1e, transparent:true, opacity:0.9})
+  );
+  stripe.rotation.x = -Math.PI/2;
+  stripe.position.set(0, 0.01, -PH/2 + (i+0.5)*(PH/14));
+  scene.add(stripe);
+}
+
+// Pitch markings
+const lmat = new THREE.LineBasicMaterial({color:0xffffff, opacity:0.85, transparent:true});
+function addLine(pts){
+  const g = new THREE.BufferGeometry().setFromPoints(pts.map(([x,z])=>new THREE.Vector3(x,0.05,z)));
+  scene.add(new THREE.Line(g,lmat));
+}
+const hw=PW/2;
+hh=PH/2;
+addLine([[-hw,hh],[hw,hh],[hw,-hh],[-hw,-hh],[-hw,hh]]);
+addLine([[-hw,0],[hw,0]]);
+const cc=[];for(let a=0;a<=360;a+=4)cc.push([Math.cos(a*Math.PI/180)*9.15,Math.sin(a*Math.PI/180)*9.15]);
+addLine(cc);
+const cd=new THREE.Mesh(new THREE.CircleGeometry(0.3,16),new THREE.MeshBasicMaterial({color:0xffffff}));
+cd.rotation.x=-Math.PI/2; cd.position.y=0.06; scene.add(cd);
+// penalty boxes
+addLine([[-20.15,hh],[-20.15,hh-16.5],[20.15,hh-16.5],[20.15,hh]]);
+addLine([[-20.15,-hh],[-20.15,-hh+16.5],[20.15,-hh+16.5],[20.15,-hh]]);
+addLine([[-9.15,hh],[-9.15,hh-5.5],[9.15,hh-5.5],[9.15,hh]]);
+addLine([[-9.15,-hh],[-9.15,-hh+5.5],[9.15,-hh+5.5],[9.15,-hh]]);
+// penalty spots
+const ps1=new THREE.Mesh(new THREE.CircleGeometry(0.22,12),new THREE.MeshBasicMaterial({color:0xffffff}));
+ps1.rotation.x=-Math.PI/2; ps1.position.set(0,0.06,hh-11); scene.add(ps1);
+const ps2=ps1.clone(); ps2.position.set(0,0.06,-hh+11); scene.add(ps2);
+
+// ── GOAL POSTS ──
+function addGoalPosts(zSide){
+  const gmat = new THREE.MeshStandardMaterial({color:0xffffff, metalness:0.9, roughness:0.1});
+  const r=0.1;
+  const cb=new THREE.Mesh(new THREE.CylinderGeometry(r,r,7.32,8),gmat);
+  cb.rotation.z=Math.PI/2; cb.position.set(0,2.44,zSide*hh); scene.add(cb);
+  [-3.66,3.66].forEach(x=>{
+    const p=new THREE.Mesh(new THREE.CylinderGeometry(r,r,2.44,8),gmat);
+    p.position.set(x,1.22,zSide*hh); scene.add(p);
+  });
+  // net (simplified with planes)
+  const nmat=new THREE.MeshBasicMaterial({color:0xffffff,wireframe:true,opacity:0.08,transparent:true});
+  const net=new THREE.Mesh(new THREE.BoxGeometry(7.32,2.44,2),nmat);
+  net.position.set(0,1.22,zSide*(hh+1)); scene.add(net);
+}
+addGoalPosts(1); addGoalPosts(-1);
+
+// ── STADIUM STANDS ──
+function buildStands(){
+  // 4 sides: north, south, east, west
+  const standColor1 = 0x1a1f3a;
+  const standColor2 = 0x222840;
+
+  // --- NORTH/SOUTH STANDS (behind goals) ---
+  const northGeo = new THREE.BufferGeometry();
+  const verts = [];
+  const seatsN = 18, seatsH = 12, seatW = PW+20;
+  for(let row=0;row<seatsH;row++){
+    const z = hh + 5 + row*3.5;
+    const y = 0.5 + row*2.8;
+    verts.push(-seatW/2,y,z, seatW/2,y,z, seatW/2,y+0.5,z, -seatW/2,y+0.5,z);
+  }
+  // build as series of flat strips
+  for(let row=0;row<seatsH;row++){
+    const seatColor = row%3===0?0x2a3060:row%3===1?0x222850:0x1e2245;
+    // Each row has many seats
+    for(let col=0;col<22;col++){
+      const w=(seatW/22)-0.1;
+      const x=-seatW/2+col*(seatW/22)+w/2;
+      const z = hh + 5 + row*3.5;
+      const y = 0.5 + row*2.8;
+      const seat=new THREE.Mesh(
+        new THREE.BoxGeometry(w,0.55,0.8),
+        new THREE.MeshLambertMaterial({color: Math.random()>0.15 ? seatColor : 0xcc2222})
+      );
+      seat.position.set(x,y,z); scene.add(seat);
+    }
+    // south
+    for(let col=0;col<22;col++){
+      const w=(seatW/22)-0.1;
+      const x=-seatW/2+col*(seatW/22)+w/2;
+      const z=-(hh+5+row*3.5);
+      const y=0.5+row*2.8;
+      const seat=new THREE.Mesh(
+        new THREE.BoxGeometry(w,0.55,0.8),
+        new THREE.MeshLambertMaterial({color: Math.random()>0.15 ? seatColor : 0xcc2222})
+      );
+      seat.position.set(x,y,z); scene.add(seat);
+    }
+  }
+
+  // --- EAST/WEST LONG STANDS ---
+  const longLen = PH + 16;
+  for(let side=0;side<2;side++){
+    const xSide = side===0 ? 1 : -1;
+    for(let row=0;row<seatsH;row++){
+      const seatColor = row%3===0?0x2a3060:row%3===1?0x222850:0x1e2245;
+      for(let col=0;col<30;col++){
+        const w=(longLen/30)-0.1;
+        const z=-longLen/2+col*(longLen/30)+w/2;
+        const x=xSide*(hw+5+row*3.5);
+        const y=0.5+row*2.8;
+        const seat=new THREE.Mesh(
+          new THREE.BoxGeometry(0.8,0.55,w),
+          new THREE.MeshLambertMaterial({color: Math.random()>0.15 ? seatColor : 0xcc2222})
+        );
+        seat.position.set(x,y,z); scene.add(seat);
+      }
+    }
+  }
+
+  // roof trusses
+  const trussmat = new THREE.MeshStandardMaterial({color:0xaaaaaa,metalness:0.8,roughness:0.3});
+  // North roof
+  const nroof=new THREE.Mesh(new THREE.BoxGeometry(PW+25,0.6,5),trussmat);
+  nroof.position.set(0,35,hh+35); scene.add(nroof);
+  const sroof=nroof.clone(); sroof.position.set(0,35,-(hh+35)); scene.add(sroof);
+  const eroof=new THREE.Mesh(new THREE.BoxGeometry(5,0.6,PH+30),trussmat);
+  eroof.position.set(hw+35,35,0); scene.add(eroof);
+  const wroof=eroof.clone(); wroof.position.set(-(hw+35),35,0); scene.add(wroof);
+
+  // Support columns
+  const colmat=new THREE.MeshStandardMaterial({color:0x888888,metalness:0.7,roughness:0.4});
+  const colGeo=new THREE.CylinderGeometry(0.5,0.8,36,8);
+  const colPositions=[
+    [-(PW/2+20),0,hh+38],[0,0,hh+38],[PW/2+20,0,hh+38],
+    [-(PW/2+20),0,-(hh+38)],[0,0,-(hh+38)],[PW/2+20,0,-(hh+38)],
+    [hw+38,0,-PH/4],[hw+38,0,PH/4],
+    [-(hw+38),0,-PH/4],[-(hw+38),0,PH/4],
+  ];
+  colPositions.forEach(([x,y,z])=>{
+    const col=new THREE.Mesh(colGeo,colmat);
+    col.position.set(x,18,z); scene.add(col);
+  });
+
+  // Floodlights on top of columns
+  const floodmat=new THREE.MeshStandardMaterial({color:0xffffee,emissive:0xffff88,emissiveIntensity:0.5,metalness:0.5});
+  colPositions.slice(0,4).forEach(([x,y,z])=>{
+    const fl=new THREE.Mesh(new THREE.BoxGeometry(3,0.4,1.5),floodmat);
+    fl.position.set(x,36.5,z); scene.add(fl);
+  });
+}
+buildStands();
+
+// ── LIGHTING ──
+scene.add(new THREE.AmbientLight(0x223355, 0.7));
+// Floodlights
+const floodPositions=[
+  [-40,40,-55],[ 40,40,-55],[-40,40, 55],[ 40,40, 55],
+  [ 0, 42,-55],[ 0, 42, 55],[-40,42,  0],[ 40,42,  0]
+];
+floodPositions.forEach(([x,y,z])=>{
+  const sl=new THREE.SpotLight(0xfff8f0, 0.55, 200, Math.PI/5, 0.4, 1.0);
+  sl.position.set(x,y,z);
+  sl.target.position.set(0,0,0);
+  sl.castShadow = true;
+  sl.shadow.mapSize.width  = 512;
+  sl.shadow.mapSize.height = 512;
+  scene.add(sl); scene.add(sl.target);
+});
+// Warm rim light
+const rimL=new THREE.DirectionalLight(0xff9922,0.3);
+rimL.position.set(-30,20,30); scene.add(rimL);
+
+// ── CONFETTI 3D ──
+const CONF_COUNT=600;
+const confGeo=new THREE.BufferGeometry();
+const cPos=new Float32Array(CONF_COUNT*3);
+const cCol=new Float32Array(CONF_COUNT*3);
+const cVel=[];
+const cPalette=[[1,0.85,0.15],[0.12,0.87,0.43],[0.94,0.22,0.22],[0.2,0.6,1],[1,1,1],[1,0.5,0.1]];
+for(let i=0;i<CONF_COUNT;i++){
+  cPos[i*3]=(Math.random()-0.5)*120;
+  cPos[i*3+1]=Math.random()*50+10;
+  cPos[i*3+2]=(Math.random()-0.5)*100;
+  cVel.push({vy:-0.05-Math.random()*0.07, vx:(Math.random()-0.5)*0.04});
+  const cp=cPalette[Math.floor(Math.random()*cPalette.length)];
+  cCol[i*3]=cp[0]; cCol[i*3+1]=cp[1]; cCol[i*3+2]=cp[2];
+}
+confGeo.setAttribute('position',new THREE.BufferAttribute(cPos,3));
+confGeo.setAttribute('color',   new THREE.BufferAttribute(cCol,3));
+const confMat=new THREE.PointsMaterial({size:0.35,vertexColors:true,transparent:true,opacity:0});
+const confPts=new THREE.Points(confGeo,confMat);
+scene.add(confPts);
+let confActive=false;
+
+// ── 3D SHIELD LOGOS ──
+function make3DLogo(containerId, colorHex, ringColor, size){
+  const wrap=document.getElementById(containerId);
+  if(!wrap)return;
+  const r=new THREE.WebGLRenderer({antialias:true,alpha:true});
+  r.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  r.setSize(size,size); wrap.appendChild(r.domElement);
+  const sc=new THREE.Scene();
+  const cam=new THREE.PerspectiveCamera(40,1,0.1,100);
+  cam.position.set(0,0,5);
+  const sh=new THREE.Shape();
+  sh.moveTo(-1.2,1.6);sh.lineTo(1.2,1.6);sh.lineTo(1.2,-0.5);
+  sh.quadraticCurveTo(1.2,-1.8,0,-2.2);sh.quadraticCurveTo(-1.2,-1.8,-1.2,-0.5);sh.lineTo(-1.2,1.6);
+  const geo=new THREE.ExtrudeGeometry(sh,{depth:0.28,bevelEnabled:true,bevelThickness:0.07,bevelSize:0.05,bevelSegments:4});
+  const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(colorHex),metalness:0.8,roughness:0.15});
+  const m=new THREE.Mesh(geo,mat); sc.add(m);
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(0.92,0.065,8,32),
+    new THREE.MeshStandardMaterial({color:new THREE.Color(ringColor),metalness:0.95,roughness:0.05}));
+  ring.position.z=0.15; sc.add(ring);
+  const star=new THREE.Mesh(new THREE.OctahedronGeometry(0.2,0),
+    new THREE.MeshStandardMaterial({color:new THREE.Color(ringColor),metalness:1,roughness:0.04}));
+  star.position.set(0,1.85,0.28); star.rotation.z=Math.PI/4; sc.add(star);
+  sc.add(new THREE.AmbientLight(0x334466,0.5));
+  const dl=new THREE.DirectionalLight(0xfff5e0,2.5); dl.position.set(3,5,4); sc.add(dl);
+  sc.add(new THREE.DirectionalLight(new THREE.Color(ringColor),1.0)).position.set(-3,-2,2);
+  sc.add(new THREE.PointLight(0xffffff,0.6,12));
+  let t=0;
+  (function lp(){requestAnimationFrame(lp);t+=0.013;
+    m.rotation.y=Math.sin(t*0.55)*0.45;
+    m.rotation.x=Math.sin(t*0.35)*0.08;
+    ring.rotation.z=t*0.6; star.rotation.y=t*2.4;
+    r.render(sc,cam);
+  })();
+}
+
+// ── CAMERA STATE MACHINE ──
+let camMode='orbit';  // orbit | score | goals | cards | stats | potm
+let camT=0;
+const camTarget={x:0,y:0,z:0};
+const camLook={x:0,y:2,z:0};
+
+// smooth camera
+const camPos={x:0,y:28,z:55};
+function lerp(a,b,t){return a+(b-a)*t;}
+
+(function renderLoop(){
+  requestAnimationFrame(renderLoop);
+  camT+=0.004;
+
+  // animate confetti
+  if(confActive){
+    const p=confPts.geometry.attributes.position;
+    for(let i=0;i<CONF_COUNT;i++){
+      p.setY(i,p.getY(i)+cVel[i].vy);
+      p.setX(i,p.getX(i)+cVel[i].vx);
+      if(p.getY(i)<-5){p.setY(i,55+Math.random()*10);p.setX(i,(Math.random()-0.5)*120);}
+    }
+    p.needsUpdate=true;
+  }
+
+  // Camera presets per scene
+  let tx,ty,tz,lx,ly,lz;
+  const s=Math.sin,c=Math.cos;
+  if(camMode==='orbit'){
+    // wide cinematic orbit, showing stadium + pitch
+    tx=s(camT*0.5)*30; ty=28+s(camT*0.3)*5; tz=55+c(camT*0.4)*12;
+    lx=0;ly=4;lz=0;
+  } else if(camMode==='goals'){
+    // low dramatic angle looking across pitch
+    tx=s(camT*0.35)*22; ty=8+s(camT*0.25)*3; tz=38+c(camT*0.3)*10;
+    lx=s(camT*0.2)*10;ly=3;lz=0;
+  } else if(camMode==='cards'){
+    // side sweep showing stands
+    tx=40+s(camT*0.4)*15; ty=14+s(camT*0.3)*4; tz=s(camT*0.5)*25;
+    lx=0;ly=5;lz=0;
+  } else if(camMode==='stats'){
+    // behind goal, pulling back showing net
+    tx=s(camT*0.3)*18; ty=12+s(camT*0.4)*5; tz=hh*2+s(camT*0.25)*8;
+    lx=0;ly=4;lz=0;
+  } else if(camMode==='potm'){
+    // tight orbit on center circle (POTM spotlight)
+    tx=s(camT)*18; ty=10+s(camT*0.5)*4; tz=20+c(camT)*14;
+    lx=0;ly=2;lz=0;
+    confMat.opacity=Math.max(0,confMat.opacity);
+  }
+
+  const sp=0.018;
+  camPos.x=lerp(camPos.x,tx,sp);
+  camPos.y=lerp(camPos.y,ty,sp);
+  camPos.z=lerp(camPos.z,tz,sp);
+
+  camera.position.set(camPos.x,camPos.y,camPos.z);
+  camera.lookAt(lx,ly,lz);
+
+  renderer.render(scene,camera);
+})();
+
+const hh = PH/2;
+
+// ═══════════════════════════════════════════════════════════════════
+// HTML BUILD
+// ═══════════════════════════════════════════════════════════════════
+function buildGoals(){
+  const el=document.getElementById('goals-list'); el.innerHTML='';
+  GOALS.forEach(g=>{
+    const d=document.createElement('div');
+    d.className=`goal-card ${g.team}`;
+    d.innerHTML=`<div class="gc-min">${g.min}'</div>
+    <div class="gc-ball">&#9917;</div>
+    <div class="gc-info">
+      <div class="gc-name">${g.scorer}</div>
+      <div class="gc-detail">${g.type}</div>
+      <div class="gc-assist">${g.assist}</div>
+    </div>`;
+    el.appendChild(d);
+  });
+}
+
+function buildCards(){
+  const yl=document.getElementById('yc-list'),rl=document.getElementById('rc-list');
+  yl.innerHTML=''; rl.innerHTML='';
+  YC.forEach(c=>{
+    const d=document.createElement('div');
+    d.className='disc-item';
+    d.innerHTML=`<div class="card-rect yc">YC</div>
+    <div><div class="di-name">${c.player}</div><div class="di-meta">${c.reason}</div></div>
+    <div class="di-min">${c.min}'</div>`;
+    yl.appendChild(d);
+  });
+  RC.forEach(c=>{
+    const d=document.createElement('div');
+    d.className='disc-item';
+    d.innerHTML=`<div class="card-rect ${c.type}">${c.type==='y2r'?'2Y':'RC'}</div>
+    <div><div class="di-name">${c.player}</div><div class="di-meta">${c.reason}</div></div>
+    <div class="di-min">${c.min}'</div>`;
+    rl.appendChild(d);
+  });
+}
+
+function buildStats(){
+  const el=document.getElementById('stats-list'); el.innerHTML='';
+  STATS.forEach(s=>{
+    const d=document.createElement('div');
+    d.className='stat-row';
+    d.innerHTML=`
+    <div>
+      <div class="sv-home">${s.home}</div>
+      <div class="db-h-wrap"><div class="dual-bar"><div class="db-h" data-w="${s.hv}"></div></div></div>
+    </div>
+    <div class="sl-center">${s.label}</div>
+    <div>
+      <div class="sv-away">${s.away}</div>
+      <div class="db-a-wrap"><div class="dual-bar"><div class="db-a" data-w="${s.av}"></div></div></div>
+    </div>`;
+    el.appendChild(d);
+  });
+}
+
+buildGoals(); buildCards(); buildStats();
+
+// ═══════════════════════════════════════════════════════════════════
+// GOAL CELEBRATION
+// ═══════════════════════════════════════════════════════════════════
+function triggerGoalCelebration(scorer,min){
+  document.getElementById('gcsub-txt').textContent=scorer+' \u00b7 '+min+"'";
+  const ov=document.getElementById('gcelebration');
+  const stamp=ov.querySelector('.gcstamp');
+  const sub=ov.querySelector('.gcsub');
+  const tl=gsap.timeline();
+  tl.set(ov,{opacity:1});
+  tl.fromTo(stamp,{scale:0.1,opacity:0},{scale:1,opacity:1,duration:0.55,ease:'back.out(2)'},0);
+  tl.fromTo(sub,{opacity:0,y:25},{opacity:1,y:0,duration:0.45,ease:'power3.out'},0.3);
+  tl.to(ov,{opacity:0,duration:0.5,ease:'power2.in'},2.0);
+  confActive=true; confMat.opacity=0.85;
+  setTimeout(()=>{confActive=false; gsap.to(confMat,{opacity:0,duration:2});},3200);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SCENE SEQUENCER
+// ═══════════════════════════════════════════════════════════════════
+const SCENES=['p1','p2','p3','p4','p5'];
+const CAM_MODES=['orbit','goals','cards','stats','potm'];
+const DURATIONS=[9,9,8,10,10];
+let currentIdx=0;
+
+function activatePanel(idx){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('show'));
+  document.querySelectorAll('.ndot').forEach((d,i)=>d.classList.toggle('on',i===idx));
+  document.getElementById(SCENES[idx]).classList.add('show');
+  camMode=CAM_MODES[idx];
+  currentIdx=idx;
+}
+
+// ── SCENE ANIMATIONS ──
+function animP1(){
+  const logoSize=Math.min(Math.floor(window.innerWidth*0.1),118);
+  make3DLogo('badge3d-home','#e63030','#ffd700',logoSize);
+  make3DLogo('badge3d-away','#c8a200','#ffffff',logoSize);
+  const tl=gsap.timeline();
+  tl.to('#ribbon',{opacity:1,duration:0.7},0.2);
+  tl.to('#nav',{opacity:1,duration:0.5},0.4);
+  tl.to('.p1-top',{opacity:1,duration:0.6},0.5);
+  tl.to('#tb-home',{opacity:1,y:0,duration:0.8,ease:'power3.out'},0.7);
+  tl.to('#tb-away',{opacity:1,y:0,duration:0.8,ease:'power3.out'},0.9);
+  tl.to('#sc-block',{opacity:1,duration:0.6,ease:'back.out(1.4)'},1.2);
+  tl.fromTo('.sc-d',{scale:0.3,y:-40,opacity:0},{scale:1,y:0,opacity:1,
+    duration:0.7,stagger:0.25,ease:'back.out(2)'},1.4);
+  tl.to('#res-chip',{opacity:1,duration:0.5},2.2);
+  // first goal celebration
+  tl.call(()=>triggerGoalCelebration(GOALS[0].scorer,GOALS[0].min),null,2.6);
+}
+
+function animP2(){
+  const tl=gsap.timeline();
+  tl.to('#gh-title',{opacity:1,duration:0.6},0.2);
+  tl.to('.goal-card',{opacity:1,x:0,duration:0.55,stagger:0.12,ease:'back.out(1.3)'},0.5);
+}
+
+function animP3(){
+  const tl=gsap.timeline();
+  tl.to('#dc-title',{opacity:1,duration:0.6},0.2);
+  tl.to('.disc-item',{opacity:1,y:0,duration:0.45,stagger:0.1,ease:'back.out(1.5)'},0.5);
+}
+
+function animP4(){
+  const tl=gsap.timeline();
+  tl.to('#st-title',{opacity:1,duration:0.6},0.2);
+  tl.to('.stat-row',{opacity:1,duration:0.4,stagger:0.1,ease:'power3.out'},0.4);
+  tl.call(()=>{
+    document.querySelectorAll('.db-h').forEach(b=>b.style.width=b.getAttribute('data-w')+'%');
+    document.querySelectorAll('.db-a').forEach(b=>b.style.width=b.getAttribute('data-w')+'%');
+  },null,0.9);
+}
+
+function animP5(){
+  const tl=gsap.timeline();
+  tl.to('.potm-eyebrow',{opacity:1,duration:0.6},0.3);
+  tl.to('.potm-ring',{opacity:1,duration:0.7,ease:'back.out(1.5)'},0.6);
+  tl.to('.potm-nm',{opacity:1,scale:1,y:0,duration:0.85,ease:'back.out(1.3)'},1.0);
+  tl.to('.potm-pos',{opacity:1,duration:0.5},1.6);
+  tl.to('.potm-stats',{opacity:1,duration:0.5},1.8);
+  // Celebration
+  tl.call(()=>{
+    confActive=true; confMat.opacity=0.75;
+    setTimeout(()=>{confActive=false;gsap.to(confMat,{opacity:0,duration:2.5});},5000);
+  },null,1.2);
+}
+
+const ANIM_FNS=[animP1,animP2,animP3,animP4,animP5];
+
+function resetPanel(idx){
+  const p=document.getElementById(SCENES[idx]);
+  // reset opacities for re-animation
+  p.querySelectorAll('[style*="opacity"]').forEach(e=>{
+    if(e.id!=='ribbon'&&e.id!=='nav') e.style.opacity='';
+  });
+  p.querySelectorAll('.goal-card,.disc-item,.stat-row').forEach(e=>{
+    e.style.opacity='0'; e.style.transform='';
+  });
+  p.querySelectorAll('.db-h,.db-a').forEach(b=>b.style.width='0%');
+  // reset 3D logos
+  if(idx===0){
+    ['badge3d-home','badge3d-away'].forEach(id=>{
+      const w=document.getElementById(id);
+      if(w) w.innerHTML='';
+    });
+  }
+}
+
+function runScene(idx){
+  if(idx>=SCENES.length) idx=0;
+  resetPanel(idx);
+  activatePanel(idx);
+  ANIM_FNS[idx]();
+  gsap.fromTo('#pgf',{width:'0%'},{width:'100%',duration:DURATIONS[idx],ease:'none'});
+  setTimeout(()=>runScene(idx+1), DURATIONS[idx]*1000);
+}
+
+// CLOCK
+function updateClock(){
+  const n=new Date();
+  document.getElementById('clock-el').textContent=
+    String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0');
+}
+updateClock(); setInterval(updateClock,1000);
+
+// START
+setTimeout(()=>runScene(0), 500);
+
+// RESIZE
+window.addEventListener('resize',()=>{
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+</script>
+</body>
+</html>
