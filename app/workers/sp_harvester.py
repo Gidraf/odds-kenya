@@ -448,6 +448,15 @@ def _parse_match_item(item: dict) -> dict | None:
 
     sport_raw  = item.get("sport") or {}
     sport_name = _str_field(sport_raw)
+    # Numeric sport ID for sport-aware market mapping (e.g. ID 52 = goals vs points)
+    sp_sport_id: int = 1
+    if isinstance(sport_raw, dict):
+        try:
+            sp_sport_id = int(sport_raw.get("id") or 1)
+        except (TypeError, ValueError):
+            pass
+    elif isinstance(sport_raw, int):
+        sp_sport_id = sport_raw
 
     inline = item.get("markets") or item.get("odds") or []
     if isinstance(inline, dict):
@@ -461,6 +470,7 @@ def _parse_match_item(item: dict) -> dict | None:
         "start_time":   _parse_timestamp(item),
         "competition":  competition,
         "sport":        sport_name,
+        "sp_sport_id":  sp_sport_id,   # int — passed to normalize_sp_market
         "_inline_mkts": inline,
     }
 
@@ -469,6 +479,7 @@ def _parse_markets(
     raw_list:  list[dict],
     game_id:   str | None = None,
     debug_ou:  bool       = False,
+    sport_id:  int        = 1,
 ) -> dict[str, dict[str, float]]:
     """
     Convert SP market list  →  { canonical_slug: { outcome_key: float } }.
@@ -518,11 +529,11 @@ def _parse_markets(
             # not when it is 0 or any other falsy numeric value.
             spec_val = mkt.get("spec") or mkt.get("handicap")
 
-        mkt_key = normalize_sp_market(mkt_id, spec_val)
+        mkt_key = normalize_sp_market(mkt_id, spec_val, sport_id)
         markets.setdefault(mkt_key, {})
 
         # Debug O/U
-        if debug_ou and mkt_id in (52, 18):
+        if debug_ou and mkt_id in (52, 18, 56):
             print(f"[sp:ou] game={game_id} mkt_id={mkt_id} "
                   f"specValue={spec_val!r} → slug={mkt_key!r}")
 
@@ -579,6 +590,7 @@ def _build_match(
         "start_time":   parsed["start_time"],
         "competition":  parsed["competition"],
         "sport":        parsed["sport"] or sport_slug,
+        "sp_sport_id":  parsed.get("sp_sport_id", 1),
         "source":       "sportpesa",
         "status":       status,
         "markets":      markets,
@@ -687,7 +699,8 @@ def fetch_upcoming(
             raw_mkts = parsed["_inline_mkts"]
 
         markets = _parse_markets(raw_mkts, game_id=parsed["sp_game_id"],
-                                  debug_ou=debug_ou)
+                                  debug_ou=debug_ou,
+                                  sport_id=parsed.get("sp_sport_id", 1))
         results.append(_build_match(parsed, markets, sport_slug))
 
     if inline_fallback_count:
@@ -726,7 +739,8 @@ def fetch_live(
         else:
             raw_mkts = parsed["_inline_mkts"]
         markets = _parse_markets(raw_mkts, game_id=parsed["sp_game_id"],
-                                  debug_ou=debug_ou)
+                                  debug_ou=debug_ou,
+                                  sport_id=parsed.get("sp_sport_id", 1))
         results.append(_build_match(parsed, markets, sport_slug, status="live"))
 
     if inline_fallback_count:
@@ -787,7 +801,8 @@ def fetch_upcoming_stream(
             raw_mkts = parsed["_inline_mkts"]
 
         markets = _parse_markets(raw_mkts, game_id=parsed["sp_game_id"],
-                                  debug_ou=debug_ou)
+                                  debug_ou=debug_ou,
+                                  sport_id=parsed.get("sp_sport_id", 1))
         yield _build_match(parsed, markets, sport_slug)
 
     if inline_count:
@@ -823,7 +838,8 @@ def fetch_live_stream(
         else:
             raw_mkts = parsed["_inline_mkts"]
         markets = _parse_markets(raw_mkts, game_id=parsed["sp_game_id"],
-                                  debug_ou=debug_ou)
+                                  debug_ou=debug_ou,
+                                  sport_id=parsed.get("sp_sport_id", 1))
         yield _build_match(parsed, markets, sport_slug, status="live")
 
 

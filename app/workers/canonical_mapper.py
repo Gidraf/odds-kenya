@@ -102,34 +102,80 @@ def slug_with_line(base: str, raw_line: Any) -> str:
 # OUTCOME NORMALISATION
 # =============================================================================
 
+# =============================================================================
+# OUTCOME LOOKUP TABLES
+# =============================================================================
+
+# ── Universal exact-match shortNames (case-insensitive) ───────────────────────
 _OUT_EXACT: dict[str, str] = {
     # 3-way result
     "1":    "1",   "x":    "X",   "2":    "2",
     "home": "1",   "draw": "X",   "away": "2",
-    # Over / Under
-    "over":  "over",   "under":  "under",
-    "ov":    "over",   "un":     "under",
-    # BTTS / Odd-Even
+    # Over / Under  (full words and shortNames OV/UN)
+    "over":  "over",   "under": "under",
+    "ov":    "over",   "un":    "under",
+    # BTTS / GG/NG
     "yes":  "yes",   "no":   "no",
     "gg":   "yes",   "ng":   "no",
+    # Odd / Even  (shortNames OD/EV used by SP for basketball, tennis, darts)
     "odd":  "odd",   "even": "even",
     "od":   "odd",   "ev":   "even",
-    # Double Chance — all notations (B2B uses "2X" which means "X2")
-    "1x":          "1X",   "x2":          "X2",   "12":          "12",
-    "2x":          "X2",   # B2B gap fix
-    "1/x":         "1X",   "x/2":         "X2",   "1/2":         "12",
-    "1 or x":      "1X",   "1 or 2":      "12",   "x or 2":      "X2",
-    "home or draw":"1X",   "home or away":"12",   "draw or away":"X2",
-    # No-goal / none
+    # Double Chance — slash, "or", and B2B "2X" → "X2"
+    "1x":           "1X",   "x2":           "X2",   "12":           "12",
+    "2x":           "X2",
+    "1/x":          "1X",   "x/2":          "X2",   "1/2":          "12",
+    "1 or x":       "1X",   "1 or 2":       "12",   "x or 2":       "X2",
+    "home or draw": "1X",   "home or away": "12",   "draw or away": "X2",
+    # No-goal / none  (First Team to Score)
     "none":    "none",
     "no goal": "none",
-    # Highest scoring half (market 207)
-    # SP shortName "Eql" → "equal"
-    "eql":  "equal",   "equal": "equal",
-    # "1st" and "2nd" fall through to sanitised return → "1st"/"2nd" ✓
+    # Highest Scoring Half (SP market 207)
+    "eql":   "equal",   "equal": "equal",
+    # "1st" / "2nd" pass through to the sanitise fallback → "1st" / "2nd" ✓
 }
 
-# SP-specific combo outcomes (Result + O/U, BTTS + Result)
+# ── HT/FT — must resolve BEFORE _OUT_EXACT because "12" collides with DC ─────
+# SP shortNames: "11" → "1/1", "1X" → "1/X", etc.
+_HTFT_MAP: dict[str, str] = {
+    "11": "1/1",  "1x": "1/X",  "12": "1/2",
+    "x1": "X/1",  "xx": "X/X",  "x2": "X/2",
+    "21": "2/1",  "2x": "2/X",  "22": "2/2",
+    "1/1":"1/1",  "1/x":"1/X",  "1/2":"1/2",
+    "x/1":"X/1",  "x/x":"X/X",  "x/2":"X/2",
+    "2/1":"2/1",  "2/x":"2/X",  "2/2":"2/2",
+}
+
+# ── First Set / Match Winner combo (tennis market 433) ────────────────────────
+# shortNames "11","12","21","22" → slash notation like HT/FT
+# Only applied when market_slug == "first_set_match_winner"
+_FSMW_MAP: dict[str, str] = {
+    "11": "1/1",  "12": "1/2",
+    "21": "2/1",  "22": "2/2",
+}
+
+# ── Winning Margin shortNames (basketball market 222) ────────────────────────
+# SP sends cryptic shortNames like "H15" (Home by 1-5 pts).
+# These resolve ONLY when market_slug == "winning_margin".
+_WINNING_MARGIN: dict[str, str] = {
+    # Home wins
+    "h15":   "home_1_5",    # Home by 1-5
+    "h610":  "home_6_10",   # Home by 6-10
+    "h_10":  "home_11plus", # Home by 11+  (SP uses "H_10" for ≥11)
+    "h11":   "home_11plus",
+    # Away wins
+    "a15":   "away_1_5",
+    "a610":  "away_6_10",
+    "a_10":  "away_11plus",
+    "a11":   "away_11plus",
+}
+
+# ── Winning Margin display-name fallback (when shortName not in _WINNING_MARGIN)
+_WINNING_MARGIN_DISPLAY = re.compile(
+    r"(?P<side>home|away)\s+by\s+(?P<range>[\d]+[-–+][\d]*)\s*pts?",
+    re.I,
+)
+
+# ── SP combo outcomes (Result + O/U, Result + BTTS) ──────────────────────────
 _SP_COMBO: dict[str, str] = {
     "ov_1": "1_over",   "ov_x": "X_over",   "ov_2": "2_over",
     "un_1": "1_under",  "un_x": "X_under",  "un_2": "2_under",
@@ -137,22 +183,15 @@ _SP_COMBO: dict[str, str] = {
     "1ng":  "1_no",     "xng":  "X_no",     "2ng":  "2_no",
 }
 
-# HT/FT outcomes — SP shortNames use "11","1X","X2" style (no slash).
-# These ONLY apply to the ht_ft market to avoid collision with double_chance.
-_HTFT_MAP: dict[str, str] = {
-    "11": "1/1",  "1x": "1/X",  "12": "1/2",
-    "x1": "X/1",  "xx": "X/X",  "x2": "X/2",
-    "21": "2/1",  "2x": "2/X",  "22": "2/2",
-    # slash variants (already correct if SP ever returns them)
-    "1/1": "1/1", "1/x": "1/X", "1/2": "1/2",
-    "x/1": "X/1", "x/x": "X/X", "x/2": "X/2",
-    "2/1": "2/1", "2/x": "2/X", "2/2": "2/2",
-}
-
-_OUT_OVER_RE  = re.compile(r"^over\s+([\d.]+)$",   re.I)
-_OUT_UNDER_RE = re.compile(r"^under\s+([\d.]+)$",  re.I)
+# ── Compiled regexes ──────────────────────────────────────────────────────────
+_OUT_OVER_RE  = re.compile(r"^over\s+([\d.]+)$",    re.I)
+_OUT_UNDER_RE = re.compile(r"^under\s+([\d.]+)$",   re.I)
 _OUT_SCORE_RE = re.compile(r"^\d+:\d+$")
+# Handicap bracket notation: "Hamburg [-5.5]" → "1",  "Jodar, Rafael [-1.50]" → "1"
 _OUT_HCP_RE   = re.compile(r"^([12X])\s*[\(\[].*[\)\]]$", re.I)
+_OUT_HCP_NAME = re.compile(r"^.+\s+[\(\[]([+-]?[\d.]+)[\)\]]$", re.I)
+# Point range: "Home by 1-5 pts", "Away by 11+ pts"
+_OUT_RANGE_RE = re.compile(r"^\d+[-–+]\d*$")
 
 
 def normalize_outcome(
@@ -161,40 +200,74 @@ def normalize_outcome(
     display:     str = "",
 ) -> str:
     """
-    Return a canonical outcome key for any bookmaker's raw outcome string.
+    Convert a raw SP shortName / outcome name to a canonical outcome key.
 
-    Special handling per market_slug
-    ─────────────────────────────────
-    ht_ft
-        SP shortNames are "11","1X","X2" etc. (no slash).
-        These must be resolved via _HTFT_MAP BEFORE the general _OUT_EXACT
-        lookup, because "12" in double_chance means "both teams win" (12)
-        but in ht_ft means "Home at HT / Away at FT" (1/2).
+    Dispatch order
+    ──────────────
+    1. Market-specific maps (ht_ft, first_set_match_winner, winning_margin)
+       checked FIRST to avoid collisions with generic "12" / "11" / "22" keys.
+    2. Universal _OUT_EXACT lookup (OV→over, OD→odd, 1→1, X→X …).
+    3. Regex patterns (OVER 2.50→over, Hamburg [-5.5]→1, 2:1→2:1 …).
+    4. SP combo outcomes (OV_1→1_over, 1GG→1_yes …).
+    5. Numeric ranges (0-1, 2-3, 6+).
+    6. Snake-case sanitise fallback.
 
-    highest_scoring_half
-        SP shortName "Eql" → "equal"
+    Multi-sport examples
+    ─────────────────────
+    Football:   normalize_outcome("ht_ft",              "11")  → "1/1"
+                normalize_outcome("asian_handicap_0",   "1")   → "1"
+                normalize_outcome("highest_scoring_half","Eql") → "equal"
+                normalize_outcome("over_under_goals_2.5","OV") → "over"
 
-    over_under_goals_*
-        Line is already in the slug; "OVER 2.50" → "over" (line stripped).
+    Basketball: normalize_outcome("total_points_173.5", "OV") → "over"
+                normalize_outcome("point_spread_10.5",  "1")  → "1"
+                normalize_outcome("winning_margin",     "H15") → "home_1_5"
+                normalize_outcome("winning_margin",     "A_10")→ "away_11plus"
+                normalize_outcome("odd_even_points",    "OD") → "odd"
 
-    asian/european_handicap_*
-        SP shortName "1 (0:1)" → "1"  (handicap notation stripped).
+    Tennis:     normalize_outcome("match_winner",       "1")  → "1"
+                normalize_outcome("game_handicap_-1.5", "1")  → "1"
+                normalize_outcome("total_games_22.5",   "OV") → "over"
+                normalize_outcome("set_betting",        "2:0") → "2:0"
+                normalize_outcome("first_set_match_winner","11") → "1/1"
+                normalize_outcome("set_handicap_-1.5",  "2")  → "2"
+                normalize_outcome("first_set_total_games_9.5","UN") → "under"
+                normalize_outcome("odd_even_games",     "EV") → "even"
 
-    correct_score
-        "2:1" passes through unchanged.
-
-    result_and_over_under / btts_and_result
-        SP shortNames "OV_1","XGG" etc. → resolved via _SP_COMBO.
+    eFootball:  normalize_outcome("1x2",                "X")  → "X"
+                normalize_outcome("over_under_goals_2.5","OV") → "over"
+                normalize_outcome("asian_handicap_-0.5","1")  → "1"
     """
     kl = raw_key.strip().lower()
 
-    # ── HT/FT: resolve BEFORE general lookup to avoid "12"/"x2" collision ──
+    # ── 1a. HT/FT market — must be first (avoids "12" → DC collision) ────────
     if "ht_ft" in market_slug:
         v = _HTFT_MAP.get(kl)
         if v:
             return v
 
-    # ── General exact match ──────────────────────────────────────────────────
+    # ── 1b. First Set / Match Winner (tennis, "11"→"1/1" not DC "12") ────────
+    if market_slug == "first_set_match_winner":
+        v = _FSMW_MAP.get(kl)
+        if v:
+            return v
+
+    # ── 1c. Winning Margin (basketball / handball) ────────────────────────────
+    if market_slug == "winning_margin":
+        v = _WINNING_MARGIN.get(kl)
+        if v:
+            return v
+        # Try display name fallback: "Home by 1-5 pts"
+        for txt in (raw_key, display):
+            m = _WINNING_MARGIN_DISPLAY.match(txt.strip())
+            if m:
+                side  = "home" if m.group("side").lower() == "home" else "away"
+                rng   = m.group("range").replace("–", "-").replace(" ", "")
+                return f"{side}_{rng.replace('-', '_').replace('+', 'plus')}"
+        # Fallback — sanitise whatever shortName we got
+        return re.sub(r"[^a-z0-9_]+", "_", kl).strip("_") or "unknown"
+
+    # ── 2. Universal exact match ──────────────────────────────────────────────
     for raw in (raw_key, display):
         if not raw:
             continue
@@ -204,29 +277,43 @@ def normalize_outcome(
         if v:
             return v
 
+        # "OVER 2.50" / "UNDER 173.50" → strip the line, keep the direction
         if _OUT_OVER_RE.match(kl2):
             return "over"
         if _OUT_UNDER_RE.match(kl2):
             return "under"
 
-        # Correct score "2:1", "0:0" etc.
+        # Correct score / set score: "2:1", "0:2" etc.
         if _OUT_SCORE_RE.match(raw.strip()):
             return raw.strip()
 
-        # Handicap notation "1 (0:1)" → "1"
+        # Handicap bracket — Form A: "1 [-5.5]" → "1"
         m = _OUT_HCP_RE.match(raw.strip())
         if m:
             return m.group(1).upper()
 
-    # ── SP combo outcomes ────────────────────────────────────────────────────
+        # Handicap bracket — Form B: "Hamburg [-5.5]" or "Jodar, Rafael [-1.50]"
+        # Strip the bracket and re-check the bare name fragment.
+        # We can't determine 1 vs 2 from the team name alone, so we just
+        # return "1" if the team-name segment itself resolves as a known home
+        # token, or leave it for the fallback.  In practice SP sends shortName
+        # as "1"/"2" so this path only fires for other bookmakers.
+        m2 = _OUT_HCP_NAME.match(raw.strip())
+        if m2:
+            bare = m2.group(1).strip().lower()
+            v2   = _OUT_EXACT.get(bare)
+            if v2:
+                return v2
+
+    # ── 3. SP combo outcomes (Result+O/U, Result+BTTS) ───────────────────────
     if kl in _SP_COMBO:
         return _SP_COMBO[kl]
 
-    # ── Numeric goal ranges "0-1", "2-3", "6+" ──────────────────────────────
-    if re.match(r"^\d+[-–+]\d*$", raw_key.strip()):
+    # ── 4. Numeric goal/point/margin ranges "0-1", "2-3", "6+" ──────────────
+    if _OUT_RANGE_RE.match(raw_key.strip()):
         return raw_key.strip()
 
-    # ── Fallback — sanitise to snake_case ────────────────────────────────────
+    # ── 5. Fallback — snake_case sanitise ────────────────────────────────────
     raw = raw_key.strip() or display.strip()
     return re.sub(r"[^a-z0-9_:+./\-]+", "_", raw.lower()).strip("_") or "unknown"
 
