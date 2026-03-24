@@ -2,25 +2,7 @@
 
 Markets fetched (in grid-column priority order):
   382  Match Winner (2-way)
-  204  First Set Winner
-  231  Second Set Winner
-  51   Game Handicap  (multi-line: -1.5, -0.5, +1.5)
-  226  Total Games O/U  (multi-line: 20.5 → 24.5)
-  233  Set Betting  (correct score: 2:0, 2:1, 1:2, 0:2)
-  439  Set Handicap  (±1.5)
-  45   Odd/Even Games
-  339  1st Set Game Handicap  (multi-line: -1.5, -0.5, +1.5)
-  340  1st Set Total Games O/U  (multi-line: 8.5, 9.5, 10.5)
-  433  1st Set / Match Winner combo
-  353  Player 1 Games O/U  (multi-line: 11.5, 12.5, 13.5)
-  352  Player 2 Games O/U  (multi-line: 11.5, 12.5, 13.5)
-
-Grid columns rendered by SportspesaTab (TENNIS_GRID_COLS):
-  match_winner           → Home / Away
-  first_set_winner       → 1st Set Home / 1st Set Away
-  total_games_<line>     → Gms OV / Gms UN   (best available line)
-  set_handicap_<line>    → Sets HC-1 / Sets HC+1
-  set_betting            → Sets 2-0 / Sets 2-1 / Sets 1-2 / Sets 0-2
+          → Sets 2-0 / Sets 2-1 / Sets 1-2 / Sets 0-2
 """
 
 from app.workers.sp_harvester_base import SportConfig
@@ -89,15 +71,7 @@ TENNIS_GRID_COLS: list[dict] = [
 def best_total_games_line(markets: dict) -> str | None:
     """
     Given a normalised markets dict, return the spec-value suffix of the
-    total_games_* key whose over/under prices are closest to evens.
-
-    E.g. if markets has keys "total_games_20.5", "total_games_22.5",
-    "total_games_24.5", returns "22.5" when that line is nearest 1.91/1.91.
-
-    Usage in harvester post-processing or frontend helper:
-        line = best_total_games_line(match["markets"])
-        over_price  = match["markets"].get(f"total_games_{line}", {}).get("over")
-        under_price = match["markets"].get(f"total_games_{line}", {}).get("under")
+   
     """
     import re
     best_key, best_diff = None, float("inf")

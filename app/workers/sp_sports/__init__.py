@@ -1,68 +1,327 @@
 """
-app/workers/sp_sports/
-=======================
-Per-sport Sportpesa harvester configurations.
-
-Each module exposes a single `CONFIG: SportConfig` object describing:
-  - Which URL slugs map to this sport
-  - The SP numeric sport_id
-  - Which market IDs to request from the SP API
-  - Fetch defaults (days, max matches)
+app/workers/sp_sports/__init__.py
+==================================
+Exports every SportConfig and a registry dict keyed by sport slug.
 
 Usage
 ─────
-    from app.workers.sp_sports import get_config
-    from app.workers.sp_harvester_base import fetch_upcoming_stream
+  from app.workers.sp_sports import SPORT_CONFIGS, get_config
 
-    cfg = get_config("basketball")
-    for match in fetch_upcoming_stream("basketball", cfg):
-        print(match["home_team"], match["markets"])
-
-The unified dispatcher (sp_harvester.py) uses this registry automatically.
+  cfg = get_config("tennis")          # → SportConfig(sport_id=5, …)
+  cfg = get_config("soccer")          # → SportConfig(sport_id=1, …)
 """
 
-from __future__ import annotations
 from app.workers.sp_harvester_base import SportConfig
 
-# Import every sport config
-from app.workers.sp_sports.football          import CONFIG as _FOOTBALL
-from app.workers.sp_sports.efootball         import CONFIG as _EFOOTBALL
-from app.workers.sp_sports.basketball        import CONFIG as _BASKETBALL
-from app.workers.sp_sports.tennis            import CONFIG as _TENNIS
-from app.workers.sp_sports.ice_hockey        import CONFIG as _ICE_HOCKEY
-from app.workers.sp_sports.volleyball        import CONFIG as _VOLLEYBALL
-from app.workers.sp_sports.handball          import CONFIG as _HANDBALL
-from app.workers.sp_sports.table_tennis      import CONFIG as _TABLE_TENNIS
-from app.workers.sp_sports.rugby             import CONFIG as _RUGBY
-from app.workers.sp_sports.cricket           import CONFIG as _CRICKET
-from app.workers.sp_sports.boxing            import CONFIG as _BOXING
-from app.workers.sp_sports.mma               import CONFIG as _MMA
-from app.workers.sp_sports.darts             import CONFIG as _DARTS
-from app.workers.sp_sports.american_football import CONFIG as _AMERICAN_FOOTBALL
+# ══════════════════════════════════════════════════════════════════════════════
+# SPORT CONFIGS
+# ══════════════════════════════════════════════════════════════════════════════
 
-# Registry: every slug → its SportConfig
-_ALL: list[SportConfig] = [
-    _FOOTBALL, _EFOOTBALL, _BASKETBALL, _TENNIS,
-    _ICE_HOCKEY, _VOLLEYBALL, _HANDBALL, _TABLE_TENNIS,
-    _RUGBY, _CRICKET, _BOXING, _MMA, _DARTS, _AMERICAN_FOOTBALL,
+FOOTBALL = SportConfig(
+    slugs        = ("soccer", "football"),
+    sport_id     = 1,
+    days_default = 3,
+    max_default  = 150,
+    is_esoccer   = False,
+    market_ids   = (
+        "10,1,"
+        "46,47,"
+        "43,29,386,"
+        "52,18,"
+        "353,352,"
+        "208,"
+        "258,202,"
+        "332,"
+        "51,53,"
+        "55,"
+        "45,"
+        "41,"
+        "207,"
+        "42,60,"
+        "15,54,68,"
+        "44,"
+        "328,"
+        "203,"
+        "162,166,"
+        "136,139"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+ESOCCER = SportConfig(
+    slugs        = ("esoccer", "efootball", "e-football", "virtual-football"),
+    sport_id     = 126,
+    days_default = 1,
+    max_default  = 60,
+    is_esoccer   = True,
+    market_ids   = (
+        "381,1,10,"
+        "56,52,"
+        "46,47,"
+        "43,"
+        "51,"
+        "45,"
+        "208,258,202"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+BASKETBALL = SportConfig(
+    slugs        = ("basketball",),
+    sport_id     = 2,
+    days_default = 3,
+    max_default  = 150,
+    market_ids   = (
+        "382,"
+        "51,"
+        "52,"
+        "353,"
+        "352,"
+        "45,"
+        "222,"
+        "42,"
+        "53,"
+        "54,"
+        "224,"
+        "362,"
+        "363,"
+        "364,"
+        "365,"
+        "366,"
+        "367,"
+        "368,"
+        "369"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+TENNIS = SportConfig(
+    slugs        = ("tennis",),
+    sport_id     = 5,
+    days_default = 3,
+    max_default  = 150,
+    market_ids   = (
+        "382,"
+        "204,231,"
+        "51,"
+        "226,"
+        "233,"
+        "439,"
+        "45,"
+        "339,340,"
+        "433,"
+        "353,352"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+ICE_HOCKEY = SportConfig(
+    slugs        = ("ice-hockey", "icehockey"),
+    sport_id     = 4,
+    days_default = 3,
+    max_default  = 150,
+    market_ids   = (
+        "1,10,"
+        "382,"
+        "52,"
+        "51,"
+        "45,"
+        "46,"
+        "353,352,"
+        "208,"
+        "43,"
+        "210,378"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+VOLLEYBALL = SportConfig(
+    slugs        = ("volleyball",),
+    sport_id     = 23,
+    days_default = 3,
+    max_default  = 150,
+    market_ids   = (
+        "382,"
+        "204,"
+        "20,"
+        "51,"
+        "226,"
+        "233,"
+        "45,"
+        "353,352"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+CRICKET = SportConfig(
+    slugs        = ("cricket",),
+    sport_id     = 21,
+    days_default = 5,
+    max_default  = 50,
+    market_ids   = (
+        "382,"
+        "1,"
+        "51,"
+        "52,"
+        "353,352"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+RUGBY = SportConfig(
+    slugs        = ("rugby", "rugby-league", "rugby-union"),
+    sport_id     = 12,
+    days_default = 3,
+    max_default  = 150,
+    market_ids   = (
+        "10,1,"
+        "382,"
+        "46,"
+        "42,"
+        "51,"
+        "53,"
+        "60,52,"
+        "353,352,"
+        "45,"
+        "379,"
+        "207,"
+        "44"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+HANDBALL = SportConfig(
+    slugs        = ("handball",),
+    sport_id     = 6,
+    days_default = 3,
+    max_default  = 150,
+    market_ids   = (
+        "1,10,"
+        "382,"
+        "52,"
+        "51,"
+        "45,"
+        "46,47,"
+        "353,352,"
+        "208,"
+        "43,"
+        "42,"
+        "207"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+TABLE_TENNIS = SportConfig(
+    slugs        = ("table-tennis", "tabletennis"),
+    sport_id     = 16,
+    days_default = 3,
+    max_default  = 150,
+    market_ids   = (
+        "382,"
+        "51,"
+        "226,"
+        "45,"
+        "233,"
+        "340"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+MMA = SportConfig(
+    slugs        = ("mma", "ufc"),
+    sport_id     = 117,
+    days_default = 7,
+    max_default  = 30,
+    market_ids   = (
+        "382,"
+        "20,"
+        "51,"
+        "52"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+BOXING = SportConfig(
+    slugs        = ("boxing",),
+    sport_id     = 10,
+    days_default = 7,
+    max_default  = 30,
+    market_ids   = (
+        "382,"
+        "51,"
+        "52"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+DARTS = SportConfig(
+    slugs        = ("darts",),
+    sport_id     = 49,
+    days_default = 3,
+    max_default  = 100,
+    market_ids   = (
+        "382,"
+        "226,"
+        "45,"
+        "51"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+AMERICAN_FOOTBALL = SportConfig(
+    slugs        = ("american-football", "americanfootball", "nfl"),
+    sport_id     = 15,
+    days_default = 7,
+    max_default  = 50,
+    market_ids   = (
+        "382,"
+        "51,"
+        "52,"
+        "45,"
+        "353,"
+        "352"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+BASEBALL = SportConfig(
+    slugs        = ("baseball",),
+    sport_id     = 3,
+    days_default = 3,
+    max_default  = 100,
+    market_ids   = (
+        "382,"
+        "51,"
+        "52,"
+        "45,"
+        "353,"
+        "352"
+    ).replace("\n", "").replace(" ", ""),
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REGISTRY  — slug → config
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ALL_CONFIGS = [
+    FOOTBALL, ESOCCER, BASKETBALL, TENNIS, ICE_HOCKEY,
+    VOLLEYBALL, CRICKET, RUGBY, HANDBALL, TABLE_TENNIS,
+    MMA, BOXING, DARTS, AMERICAN_FOOTBALL, BASEBALL,
 ]
 
-_SLUG_MAP: dict[str, SportConfig] = {}
-for _cfg in _ALL:
+SPORT_CONFIGS: dict[str, SportConfig] = {}
+for _cfg in _ALL_CONFIGS:
     for _slug in _cfg.slugs:
-        _SLUG_MAP[_slug.lower()] = _cfg
+        SPORT_CONFIGS[_slug.lower()] = _cfg
+
+# sport_id → config (first slug wins for each sport_id)
+SPORT_ID_CONFIGS: dict[int, SportConfig] = {}
+for _cfg in _ALL_CONFIGS:
+    if _cfg.sport_id not in SPORT_ID_CONFIGS:
+        SPORT_ID_CONFIGS[_cfg.sport_id] = _cfg
 
 
 def get_config(sport_slug: str) -> SportConfig | None:
-    """Return the SportConfig for a slug, or None if unknown."""
-    return _SLUG_MAP.get(sport_slug.lower().replace(" ", "-"))
+    """Return SportConfig for a given slug, case-insensitive."""
+    return SPORT_CONFIGS.get(sport_slug.lower().replace(" ", "-"))
 
 
-def all_slugs() -> list[str]:
-    """All recognised sport slugs."""
-    return sorted(_SLUG_MAP.keys())
+def get_config_by_id(sport_id: int) -> SportConfig | None:
+    """Return SportConfig for a numeric sport ID."""
+    return SPORT_ID_CONFIGS.get(sport_id)
 
 
-def all_configs() -> list[SportConfig]:
-    """All SportConfig objects (one per sport)."""
-    return _ALL
+__all__ = [
+    "FOOTBALL", "ESOCCER", "BASKETBALL", "TENNIS", "ICE_HOCKEY",
+    "VOLLEYBALL", "CRICKET", "RUGBY", "HANDBALL", "TABLE_TENNIS",
+    "MMA", "BOXING", "DARTS", "AMERICAN_FOOTBALL", "BASEBALL",
+    "SPORT_CONFIGS", "SPORT_ID_CONFIGS",
+    "get_config", "get_config_by_id",
+]

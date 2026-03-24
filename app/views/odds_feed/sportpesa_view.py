@@ -1,61 +1,10 @@
 """
-app/views/odds_feed/sp_module.py
-=================================
-Sportpesa API module — with SSE streaming endpoints.
-
-Endpoints
-─────────
-  Cached (instant, from Redis)
-  ─────────────────────────────
-  GET /api/sp/sports
-  GET /api/sp/upcoming/<sport>
-  GET /api/sp/live/<sport>
-  GET /api/sp/status
-
-  Direct (hits SP API, updates cache)
-  ─────────────────────────────────────
-  GET /api/sp/direct/upcoming/<sport>         ← blocking, full response
-  GET /api/sp/direct/live/<sport>             ← blocking, full response
-
-  Streaming SSE (one match per event, updates cache at end)
-  ──────────────────────────────────────────────────────────
-  GET /api/sp/stream/upcoming/<sport>         ← SSE, yields each match live
-  GET /api/sp/stream/live/<sport>             ← SSE, yields each match live
-
-  On-demand
-  ──────────
-  GET /api/sp/match/<game_id>/markets
-
-  Debug
-  ─────
-  GET /api/sp/debug/markets/<game_id>         ← raw market fetch + O/U diagnosis
-
-  Legacy
-  ───────
-  GET /api/sp/realtime/<sport>                ← alias for /direct/upcoming
-
-Streaming SSE protocol
-───────────────────────
-  Each event is a JSON object on a `data:` line:
-
-    data: {"type":"match","index":1,"total_raw":120,"match":{...}}\n\n
-    data: {"type":"match","index":2,"total_raw":120,"match":{...}}\n\n
-    ...
-    data: {"type":"done","total":120,"latency_ms":4200,"harvested_at":"..."}\n\n
-    data: {"type":"error","message":"..."}\n\n   ← on failure
-
-  The client can show matches as they arrive and stop when type=="done".
-
-Scalability
-───────────
-  Flask SSE uses Response + generator + stream_with_context.
-  For multiple concurrent connections:
-    • gunicorn with gevent workers (recommended):
-        gunicorn -w 4 -k gevent --worker-connections 1000 "app:create_app()"
-    • Each streaming connection consumes one gevent greenlet (very lightweight).
-    • 200-500 simultaneous SSE clients on a single 2-core server is typical.
-    • Nginx config: proxy_buffering off; proxy_read_timeout 300s;
-    • X-Accel-Buffering: no header is set automatically below.
+app/views/odds_feed/sp_module.py  (v2 — all sports + market metadata)
+=======================================================================
+New endpoints added in v2
+──────────────────────────
+  GET /api/sp/meta/sports          → sport list with primary market slugs
+  GET /api/sp/meta/markets/<sport> → all market slugs + display names for sport
 """
 
 from __future__ import annotations
@@ -72,8 +21,8 @@ bp_sp = Blueprint("sp", __name__, url_prefix="/api/sp")
 
 _SPORTS = [
     "soccer", "esoccer", "basketball", "tennis", "ice-hockey",
-    "volleyball", "cricket", "rugby", "table-tennis", "boxing", "handball", "mma",
-    "darts", "american-football",
+    "volleyball", "cricket", "rugby", "table-tennis", "boxing",
+    "handball", "mma", "darts", "american-football", "baseball",
 ]
 _FOOTBALL_SPORTS = {"soccer", "esoccer", "football", "efootball"}
 _ESOCCER_SLUGS   = {"esoccer", "efootball", "e-football"}
@@ -113,10 +62,11 @@ def _parse_dt(val) -> datetime:
 
 
 def _apply_filters(matches: list[dict], args) -> list[dict]:
-    comp   = (args.get("comp")   or args.get("competition") or "").strip().lower()
-    team   = (args.get("team")   or "").strip().lower()
-    market = (args.get("market") or "").strip().lower()
-    date_s = (args.get("date")   or "").strip()
+    comp      = (args.get("comp")        or args.get("competition") or "").strip().lower()
+    team      = (args.get("team")        or "").strip().lower()
+    market    = (args.get("market")      or "").strip().lower()
+    date_s    = (args.get("date")        or "").strip()
+    league_id = (args.get("league_id")   or "").strip()
 
     fdt = tdt = None
     if date_s:
@@ -135,6 +85,8 @@ def _apply_filters(matches: list[dict], args) -> list[dict]:
                     team not in m.get("away_team", "").lower()):
                 continue
         if market and not any(market in k for k in (m.get("markets") or {})):
+            continue
+        if league_id and str(m.get("league_id", "")) != league_id:
             continue
         if fdt:
             st = _parse_dt(m.get("start_time"))
@@ -221,18 +173,109 @@ def _run_direct_fetch(sport_slug, is_live, days, max_m):
 # =============================================================================
 
 def _sse(data: dict) -> str:
-    """Format a dict as an SSE event line."""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def _sse_headers() -> dict:
-    """Response headers required for SSE + nginx compatibility."""
     return {
         "Content-Type":      "text/event-stream",
         "Cache-Control":     "no-cache",
-        "X-Accel-Buffering": "no",       # disables nginx proxy buffering
+        "X-Accel-Buffering": "no",
         "Connection":        "keep-alive",
     }
+
+
+# =============================================================================
+# NEW: /api/sp/meta/sports  — sport list + primary markets
+# =============================================================================
+
+@bp_sp.route("/meta/sports")
+def meta_sports():
+    """Return all sports with their primary market slugs and display names."""
+    from app.workers.sp_mapper import SPORT_META, SPORT_PRIMARY_MARKETS, get_market_display_name
+    from app.workers.sp_sports import SPORT_ID_CONFIGS
+
+    t0 = time.perf_counter()
+    result = []
+
+    for sport_id, meta in SPORT_META.items():
+        cfg        = SPORT_ID_CONFIGS.get(sport_id)
+        primary_ms = SPORT_PRIMARY_MARKETS.get(sport_id, ["match_winner"])
+        cached_up  = _cache_get(f"sp:upcoming:{meta['slugs'][0]}") or {}
+        cached_lv  = _cache_get(f"sp:live:{meta['slugs'][0]}")     or {}
+
+        result.append({
+            "sport_id":       sport_id,
+            "name":           meta["name"],
+            "emoji":          meta["emoji"],
+            "slugs":          meta["slugs"],
+            "primary_slug":   meta["slugs"][0],
+            "days_default":   cfg.days_default if cfg else 3,
+            "primary_markets": [
+                {"slug": s, "label": get_market_display_name(s)}
+                for s in primary_ms
+            ],
+            "upcoming_count": cached_up.get("match_count", 0),
+            "live_count":     cached_lv.get("match_count", 0),
+            "last_harvest":   cached_up.get("harvested_at"),
+        })
+
+    # Sort by sport_id order
+    order = [1, 126, 2, 5, 4, 12, 23, 21, 6, 16, 117, 10, 49, 15, 3]
+    result.sort(key=lambda r: order.index(r["sport_id"]) if r["sport_id"] in order else 99)
+
+    return _signed_response({
+        "ok": True, "source": "sportpesa",
+        "sports": result,
+        "latency_ms": int((time.perf_counter() - t0) * 1000),
+    })
+
+
+# =============================================================================
+# NEW: /api/sp/meta/markets/<sport_slug>  — all markets for a sport
+# =============================================================================
+
+@bp_sp.route("/meta/markets/<sport_slug>")
+def meta_markets(sport_slug: str):
+    """Return all canonical market slugs + display names for a sport."""
+    from app.workers.sp_mapper import (
+        get_sport_table, get_market_display_name,
+        get_sport_primary_markets, get_sport_meta,
+        OUTCOME_DISPLAY,
+    )
+    from app.workers.sp_sports import get_config
+
+    t0  = time.perf_counter()
+    cfg = get_config(sport_slug)
+    if not cfg:
+        return _err(f"Unknown sport: {sport_slug}", 404)
+
+    table      = get_sport_table(cfg.sport_id)
+    base_slugs = sorted({slug for slug, _ in table.values()})
+    primary    = get_sport_primary_markets(cfg.sport_id)
+    meta       = get_sport_meta(cfg.sport_id)
+
+    markets = []
+    for slug in base_slugs:
+        markets.append({
+            "slug":       slug,
+            "label":      get_market_display_name(slug),
+            "is_primary": slug in primary,
+            "outcomes":   OUTCOME_DISPLAY.get(slug, {}),
+        })
+
+    # Primary markets first, then alphabetical
+    markets.sort(key=lambda m: (0 if m["is_primary"] else 1, m["slug"]))
+
+    return _signed_response({
+        "ok":         True,
+        "sport_slug": sport_slug,
+        "sport_id":   cfg.sport_id,
+        "sport_name": meta["name"],
+        "markets":    markets,
+        "market_count": len(markets),
+        "latency_ms": int((time.perf_counter() - t0) * 1000),
+    })
 
 
 # =============================================================================
@@ -247,7 +290,8 @@ def list_sports():
         cached = _cache_get(f"sp:upcoming:{slug}")
         live   = _cache_get(f"sp:live:{slug}")
         result.append({
-            "slug": slug, "label": slug.replace("-", " ").title(),
+            "slug":         slug,
+            "label":        slug.replace("-", " ").title(),
             "is_football":  slug in _FOOTBALL_SPORTS,
             "upcoming":     (cached or {}).get("match_count", 0),
             "live":         (live   or {}).get("match_count", 0),
@@ -376,31 +420,6 @@ def direct_live(sport_slug: str):
 
 @bp_sp.route("/stream/upcoming/<sport_slug>")
 def stream_upcoming(sport_slug: str):
-    """
-    Server-Sent Events endpoint.  Yields one match per event as the harvester
-    processes it.  The client sees data arriving in real time instead of
-    waiting for the full harvest.
-
-    Events
-    ───────
-    {"type":"start","total_raw":120,"sport":"soccer","days":3}
-    {"type":"match","index":1,"total_raw":120,"match":{...}}
-    {"type":"match","index":2,"total_raw":120,"match":{...}}
-    ...
-    {"type":"done","total":120,"latency_ms":4800,"harvested_at":"..."}
-    {"type":"error","message":"..."}   ← only on failure
-
-    Scalability
-    ────────────
-    Each SSE connection runs as a generator inside Flask's stream_with_context.
-    With gunicorn + gevent workers, thousands of concurrent SSE clients are
-    supported with minimal memory overhead (each generator is a greenlet).
-
-    Nginx config needed:
-      proxy_buffering off;
-      proxy_read_timeout 300s;
-      proxy_http_version 1.1;
-    """
     is_virtual = sport_slug.lower() in _ESOCCER_SLUGS
     days  = min(int(request.args.get("days", 1 if is_virtual else 3) or 3), 7)
     max_m = min(int(request.args.get("max",  60 if is_virtual else 150) or 150), 300)
@@ -413,15 +432,11 @@ def stream_upcoming(sport_slug: str):
         try:
             from app.workers.sp_harvester import fetch_upcoming_stream  # noqa
 
-            # Peek at raw count first so the client can show progress
-            # (we re-use the generator — counts estimated from request params)
             gen = fetch_upcoming_stream(
                 sport_slug, days=days, max_matches=max_m,
                 fetch_full_markets=True, debug_ou=True,
             )
 
-            # Emit start event (total_raw unknown until we finish collecting,
-            # so we send an optimistic estimate based on days × avg page)
             yield _sse({"type": "start", "sport": sport_slug, "days": days,
                         "estimated_max": max_m})
 
@@ -431,7 +446,6 @@ def stream_upcoming(sport_slug: str):
                 all_matches.append(match)
                 yield _sse({"type": "match", "index": idx, "match": match})
 
-            # Write to Redis so /upcoming stays warm
             harvested_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             latency_ms   = int((time.perf_counter() - t0) * 1000)
             _cache_set(f"sp:upcoming:{sport_slug}", {
@@ -440,7 +454,6 @@ def stream_upcoming(sport_slug: str):
                 "latency_ms": latency_ms, "matches": all_matches,
             }, ttl=360)
 
-            # SSE push to other cached-mode tabs
             try:
                 from app.workers.celery_tasks import emit_sse_event  # noqa
                 emit_sse_event("odds_updated", {"source": "sportpesa",
@@ -460,16 +473,14 @@ def stream_upcoming(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/stream/live/<sport>  — SSE streaming for live matches
+# /api/sp/stream/live/<sport>  — SSE streaming
 # =============================================================================
 
 @bp_sp.route("/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
-    """SSE streaming for live matches."""
-
     @stream_with_context
     def generate():
-        t0          = time.perf_counter()
+        t0 = time.perf_counter()
         all_matches = []
 
         try:
@@ -503,42 +514,48 @@ def stream_live(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/match/<game_id>/markets  — on-demand
+# /api/sp/match/<game_id>/markets  — on-demand single match
 # =============================================================================
 
 @bp_sp.route("/match/<game_id>/markets")
 def get_match_markets(game_id: str):
     t0 = time.perf_counter()
+    sport_slug = request.args.get("sport", "soccer")
     try:
         from app.workers.sp_harvester import fetch_match_markets
-        markets = fetch_match_markets(game_id)
+        from app.workers.sp_mapper    import get_market_display_name, OUTCOME_DISPLAY
+        markets_raw = fetch_match_markets(game_id, sport_slug)
     except Exception as exc:
         return _err(f"SP markets fetch error: {exc}", 500)
 
+    # Enrich with display names
+    enriched: dict = {}
+    for slug, outcomes in markets_raw.items():
+        out_display = OUTCOME_DISPLAY.get(slug.split("_")[0], {})
+        enriched[slug] = {
+            "label":    get_market_display_name(slug),
+            "outcomes": {
+                k: {"price": v, "label": out_display.get(k, k.upper())}
+                for k, v in outcomes.items()
+            },
+        }
+
     return _signed_response({
         "ok": True, "sp_game_id": game_id, "source": "sportpesa",
-        "markets": markets, "market_count": len(markets),
-        "has_over_under": any(k.startswith("over_under_goals") for k in markets),
+        "sport": sport_slug,
+        "markets": enriched,
+        "market_count": len(enriched),
+        "has_over_under": any("over_under" in k or "total" in k for k in markets_raw),
         "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
 
 # =============================================================================
-# /api/sp/debug/markets/<game_id>  — O/U diagnostic
+# /api/sp/debug/markets/<game_id>
 # =============================================================================
 
 @bp_sp.route("/debug/markets/<game_id>")
 def debug_markets(game_id: str):
-    """
-    Raw market fetch for a single game — use to diagnose missing O/U.
-
-    Returns:
-      raw_count:     total market objects returned by SP API
-      market_ids:    every market ID in the raw response
-      has_ou_raw:    whether IDs 52 or 18 appeared in raw response
-      parsed:        normalised market slugs → outcomes
-      has_ou_parsed: whether any over_under_goals_* key exists after parse
-    """
     t0 = time.perf_counter()
     sport_slug = request.args.get("sport", "soccer")
     try:
@@ -548,16 +565,16 @@ def debug_markets(game_id: str):
         mkt_ids = [m.get("id") for m in raw if isinstance(m, dict)]
 
         return _signed_response({
-            "ok":           True,
-            "game_id":      game_id,
-            "sport_slug":   sport_slug,
-            "raw_count":    len(raw),
-            "market_ids":   mkt_ids,
-            "has_ou_raw":   any(i in mkt_ids for i in [52, 18]),
-            "parsed_slugs": list(parsed.keys()),
-            "has_ou_parsed": any(k.startswith("over_under_goals") for k in parsed),
-            "parsed":       parsed,
-            "latency_ms":   int((time.perf_counter() - t0) * 1000),
+            "ok":            True,
+            "game_id":       game_id,
+            "sport_slug":    sport_slug,
+            "raw_count":     len(raw),
+            "market_ids":    mkt_ids,
+            "has_ou_raw":    any(i in mkt_ids for i in [52, 18, 56]),
+            "parsed_slugs":  list(parsed.keys()),
+            "has_ou_parsed": any("over_under" in k or "total" in k for k in parsed),
+            "parsed":        parsed,
+            "latency_ms":    int((time.perf_counter() - t0) * 1000),
         })
     except Exception as exc:
         return _err(f"debug error: {exc}", 500)
@@ -569,7 +586,7 @@ def debug_markets(game_id: str):
 
 @bp_sp.route("/status")
 def sp_status():
-    t0     = time.perf_counter()
+    t0 = time.perf_counter()
     sports = []
     for slug in _SPORTS:
         up   = _cache_get(f"sp:upcoming:{slug}") or {}
@@ -585,43 +602,9 @@ def sp_status():
     hb = _cache_get("worker_heartbeat") or {}
     return _signed_response({
         "ok": True, "source": "sportpesa",
-        "worker_alive": hb.get("alive", False),
+        "worker_alive":   hb.get("alive", False),
         "last_heartbeat": hb.get("checked_at"),
         "sports": sports,
         "football_sports": sorted(_FOOTBALL_SPORTS),
         "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
-
-
-# =============================================================================
-# /api/sp/realtime/<sport>  — legacy alias
-# =============================================================================
-
-@bp_sp.route("/realtime/<sport_slug>")
-def get_realtime(sport_slug: str):
-    t0                          = time.perf_counter()
-    page, per_page, sort, order = _get_args()
-
-    is_live    = request.args.get("live", "0") == "1"
-    is_virtual = sport_slug.lower() in _ESOCCER_SLUGS
-    days  = min(int(request.args.get("days", 1 if is_virtual else 2) or 2), 7)
-    max_m = min(int(request.args.get("max",  60 if is_virtual else 80) or 80), 300)
-
-    try:
-        matches, harvested_at, days_fetched = _run_direct_fetch(
-            sport_slug, is_live=is_live, days=days, max_m=max_m)
-    except Exception as exc:
-        return _err(f"SP realtime error: {exc}", 500)
-
-    fetched_total = len(matches)
-    matches = _apply_filters(matches, request.args)
-    matches = _sort_matches(matches, sort, order)
-    paged, total = _paginate(matches, page, per_page)
-
-    return _signed_response(_envelope(
-        paged, total, sport_slug,
-        "direct_live" if is_live else "direct_upcoming",
-        page, per_page, harvested_at,
-        int((time.perf_counter() - t0) * 1000),
-        extra={"fresh": True, "fetched_total": fetched_total, "days_fetched": days_fetched},
-    ))
