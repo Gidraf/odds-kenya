@@ -3,17 +3,12 @@ app/workers/sp_harvester.py
 ============================
 Sportpesa Kenya harvester — single-file edition.
 
-Self-contained: only requires sp_mapper + canonical_mapper.
-No sp_harvester_base.py or sp_sports/ package needed.
-
-Public API
+FIXES (v2)
 ──────────
-  fetch_upcoming(sport_slug, ...)       → list[dict]
-  fetch_live(sport_slug, ...)           → list[dict]
-  fetch_upcoming_stream(sport_slug, …)  → Generator[dict]
-  fetch_live_stream(sport_slug, …)      → Generator[dict]
-  fetch_match_markets(game_id, …)       → dict
-  fetch_sport_ids()                     → dict
+• Added "baseball": "3" to SP_SPORT_ID  (was completely missing → 0 matches)
+• Added "3" (baseball) entry to _SPORT_MARKET_IDS
+• Added market IDs 210 (1st Period Winner) + 378 (OT alias) to ice-hockey
+• specValue fallback: also checks selection-level specValue for inline markets
 """
 
 from __future__ import annotations
@@ -73,6 +68,7 @@ SP_SPORT_ID: dict[str, str] = {
     "american-football": "15",
     "americanfootball":  "15",
     "nfl":               "15",
+    "baseball":          "3",   # ← FIX: was missing entirely
 }
 
 # ── Sport slug → market IDs to request ────────────────────────────────────────
@@ -97,7 +93,8 @@ _SPORT_MARKET_IDS: dict[str, str] = {
         "203,"                      # HT Correct Score
         "162,166,"                  # Total Corners
         "136,139"                   # Total Bookings / Cards
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "126": (                        # eFootball / eSoccer
         "381,1,10,"                 # 1X2
         "56,52,"                    # O/U Goals
@@ -106,7 +103,8 @@ _SPORT_MARKET_IDS: dict[str, str] = {
         "51,"                       # Asian Handicap
         "45,"                       # Odd/Even
         "208,258,202"               # Result+O/U, Exact Goals
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "2": (                          # Basketball
         "382,"                      # Match Winner (2-way, OT incl.)
         "51,"                       # Point Spread (multi-line)
@@ -121,7 +119,8 @@ _SPORT_MARKET_IDS: dict[str, str] = {
         "224,"                      # Highest Scoring Quarter
         "362,363,364,365,"          # Q1-Q4 O/U Total Points
         "366,367,368,369"           # Q1-Q4 Handicap
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "5": (                          # Tennis
         "382,"                      # Match Winner
         "204,231,"                  # First / Second Set Winner
@@ -133,7 +132,8 @@ _SPORT_MARKET_IDS: dict[str, str] = {
         "339,340,"                  # 1st Set Game HC / 1st Set Total Games
         "433,"                      # 1st Set / Match Winner combo
         "353,352"                   # Player 1/2 Games O/U
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "4": (                          # Ice Hockey
         "1,10,"                     # 1X2
         "382,"                      # Match Winner (2-way OT/SO)
@@ -142,8 +142,12 @@ _SPORT_MARKET_IDS: dict[str, str] = {
         "45,"                       # Odd/Even Goals
         "46,"                       # Double Chance
         "353,352,"                  # Home / Away Goals O/U
-        "208,43"                    # Result+O/U, BTTS
-    ),
+        "208,"                      # Result+O/U
+        "43,"                       # BTTS
+        "210,"                      # 1st Period Winner  ← FIX: was missing
+        "378"                       # 2-Way OT alias     ← FIX: was missing
+    ).replace("\n", "").replace(" ", ""),
+
     "23": (                         # Volleyball
         "382,"                      # Match Winner
         "51,"                       # Set Handicap
@@ -151,7 +155,8 @@ _SPORT_MARKET_IDS: dict[str, str] = {
         "233,"                      # Set Betting
         "45,"                       # Odd/Even Points
         "353,352"                   # Home / Away Points O/U
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "6": (                          # Handball
         "1,10,382,"                 # 1X2 / Match Winner
         "52,"                       # Total Goals O/U
@@ -160,40 +165,49 @@ _SPORT_MARKET_IDS: dict[str, str] = {
         "46,47,"                    # Double Chance, Draw No Bet
         "353,352,"                  # Home / Away Goals O/U
         "208,43"                    # Result+O/U, BTTS
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "16": (                         # Table Tennis
         "382,"                      # Match Winner
         "51,"                       # Game Handicap
         "226,"                      # Total Games O/U
         "45,233,340"                # Odd/Even, Set Betting, 1st Set Games
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "12": (                         # Rugby
         "382,1,10,46,"              # Match Winner / 1X2
         "51,"                       # Asian Handicap
         "52,"                       # Total Points O/U
         "45,353,352"                # Odd/Even, Home/Away Points
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
     "21": (                         # Cricket
         "382,1,"                    # Match Winner
         "51,"                       # Handicap
         "52,353,352"                # Total Runs O/U
-    ),
-    "10": (                         # Boxing
-        "382,51,52"                 # Fight Winner, Round Betting, Total Rounds
-    ),
-    "117": (                        # MMA
-        "382,51,52"                 # Fight Winner, Round Betting, Total Rounds
-    ),
+    ).replace("\n", "").replace(" ", ""),
+
+    "10": "382,51,52",              # Boxing
+    "117": "382,20,51,52",          # MMA
+
     "49": (                         # Darts
-        "382,226,45,51"             # Match Winner, Total Legs, Odd/Even, Handicap
+        "382,226,45,51"
     ),
-    "15": (                         # American Football
-        "382,51,52,45,353,352"      # Moneyline, Spread, Total, Odd/Even
+
+    "15": (                         # American Football / NFL
+        "382,51,52,45,353,352"
     ),
+
+    "3": (                          # Baseball  ← FIX: was entirely missing
+        "382,"                      # Moneyline
+        "51,"                       # Run Line (Spread)
+        "52,"                       # Total Runs O/U
+        "45,"                       # Odd/Even Runs
+        "353,352"                   # Home / Away Runs O/U
+    ).replace("\n", "").replace(" ", ""),
 }
 
-_DEFAULT_MARKET_IDS = "382,1,10,51,52,45,46"  # generic fallback
-
+_DEFAULT_MARKET_IDS = "382,1,10,51,52,45,46"   # generic fallback
 _ESOCCER_IDS = {"126"}
 
 
@@ -433,6 +447,16 @@ def _parse_markets(
     game_id:  str = "",
     sport_id: int = 1,
 ) -> dict[str, dict[str, float]]:
+    """
+    Convert SP market list → {canonical_slug: {outcome_key: float}}.
+
+    specValue resolution order (FIX):
+      1. mkt["specValue"]      — full-market-fetch format (market level)
+      2. mkt["spec"]           — alt key
+      3. mkt["handicap"]       — alt key
+      4. first sel["specValue"] that is not None/0 — inline listing format
+         (boxing-style: specValue lives on each selection, not on the market)
+    """
     markets: dict[str, dict[str, float]] = {}
     ou_seen = False
 
@@ -450,10 +474,23 @@ def _parse_markets(
         if mkt_id in (52, 18, 56):
             ou_seen = True
 
-        # MUST use is None — specValue=0 is a valid line (Asian HC level ball)
+        # ── specValue: explicit None check — 0 is a valid line (level ball) ──
         spec_val = mkt.get("specValue")
         if spec_val is None:
             spec_val = mkt.get("spec") or mkt.get("handicap")
+
+        # FIX: inline listing format stores specValue per-selection
+        # Pull it from the first selection that has a non-zero / non-None value.
+        if spec_val is None:
+            sels_raw = mkt.get("selections") or mkt.get("outcomes") or []
+            if isinstance(sels_raw, dict):
+                sels_raw = list(sels_raw.values())
+            for s in sels_raw:
+                if isinstance(s, dict):
+                    sv = s.get("specValue")
+                    if sv is not None and sv != 0:
+                        spec_val = sv
+                        break
 
         mkt_key = normalize_sp_market(mkt_id, spec_val, sport_id)
         markets.setdefault(mkt_key, {})
@@ -488,9 +525,11 @@ def _parse_markets(
     if game_id:
         ou_keys = [k for k in result if "total" in k or "over_under" in k]
         if not ou_seen:
-            print(f"[sp:ou] {game_id}: IDs 52/18/56 NOT in raw ({len(raw_list)} mkts) — SP doesn't offer O/U")
+            print(f"[sp:ou] {game_id}: IDs 52/18/56 NOT in raw ({len(raw_list)} mkts) "
+                  "— SP doesn't offer O/U for this game")
         elif not ou_keys:
-            print(f"[sp:ou] {game_id}: O/U IDs present but no total* keys after parse — check shortNames")
+            print(f"[sp:ou] {game_id}: O/U IDs present but no total* keys after parse "
+                  "— check shortNames")
         else:
             print(f"[sp:ou] {game_id}: O/U OK → {ou_keys[:5]}")
 
@@ -569,9 +608,7 @@ def _collect_raw_items(
 
 
 def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
-    """
-    Returns (sport_id_str, market_ids, is_esoccer, days_default, max_default).
-    """
+    """Returns (sport_id_str, market_ids, is_esoccer, days_default, max_default)."""
     slug      = sport_slug.lower().replace(" ", "-")
     sport_id  = SP_SPORT_ID.get(slug)
     if not sport_id:
@@ -579,7 +616,6 @@ def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
         return "", "", False, 3, 150
     is_esoccer   = sport_id in _ESOCCER_IDS
     market_ids   = _SPORT_MARKET_IDS.get(sport_id, _DEFAULT_MARKET_IDS)
-    # Clean concatenated string
     market_ids   = market_ids.replace("\n", "").replace(" ", "")
     days_default = 1 if is_esoccer else 3
     max_default  = 60 if is_esoccer else 150
@@ -599,16 +635,12 @@ def fetch_upcoming_stream(
     debug_ou:           bool         = False,
     **_,
 ) -> Generator[dict, None, None]:
-    """
-    Yield one normalised match dict at a time as markets are fetched.
-    Used by SSE endpoints in sp_module.py.
-    """
     sport_id, market_ids, is_esoccer, days_default, max_default = _get_config(sport_slug)
     if not sport_id:
         return
 
-    days    = days        or days_default
-    max_m   = max_matches or max_default
+    days  = days        or days_default
+    max_m = max_matches or max_default
 
     raw_items = _collect_raw_items(sport_id, days, 30, max_m, is_esoccer=is_esoccer)
     print(f"[sp:{sport_slug}] {len(raw_items)} raw items (sportId={sport_id})")
@@ -648,7 +680,6 @@ def fetch_live_stream(
     debug_ou:           bool  = False,
     **_,
 ) -> Generator[dict, None, None]:
-    """Yield live matches one at a time."""
     sport_id, market_ids, _, _, _ = _get_config(sport_slug)
     if not sport_id:
         return
@@ -729,7 +760,6 @@ def fetch_match_markets(
     game_id:    str | int,
     sport_slug: str = "soccer",
 ) -> dict[str, dict[str, float]]:
-    """Full market book for one SP game ID."""
     sport_id, market_ids, _, _, _ = _get_config(sport_slug)
     if not sport_id:
         sport_id   = "1"
@@ -771,7 +801,6 @@ def _parse_markets_for_debug(
 # =============================================================================
 
 def fetch_sport_ids() -> dict[str, int]:
-    """Return {sport_name: live_event_count} from the SP live sports API."""
     raw, _ = _get("/api/live/sports")
     if not isinstance(raw, dict):
         return {}
