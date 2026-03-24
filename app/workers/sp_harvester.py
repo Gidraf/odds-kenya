@@ -1,14 +1,32 @@
 """
 app/workers/sp_harvester.py
 ============================
-Sportpesa Kenya harvester — single-file edition.
+Sportpesa Kenya harvester.
 
-FIXES (v2)
-──────────
-• Added "baseball": "3" to SP_SPORT_ID  (was completely missing → 0 matches)
-• Added "3" (baseball) entry to _SPORT_MARKET_IDS
-• Added market IDs 210 (1st Period Winner) + 378 (OT alias) to ice-hockey
-• specValue fallback: also checks selection-level specValue for inline markets
+KEY FINDINGS from live API analysis (curl samples)
+────────────────────────────────────────────────────
+• The SP listing API (/api/upcoming/games) ALWAYS uses markets_layout=single,
+  regardless of sport. This means the inline `markets` array on each listing
+  row contains exactly ONE market (the primary one). All extra markets —
+  O/U, handicap, BTTS, correct score — come exclusively from the separate
+  /api/games/markets call.
+
+• marketsCount=0 in boxing/mma inline data is SP's flag meaning "no extra
+  markets beyond the inline primary". The full /api/games/markets fetch still
+  returns that primary market.
+
+• Using markets_layout=multiple (old code) for non-esoccer sports caused the
+  listing call to return a response format different from what SP sends to its
+  own frontend, potentially corrupting inline market parsing.
+
+CHANGES vs v1
+──────────────
+• markets_layout is now always "single" — matches SP's own requests exactly.
+  is_esoccer no longer controls layout; it only controls pagination cadence.
+• Added "baseball": "3" to SP_SPORT_ID  (was missing → 0 matches returned)
+• Added "3" (baseball) to _SPORT_MARKET_IDS
+• Added market IDs 210 (1st Period) + 378 (OT alias) to ice-hockey markets
+• specValue fallback: reads per-selection specValue for inline market format
 """
 
 from __future__ import annotations
@@ -30,8 +48,8 @@ _BASE = "https://www.ke.sportpesa.com"
 
 _HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
     ),
     "Accept":           "application/json, text/plain, */*",
     "Accept-Language":  "en-GB,en-US;q=0.9,en;q=0.8",
@@ -71,144 +89,154 @@ SP_SPORT_ID: dict[str, str] = {
     "baseball":          "3",   # ← FIX: was missing entirely
 }
 
-# ── Sport slug → market IDs to request ────────────────────────────────────────
+# ── Sport ID → market IDs for /api/games/markets ─────────────────────────────
+# The listing API only returns 1 inline market per match. These IDs are what
+# unlocks the full book: O/U, handicap, BTTS, correct score, etc.
 _SPORT_MARKET_IDS: dict[str, str] = {
-    "1": (                          # Football / Soccer
-        "10,1,46,47,"               # 1X2, Double Chance, Draw No Bet
-        "43,29,386,"                # BTTS, BTTS+Result
-        "52,18,"                    # O/U Goals (multi-line via specValue)
-        "353,352,"                  # Home / Away team goals O/U
-        "208,"                      # Result + O/U
-        "258,202,"                  # Exact Goals, Goal Groups
-        "332,"                      # Correct Score
-        "51,53,"                    # Asian HC FT + HT
-        "55,"                       # European HC
-        "45,"                       # Odd/Even Goals
-        "41,"                       # First Team to Score
-        "207,"                      # Highest Scoring Half
-        "42,60,"                    # HT 1X2
-        "15,54,68,"                 # HT O/U
-        "44,"                       # HT/FT
-        "328,"                      # HT BTTS
-        "203,"                      # HT Correct Score
-        "162,166,"                  # Total Corners
-        "136,139"                   # Total Bookings / Cards
-    ).replace("\n", "").replace(" ", ""),
+    # Football / Soccer
+    "1": (
+        "10,1,46,47,"
+        "43,29,386,"
+        "52,18,"
+        "353,352,"
+        "208,"
+        "258,202,"
+        "332,"
+        "51,53,"
+        "55,"
+        "45,"
+        "41,"
+        "207,"
+        "42,60,"
+        "15,54,68,"
+        "44,"
+        "328,"
+        "203,"
+        "162,166,"
+        "136,139"
+    ).replace("\n","").replace(" ",""),
 
-    "126": (                        # eFootball / eSoccer
-        "381,1,10,"                 # 1X2
-        "56,52,"                    # O/U Goals
-        "46,47,"                    # Double Chance, Draw No Bet
-        "43,"                       # BTTS
-        "51,"                       # Asian Handicap
-        "45,"                       # Odd/Even
-        "208,258,202"               # Result+O/U, Exact Goals
-    ).replace("\n", "").replace(" ", ""),
+    # eFootball / eSoccer
+    "126": (
+        "381,1,10,"
+        "56,52,"
+        "46,47,"
+        "43,"
+        "51,"
+        "45,"
+        "208,258,202"
+    ).replace("\n","").replace(" ",""),
 
-    "2": (                          # Basketball
-        "382,"                      # Match Winner (2-way, OT incl.)
-        "51,"                       # Point Spread (multi-line)
-        "52,"                       # Total Points O/U (multi-line)
-        "353,"                      # Home Team Total Points O/U
-        "352,"                      # Away Team Total Points O/U
-        "45,"                       # Odd/Even Points
-        "222,"                      # Winning Margin
-        "42,"                       # 3 Way - First Half
-        "53,"                       # Handicap - First Half
-        "54,"                       # Total Points - First Half
-        "224,"                      # Highest Scoring Quarter
-        "362,363,364,365,"          # Q1-Q4 O/U Total Points
-        "366,367,368,369"           # Q1-Q4 Handicap
-    ).replace("\n", "").replace(" ", ""),
+    # Basketball
+    "2": (
+        "382,"
+        "51,"
+        "52,"
+        "353,352,"
+        "45,"
+        "222,"
+        "42,"
+        "53,"
+        "54,"
+        "224,"
+        "362,363,364,365,"
+        "366,367,368,369"
+    ).replace("\n","").replace(" ",""),
 
-    "5": (                          # Tennis
-        "382,"                      # Match Winner
-        "204,231,"                  # First / Second Set Winner
-        "51,"                       # Game Handicap (multi-line)
-        "226,"                      # Total Games O/U
-        "233,"                      # Set Betting
-        "439,"                      # Set Handicap
-        "45,"                       # Odd/Even Games
-        "339,340,"                  # 1st Set Game HC / 1st Set Total Games
-        "433,"                      # 1st Set / Match Winner combo
-        "353,352"                   # Player 1/2 Games O/U
-    ).replace("\n", "").replace(" ", ""),
+    # Tennis
+    "5": (
+        "382,"
+        "204,231,"
+        "51,"
+        "226,"
+        "233,"
+        "439,"
+        "45,"
+        "339,340,"
+        "433,"
+        "353,352"
+    ).replace("\n","").replace(" ",""),
 
-    "4": (                          # Ice Hockey
-        "1,10,"                     # 1X2
-        "382,"                      # Match Winner (2-way OT/SO)
-        "52,"                       # Total Goals O/U
-        "51,"                       # Puck Line
-        "45,"                       # Odd/Even Goals
-        "46,"                       # Double Chance
-        "353,352,"                  # Home / Away Goals O/U
-        "208,"                      # Result+O/U
-        "43,"                       # BTTS
-        "210,"                      # 1st Period Winner  ← FIX: was missing
-        "378"                       # 2-Way OT alias     ← FIX: was missing
-    ).replace("\n", "").replace(" ", ""),
+    # Ice Hockey — added 210 (1st Period) + 378 (OT alias)
+    "4": (
+        "1,10,"
+        "382,"
+        "52,"
+        "51,"
+        "45,"
+        "46,"
+        "353,352,"
+        "208,"
+        "43,"
+        "210,"
+        "378"
+    ).replace("\n","").replace(" ",""),
 
-    "23": (                         # Volleyball
-        "382,"                      # Match Winner
-        "51,"                       # Set Handicap
-        "226,"                      # Total Sets O/U
-        "233,"                      # Set Betting
-        "45,"                       # Odd/Even Points
-        "353,352"                   # Home / Away Points O/U
-    ).replace("\n", "").replace(" ", ""),
+    # Volleyball
+    "23": (
+        "382,"
+        "204,"
+        "20,"
+        "51,"
+        "226,"
+        "233,"
+        "45,"
+        "353,352"
+    ).replace("\n","").replace(" ",""),
 
-    "6": (                          # Handball
-        "1,10,382,"                 # 1X2 / Match Winner
-        "52,"                       # Total Goals O/U
-        "51,"                       # Asian Handicap
-        "45,"                       # Odd/Even Goals
-        "46,47,"                    # Double Chance, Draw No Bet
-        "353,352,"                  # Home / Away Goals O/U
-        "208,43"                    # Result+O/U, BTTS
-    ).replace("\n", "").replace(" ", ""),
+    # Handball
+    "6": (
+        "1,10,382,"
+        "52,"
+        "51,"
+        "45,"
+        "46,47,"
+        "353,352,"
+        "208,43,"
+        "42,"
+        "207"
+    ).replace("\n","").replace(" ",""),
 
-    "16": (                         # Table Tennis
-        "382,"                      # Match Winner
-        "51,"                       # Game Handicap
-        "226,"                      # Total Games O/U
-        "45,233,340"                # Odd/Even, Set Betting, 1st Set Games
-    ).replace("\n", "").replace(" ", ""),
+    # Table Tennis
+    "16": "382,51,226,45,233,340",
 
-    "12": (                         # Rugby
-        "382,1,10,46,"              # Match Winner / 1X2
-        "51,"                       # Asian Handicap
-        "52,"                       # Total Points O/U
-        "45,353,352"                # Odd/Even, Home/Away Points
-    ).replace("\n", "").replace(" ", ""),
+    # Rugby Union / League
+    "12": (
+        "10,1,"
+        "382,"
+        "46,"
+        "42,"
+        "51,"
+        "53,"
+        "60,52,"
+        "353,352,"
+        "45,"
+        "379,"
+        "207,"
+        "44"
+    ).replace("\n","").replace(" ",""),
 
-    "21": (                         # Cricket
-        "382,1,"                    # Match Winner
-        "51,"                       # Handicap
-        "52,353,352"                # Total Runs O/U
-    ).replace("\n", "").replace(" ", ""),
+    # Cricket
+    "21": "382,1,51,52,353,352",
 
-    "10": "382,51,52",              # Boxing
-    "117": "382,20,51,52",          # MMA
+    # Boxing
+    "10": "382,51,52",
 
-    "49": (                         # Darts
-        "382,226,45,51"
-    ),
+    # MMA / UFC
+    "117": "382,20,51,52",
 
-    "15": (                         # American Football / NFL
-        "382,51,52,45,353,352"
-    ),
+    # Darts
+    "49": "382,226,45,51",
 
-    "3": (                          # Baseball  ← FIX: was entirely missing
-        "382,"                      # Moneyline
-        "51,"                       # Run Line (Spread)
-        "52,"                       # Total Runs O/U
-        "45,"                       # Odd/Even Runs
-        "353,352"                   # Home / Away Runs O/U
-    ).replace("\n", "").replace(" ", ""),
+    # American Football / NFL
+    "15": "382,51,52,45,353,352",
+
+    # Baseball — FIX: was entirely missing
+    "3": "382,51,52,45,353,352",
 }
 
-_DEFAULT_MARKET_IDS = "382,1,10,51,52,45,46"   # generic fallback
-_ESOCCER_IDS = {"126"}
+_DEFAULT_MARKET_IDS = "382,1,10,51,52,45,46"
+_ESOCCER_IDS        = {"126"}
 
 
 # =============================================================================
@@ -252,18 +280,25 @@ def _parse_content_range(header: str | None) -> int | None:
 # =============================================================================
 
 def _fetch_upcoming_page(
-    sport_id:   str,
-    ts_start:   int,
-    ts_end:     int,
-    page_size:  int,
-    offset:     int,
-    is_esoccer: bool = False,
+    sport_id:  str,
+    ts_start:  int,
+    ts_end:    int,
+    page_size: int,
+    offset:    int,
 ) -> tuple[list[dict], int | None]:
+    """
+    Fetch one page of upcoming matches.
+
+    CRITICAL: markets_layout is always "single".
+    The SP website itself always sends 'single' regardless of sport.
+    Each match in the response has exactly 1 inline market (the primary one).
+    All other markets come from the separate /api/games/markets fetch.
+    """
     raw, headers = _get("/api/upcoming/games", params={
         "type":           "prematch",
         "sportId":        sport_id,
         "section":        "upcoming",
-        "markets_layout": "single" if is_esoccer else "multiple",
+        "markets_layout": "single",   # always single — matches SP's own requests
         "o":              "leagues",
         "pag_count":      str(page_size),
         "pag_min":        str(offset + 1),
@@ -294,9 +329,11 @@ def _fetch_live_list(sport_id: str) -> list[dict]:
 
 
 def _extract_market_list(raw: Any, gid: str) -> list[dict]:
+    """Extract market list from any observed /api/games/markets response shape."""
     if raw is None:
         return []
     if isinstance(raw, dict):
+        # Shape A: {"<game_id>": [...]}
         if gid in raw and isinstance(raw[gid], list):
             return raw[gid]
         try:
@@ -305,6 +342,7 @@ def _extract_market_list(raw: Any, gid: str) -> list[dict]:
                 return raw[ikey]
         except (ValueError, TypeError):
             pass
+        # Shape B: {"data": {"<game_id>": [...]}}
         for wrapper in ("data", "result"):
             inner = raw.get(wrapper)
             if isinstance(inner, dict):
@@ -313,11 +351,13 @@ def _extract_market_list(raw: Any, gid: str) -> list[dict]:
                 for v in inner.values():
                     if isinstance(v, list) and v:
                         return v
+        # Shape C: {"markets": [...]}
         if isinstance(raw.get("markets"), list):
             return raw["markets"]
         for v in raw.values():
             if isinstance(v, list) and v:
                 return v
+    # Shape D: flat list
     if isinstance(raw, list):
         return raw
     return []
@@ -425,20 +465,23 @@ def _parse_match_item(item: dict) -> dict | None:
     elif isinstance(sport_raw, int):
         sp_sport_id = sport_raw
 
+    # Inline markets: always exactly 1 entry with markets_layout=single.
+    # Used only as a last-resort fallback when the full market fetch fails.
     inline = item.get("markets") or item.get("odds") or []
     if isinstance(inline, dict):
         inline = list(inline.values())
 
     return {
-        "betradar_id":  betradar_id,
-        "sp_game_id":   sp_game_id,
-        "home_team":    home,
-        "away_team":    away,
-        "start_time":   _parse_timestamp(item),
-        "competition":  competition,
-        "sport":        sport_name,
-        "sp_sport_id":  sp_sport_id,
-        "_inline_mkts": inline,
+        "betradar_id":     betradar_id,
+        "sp_game_id":      sp_game_id,
+        "home_team":       home,
+        "away_team":       away,
+        "start_time":      _parse_timestamp(item),
+        "competition":     competition,
+        "sport":           sport_name,
+        "sp_sport_id":     sp_sport_id,
+        "_inline_mkts":    inline,
+        "_markets_count":  item.get("marketsCount", 0),
     }
 
 
@@ -450,12 +493,12 @@ def _parse_markets(
     """
     Convert SP market list → {canonical_slug: {outcome_key: float}}.
 
-    specValue resolution order (FIX):
-      1. mkt["specValue"]      — full-market-fetch format (market level)
-      2. mkt["spec"]           — alt key
-      3. mkt["handicap"]       — alt key
-      4. first sel["specValue"] that is not None/0 — inline listing format
-         (boxing-style: specValue lives on each selection, not on the market)
+    specValue resolution:
+      1. mkt["specValue"]                (market-level, from full markets fetch)
+      2. mkt["spec"] / mkt["handicap"]
+      3. first sel["specValue"] != 0     (per-selection, from inline listing)
+         Note: boxing/tennis inline markets all have specValue=0 on both the
+         market and selections since they are match-winner markets (no line).
     """
     markets: dict[str, dict[str, float]] = {}
     ou_seen = False
@@ -474,14 +517,14 @@ def _parse_markets(
         if mkt_id in (52, 18, 56):
             ou_seen = True
 
-        # ── specValue: explicit None check — 0 is a valid line (level ball) ──
+        # specValue: use `is None` check — 0 is a valid line (Asian HC level ball)
         spec_val = mkt.get("specValue")
         if spec_val is None:
             spec_val = mkt.get("spec") or mkt.get("handicap")
 
-        # FIX: inline listing format stores specValue per-selection
-        # Pull it from the first selection that has a non-zero / non-None value.
-        if spec_val is None:
+        # Fallback: read specValue from first selection that has a non-zero value.
+        # Handles line markets in the inline listing format.
+        if spec_val is None or spec_val == 0:
             sels_raw = mkt.get("selections") or mkt.get("outcomes") or []
             if isinstance(sels_raw, dict):
                 sels_raw = list(sels_raw.values())
@@ -528,7 +571,7 @@ def _parse_markets(
             print(f"[sp:ou] {game_id}: IDs 52/18/56 NOT in raw ({len(raw_list)} mkts) "
                   "— SP doesn't offer O/U for this game")
         elif not ou_keys:
-            print(f"[sp:ou] {game_id}: O/U IDs present but no total* keys after parse "
+            print(f"[sp:ou] {game_id}: O/U IDs present but no total*/over_under* keys "
                   "— check shortNames")
         else:
             print(f"[sp:ou] {game_id}: O/U OK → {ou_keys[:5]}")
@@ -570,6 +613,10 @@ def _collect_raw_items(
     max_items:  int | None,
     is_esoccer: bool = False,
 ) -> list[dict]:
+    """
+    Walk day-by-day pages of the listing API and collect raw match rows.
+    is_esoccer: only used to tune pagination window, not the layout param.
+    """
     raw_items: list[dict] = []
     seen_ids:  set[str]   = set()
     now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
@@ -582,7 +629,7 @@ def _collect_raw_items(
 
         while True:
             items, total_hint = _fetch_upcoming_page(
-                sport_id, ts_s, ts_e, page_size, offset, is_esoccer=is_esoccer
+                sport_id, ts_s, ts_e, page_size, offset
             )
             if not items:
                 break
@@ -635,6 +682,10 @@ def fetch_upcoming_stream(
     debug_ou:           bool         = False,
     **_,
 ) -> Generator[dict, None, None]:
+    """
+    Yield one normalised match dict at a time as markets are fetched.
+    fetch_full_markets=True (default) is required to see O/U, handicap, etc.
+    """
     sport_id, market_ids, is_esoccer, days_default, max_default = _get_config(sport_slug)
     if not sport_id:
         return
@@ -656,6 +707,7 @@ def fetch_upcoming_stream(
                 parsed["sp_game_id"], market_ids, debug=debug_ou
             )
             if not raw_mkts:
+                # Fallback: 1 inline market only
                 raw_mkts = parsed["_inline_mkts"]
                 inline_count += 1
             time.sleep(sleep_between)
@@ -670,7 +722,8 @@ def fetch_upcoming_stream(
         yield _build_match(parsed, markets, sport_slug)
 
     if inline_count:
-        print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} used inline fallback")
+        print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} "
+              "matches used inline fallback (primary market only)")
 
 
 def fetch_live_stream(
@@ -680,6 +733,7 @@ def fetch_live_stream(
     debug_ou:           bool  = False,
     **_,
 ) -> Generator[dict, None, None]:
+    """Yield live matches one at a time."""
     sport_id, market_ids, _, _, _ = _get_config(sport_slug)
     if not sport_id:
         return
@@ -760,6 +814,7 @@ def fetch_match_markets(
     game_id:    str | int,
     sport_slug: str = "soccer",
 ) -> dict[str, dict[str, float]]:
+    """Full market book for one SP game ID."""
     sport_id, market_ids, _, _, _ = _get_config(sport_slug)
     if not sport_id:
         sport_id   = "1"
@@ -770,10 +825,6 @@ def fetch_match_markets(
     print(f"[sp:match] {game_id}: {len(result)} slugs → {list(result.keys())[:8]}")
     return result
 
-
-# =============================================================================
-# INTERNAL — used by /debug endpoint in sp_module.py
-# =============================================================================
 
 def _fetch_markets_for_debug(
     game_id:    str,
@@ -796,11 +847,8 @@ def _parse_markets_for_debug(
     return _parse_markets(raw_list, game_id=game_id, sport_id=sid)
 
 
-# =============================================================================
-# PUBLIC API — SPORT EVENT COUNTS
-# =============================================================================
-
 def fetch_sport_ids() -> dict[str, int]:
+    """Return {sport_name: live_event_count} from the SP live sports API."""
     raw, _ = _get("/api/live/sports")
     if not isinstance(raw, dict):
         return {}
