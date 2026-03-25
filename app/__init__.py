@@ -89,6 +89,7 @@ def create_app() -> Flask:
     from app.views.subscriptions import bp_customer_subscriptions
     from app.views.webhook import bp_interceptor
     from app.views.odds_feed.sportpesa_view import bp_sp
+    from app.views.odds_feed.sp_live_view import bp_sp_live
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -107,6 +108,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_fetcher)
     flask_app.register_blueprint(bp_interceptor)
     flask_app.register_blueprint(bp_sp)
+    flask_app.register_blueprint(bp_sp_live)
 
     # init_playwright_manager()
     init_fetcher_manager()
