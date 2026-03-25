@@ -249,9 +249,11 @@ def _get(
     timeout: int         = 20,
 ) -> tuple[Any, dict]:
     url = f"{_BASE}{path}"
+    print(url)
     try:
         r = requests.get(url, headers=_HEADERS, params=params,
                          timeout=timeout, allow_redirects=True)
+        print(r.text)
         if r.status_code == 304:
             return None, {}
         if not r.ok:
