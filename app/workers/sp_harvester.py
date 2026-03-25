@@ -250,6 +250,7 @@ def _get(
 ) -> tuple[Any, dict]:
     url = f"{_BASE}{path}"
     print(url)
+    print(params)
     try:
         r = requests.get(url, headers=_HEADERS, params=params,
                          timeout=timeout, allow_redirects=True)
