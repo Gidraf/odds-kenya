@@ -1,10 +1,17 @@
 """
-app/views/odds_feed/sp_module.py  (v2 — all sports + market metadata)
-=======================================================================
-New endpoints added in v2
-──────────────────────────
-  GET /api/sp/meta/sports          → sport list with primary market slugs
-  GET /api/sp/meta/markets/<sport> → all market slugs + display names for sport
+app/views/odds_feed/sp_module.py  (v3 — all sports + market metadata + line-aware labels)
+==========================================================================================
+
+Changes in v3
+──────────────
+• get_match_markets() enrichment now uses get_outcome_display(slug, key) from
+  sp_mapper instead of OUTCOME_DISPLAY.get(slug.split("_")[0]) which was
+  broken for all line-suffixed slugs (O/U, handicap, Euro HC, Result+O/U).
+• markets_list[] added to /match/<id>/markets response — ordered list with
+  primary markets first, each entry has slug/label/base_slug/line/is_primary.
+• get_market_display_name() now returns "Goals O/U 2.5" instead of generic
+  title-case for line markets.
+• Import set updated: OUTCOME_DISPLAY no longer needed in this module.
 """
 
 from __future__ import annotations
@@ -62,11 +69,11 @@ def _parse_dt(val) -> datetime:
 
 
 def _apply_filters(matches: list[dict], args) -> list[dict]:
-    comp      = (args.get("comp")        or args.get("competition") or "").strip().lower()
-    team      = (args.get("team")        or "").strip().lower()
-    market    = (args.get("market")      or "").strip().lower()
-    date_s    = (args.get("date")        or "").strip()
-    league_id = (args.get("league_id")   or "").strip()
+    comp      = (args.get("comp")       or args.get("competition") or "").strip().lower()
+    team      = (args.get("team")       or "").strip().lower()
+    market    = (args.get("market")     or "").strip().lower()
+    date_s    = (args.get("date")       or "").strip()
+    league_id = (args.get("league_id")  or "").strip()
 
     fdt = tdt = None
     if date_s:
@@ -127,8 +134,8 @@ def _envelope(matches, total, sport, mode, page, per_page,
 
 
 def _get_args():
-    page     = max(1, int(request.args.get("page",     1)  or 1))
-    per_page = min(int(request.args.get("per_page",   25)  or 25), 100)
+    page     = max(1, int(request.args.get("page",    1)  or 1))
+    per_page = min(int(request.args.get("per_page",  25)  or 25), 100)
     sort     = request.args.get("sort",  "start_time") or "start_time"
     order    = request.args.get("order", "asc")        or "asc"
     return page, per_page, sort, order
@@ -186,7 +193,7 @@ def _sse_headers() -> dict:
 
 
 # =============================================================================
-# NEW: /api/sp/meta/sports  — sport list + primary markets
+# GET /api/sp/meta/sports  — sport list + primary markets
 # =============================================================================
 
 @bp_sp.route("/meta/sports")
@@ -195,7 +202,7 @@ def meta_sports():
     from app.workers.sp_mapper import SPORT_META, SPORT_PRIMARY_MARKETS, get_market_display_name
     from app.workers.sp_sports import SPORT_ID_CONFIGS
 
-    t0 = time.perf_counter()
+    t0     = time.perf_counter()
     result = []
 
     for sport_id, meta in SPORT_META.items():
@@ -220,7 +227,6 @@ def meta_sports():
             "last_harvest":   cached_up.get("harvested_at"),
         })
 
-    # Sort by sport_id order
     order = [1, 126, 2, 5, 4, 12, 23, 21, 6, 16, 117, 10, 49, 15, 3]
     result.sort(key=lambda r: order.index(r["sport_id"]) if r["sport_id"] in order else 99)
 
@@ -232,7 +238,7 @@ def meta_sports():
 
 
 # =============================================================================
-# NEW: /api/sp/meta/markets/<sport_slug>  — all markets for a sport
+# GET /api/sp/meta/markets/<sport_slug>  — all markets for a sport
 # =============================================================================
 
 @bp_sp.route("/meta/markets/<sport_slug>")
@@ -264,22 +270,21 @@ def meta_markets(sport_slug: str):
             "outcomes":   OUTCOME_DISPLAY.get(slug, {}),
         })
 
-    # Primary markets first, then alphabetical
     markets.sort(key=lambda m: (0 if m["is_primary"] else 1, m["slug"]))
 
     return _signed_response({
-        "ok":         True,
-        "sport_slug": sport_slug,
-        "sport_id":   cfg.sport_id,
-        "sport_name": meta["name"],
-        "markets":    markets,
+        "ok":           True,
+        "sport_slug":   sport_slug,
+        "sport_id":     cfg.sport_id,
+        "sport_name":   meta["name"],
+        "markets":      markets,
         "market_count": len(markets),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
+        "latency_ms":   int((time.perf_counter() - t0) * 1000),
     })
 
 
 # =============================================================================
-# /api/sp/sports
+# GET /api/sp/sports
 # =============================================================================
 
 @bp_sp.route("/sports")
@@ -305,7 +310,7 @@ def list_sports():
 
 
 # =============================================================================
-# /api/sp/upcoming/<sport>  — cached
+# GET /api/sp/upcoming/<sport>  — cached
 # =============================================================================
 
 @bp_sp.route("/upcoming/<sport_slug>")
@@ -331,7 +336,7 @@ def get_upcoming_cached(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/live/<sport>  — cached
+# GET /api/sp/live/<sport>  — cached
 # =============================================================================
 
 @bp_sp.route("/live/<sport_slug>")
@@ -357,7 +362,7 @@ def get_live_cached(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/direct/upcoming/<sport>  — blocking direct fetch
+# GET /api/sp/direct/upcoming/<sport>  — blocking direct fetch
 # =============================================================================
 
 @bp_sp.route("/direct/upcoming/<sport_slug>")
@@ -388,7 +393,7 @@ def direct_upcoming(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/direct/live/<sport>  — blocking direct fetch
+# GET /api/sp/direct/live/<sport>  — blocking direct fetch
 # =============================================================================
 
 @bp_sp.route("/direct/live/<sport_slug>")
@@ -415,7 +420,7 @@ def direct_live(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/stream/upcoming/<sport>  — SSE streaming
+# GET /api/sp/stream/upcoming/<sport>  — SSE streaming
 # =============================================================================
 
 @bp_sp.route("/stream/upcoming/<sport_slug>")
@@ -426,7 +431,7 @@ def stream_upcoming(sport_slug: str):
 
     @stream_with_context
     def generate():
-        t0 = time.perf_counter()
+        t0          = time.perf_counter()
         all_matches = []
 
         try:
@@ -473,14 +478,14 @@ def stream_upcoming(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/stream/live/<sport>  — SSE streaming
+# GET /api/sp/stream/live/<sport>  — SSE streaming
 # =============================================================================
 
 @bp_sp.route("/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
     @stream_with_context
     def generate():
-        t0 = time.perf_counter()
+        t0          = time.perf_counter()
         all_matches = []
 
         try:
@@ -514,49 +519,107 @@ def stream_live(sport_slug: str):
 
 
 # =============================================================================
-# /api/sp/match/<game_id>/markets  — on-demand single match
+# GET /api/sp/match/<game_id>/markets  — on-demand single match, full book
 # =============================================================================
 
 @bp_sp.route("/match/<game_id>/markets")
 def get_match_markets(game_id: str):
-    t0 = time.perf_counter()
+    """
+    Full market book for one SP game, with line-aware display labels.
+
+    Every market entry in the response:
+    {
+      "slug":       "over_under_goals_2.5",
+      "label":      "Goals O/U 2.5",
+      "base_slug":  "over_under_goals",
+      "line":       "2.5",
+      "is_primary": true,
+      "outcomes": {
+        "over":  { "price": 1.38, "label": "Over 2.5"  },
+        "under": { "price": 2.80, "label": "Under 2.5" }
+      }
+    }
+
+    For Asian handicap 1.5:
+      outcome "1" → { "price": 2.14, "label": "Home +1.5" }
+      outcome "2" → { "price": 1.60, "label": "Away -1.5" }
+
+    For Result+O/U 2.5:
+      outcome "1_over"  → { "price": 1.70, "label": "Home Over 2.5" }
+      outcome "2_under" → { "price": 4.60, "label": "Away Under 2.5" }
+    """
+    t0         = time.perf_counter()
     sport_slug = request.args.get("sport", "soccer")
+
     try:
         from app.workers.sp_harvester import fetch_match_markets
-        from app.workers.sp_mapper    import get_market_display_name, OUTCOME_DISPLAY
+        from app.workers.sp_mapper    import (
+            get_market_display_name,
+            get_outcome_display,
+            get_sport_primary_markets,
+            extract_base_and_line,
+        )
+        from app.workers.sp_sports import get_config
+
         markets_raw = fetch_match_markets(game_id, sport_slug)
     except Exception as exc:
         return _err(f"SP markets fetch error: {exc}", 500)
 
-    # Enrich with display names
-    enriched: dict = {}
+    # Determine which markets are "primary" for this sport
+    cfg         = get_config(sport_slug)
+    sport_id    = cfg.sport_id if cfg else 1
+    primary_set = set(get_sport_primary_markets(sport_id))
+
+    # Build enriched list with line-aware labels
+    enriched_list: list[dict] = []
     for slug, outcomes in markets_raw.items():
-        out_display = OUTCOME_DISPLAY.get(slug.split("_")[0], {})
-        enriched[slug] = {
-            "label":    get_market_display_name(slug),
-            "outcomes": {
-                k: {"price": v, "label": out_display.get(k, k.upper())}
+        base, line = extract_base_and_line(slug)
+        is_primary = base in primary_set or slug in primary_set
+
+        enriched_list.append({
+            "slug":       slug,
+            "label":      get_market_display_name(slug),
+            "base_slug":  base,
+            "line":       line,
+            "is_primary": is_primary,
+            "outcomes":   {
+                k: {
+                    "price": v,
+                    "label": get_outcome_display(slug, k),
+                }
                 for k, v in outcomes.items()
             },
-        }
+        })
+
+    # Sort: primary first, then alphabetical by slug
+    enriched_list.sort(key=lambda m: (0 if m["is_primary"] else 1, m["slug"]))
+
+    # Also expose as dict keyed by slug for backward compat
+    enriched_dict = {m["slug"]: m for m in enriched_list}
 
     return _signed_response({
-        "ok": True, "sp_game_id": game_id, "source": "sportpesa",
-        "sport": sport_slug,
-        "markets": enriched,
-        "market_count": len(enriched),
-        "has_over_under": any("over_under" in k or "total" in k for k in markets_raw),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
+        "ok":             True,
+        "sp_game_id":     game_id,
+        "source":         "sportpesa",
+        "sport":          sport_slug,
+        "markets":        enriched_dict,   # dict — backward compat
+        "markets_list":   enriched_list,   # ordered list — primary first
+        "market_count":   len(enriched_list),
+        "has_over_under": any(
+            "over_under" in k or k.startswith("total_")
+            for k in markets_raw
+        ),
+        "latency_ms":     int((time.perf_counter() - t0) * 1000),
     })
 
 
 # =============================================================================
-# /api/sp/debug/markets/<game_id>
+# GET /api/sp/debug/markets/<game_id>
 # =============================================================================
 
 @bp_sp.route("/debug/markets/<game_id>")
 def debug_markets(game_id: str):
-    t0 = time.perf_counter()
+    t0         = time.perf_counter()
     sport_slug = request.args.get("sport", "soccer")
     try:
         from app.workers.sp_harvester import _fetch_markets_for_debug, _parse_markets_for_debug  # noqa
@@ -581,18 +644,19 @@ def debug_markets(game_id: str):
 
 
 # =============================================================================
-# /api/sp/status
+# GET /api/sp/status
 # =============================================================================
 
 @bp_sp.route("/status")
 def sp_status():
-    t0 = time.perf_counter()
+    t0     = time.perf_counter()
     sports = []
     for slug in _SPORTS:
         up   = _cache_get(f"sp:upcoming:{slug}") or {}
         live = _cache_get(f"sp:live:{slug}")     or {}
         sports.append({
-            "sport": slug, "is_football": slug in _FOOTBALL_SPORTS,
+            "sport":              slug,
+            "is_football":        slug in _FOOTBALL_SPORTS,
             "upcoming_count":     up.get("match_count",   0),
             "upcoming_harvested": up.get("harvested_at"),
             "upcoming_latency":   up.get("latency_ms"),
@@ -601,10 +665,11 @@ def sp_status():
         })
     hb = _cache_get("worker_heartbeat") or {}
     return _signed_response({
-        "ok": True, "source": "sportpesa",
+        "ok":             True,
+        "source":         "sportpesa",
         "worker_alive":   hb.get("alive", False),
         "last_heartbeat": hb.get("checked_at"),
-        "sports": sports,
+        "sports":         sports,
         "football_sports": sorted(_FOOTBALL_SPORTS),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
+        "latency_ms":     int((time.perf_counter() - t0) * 1000),
     })
