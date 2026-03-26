@@ -325,18 +325,18 @@ def _fetch_live_list(sport_id: str) -> list[dict]:
     Returns {"events": [...]} with id, competitors, state, externalId, kickoffTimeUTC
     """
     # Primary endpoint (confirmed from SP frontend network traffic)
-    raw, _ = _get(f"/live/sports/{sport_id}/events", params={"limit": 100})
+    raw, _ = _get(f"/api/live/sports/{sport_id}/events", params={"limit": 100})
     if raw:
         for key in ("events", "data", "items"):
             if isinstance(raw.get(key), list) and raw[key]:
-                print(f"[sp:{sport_id}:live] _fetch_live_list: {len(raw[key])} events via /live/sports/{sport_id}/events")
+                print(f"[sp:{sport_id}:live] _fetch_live_list: {len(raw[key])} events via /api/live/sports/{sport_id}/events")
                 return raw[key]
         if isinstance(raw, list) and raw:
             return raw
 
     # Fallback: old endpoint (kept for safety)
-    print(f"[sp:{sport_id}:live] primary endpoint empty — trying /live/games fallback")
-    raw, _ = _get("/live/games", params={"sportId": sport_id})
+    print(f"[sp:{sport_id}:live] primary endpoint empty — trying /api/live/games fallback")
+    raw, _ = _get("/api/live/games", params={"sportId": sport_id})
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
@@ -354,7 +354,7 @@ def _fetch_live_event_details_markets(event_id: str | int) -> list[dict]:
     Returns live-specific market IDs (194=1x2, 147=DC, 105=Total, 138=BTTS, etc.)
     with selection names as full team names ("Afghanistan", "draw", "Myanmar").
     """
-    raw, _ = _get(f"/live/events/{event_id}/details")
+    raw, _ = _get(f"/api/live/events/{event_id}/details")
     if not raw or not isinstance(raw, dict):
         return []
     markets = raw.get("markets") or []
