@@ -1,7 +1,8 @@
 """
-app/views/odds_feed/sp_live_module.py
-=======================================
-Flask Blueprint — Sportpesa Live Odds + Events.
+app/views/odds_feed/sp_live_view.py
+=====================================
+Flask Blueprint — Sportpesa Live Odds, Events, SSE Streams,
+                  and Sportradar match-stats proxy.
 
 All SSE endpoints subscribe to Redis pub/sub channels published by
 sp_live_harvester.py.  Only delta messages (changed odds) are forwarded.
@@ -22,27 +23,41 @@ GET  /api/sp/live/stream                      — all live updates
 GET  /api/sp/live/stream/sport/<sport_id>     — sport-scoped stream
 GET  /api/sp/live/stream/event/<event_id>     — event-scoped stream
 
-Test trigger endpoints
+Sportradar proxy endpoints
+──────────────────────────
+GET  /api/sp/live/sportradar/match-details/<external_id>
+     → parsed live stats: corners, cards, possession, attacks, substitutions
+GET  /api/sp/live/sportradar/match-info/<external_id>
+     → venue, referee, tournament context
+
+Test / admin endpoints
 ──────────────────────
 POST /api/sp/live/test/snapshot               — force HTTP snapshot
 POST /api/sp/live/test/start-harvester        — launch WS harvester thread
 POST /api/sp/live/test/stop-harvester         — stop WS harvester
+POST /api/sp/live/test/publish                — inject test message
+GET  /api/sp/live/test/fetch-markets          — test HTTP market fetch
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 from datetime import datetime, timezone
 
+import requests
 from flask import Blueprint, Response, request, stream_with_context
 
 from app.utils.customer_jwt_helpers import _err, _signed_response
 
+log = logging.getLogger("sp_live")
+
 bp_sp_live = Blueprint("sp_live", __name__, url_prefix="/api/sp/live")
 
 
-# ── Internal imports (lazy, to avoid circular) ────────────────────────────────
+# ── Internal helpers (lazy imports to avoid circular deps) ────────────────────
 
 def _harvester():
     from app.workers import sp_live_harvester as h
@@ -54,7 +69,7 @@ def _get_redis():
     return gr()
 
 
-# ── Constants (mirrors sp_live_harvester) ─────────────────────────────────────
+# ── Redis channel names (mirrors harvester) ───────────────────────────────────
 
 CH_ALL   = "sp:live:all"
 CH_SPORT = "sp:live:sport:{sport_id}"
@@ -68,7 +83,9 @@ SSE_HEADERS = {
 }
 
 
-# ── SSE frame helpers ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SSE helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -79,21 +96,21 @@ def _sse_keep_alive() -> str:
     return f": keep-alive {ts}\n\n"
 
 
-# ── Generic SSE generator from a Redis pub/sub channel ───────────────────────
-
 def _stream_channel(channel: str, label: str = ""):
     """
-    Generator: subscribe to a Redis pub/sub channel, yield SSE frames.
-    Sends a keep-alive comment every 15 s to prevent proxy timeouts.
-    Only publishes if message has changed keys (odds delta already ensured
-    at publisher side, but we double-check the type field here).
+    Generator: subscribe to one Redis pub/sub channel, yield SSE frames.
+    Keep-alive comment emitted every 15 s to prevent proxy timeouts.
     """
-    r        = _get_redis()
-    pubsub   = r.pubsub(ignore_subscribe_messages=True)
+    r      = _get_redis()
+    pubsub = r.pubsub(ignore_subscribe_messages=True)
     pubsub.subscribe(channel)
 
-    yield _sse({"type": "connected", "channel": channel, "label": label,
-                "ts": datetime.now(timezone.utc).isoformat()})
+    yield _sse({
+        "type":    "connected",
+        "channel": channel,
+        "label":   label,
+        "ts":      datetime.now(timezone.utc).isoformat(),
+    })
 
     last_ka = time.monotonic()
     try:
@@ -103,7 +120,6 @@ def _stream_channel(channel: str, label: str = ""):
             if msg and msg["type"] == "message":
                 yield _sse(json.loads(msg["data"]))
 
-            # Keep-alive every 15 s
             if time.monotonic() - last_ka > 15:
                 yield _sse_keep_alive()
                 last_ka = time.monotonic()
@@ -124,55 +140,44 @@ def _stream_channel(channel: str, label: str = ""):
 
 @bp_sp_live.route("/stream")
 def stream_all():
-    """
-    Stream every live update across all sports.
-    Clients receive both `market_update` and `event_update` messages.
-    """
+    """Stream every live update across all sports."""
     @stream_with_context
     def generate():
         yield from _stream_channel(CH_ALL, label="all")
-
     return Response(generate(), headers=SSE_HEADERS)
 
 
 @bp_sp_live.route("/stream/sport/<int:sport_id>")
 def stream_sport(sport_id: int):
-    """
-    Stream all live updates for one sport (e.g. /stream/sport/1 = Soccer).
-    """
+    """Stream all live updates for one sport (e.g. /stream/sport/1 = Soccer)."""
     @stream_with_context
     def generate():
         yield from _stream_channel(
             CH_SPORT.format(sport_id=sport_id),
             label=f"sport_{sport_id}",
         )
-
     return Response(generate(), headers=SSE_HEADERS)
 
 
 @bp_sp_live.route("/stream/event/<int:event_id>")
 def stream_event(event_id: int):
-    """
-    Stream all updates for a single live event.
-    Receives market_update (odds changes) and event_update (score/clock).
-    """
+    """Stream all updates for a single live event (odds + score/clock)."""
     @stream_with_context
     def generate():
         yield from _stream_channel(
             CH_EVENT.format(event_id=event_id),
             label=f"event_{event_id}",
         )
-
     return Response(generate(), headers=SSE_HEADERS)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# REST — SNAPSHOT / QUERY ENDPOINTS
+# REST — SPORTS / EVENTS / SNAPSHOT / MARKETS
 # ═════════════════════════════════════════════════════════════════════════════
 
 @bp_sp_live.route("/sports")
 def live_sports():
-    """Return current live sport list (from Redis cache or HTTP fallback)."""
+    """Return current live sport list (Redis cache → HTTP fallback)."""
     t0 = time.perf_counter()
     r  = _get_redis()
 
@@ -196,7 +201,7 @@ def live_sports():
 
 @bp_sp_live.route("/events/<int:sport_id>")
 def live_events(sport_id: int):
-    """Return current live events for one sport (HTTP, not cached)."""
+    """Return current live events for one sport (live HTTP call)."""
     t0     = time.perf_counter()
     limit  = min(int(request.args.get("limit",  50) or 50), 200)
     offset = int(request.args.get("offset", 0) or 0)
@@ -214,28 +219,27 @@ def live_events(sport_id: int):
 
 @bp_sp_live.route("/snapshot/<int:sport_id>")
 def live_snapshot(sport_id: int):
-    """Return the cached snapshot for a sport (events + markets)."""
-    t0 = time.perf_counter()
-    r  = _get_redis()
-
+    """Return the Redis-cached snapshot for a sport (events + markets)."""
+    t0  = time.perf_counter()
+    r   = _get_redis()
     raw = r.get(f"sp:live:snapshot:{sport_id}")
+
     if not raw:
-        return _err(f"No snapshot for sport_id={sport_id}. "
-                    "POST /api/sp/live/test/snapshot to refresh.", 404)
+        return _err(
+            f"No snapshot for sport_id={sport_id}. "
+            "POST /api/sp/live/test/snapshot to warm the cache.",
+            404,
+        )
 
     data = json.loads(raw)
+    data["ok"]         = True
     data["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-    data["ok"] = True
     return _signed_response(data)
 
 
 @bp_sp_live.route("/markets/<int:event_id>")
 def live_markets(event_id: int):
-    """
-    Return current market odds snapshot for one event from Redis.
-    Keys: sp:live:odds:{eventId}:{marketId}
-    Also lists all marketIds stored for this event.
-    """
+    """Return all current market odds for one event from Redis."""
     t0     = time.perf_counter()
     r      = _get_redis()
     prefix = f"sp:live:odds:{event_id}:"
@@ -243,26 +247,23 @@ def live_markets(event_id: int):
 
     if not keys:
         return _signed_response({
-            "ok":       True,
-            "event_id": event_id,
-            "markets":  [],
-            "count":    0,
+            "ok":         True,
+            "event_id":   event_id,
+            "markets":    [],
+            "count":      0,
             "latency_ms": int((time.perf_counter() - t0) * 1000),
         })
 
-    markets = []
-    pipe    = r.pipeline()
+    pipe   = r.pipeline()
     for k in keys:
         pipe.get(k)
     values = pipe.execute()
 
+    markets = []
     for k, v in zip(keys, values):
         if v:
             market_id = k.split(":")[-1]
-            markets.append({
-                "market_id": int(market_id),
-                "odds":      json.loads(v),
-            })
+            markets.append({"market_id": int(market_id), "odds": json.loads(v)})
 
     return _signed_response({
         "ok":         True,
@@ -300,39 +301,243 @@ def event_state(event_id: int):
     if not raw:
         return _err(f"No state cached for event {event_id}", 404)
 
-    state = json.loads(raw)
     return _signed_response({
         "ok":         True,
         "event_id":   event_id,
-        "state":      state,
+        "state":      json.loads(raw),
         "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
 
 @bp_sp_live.route("/status")
 def live_status():
-    """Harvester health + channel subscriber counts."""
+    """Harvester health + Redis pub/sub subscriber counts."""
     t0 = time.perf_counter()
     h  = _harvester()
+    r  = _get_redis()
 
-    # Redis pub/sub subscriber counts
-    r    = _get_redis()
-    info = {}
+    channels = {}
     try:
-        ps_info = r.execute_command("PUBSUB", "NUMSUB",
-                                     CH_ALL, "sp:live:sport:1", "sp:live:sport:2")
-        # Returns [channel, count, channel, count, …]
+        ps_info = r.execute_command(
+            "PUBSUB", "NUMSUB",
+            CH_ALL, "sp:live:sport:1", "sp:live:sport:2",
+        )
         for i in range(0, len(ps_info), 2):
-            info[ps_info[i]] = ps_info[i + 1]
+            channels[ps_info[i]] = ps_info[i + 1]
     except Exception:
         pass
 
     return _signed_response({
-        "ok":             True,
+        "ok":              True,
         "harvester_alive": h.harvester_alive(),
-        "channels":        info,
+        "channels":        channels,
         "redis_connected": bool(r.ping()),
         "latency_ms":      int((time.perf_counter() - t0) * 1000),
+    })
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SPORTRADAR PROXY
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Sportradar LMT API endpoints used:
+#   match_detailsextended/{externalId}  → live stats: corners, cards, possession…
+#   match_info/{externalId}             → venue, referee, tournament context
+#
+# Token is read from SPORTRADAR_TOKEN env var at request time so you can
+# rotate without restarting.
+#
+#   export SPORTRADAR_TOKEN="exp=...~acl=/*~data=...~hmac=..."
+#
+# Hard-coded fallback (may expire — rotate via env var):
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SR_BASE           = "https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo"
+_SR_ORIGIN         = "https://www.ke.sportpesa.com"
+_SR_TOKEN_FALLBACK = (
+    "exp=1774545287~acl=/*"
+    "~data=eyJvIjoiaHR0cHM6Ly93d3cua2Uuc3BvcnRwZXNhLmNvbSIsImEiOiJmODYx"
+    "N2E4OTZkMzU1MWJhNTBkNTFmMDE0OWQ0YjZkZCIsImFjdCI6Im9yaWdpbmNoZWNrIiwi"
+    "b3NyYyI6Im9yaWdpbiJ9"
+    "~hmac=2a52533b3d171493eba79a54b75c4c708836d6e01bbf762f4d5856b28d24ba18"
+)
+
+# Stats shown in the live detail drawer.
+# Each tuple: (Sportradar values key, human label)
+_SR_STAT_KEYS: list[tuple[str, str]] = [
+    ("124",                       "Corners"),
+    ("40",                        "Yellow Cards"),
+    ("45",                        "Yellow/Red Cards"),
+    ("50",                        "Red Cards"),
+    ("1030",                      "Ball Safe"),
+    ("1126",                      "Attacks"),
+    ("1029",                      "Dangerous Attacks"),
+    ("ballsafepercentage",        "Possession %"),
+    ("attackpercentage",          "Attack %"),
+    ("dangerousattackpercentage", "Danger Att %"),
+    ("60",                        "Substitutions"),
+    ("158",                       "Injuries"),
+]
+
+
+def _sr_token() -> str:
+    """Return SPORTRADAR_TOKEN env var, falling back to hard-coded token."""
+    return os.getenv("SPORTRADAR_TOKEN", _SR_TOKEN_FALLBACK)
+
+
+def _sr_get(endpoint: str, timeout: int = 8) -> dict | None:
+    """GET one Sportradar LMT endpoint; return parsed JSON or None."""
+    url = f"{_SR_BASE}/{endpoint}?T={_sr_token()}"
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "Origin":     _SR_ORIGIN,
+                "Referer":    _SR_ORIGIN + "/",
+                "User-Agent": (
+                    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
+                ),
+            },
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        log.warning("SR %s → %s", endpoint, exc)
+        return None
+
+
+@bp_sp_live.route("/sportradar/match-details/<int:external_id>")
+def sr_match_details(external_id: int):
+    """
+    GET /api/sp/live/sportradar/match-details/<external_id>
+
+    Fetches match_detailsextended from Sportradar and returns a parsed
+    stats payload suitable for rendering stat-bars in the live tab.
+
+    Response shape:
+    {
+      "ok": true,
+      "external_id": 68936642,
+      "stats": {
+        "home":  "Team A",
+        "away":  "Team B",
+        "stats": [
+          {"name": "Corners",    "home": 4, "away": 2},
+          {"name": "Possession %", "home": 58, "away": 42},
+          ...
+        ]
+      },
+      "latency_ms": 142
+    }
+    """
+    t0   = time.perf_counter()
+    data = _sr_get(f"match_detailsextended/{external_id}")
+
+    if not data:
+        return _err(
+            f"Sportradar stats unavailable for externalId={external_id}. "
+            "Token may have expired — set SPORTRADAR_TOKEN env var.",
+            503,
+        )
+
+    doc    = (data.get("doc") or [{}])[0]
+    inner  = doc.get("data", {})
+    values = inner.get("values", {})
+    teams  = inner.get("teams", {})
+
+    # Parse stats rows — only include rows where both sides are numeric/present
+    stats_rows = []
+    for key, label in _SR_STAT_KEYS:
+        entry = values.get(key)
+        if not entry:
+            continue
+        val = entry.get("value")
+        if not isinstance(val, dict):
+            continue
+        h = val.get("home", "")
+        a = val.get("away", "")
+        # Skip completely empty rows
+        if h == "" and a == "":
+            continue
+        stats_rows.append({
+            "name": label,
+            "home": h if h != "" else 0,
+            "away": a if a != "" else 0,
+        })
+
+    return _signed_response({
+        "ok":          True,
+        "external_id": external_id,
+        "stats": {
+            "home":  teams.get("home", "Home"),
+            "away":  teams.get("away", "Away"),
+            "stats": stats_rows,
+        },
+        "raw_maxage":  inner.get("_maxage"),
+        "latency_ms":  int((time.perf_counter() - t0) * 1000),
+    })
+
+
+@bp_sp_live.route("/sportradar/match-info/<int:external_id>")
+def sr_match_info(external_id: int):
+    """
+    GET /api/sp/live/sportradar/match-info/<external_id>
+
+    Returns venue, referee, and tournament context from Sportradar match_info.
+
+    Response shape:
+    {
+      "ok": true,
+      "external_id": 68936642,
+      "match": {
+        "id": 68936642,
+        "tournament": "Premier League",
+        "venue":      "Anfield",
+        "venue_city": "Liverpool",
+        "referee":    "Michael Oliver (England)",
+        "home":       "Liverpool",
+        "away":       "Everton"
+      },
+      "latency_ms": 87
+    }
+    """
+    t0   = time.perf_counter()
+    data = _sr_get(f"match_info/{external_id}")
+
+    if not data:
+        return _err(
+            f"Sportradar match_info unavailable for externalId={external_id}.",
+            503,
+        )
+
+    doc   = (data.get("doc") or [{}])[0]
+    inner = doc.get("data", {})
+    match = inner.get("match", {})
+    venue = match.get("venue",    {})
+    ref   = match.get("referee",  {})
+    teams = inner.get("teams",    {})
+    tourn = match.get("tournament", {})
+
+    ref_name = ref.get("name", "")
+    ref_nat  = ref.get("nationality", "")
+    ref_str  = f"{ref_name} ({ref_nat})".strip(" ()") if ref_name else ""
+
+    return _signed_response({
+        "ok":          True,
+        "external_id": external_id,
+        "match": {
+            "id":         match.get("id"),
+            "tournament": tourn.get("name"),
+            "venue":      venue.get("name"),
+            "venue_city": venue.get("cityName"),
+            "referee":    ref_str,
+            "home":       (teams.get("home") or {}).get("name"),
+            "away":       (teams.get("away") or {}).get("name"),
+        },
+        "raw":        inner,   # full payload for advanced consumers
+        "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
 
@@ -344,20 +549,17 @@ def live_status():
 def test_snapshot():
     """
     Trigger a full HTTP snapshot of all live sports/events/markets.
-    Warm the Redis cache without needing the WS harvester.
+    Populates the Redis cache without needing the WebSocket harvester.
     """
     t0 = time.perf_counter()
     try:
-        result = _harvester().snapshot_all_sports()
-        summary = {
-            sport_id: len(events)
-            for sport_id, events in result.items()
-        }
+        result  = _harvester().snapshot_all_sports()
+        summary = {sport_id: len(events) for sport_id, events in result.items()}
         return _signed_response({
-            "ok":          True,
-            "sports_done": len(result),
+            "ok":           True,
+            "sports_done":  len(result),
             "event_counts": summary,
-            "latency_ms":  int((time.perf_counter() - t0) * 1000),
+            "latency_ms":   int((time.perf_counter() - t0) * 1000),
         })
     except Exception as exc:
         return _err(f"snapshot failed: {exc}", 500)
@@ -365,25 +567,25 @@ def test_snapshot():
 
 @bp_sp_live.route("/test/start-harvester", methods=["POST"])
 def test_start_harvester():
-    """Launch the WebSocket harvester in a background thread."""
+    """Launch the WebSocket harvester in a background daemon thread."""
     t0     = time.perf_counter()
     thread = _harvester().start_harvester_thread()
     return _signed_response({
-        "ok":      True,
-        "alive":   thread.is_alive(),
-        "thread":  thread.name,
+        "ok":         True,
+        "alive":      thread.is_alive(),
+        "thread":     thread.name,
         "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
 
 @bp_sp_live.route("/test/stop-harvester", methods=["POST"])
 def test_stop_harvester():
-    """Stop the WebSocket harvester."""
+    """Stop the WebSocket harvester thread."""
     t0 = time.perf_counter()
     _harvester().stop_harvester()
     return _signed_response({
-        "ok":      True,
-        "alive":   _harvester().harvester_alive(),
+        "ok":         True,
+        "alive":      _harvester().harvester_alive(),
         "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
@@ -391,7 +593,7 @@ def test_stop_harvester():
 @bp_sp_live.route("/test/publish", methods=["POST"])
 def test_publish():
     """
-    Manually publish a test message to a channel.
+    Manually publish a message to any channel.
     Body: {"channel": "sp:live:all", "payload": {...}}
     """
     t0   = time.perf_counter()
@@ -399,13 +601,13 @@ def test_publish():
 
     channel = body.get("channel", CH_ALL)
     payload = body.get("payload", {
-        "type":     "test",
-        "message":  "hello from test endpoint",
-        "ts":       datetime.now(timezone.utc).isoformat(),
+        "type":    "test",
+        "message": "hello from test endpoint",
+        "ts":      datetime.now(timezone.utc).isoformat(),
     })
 
-    r  = _get_redis()
-    n  = r.publish(channel, json.dumps(payload))
+    r = _get_redis()
+    n = r.publish(channel, json.dumps(payload))
 
     return _signed_response({
         "ok":          True,
@@ -419,28 +621,27 @@ def test_publish():
 def test_fetch_markets():
     """
     Test the HTTP market fetch directly.
-    Query params: sport_id (default 1), event_ids (comma-separated), type (default 194)
+    Query params: sport_id (default 1), event_ids (comma-sep), type (default 194)
     """
-    t0        = time.perf_counter()
-    sport_id  = int(request.args.get("sport_id", 1))
-    ids_str   = request.args.get("event_ids", "")
-    mkt_type  = int(request.args.get("type", 194))
+    t0       = time.perf_counter()
+    sport_id = int(request.args.get("sport_id", 1))
+    ids_str  = request.args.get("event_ids", "")
+    mkt_type = int(request.args.get("type", 194))
 
     if ids_str:
         event_ids = [int(i.strip()) for i in ids_str.split(",") if i.strip().isdigit()]
     else:
-        # Fetch first batch of live events for this sport
         events    = _harvester().fetch_live_events(sport_id, limit=15)
         event_ids = [ev["id"] for ev in events]
 
     markets = _harvester().fetch_live_markets(event_ids, sport_id, mkt_type)
 
     return _signed_response({
-        "ok":         True,
-        "sport_id":   sport_id,
-        "event_ids":  event_ids,
+        "ok":          True,
+        "sport_id":    sport_id,
+        "event_ids":   event_ids,
         "market_type": mkt_type,
-        "markets":    markets,
-        "count":      len(markets),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
+        "markets":     markets,
+        "count":       len(markets),
+        "latency_ms":  int((time.perf_counter() - t0) * 1000),
     })
