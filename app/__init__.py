@@ -1,7 +1,6 @@
 import os
 from flask import Flask
 from dotenv import load_dotenv
-from app.workers.sp_live_harvester import start_harvester_thread
 from app.extensions import db, init_celery, jwt, socketio, migrate, cors
 from app.views.onboarding.playwright_onboarding import bp_fetcher, init_fetcher_manager
 
@@ -109,6 +108,8 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_interceptor)
     flask_app.register_blueprint(bp_sp)
     flask_app.register_blueprint(bp_sp_live)
+
+    from app.workers.sp_live_harvester import start_harvester_thread
     start_harvester_thread()
     # init_playwright_manager()
     init_fetcher_manager()
