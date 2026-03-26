@@ -318,14 +318,49 @@ def _fetch_upcoming_page(
 
 
 def _fetch_live_list(sport_id: str) -> list[dict]:
-    raw, _ = _get("/api/live/games", params={"sportId": sport_id})
+    """
+    Fetch live events for a sport.
+    Confirmed endpoint from SP browser traffic:
+      GET /api/live/sports/{sportId}/events?limit=100
+    Returns {"events": [...]} with id, competitors, state, externalId, kickoffTimeUTC
+    """
+    # Primary endpoint (confirmed from SP frontend network traffic)
+    raw, _ = _get(f"/live/sports/{sport_id}/events", params={"limit": 100})
+    if raw:
+        for key in ("events", "data", "items"):
+            if isinstance(raw.get(key), list) and raw[key]:
+                print(f"[sp:{sport_id}:live] _fetch_live_list: {len(raw[key])} events via /live/sports/{sport_id}/events")
+                return raw[key]
+        if isinstance(raw, list) and raw:
+            return raw
+
+    # Fallback: old endpoint (kept for safety)
+    print(f"[sp:{sport_id}:live] primary endpoint empty — trying /live/games fallback")
+    raw, _ = _get("/live/games", params={"sportId": sport_id})
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
-        for key in ("data", "games", "items"):
+        for key in ("data", "games", "items", "events"):
             if isinstance(raw.get(key), list):
                 return raw[key]
+
+    print(f"[sp:{sport_id}:live] both live endpoints returned nothing")
     return []
+
+
+def _fetch_live_event_details_markets(event_id: str | int) -> list[dict]:
+    """
+    GET /api/live/events/{eventId}/details → markets[]
+    Returns live-specific market IDs (194=1x2, 147=DC, 105=Total, 138=BTTS, etc.)
+    with selection names as full team names ("Afghanistan", "draw", "Myanmar").
+    """
+    raw, _ = _get(f"/live/events/{event_id}/details")
+    if not raw or not isinstance(raw, dict):
+        return []
+    markets = raw.get("markets") or []
+    if markets:
+        print(f"[sp:live:details] event={event_id}: {len(markets)} markets")
+    return markets if isinstance(markets, list) else []
 
 
 def _extract_market_list(raw: Any, gid: str) -> list[dict]:
@@ -733,25 +768,37 @@ def fetch_live_stream(
     debug_ou:           bool  = False,
     **_,
 ) -> Generator[dict, None, None]:
-    """Yield live matches one at a time."""
+    """
+    Yield live matches one at a time.
+
+    API flow:
+      1. _fetch_live_list()  →  GET /api/live/sports/{sportId}/events  (FIXED)
+      2. _fetch_live_event_details_markets()  →  GET /api/live/events/{id}/details
+         Returns live-specific market IDs (194, 147, 105, 138…) with full team names.
+      3. Falls back to /api/games/markets if details returns nothing.
+    """
     sport_id, market_ids, _, _, _ = _get_config(sport_slug)
     if not sport_id:
         return
 
     raw_items = _fetch_live_list(sport_id)
-    print(f"[sp:{sport_slug}:live] {len(raw_items)} live (sportId={sport_id})")
+    print(f"[sp:{sport_slug}:live] {len(raw_items)} live events (sportId={sport_id})")
 
+    inline_count = 0
     for item in raw_items:
         parsed = _parse_match_item(item)
         if not parsed:
             continue
 
         if fetch_full_markets and parsed["sp_game_id"]:
-            raw_mkts = _fetch_markets(
-                parsed["sp_game_id"], market_ids, debug=debug_ou
-            )
+            # Try live details endpoint first (correct live market IDs + team name sels)
+            raw_mkts = _fetch_live_event_details_markets(parsed["sp_game_id"])
+            if not raw_mkts:
+                # Fallback: upcoming /api/games/markets endpoint
+                raw_mkts = _fetch_markets(parsed["sp_game_id"], market_ids, debug=debug_ou)
             if not raw_mkts:
                 raw_mkts = parsed["_inline_mkts"]
+                inline_count += 1
             time.sleep(sleep_between)
         else:
             raw_mkts = parsed["_inline_mkts"]
@@ -762,6 +809,9 @@ def fetch_live_stream(
             sport_id = parsed.get("sp_sport_id") or int(sport_id),
         )
         yield _build_match(parsed, markets, sport_slug, status="live")
+
+    if inline_count:
+        print(f"[sp:{sport_slug}:live] {inline_count}/{len(raw_items)} used inline fallback")
 
 
 # =============================================================================
