@@ -11,7 +11,8 @@ REST endpoints
 ──────────────
 GET  /api/sp/live/sports                      — current live sport list
 GET  /api/sp/live/events/<sport_id>           — events for one sport
-GET  /api/sp/live/snapshot/<sport_id>         — full cached snapshot
+GET  /api/sp/live/snapshot/<sport_id>         — full cached snapshot (raw SP format)
+GET  /api/sp/live/snapshot-canonical/<slug>  — live matches in canonical slug format
 GET  /api/sp/live/markets/<event_id>          — current market odds snapshot
 GET  /api/sp/live/odds-history/<eid>/<mid>    — last N odds ticks for a market
 GET  /api/sp/live/state/<event_id>            — last known event state/score
@@ -235,6 +236,83 @@ def live_snapshot(sport_id: int):
     data["ok"]         = True
     data["latency_ms"] = int((time.perf_counter() - t0) * 1000)
     return _signed_response(data)
+
+
+@bp_sp_live.route("/snapshot-canonical/<sport_slug>")
+def live_snapshot_canonical(sport_slug: str):
+    """
+    GET /api/sp/live/snapshot-canonical/<sport_slug>
+
+    Returns live matches in the SAME canonical format as the pre-match harvester
+    (i.e. SpMatch[] with markets: {slug: {outcome: odd}}).
+
+    Uses sp_harvester.fetch_live() → sp_mapper.py internally, so all slug
+    conversions are identical to the pre-match pipeline. The frontend needs
+    zero custom type-ID mapping — it can render live odds exactly like upcoming.
+
+    Cache key: sp:live:{sport_slug}  (TTL 90 s, same as direct live fetch)
+    Falls back to a fresh HTTP fetch if cache is cold.
+    """
+    t0 = time.perf_counter()
+
+    # 1. Try existing cache written by Celery harvester
+    cached = _cache_get(f"sp:live:{sport_slug}")
+    if cached and cached.get("matches"):
+        data = cached
+        from_cache = True
+    else:
+        # 2. Fresh fetch via sp_harvester → sp_mapper (blocking, ~1–3 s)
+        try:
+            from app.workers.sp_harvester import fetch_live  # noqa
+            matches      = fetch_live(sport_slug, fetch_full_markets=True)
+            harvested_at = _now_ts()
+            data = {
+                "source":       "sportpesa",
+                "sport":        sport_slug,
+                "mode":         "live",
+                "match_count":  len(matches),
+                "harvested_at": harvested_at,
+                "latency_ms":   int((time.perf_counter() - t0) * 1000),
+                "matches":      matches,
+            }
+            _cache_set(f"sp:live:{sport_slug}", data, ttl=90)
+            from_cache = False
+        except Exception as exc:
+            log.warning("live canonical fetch failed for %s: %s", sport_slug, exc)
+            return _err(f"Live fetch failed: {exc}", 503)
+
+    return _signed_response({
+        "ok":         True,
+        "source":     "sportpesa_live_canonical",
+        "sport":      sport_slug,
+        "from_cache": from_cache,
+        "matches":    data.get("matches", []),
+        "total":      data.get("match_count", len(data.get("matches", []))),
+        "harvested_at": data.get("harvested_at"),
+        "latency_ms": int((time.perf_counter() - t0) * 1000),
+    })
+
+
+# ── Helpers used above ────────────────────────────────────────────────────────
+
+def _cache_get(key: str):
+    try:
+        from app.workers.celery_tasks import cache_get
+        return cache_get(key)
+    except Exception:
+        return None
+
+
+def _cache_set(key: str, data, ttl: int = 90):
+    try:
+        from app.workers.celery_tasks import cache_set
+        cache_set(key, data, ttl=ttl)
+    except Exception:
+        pass
+
+
+def _now_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @bp_sp_live.route("/markets/<int:event_id>")
