@@ -368,7 +368,13 @@ def fetch_live_events(sport_id: int, limit: int = 50, offset: int = 0) -> list[d
     if not data:
         _D("fetch_live_events sport=%d: no data", sport_id, level="warning")
         return []
-    events = data.get("events") or data.get("data") or []
+    # SP API sometimes returns a list directly
+    if isinstance(data, list):
+        events = data
+    else:
+        events = data.get("events") or data.get("data") or []
+    # Filter to dicts only (guard against nested lists)
+    events = [e for e in events if isinstance(e, dict)]
     _D("fetch_live_events sport=%d: %d events", sport_id, len(events), level="info")
     for ev in events[:3]:
         comps = ev.get("competitors") or []
@@ -389,7 +395,11 @@ def fetch_live_default_markets(sport_id: int) -> list[dict]:
     if not data:
         _D("fetch_live_default_markets sport=%d: no data", sport_id, level="warning")
         return []
-    items = data.get("markets") or []
+    if isinstance(data, list):
+        items = data
+    else:
+        items = data.get("markets") or []
+    items = [i for i in items if isinstance(i, dict)]
     _D("fetch_live_default_markets sport=%d: %d event-market bundles", sport_id, len(items), level="info")
     return items
 
@@ -416,7 +426,12 @@ def fetch_live_markets(
 
 def fetch_event_details(event_id: int) -> dict | None:
     data = _get(f"/events/{event_id}/details")
-    return data if isinstance(data, dict) else None
+    if isinstance(data, dict):
+        return data
+    # Some SP responses wrap in a list — take first item
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0]
+    return None
 
 
 def snapshot_all_sports() -> dict[int, list[dict]]:
