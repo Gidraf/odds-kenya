@@ -424,11 +424,26 @@ def fetch_live_markets(
     return markets
 
 
+def _get_quiet(path: str, params: dict | None = None, timeout: int = 10) -> Any:
+    """Like _get but silently returns None on 404 (expected for ended/pre-match events)."""
+    url = f"{API_BASE}{path}"
+    try:
+        r = _session().get(url, params=params, timeout=timeout)
+        if r.status_code == 404:
+            return None   # silent — event not live, expected
+        if not r.ok:
+            _D("HTTP ERROR %d: %s", r.status_code, r.text[:200], level="warning")
+            return None
+        return r.json()
+    except Exception as exc:
+        _D("HTTP EXCEPTION %s: %s", url, exc, level="error")
+        return None
+
+
 def fetch_event_details(event_id: int) -> dict | None:
-    data = _get(f"/events/{event_id}/details")
+    data = _get_quiet(f"/events/{event_id}/details")
     if isinstance(data, dict):
         return data
-    # Some SP responses wrap in a list — take first item
     if isinstance(data, list) and data and isinstance(data[0], dict):
         return data[0]
     return None
@@ -890,28 +905,352 @@ _harvester_instance: SpLiveHarvester | None = None
 _harvester_thread:   threading.Thread | None = None
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# LIVE POLLER — active polling loop for real-time odds + state
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The WebSocket only fires on changes (not every second).
+# The LivePoller fills the gap:
+#   • Every POLL_DEFAULT_INTERVAL s → GET /api/live/default/markets?sportId=N
+#     This is ONE call per sport that returns 1x2 odds for every live event.
+#     Cheap. Detects 1x2 changes in near-real-time.
+#
+#   • Every POLL_DETAIL_INTERVAL s → GET /api/live/events/{id}/details
+#     Full market book + event state (score, phase, matchTime, isPaused).
+#     Detects DC / O/U / BTTS changes + updates the live clock.
+#
+# All changes are diffed against the Redis odds snapshot and published
+# ONLY if something actually changed → zero noise on the SSE channel.
+#
+# Diagram:
+#   LivePoller thread
+#     ├─ default_poll_loop() → sport loop → diff → publish market_update
+#     └─ detail_poll_loop()  → event loop → diff → publish market_update
+#                                                 → compare state → publish event_update
+
+POLL_DEFAULT_INTERVAL = 4    # seconds between default-markets polls per sport
+POLL_DETAIL_INTERVAL  = 8    # seconds between details polls per event
+POLL_EVENT_LIST_TTL   = 30   # seconds before refreshing the live event list
+
+
+class LivePoller:
+    """
+    Active polling thread — runs alongside the WebSocket harvester.
+    Ensures odds and match state are synced even when WS is quiet.
+    """
+
+    def __init__(self) -> None:
+        self._stop  = threading.Event()
+        self._threads: list[threading.Thread] = []
+        # Cached live event list per sport: {sport_id: (events, fetched_at)}
+        self._event_cache: dict[int, tuple[list[dict], float]] = {}
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        t1 = threading.Thread(target=self._default_loop, daemon=True, name="sp-live-poll-default")
+        t2 = threading.Thread(target=self._detail_loop,  daemon=True, name="sp-live-poll-detail")
+        self._threads = [t1, t2]
+        t1.start(); t2.start()
+        _D("LivePoller started (default=%ds  detail=%ds)", POLL_DEFAULT_INTERVAL, POLL_DETAIL_INTERVAL, level="info")
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def alive(self) -> bool:
+        return any(t.is_alive() for t in self._threads)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _get_live_events(self, sport_id: int) -> list[dict]:
+        """Return cached event list, refreshing if stale."""
+        with self._lock:
+            cached, fetched_at = self._event_cache.get(sport_id, ([], 0.0))
+            if time.monotonic() - fetched_at < POLL_EVENT_LIST_TTL and cached:
+                return cached
+        events = fetch_live_events(sport_id, limit=100)
+        with self._lock:
+            self._event_cache[sport_id] = (events, time.monotonic())
+        return events
+
+    def _invalidate_event_cache(self, sport_id: int) -> None:
+        with self._lock:
+            self._event_cache.pop(sport_id, None)
+
+    # ── Default markets loop (fast batch — 1x2 for all events) ───────────────
+
+    def _default_loop(self) -> None:
+        """Poll /api/live/default/markets?sportId=N every POLL_DEFAULT_INTERVAL seconds."""
+        while not self._stop.is_set():
+            for sport_id in LIVE_SPORT_IDS:
+                if self._stop.is_set():
+                    break
+                try:
+                    self._poll_default(sport_id)
+                except Exception as exc:
+                    _D("default_loop sport=%d: %s", sport_id, exc, level="error")
+                # Spread polls across the interval window
+                self._stop.wait(POLL_DEFAULT_INTERVAL / len(LIVE_SPORT_IDS))
+
+    def _poll_default(self, sport_id: int) -> None:
+        """One default-markets poll for a sport."""
+        items = fetch_live_default_markets(sport_id)
+        if not items:
+            return
+
+        for item in items:
+            event_id = item.get("eventId")
+            mkts     = item.get("markets") or []
+            if not event_id or not mkts:
+                continue
+            try:
+                event_id = int(event_id)
+            except (TypeError, ValueError):
+                continue
+
+            for mkt in mkts:
+                if not isinstance(mkt, dict):
+                    continue
+                if not mkt.get("eventMarketId"):
+                    mkt["eventMarketId"] = mkt.get("id", 0)
+                changed_sels, all_sels = _upsert_odds_and_diff(event_id, mkt)
+                if not changed_sels:
+                    continue
+
+                mkt_type = mkt.get("id")
+                handicap = mkt.get("specialValue")
+                slug     = live_market_slug(mkt_type or 0, handicap, sport_id)
+                norm_sels = _normalise_sels(slug, all_sels)
+
+                _publish(sport_id, event_id, {
+                    "type":                  "market_update",
+                    "source":                "poll_default",
+                    "event_id":              event_id,
+                    "sport_id":              sport_id,
+                    "sport_slug":            SPORT_SLUG_MAP.get(sport_id),
+                    "market_id":             mkt.get("eventMarketId"),
+                    "market_type":           mkt_type,
+                    "market_slug":           slug,
+                    "market_name":           mkt.get("name", ""),
+                    "handicap":              handicap,
+                    "status":                mkt.get("status"),
+                    "changed_selections":    changed_sels,
+                    "all_selections":        all_sels,
+                    "normalised_selections": norm_sels,
+                    "ts":                    _now_iso(),
+                })
+                _D("poll_default sport=%d event=%d slug=%r → %d changed",
+                   sport_id, event_id, slug, len(changed_sels))
+
+    # ── Detail loop (full markets + state per event) ──────────────────────────
+
+    def _detail_loop(self) -> None:
+        """Poll /api/live/events/{id}/details every POLL_DETAIL_INTERVAL seconds."""
+        while not self._stop.is_set():
+            for sport_id in LIVE_SPORT_IDS:
+                if self._stop.is_set():
+                    break
+                try:
+                    events = self._get_live_events(sport_id)
+                    # Filter to actually in-play events only
+                    live = [
+                        ev for ev in events
+                        if ev.get("status", "").lower() in ("started", "inprogress", "live", "")
+                        and (ev.get("state") or {}).get("currentEventPhase", "") not in ("", "NotStarted")
+                    ]
+                    if not live:
+                        self._invalidate_event_cache(sport_id)
+                        continue
+                    for ev in live[:30]:   # cap at 30 in-play events
+                        if self._stop.is_set():
+                            break
+                        try:
+                            self._poll_detail(ev, sport_id)
+                        except Exception as exc:
+                            _D("detail_loop event=%s: %s", ev.get("id"), exc, level="error")
+                        self._stop.wait(0.15)   # 150ms between detail calls
+                except Exception as exc:
+                    _D("detail_loop sport=%d: %s", sport_id, exc, level="error")
+                self._stop.wait(POLL_DETAIL_INTERVAL / len(LIVE_SPORT_IDS))
+
+    def _poll_detail(self, ev_stub: dict, sport_id: int) -> None:
+        """Fetch full details for one event, publish any changes."""
+        event_id = ev_stub.get("id")
+        if not event_id:
+            return
+
+        details = fetch_event_details(event_id)
+        if not details or not isinstance(details, dict):
+            return
+
+        # ── 1. Market odds diff ───────────────────────────────────────────────
+        for mkt in details.get("markets") or []:
+            if not isinstance(mkt, dict):
+                continue
+            if not mkt.get("eventMarketId"):
+                mkt["eventMarketId"] = mkt.get("id", 0)
+            if mkt.get("status") == "Suspended":
+                continue
+
+            changed_sels, all_sels = _upsert_odds_and_diff(event_id, mkt)
+            if not changed_sels:
+                continue
+
+            mkt_type = mkt.get("id")
+            handicap = mkt.get("specialValue")
+            slug     = live_market_slug(mkt_type or 0, handicap, sport_id)
+            norm_sels = _normalise_sels(slug, all_sels)
+
+            _publish(sport_id, event_id, {
+                "type":                  "market_update",
+                "source":                "poll_detail",
+                "event_id":              event_id,
+                "sport_id":              sport_id,
+                "sport_slug":            SPORT_SLUG_MAP.get(sport_id),
+                "market_id":             mkt.get("eventMarketId"),
+                "market_type":           mkt_type,
+                "market_slug":           slug,
+                "market_name":           mkt.get("name", ""),
+                "handicap":              handicap,
+                "status":                mkt.get("status"),
+                "changed_selections":    changed_sels,
+                "all_selections":        all_sels,
+                "normalised_selections": norm_sels,
+                "ts":                    _now_iso(),
+            })
+            _D("poll_detail event=%d slug=%r → %d changed", event_id, slug, len(changed_sels))
+
+        # ── 2. Event state diff (score + phase + matchTime) ───────────────────
+        ev_detail = details.get("event") or {}
+        new_state = ev_detail.get("state") or details.get("state") or {}
+        if not new_state:
+            # Fallback: state might be top-level in some response shapes
+            new_state = {k: details[k] for k in ("currentEventPhase", "matchTime", "matchScore", "clockRunning", "remainingTimeMillis") if k in details}
+
+        if not new_state:
+            return
+
+        score     = new_state.get("matchScore") or {}
+        new_phase = new_state.get("currentEventPhase", "")
+        new_time  = new_state.get("matchTime", "")
+        new_home  = str(score.get("home", ""))
+        new_away  = str(score.get("away", ""))
+        new_paused = ev_detail.get("isPaused", False)
+        clock_run  = new_state.get("clockRunning", True)
+        remain_ms  = new_state.get("remainingTimeMillis")
+
+        # Diff against Redis
+        state_key = f"sp:live:state:{event_id}"
+        r         = _get_redis()
+        prev_raw  = r.get(state_key)
+        prev      = json.loads(prev_raw) if prev_raw else {}
+
+        state_changed = (
+            prev.get("phase")      != new_phase or
+            prev.get("matchTime")  != new_time  or
+            prev.get("scoreHome")  != new_home  or
+            prev.get("scoreAway")  != new_away  or
+            prev.get("isPaused")   != new_paused
+        )
+
+        if not state_changed:
+            return
+
+        new_state_snap = {
+            "phase": new_phase, "matchTime": new_time,
+            "scoreHome": new_home, "scoreAway": new_away, "isPaused": new_paused,
+        }
+        r.setex(state_key, TTL_STATE, json.dumps(new_state_snap))
+
+        _publish(sport_id, event_id, {
+            "type":          "event_update",
+            "source":        "poll_detail",
+            "event_id":      event_id,
+            "sport_id":      sport_id,
+            "sport_slug":    SPORT_SLUG_MAP.get(sport_id),
+            "status":        ev_detail.get("status"),
+            "phase":         new_phase,
+            "is_paused":     new_paused,
+            "clock_running": clock_run,
+            "remaining_ms":  remain_ms,
+            "score_home":    new_home,
+            "score_away":    new_away,
+            "state":         {"matchTime": new_time, "currentEventPhase": new_phase,
+                              "matchScore": score, "clockRunning": clock_run,
+                              "remainingTimeMillis": remain_ms},
+            "ts":            _now_iso(),
+        })
+        _D("poll_detail event=%d state changed: phase=%r time=%r score=%s-%s",
+           event_id, new_phase, new_time, new_home, new_away)
+
+
+def _normalise_sels(slug: str, sels: list[dict]) -> list[dict]:
+    """Build normalised_selections with outcome_key for the frontend."""
+    result = []
+    for idx, sel in enumerate(sels):
+        if not isinstance(sel, dict):
+            continue
+        if sel.get("status") == "Suspended":
+            continue
+        try:
+            odd = float(sel.get("odds") or "0")
+        except (TypeError, ValueError):
+            odd = 0.0
+        if odd <= 1.0:
+            continue
+        out_key = normalize_live_outcome(slug, sel.get("name", ""), idx, sels)
+        result.append({
+            "id":          sel.get("id"),
+            "name":        sel.get("name"),
+            "outcome_key": out_key,
+            "odds":        sel.get("odds"),
+            "status":      sel.get("status"),
+        })
+    return result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SINGLETON + START
+# ═════════════════════════════════════════════════════════════════════════════
+
+_poller_instance: LivePoller | None = None
+_poller_thread:   threading.Thread | None = None
+
+
 def start_harvester_thread() -> threading.Thread:
-    global _harvester_instance, _harvester_thread
+    global _harvester_instance, _harvester_thread, _poller_instance, _poller_thread
     if _harvester_thread and _harvester_thread.is_alive():
         _D("harvester already running (%s)", _harvester_thread.name, level="info")
         return _harvester_thread
+
     _D_section("start_harvester_thread")
+
+    # ── WebSocket harvester (receives push events from SP) ────────────────────
     _harvester_instance = SpLiveHarvester()
     _harvester_thread = threading.Thread(
         target=_harvester_instance.run_forever, name="sp-live-harvester", daemon=True,
     )
     _harvester_thread.start()
     _D("harvester thread started: %s", _harvester_thread.name, level="info")
+
+    # ── Active poller (fills gaps — real-time odds + state sync) ─────────────
+    _poller_instance = LivePoller()
+    _poller_instance.start()
+    _D("poller started", level="info")
+
     return _harvester_thread
 
 
 def stop_harvester() -> None:
     if _harvester_instance:
         _harvester_instance.stop()
+    if _poller_instance:
+        _poller_instance.stop()
 
 
 def harvester_alive() -> bool:
-    return bool(_harvester_thread and _harvester_thread.is_alive())
+    ws_alive    = bool(_harvester_thread and _harvester_thread.is_alive())
+    poll_alive  = bool(_poller_instance and _poller_instance.alive())
+    return ws_alive or poll_alive
 
 
 if __name__ == "__main__":
