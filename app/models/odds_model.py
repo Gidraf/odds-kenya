@@ -248,7 +248,7 @@ class UnifiedMatch(db.Model):
     )
 
     # Optimistic locking — SQLAlchemy increments this on every UPDATE
-    version    = db.Column(db.Integer, nullable=False, default=0)
+    version    = db.Column(db.Integer, nullable=True, default=0, server_default="0")
 
     created_at = db.Column(db.DateTime, default=_utcnow_naive)
     updated_at = db.Column(db.DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
@@ -428,7 +428,7 @@ class BookmakerMatchOdds(db.Model):
     is_active    = db.Column(db.Boolean, default=True, nullable=False, index=True)
 
     # Manual row version — incremented by upsert_selection so callers can detect gaps
-    row_version  = db.Column(db.Integer, nullable=False, default=0)
+    row_version  = db.Column(db.Integer, nullable=True, default=0, server_default="0")
 
     created_at = db.Column(db.DateTime, default=_utcnow_naive)
     updated_at = db.Column(db.DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
