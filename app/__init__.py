@@ -1,11 +1,11 @@
 import os
+import threading
 from flask import Flask
 from dotenv import load_dotenv
 from app.extensions import db, init_celery, jwt, socketio, migrate, cors
 from app.views.onboarding.playwright_onboarding import bp_fetcher, init_fetcher_manager
 
 load_dotenv()
-
 
 EMAIL_ADDRESS = os.environ.get("ADMIN_EMAIL")
 EMAIL_PASSWORD = os.environ.get("ADMIN_EMAIL_PASSWORD")
@@ -14,23 +14,25 @@ IMAP_SERVER = f"mail.{os.environ.get('DOMAIN')}"
 SMTP_PORT = 587
 IMAP_PORT = 993
 
+
 def create_app() -> Flask:
     flask_app = Flask(__name__, instance_relative_config=True)
-    mail_username =  os.getenv("MAIL_USERNAME", EMAIL_ADDRESS)
+
+    mail_username = os.getenv("MAIL_USERNAME", EMAIL_ADDRESS)
     mail_password = os.getenv("MAIL_PASSWORD", EMAIL_PASSWORD)
+
     flask_app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
     flask_app.config["SECRET_KEY"]              = os.environ.get("SECRET_KEY")
     flask_app.config["JWT_SECRET_KEY"]          = os.environ.get("JWT_SECRET_KEY")
     flask_app.config["SQLALCHEMY_ECHO"]         = False
-    flask_app.config["CELERY_BROKER_URL"]       = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    flask_app.config["CELERY_RESULT_BACKEND"]   = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    flask_app.config["CELERY_BROKER_URL"]       = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/1"))
+    flask_app.config["CELERY_RESULT_BACKEND"]   = os.environ.get("CELERY_RESULT_URL",  os.environ.get("REDIS_URL", "redis://localhost:6379/2"))
     flask_app.config["OPENAI_API_KEY"]          = os.environ.get("OPENAI_API_KEY")
-    flask_app.config["MAIL_SERVER"] = SMTP_SERVER
-    flask_app.config["MAIL_PORT"] = SMTP_PORT
-    flask_app.config["MAIL_USE_TLS"] = True
-    flask_app.config["MAIL_USERNAME"] = mail_username
-    flask_app.config["MAIL_PASSWORD"] = mail_password
-    flask_app.config["SQLALCHEMY_ECHO"] = False
+    flask_app.config["MAIL_SERVER"]             = SMTP_SERVER
+    flask_app.config["MAIL_PORT"]               = SMTP_PORT
+    flask_app.config["MAIL_USE_TLS"]            = True
+    flask_app.config["MAIL_USERNAME"]           = mail_username
+    flask_app.config["MAIL_PASSWORD"]           = mail_password
 
     db.init_app(flask_app)
     jwt.init_app(flask_app)
@@ -50,7 +52,7 @@ def create_app() -> Flask:
 
     mq = redis_url if _redis_available(redis_url) else None
     if not mq:
-        print("WARNING: Redis unavailable - SocketIO cross-process emits disabled.")
+        print("WARNING: Redis unavailable — SocketIO cross-process emits disabled.")
 
     socketio.init_app(
         flask_app,
@@ -63,32 +65,26 @@ def create_app() -> Flask:
         **({"message_queue": mq, "channel": "flask-socketio"} if mq else {}),
     )
 
-    # Celery: call init_celery() directly.
-    # Do NOT import from celery_tasks here — that causes a circular import:
-    #   celery_tasks -> _bootstrap() -> create_app() -> celery_tasks (again)
-    #
-    # init_celery() sets celery._flask_initialized = True, which is the guard
-    # in celery_tasks._bootstrap() to prevent double-init.
     flask_app.celery = init_celery(flask_app)
 
-    # Blueprints
-    from app.views.auth import authorization
-    from app.views.research import bp_research
-    from app.views.odds_feed import bp_odds as odds_bp
-    # from app.views.odds_feed.customer_odds_view import bp_odds as customer_odds
-    from app.views.onboarding.playwright_onboarding import bp_fetcher
-    from app.views.bookmarkers import bookmarker
-    from app.views.bookmakers_crud import bp_search
-    from app.views.mapping import bp as mapping_bp
-    from app.views.onboarding import bp_onboarding
-    from app.views.vendors import bp_vendor
-    from app.views.sbo import bp_sbo
-    from app.views.admin import admin_bp
-    from app.views.customer_auth import bp_customer
-    from app.views.subscriptions import bp_customer_subscriptions
-    from app.views.webhook import bp_interceptor
-    from app.views.odds_feed.sportpesa_view import bp_sp
-    from app.views.odds_feed.sp_live_view import bp_sp_live
+    # ── Blueprints ────────────────────────────────────────────────────────────
+    from app.views.auth                              import authorization
+    from app.views.research                          import bp_research
+    from app.views.odds_feed                         import bp_odds as odds_bp
+    from app.views.onboarding.playwright_onboarding  import bp_fetcher
+    from app.views.bookmarkers                        import bookmarker
+    from app.views.bookmakers_crud                    import bp_search
+    from app.views.mapping                            import bp as mapping_bp
+    from app.views.onboarding                         import bp_onboarding
+    from app.views.vendors                            import bp_vendor
+    from app.views.sbo                                import bp_sbo
+    from app.views.admin                              import admin_bp
+    from app.views.customer_auth                      import bp_customer
+    from app.views.subscriptions                      import bp_customer_subscriptions
+    from app.views.webhook                            import bp_interceptor
+    from app.views.odds_feed.sportpesa_view           import bp_sp
+    from app.views.odds_feed.sp_live_view             import bp_sp_live
+    from app.views.odds.odds_view                import bp_odds as bp_unified_odds
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -97,10 +93,8 @@ def create_app() -> Flask:
     flask_app.register_blueprint(odds_bp)
     flask_app.register_blueprint(bp_sbo)
     flask_app.register_blueprint(mapping_bp)
-    # flask_app.register_blueprint()
     flask_app.register_blueprint(bp_vendor,     url_prefix="/api/vendors")
     flask_app.register_blueprint(bp_onboarding, url_prefix="/api/onboarding")
-    # flask_app.register_blueprint(bp_playwright, url_prefix="/api/playwright")
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
@@ -108,12 +102,9 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_interceptor)
     flask_app.register_blueprint(bp_sp)
     flask_app.register_blueprint(bp_sp_live)
+    flask_app.register_blueprint(bp_unified_odds)   # GET /api/odds/...
 
-    from app.workers.sp_live_harvester import start_harvester_thread
-    start_harvester_thread()
-    # init_playwright_manager()
-    init_fetcher_manager()
-
+    # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,
@@ -123,26 +114,104 @@ def create_app() -> Flask:
             ResearchSession, ResearchFinding, ResearchEndpoint,
         )
         from app.models.odds_model import (
-            BookmakerMatchOdds, BookmakerOddsHistory,
-            UnifiedMatch, MarketDefinition,
+            UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
+            MarketDefinition, ArbitrageOpportunity, EVOpportunity,
         )
-        from app.models.competions_model import Team, Sport, Competition
-        from app.models.harvest_workflow import HarvestWorkflow, HarvestWorkflowStep
-        from app.models.mapping_models import (
+        from app.models.competions_model  import Team, Sport, Competition
+        from app.models.harvest_workflow  import HarvestWorkflow, HarvestWorkflowStep
+        from app.models.mapping_models    import (
             Market, MarketAlias, TeamAlias, CompetitionAlias,
             SportAlias, BookmakerEndpointMap,
         )
-        from app.models.user_admin import User
-        from app.models.onboarding_model import BookmakerOnboardingSession
-        from app.models.vendor_template import VendorTemplate, BookmakerVendorConfig
-        from app.models.subscriptions import Subscription, SubscriptionHistory
-        from app.models.notifications import NotificationPref
-        from app.models.metrics import MetricsEvent
-        from app.models.api_key import ApiKey
-        from app.models.bank_roll import BankrollAccount, BankrollTarget
-        from app.models.customer import Customer
-        from app.models.email_tokens import EmailToken
+        from app.models.user_admin            import User
+        from app.models.onboarding_model      import BookmakerOnboardingSession
+        from app.models.vendor_template       import VendorTemplate, BookmakerVendorConfig
+        from app.models.subscriptions         import Subscription, SubscriptionHistory
+        from app.models.notifications         import NotificationPref
+        from app.models.metrics               import MetricsEvent
+        from app.models.api_key               import ApiKey
+        from app.models.bank_roll             import BankrollAccount, BankrollTarget
+        from app.models.customer              import Customer
+        from app.models.email_tokens          import EmailToken
 
     import app.sockets  # noqa: registers /admin namespace handlers
 
+    # ── Background threads ────────────────────────────────────────────────────
+    # SP live WebSocket harvester — always starts inline (like before)
+    from app.workers.sp_live_harvester import start_harvester_thread
+    start_harvester_thread()
+
+    init_fetcher_manager()
+
+    # Celery worker + beat — inline threads when NOT running as dedicated
+    # Docker services (controlled by CELERY_INLINE env var).
+    #
+    # In Docker:   CELERY_INLINE=0  (celery-harvest + celery-beat services run separately)
+    # In dev/local: CELERY_INLINE=1  (everything in one python process, no extra terminals)
+    #
+    # Start order: worker first (processes tasks), then beat (schedules them).
+    if os.environ.get("CELERY_INLINE", "0") == "1":
+        _start_inline_celery(flask_app)
+
     return flask_app
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INLINE CELERY (dev mode — single process)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _start_inline_celery(flask_app: Flask) -> None:
+    """
+    Start a Celery worker and beat scheduler as daemon threads inside the
+    Flask process.  Identical pattern to start_harvester_thread().
+
+    Useful for local development — no extra terminal needed.
+    NOT recommended for production (use dedicated Docker services instead).
+
+    Worker runs with concurrency=2 so it doesn't saturate the machine.
+    Beat runs the standard schedule from celery_app.beat_schedule.
+    """
+    import celery.bin.worker as celery_worker
+    import celery.bin.beat   as celery_beat
+
+    celery_app = flask_app.celery
+
+    def _run_worker():
+        print("[celery:inline] Starting worker (concurrency=2, queue=harvest)…")
+        try:
+            worker = celery_app.Worker(
+                queues       = ["harvest"],
+                concurrency  = 2,
+                loglevel     = "WARNING",
+                logfile      = None,
+                pool         = "threads",   # threads pool — safe inside Flask process
+                without_heartbeat = False,
+                without_gossip    = True,
+                without_mingle    = True,
+            )
+            worker.start()
+        except Exception as exc:
+            print(f"[celery:inline] Worker stopped: {exc}")
+
+    def _run_beat():
+        import time
+        # Give the worker a moment to connect before beat starts sending tasks
+        time.sleep(3)
+        print("[celery:inline] Starting beat scheduler…")
+        try:
+            beat = celery_app.Beat(
+                loglevel  = "WARNING",
+                logfile   = None,
+                schedule  = "/tmp/celerybeat-schedule-inline",
+            )
+            beat.run()
+        except Exception as exc:
+            print(f"[celery:inline] Beat stopped: {exc}")
+
+    worker_thread = threading.Thread(target=_run_worker, name="celery-inline-worker", daemon=True)
+    beat_thread   = threading.Thread(target=_run_beat,   name="celery-inline-beat",   daemon=True)
+
+    worker_thread.start()
+    beat_thread.start()
+
+    print("[celery:inline] Worker and beat threads started.")

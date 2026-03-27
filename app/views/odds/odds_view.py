@@ -39,7 +39,7 @@ from app.models.odds_model import (
 )
 from app.models.bookmakers_model import Bookmaker
 
-bp_odds = Blueprint("odds", __name__)
+bp_odds = Blueprint("odds-unified", __name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
