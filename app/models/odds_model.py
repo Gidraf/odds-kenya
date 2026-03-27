@@ -160,9 +160,9 @@ class MarketDefinition(db.Model):
     __tablename__ = "market_definitions"
 
     id             = db.Column(db.Integer, primary_key=True)
-    name           = db.Column(db.String(120), unique=True, nullable=True, index=True)
+    name           = db.Column(db.String(120), unique=True, nullable=False, index=True)
     display_name   = db.Column(db.String(120), nullable=True)
-    is_player_prop = db.Column(db.Boolean, default=False, nullable=True)
+    is_player_prop = db.Column(db.Boolean, default=False, nullable=False)
     created_at     = db.Column(db.DateTime, default=_utcnow_naive)
 
     @classmethod
@@ -207,7 +207,7 @@ class UnifiedMatch(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     parent_match_id = db.Column(
-        db.String(64), unique=True, nullable=True, index=True,
+        db.String(64), unique=True, nullable=False, index=True,
         comment="Betradar / cross-bookmaker canonical match ID",
     )
 
@@ -225,8 +225,8 @@ class UnifiedMatch(db.Model):
 
     start_time  = db.Column(db.DateTime, nullable=True, index=True)
     status      = db.Column(
-        db.Enum(MatchStatus), default=MatchStatus.PRE_MATCH,
-        nullable=True, index=True,
+        db.Enum(MatchStatus, native_enum=False), default=MatchStatus.PRE_MATCH,
+        nullable=False, index=True,
     )
 
     # Match result (populated after FINISHED)
@@ -240,7 +240,7 @@ class UnifiedMatch(db.Model):
 
     # Aggregated odds from all bookmakers
     markets_json = db.Column(
-        db.JSON, nullable=True, default=dict,
+        db.JSON, nullable=False, default=dict,
         comment=(
             "market → specifier → selection → "
             "{best_price, best_bookmaker_id, bookmakers:{id:price}, is_active, updated_at}"
@@ -248,7 +248,7 @@ class UnifiedMatch(db.Model):
     )
 
     # Optimistic locking — SQLAlchemy increments this on every UPDATE
-    version    = db.Column(db.Integer, nullable=True, default=0)
+    version    = db.Column(db.Integer, nullable=False, default=0)
 
     created_at = db.Column(db.DateTime, default=_utcnow_naive)
     updated_at = db.Column(db.DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
@@ -415,20 +415,20 @@ class BookmakerMatchOdds(db.Model):
     match_id = db.Column(
         db.Integer,
         db.ForeignKey("unified_matches.id", ondelete="CASCADE"),
-        nullable=True, index=True,
+        nullable=False, index=True,
     )
     bookmaker_id = db.Column(
         db.Integer,
         db.ForeignKey("bookmakers.id", ondelete="CASCADE"),
-        nullable=True, index=True,
+        nullable=False, index=True,
     )
 
-    markets_json = db.Column(db.JSON, nullable=True, default=dict)
+    markets_json = db.Column(db.JSON, nullable=False, default=dict)
     raw_snapshot = db.Column(db.JSON, nullable=True)
-    is_active    = db.Column(db.Boolean, default=True, nullable=True, index=True)
+    is_active    = db.Column(db.Boolean, default=True, nullable=False, index=True)
 
     # Manual row version — incremented by upsert_selection so callers can detect gaps
-    row_version  = db.Column(db.Integer, nullable=True, default=0)
+    row_version  = db.Column(db.Integer, nullable=False, default=0)
 
     created_at = db.Column(db.DateTime, default=_utcnow_naive)
     updated_at = db.Column(db.DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
@@ -548,23 +548,23 @@ class BookmakerOddsHistory(db.Model):
     id           = db.Column(db.Integer, primary_key=True)
     bmo_id       = db.Column(
         db.Integer, db.ForeignKey("bookmaker_match_odds.id", ondelete="CASCADE"),
-        nullable=True, index=True,
+        nullable=False, index=True,
     )
     bookmaker_id = db.Column(
-        db.Integer, db.ForeignKey("bookmakers.id"), nullable=True, index=True,
+        db.Integer, db.ForeignKey("bookmakers.id"), nullable=False, index=True,
     )
     match_id     = db.Column(
-        db.Integer, db.ForeignKey("unified_matches.id"), nullable=True, index=True,
+        db.Integer, db.ForeignKey("unified_matches.id"), nullable=False, index=True,
     )
 
-    market    = db.Column(db.String(120), nullable=True)
+    market    = db.Column(db.String(120), nullable=False)
     specifier = db.Column(db.String(50),  nullable=True)
-    selection = db.Column(db.String(100), nullable=True)
+    selection = db.Column(db.String(100), nullable=False)
     old_price   = db.Column(db.Float, nullable=True)
-    new_price   = db.Column(db.Float, nullable=True)
+    new_price   = db.Column(db.Float, nullable=False)
     price_delta = db.Column(db.Float, nullable=True)
 
-    recorded_at = db.Column(db.DateTime, default=_utcnow_naive, nullable=True, index=True)
+    recorded_at = db.Column(db.DateTime, default=_utcnow_naive, nullable=False, index=True)
 
     __table_args__ = (
         db.Index("ix_boh_bmo_market_sel",  "bmo_id",       "market", "selection"),
@@ -646,7 +646,7 @@ class ArbitrageOpportunity(db.Model):
     id       = db.Column(db.Integer, primary_key=True)
     match_id = db.Column(
         db.Integer, db.ForeignKey("unified_matches.id", ondelete="CASCADE"),
-        nullable=True, index=True,
+        nullable=False, index=True,
     )
 
     # Match denorms for fast queries without JOINs
@@ -656,22 +656,22 @@ class ArbitrageOpportunity(db.Model):
     competition  = db.Column(db.String(120), nullable=True)
     match_start  = db.Column(db.DateTime,    nullable=True, index=True)
 
-    market    = db.Column(db.String(120), nullable=True, index=True)
+    market    = db.Column(db.String(120), nullable=False, index=True)
     specifier = db.Column(db.String(50),  nullable=True)
 
     # Core arb metrics
-    profit_pct       = db.Column(db.Float, nullable=True,
+    profit_pct       = db.Column(db.Float, nullable=False,
                                   comment="Guaranteed profit % at time of detection")
-    peak_profit_pct  = db.Column(db.Float, nullable=True,
+    peak_profit_pct  = db.Column(db.Float, nullable=False,
                                   comment="Highest profit % seen while window was open")
     peak_detected_at = db.Column(db.DateTime, nullable=True,
                                   comment="When peak_profit_pct was recorded")
-    arb_sum          = db.Column(db.Float, nullable=True,
+    arb_sum          = db.Column(db.Float, nullable=False,
                                   comment="Sum of 1/price across all legs; <1.0 = profitable")
 
     # Exploitation guide
     legs_json = db.Column(
-        db.JSON, nullable=True,
+        db.JSON, nullable=False,
         comment="List of {selection, bookmaker_id, bookmaker, price, stake_pct}",
     )
     stake_100_returns = db.Column(
@@ -681,16 +681,16 @@ class ArbitrageOpportunity(db.Model):
 
     # Bookmaker pair summary for fast filtering
     bookmaker_ids = db.Column(
-        db.JSON, nullable=True, default=list,
+        db.JSON, nullable=False, default=list,
         comment="Sorted list of bookmaker_ids involved",
     )
 
     # Lifecycle
     status     = db.Column(
-        db.Enum(OpportunityStatus),
-        default=OpportunityStatus.OPEN, nullable=True, index=True,
+        db.Enum(OpportunityStatus, native_enum=False),
+        default=OpportunityStatus.OPEN, nullable=False, index=True,
     )
-    open_at    = db.Column(db.DateTime, default=_utcnow_naive, nullable=True, index=True)
+    open_at    = db.Column(db.DateTime, default=_utcnow_naive, nullable=False, index=True)
     closed_at  = db.Column(db.DateTime, nullable=True, index=True)
     duration_s = db.Column(
         db.Integer, nullable=True,
@@ -808,7 +808,7 @@ class EVOpportunity(db.Model):
     id       = db.Column(db.Integer, primary_key=True)
     match_id = db.Column(
         db.Integer, db.ForeignKey("unified_matches.id", ondelete="CASCADE"),
-        nullable=True, index=True,
+        nullable=False, index=True,
     )
 
     # Match denorms
@@ -819,26 +819,26 @@ class EVOpportunity(db.Model):
     match_start = db.Column(db.DateTime,    nullable=True, index=True)
 
     # Market details
-    market       = db.Column(db.String(120), nullable=True, index=True)
+    market       = db.Column(db.String(120), nullable=False, index=True)
     specifier    = db.Column(db.String(50),  nullable=True)
-    selection    = db.Column(db.String(100), nullable=True)
-    bookmaker_id = db.Column(db.Integer, db.ForeignKey("bookmakers.id"), nullable=True, index=True)
+    selection    = db.Column(db.String(100), nullable=False)
+    bookmaker_id = db.Column(db.Integer, db.ForeignKey("bookmakers.id"), nullable=False, index=True)
     bookmaker    = db.Column(db.String(80), nullable=True)
 
     # Prices at detection time
-    offered_price    = db.Column(db.Float, nullable=True,
+    offered_price    = db.Column(db.Float, nullable=False,
                                   comment="This bookmaker's price when EV was detected")
-    consensus_price  = db.Column(db.Float, nullable=True,
+    consensus_price  = db.Column(db.Float, nullable=False,
                                   comment="Average best price across all bookmakers")
-    fair_prob        = db.Column(db.Float, nullable=True,
+    fair_prob        = db.Column(db.Float, nullable=False,
                                   comment="Estimated true probability (0-1) at detection")
-    ev_pct           = db.Column(db.Float, nullable=True, index=True,
+    ev_pct           = db.Column(db.Float, nullable=False, index=True,
                                   comment="Expected value % — positive = edge")
-    peak_ev_pct      = db.Column(db.Float, nullable=True)
+    peak_ev_pct      = db.Column(db.Float, nullable=False)
     peak_detected_at = db.Column(db.DateTime, nullable=True)
 
     # Number of bookmakers used in consensus
-    bookmakers_in_consensus = db.Column(db.Integer, nullable=True, default=1)
+    bookmakers_in_consensus = db.Column(db.Integer, nullable=False, default=1)
 
     # Kelly criterion suggested stake
     kelly_fraction  = db.Column(db.Float, nullable=True,
@@ -848,10 +848,10 @@ class EVOpportunity(db.Model):
 
     # Lifecycle
     status    = db.Column(
-        db.Enum(OpportunityStatus),
-        default=OpportunityStatus.OPEN, nullable=True, index=True,
+        db.Enum(OpportunityStatus, native_enum=False),
+        default=OpportunityStatus.OPEN, nullable=False, index=True,
     )
-    open_at   = db.Column(db.DateTime, default=_utcnow_naive, nullable=True, index=True)
+    open_at   = db.Column(db.DateTime, default=_utcnow_naive, nullable=False, index=True)
     closed_at = db.Column(db.DateTime, nullable=True)
     duration_s = db.Column(db.Integer, nullable=True)
 
