@@ -160,7 +160,7 @@ class MarketDefinition(db.Model):
     __tablename__ = "market_definitions"
 
     id             = db.Column(db.Integer, primary_key=True)
-    name           = db.Column(db.String(120), unique=True, nullable=False, index=True)
+    name           = db.Column(db.String(120), unique=True, nullable=True, index=True)
     display_name   = db.Column(db.String(120), nullable=True)
     is_player_prop = db.Column(db.Boolean, default=False, nullable=False)
     created_at     = db.Column(db.DateTime, default=_utcnow_naive)
@@ -207,7 +207,7 @@ class UnifiedMatch(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     parent_match_id = db.Column(
-        db.String(64), unique=True, nullable=False, index=True,
+        db.String(64), unique=True, nullable=True, index=True,
         comment="Betradar / cross-bookmaker canonical match ID",
     )
 
@@ -428,7 +428,7 @@ class BookmakerMatchOdds(db.Model):
     is_active    = db.Column(db.Boolean, default=True, nullable=False, index=True)
 
     # Manual row version — incremented by upsert_selection so callers can detect gaps
-    row_version  = db.Column(db.Integer, nullable=False, default=0)
+    row_version  = db.Column(db.Integer, nullable=True, default=0)
 
     created_at = db.Column(db.DateTime, default=_utcnow_naive)
     updated_at = db.Column(db.DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
@@ -548,7 +548,7 @@ class BookmakerOddsHistory(db.Model):
     id           = db.Column(db.Integer, primary_key=True)
     bmo_id       = db.Column(
         db.Integer, db.ForeignKey("bookmaker_match_odds.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        nullable=True, index=True,
     )
     bookmaker_id = db.Column(
         db.Integer, db.ForeignKey("bookmakers.id"), nullable=False, index=True,
