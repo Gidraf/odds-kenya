@@ -1,16 +1,27 @@
 """
-app/workers/sp_live_harvester.py  (v4 — bug-fixed)
-====================================================
-All four v4 patches applied (correct WS URL, EIO=3 heartbeat,
-subscribe pattern, SR polling thread) plus:
+app/workers/sp_live_harvester.py  (v5 — adds live snapshot history)
+====================================================================
+Changes from v4 (bug-fixed)
+─────────────────────────────
+⑤ Live snapshot history recording
+  Every time the WS harvester processes a market_update or the SR
+  thread processes an event_update, a compact snapshot is recorded
+  to Redis with a 24-hour TTL. This gives you:
 
-FIX-D: SR poll loop timing
-  _sr_poll_loop had a 0.25 s sleep between each individual event fetch.
-  With 100 live events that's 25 s just in gap waits — the full sweep
-  takes 30+ seconds, making clock sync lag by half a minute.
-  Reduced to 0.05 s between events: 100 events × 0.05 s = 5 s gaps,
-  so a full sweep completes in ~10 s total (5 s gaps + 5 s final wait).
-  Still polite enough not to hammer Sportradar.
+    • Per-event intraday odds history in Redis:
+        sp:live:snap:{event_id}:{date}   — LIST of 200 most recent ticks
+    • Match state history (score, phase, clock):
+        sp:live:state_hist:{event_id}:{date}  — LIST of 100 state ticks
+
+  These keys are queryable by the sp_live_view.py endpoints for
+  historical analysis and later replay without hitting SP's API.
+
+  If you have a LiveOddsSnapshot or LiveEventState DB model,
+  `_try_persist_snapshot()` attempts to write to it — if the model
+  doesn't exist yet it silently no-ops.
+
+  There are no structural changes to the WS connection, heartbeat,
+  subscribe pattern, or SR polling — those are all from v4.
 """
 
 from __future__ import annotations
@@ -74,8 +85,11 @@ def _now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def _publish_live_update(r, sport_id: int, event_id: int, payload: dict) -> None:
-    """Publish to all three Redis channels in a single pipeline."""
     raw = json.dumps(payload, ensure_ascii=False)
     try:
         pipe = r.pipeline()
@@ -85,6 +99,202 @@ def _publish_live_update(r, sport_id: int, event_id: int, payload: dict) -> None
         pipe.execute()
     except Exception as exc:
         log.warning("publish_live_update failed: %s", exc)
+
+
+# =============================================================================
+# ⑤ Live snapshot history helpers
+# =============================================================================
+
+_SNAP_MAX     = 200   # max market ticks per event per day
+_STATE_MAX    = 100   # max state ticks per event per day
+_SNAP_TTL     = 86_400     # 24 h
+_STATE_TTL    = 86_400
+
+
+def _record_market_snapshot(r, event_id: int, payload: dict) -> None:
+    """
+    ⑤ Push a compact market tick to the intraday history list.
+    Key: sp:live:snap:{event_id}:{date}
+    Keeps the last _SNAP_MAX entries.
+    """
+    date    = _today()
+    key     = f"sp:live:snap:{event_id}:{date}"
+    tick    = {
+        "ts":      _now_ts(),
+        "market":  payload.get("market_slug", ""),
+        "type":    payload.get("market_type"),
+        "changed": payload.get("changed_selections", []),
+        "sels":    [
+            {"id": s["id"], "key": s.get("outcome_key", s.get("name", "")),
+             "odds": s["odds"]}
+            for s in payload.get("normalised_selections", [])
+        ],
+    }
+    try:
+        pipe = r.pipeline()
+        pipe.lpush(key, json.dumps(tick, ensure_ascii=False))
+        pipe.ltrim(key, 0, _SNAP_MAX - 1)
+        pipe.expire(key, _SNAP_TTL)
+        pipe.execute()
+    except Exception as exc:
+        log.debug("[snap] market record failed event=%d: %s", event_id, exc)
+
+    # Attempt DB persist (no-op if model doesn't exist yet)
+    _try_persist_snapshot(event_id, payload)
+
+
+def _record_state_snapshot(r, event_id: int, payload: dict) -> None:
+    """
+    ⑤ Push a compact state tick (score, phase, clock) to the intraday history.
+    Key: sp:live:state_hist:{event_id}:{date}
+    Keeps the last _STATE_MAX entries.
+    """
+    date = _today()
+    key  = f"sp:live:state_hist:{event_id}:{date}"
+    tick = {
+        "ts":         _now_ts(),
+        "phase":      payload.get("phase",         ""),
+        "match_time": payload.get("match_time",    ""),
+        "running":    payload.get("clock_running", False),
+        "score_h":    payload.get("score_home",    "0"),
+        "score_a":    payload.get("score_away",    "0"),
+        "is_paused":  payload.get("is_paused",     False),
+        "source":     payload.get("source",        "sportpesa_ws"),
+        "sr_period":  payload.get("sr_period"),
+        "sr_ptime":   payload.get("sr_ptime"),
+    }
+    try:
+        pipe = r.pipeline()
+        pipe.lpush(key, json.dumps(tick, ensure_ascii=False))
+        pipe.ltrim(key, 0, _STATE_MAX - 1)
+        pipe.expire(key, _STATE_TTL)
+        pipe.execute()
+    except Exception as exc:
+        log.debug("[snap] state record failed event=%d: %s", event_id, exc)
+
+    # Attempt DB persist (no-op if model doesn't exist yet)
+    _try_persist_state(event_id, tick)
+
+
+def _try_persist_snapshot(event_id: int, payload: dict) -> None:
+    """
+    ⑤ Attempt to write a market snapshot to DB.
+    Silently no-ops if LiveOddsSnapshot model doesn't exist yet —
+    create the model when you're ready and it will start writing.
+
+    Expected model schema:
+        class LiveOddsSnapshot(db.Model):
+            id           = Column(Integer, primary_key=True)
+            event_id     = Column(Integer, index=True, nullable=False)
+            market_slug  = Column(String(64))
+            market_type  = Column(Integer)
+            selections   = Column(JSON)    # list of {id, key, odds}
+            changed      = Column(JSON)    # list of {id, odds, prev}
+            recorded_at  = Column(DateTime, default=datetime.utcnow, index=True)
+    """
+    try:
+        from app.extensions import db
+        from app.models.live_snapshot import LiveOddsSnapshot  # create when ready
+        db.session.add(LiveOddsSnapshot(
+            event_id    = event_id,
+            market_slug = payload.get("market_slug", ""),
+            market_type = payload.get("market_type"),
+            selections  = [
+                {"id": s["id"], "key": s.get("outcome_key", s.get("name", "")),
+                 "odds": s["odds"]}
+                for s in payload.get("normalised_selections", [])
+            ],
+            changed     = payload.get("changed_selections", []),
+        ))
+        db.session.commit()
+    except ImportError:
+        pass   # model not created yet — no-op
+    except Exception as exc:
+        log.debug("[snap:db] market persist event=%d: %s", event_id, exc)
+        try:
+            from app.extensions import db
+            db.session.rollback()
+        except Exception:
+            pass
+
+
+def _try_persist_state(event_id: int, tick: dict) -> None:
+    """
+    ⑤ Attempt to write a state tick to DB.
+    No-op if LiveEventState model doesn't exist yet.
+
+    Expected model schema:
+        class LiveEventState(db.Model):
+            id          = Column(Integer, primary_key=True)
+            event_id    = Column(Integer, index=True, nullable=False)
+            phase       = Column(String(32))
+            match_time  = Column(String(16))
+            score_home  = Column(String(8))
+            score_away  = Column(String(8))
+            is_paused   = Column(Boolean, default=False)
+            source      = Column(String(16))
+            recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
+    """
+    try:
+        from app.extensions import db
+        from app.models.live_snapshot import LiveEventState  # create when ready
+        db.session.add(LiveEventState(
+            event_id   = event_id,
+            phase      = tick.get("phase", ""),
+            match_time = tick.get("match_time", ""),
+            score_home = tick.get("score_h", "0"),
+            score_away = tick.get("score_a", "0"),
+            is_paused  = tick.get("is_paused", False),
+            source     = tick.get("source", ""),
+        ))
+        db.session.commit()
+    except ImportError:
+        pass
+    except Exception as exc:
+        log.debug("[snap:db] state persist event=%d: %s", event_id, exc)
+        try:
+            from app.extensions import db
+            db.session.rollback()
+        except Exception:
+            pass
+
+
+# ── Public API — fetch live snapshot history ───────────────────────────────────
+
+def get_market_snapshot_history(
+    event_id: int, date: str | None = None, limit: int = 100,
+) -> list[dict]:
+    """
+    Return intraday market tick history for one event.
+    date: YYYY-MM-DD, defaults to today.
+    Returns list of ticks newest-first.
+    """
+    r   = _get_redis()
+    key = f"sp:live:snap:{event_id}:{date or _today()}"
+    try:
+        items = r.lrange(key, 0, limit - 1)
+        return [json.loads(i) for i in items]
+    except Exception as exc:
+        log.warning("get_market_snapshot_history %d: %s", event_id, exc)
+        return []
+
+
+def get_state_snapshot_history(
+    event_id: int, date: str | None = None, limit: int = 100,
+) -> list[dict]:
+    """
+    Return intraday state tick history (score, phase, clock) for one event.
+    date: YYYY-MM-DD, defaults to today.
+    Returns list of ticks newest-first.
+    """
+    r   = _get_redis()
+    key = f"sp:live:state_hist:{event_id}:{date or _today()}"
+    try:
+        items = r.lrange(key, 0, limit - 1)
+        return [json.loads(i) for i in items]
+    except Exception as exc:
+        log.warning("get_state_snapshot_history %d: %s", event_id, exc)
+        return []
 
 
 # ── SP HTTP base ───────────────────────────────────────────────────────────────
@@ -121,14 +331,10 @@ _SPORT_TOTAL_SLUG: dict[int, str] = {
 }
 
 _POS_OUTCOME: dict[int, list[str]] = {
-    194: ["1", "X", "2"],
-    149: ["1", "2"],
-    147: ["1X", "X2", "12"],
-    138: ["yes", "no"],
-    140: ["yes", "no"],
-    145: ["odd", "even"],
-    166: ["1", "2"],
-    135: ["1", "X", "2"],
+    194: ["1", "X", "2"],  149: ["1", "2"],
+    147: ["1X", "X2", "12"], 138: ["yes", "no"],
+    140: ["yes", "no"],    145: ["odd", "even"],
+    166: ["1", "2"],       135: ["1", "X", "2"],
     155: ["1st", "2nd", "equal"],
 }
 
@@ -223,7 +429,6 @@ def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[
     if raw:
         for key in ("events", "data", "items"):
             if isinstance(raw.get(key), list) and raw[key]:
-                log.debug("fetch_live_events sport=%d → %d events", sport_id, len(raw[key]))
                 return raw[key]
         if isinstance(raw, list):
             return raw
@@ -244,10 +449,13 @@ def fetch_live_markets(
 ) -> list[dict]:
     if not event_ids:
         return []
-    ids_str = ",".join(str(i) for i in event_ids)
     raw = _http_get(
         "/api/live/markets",
-        params={"eventIds": ids_str, "marketType": market_type, "sportId": sport_id},
+        params={
+            "eventIds":   ",".join(str(i) for i in event_ids),
+            "marketType": market_type,
+            "sportId":    sport_id,
+        },
     )
     if isinstance(raw, list):
         return raw
@@ -329,16 +537,15 @@ _SR_HEADERS = {
 _PERIOD_BASE_SEC: dict[str, int] = {
     "1": 0, "2": 45 * 60, "3": 90 * 60, "4": 105 * 60,
 }
-
 _SR_STATUS_TO_PHASE: dict[int, str] = {
-    6:  "FirstHalf",    7:  "SecondHalf",
-    31: "HalfTime",     41: "ExtraTimeFirst",
+    6: "FirstHalf",    7: "SecondHalf",
+    31: "HalfTime",    41: "ExtraTimeFirst",
     42: "ExtraTimeSecond", 50: "PenaltyShootout",
     80: "AwaitingExtraTime", 17: "Paused", 11: "Interrupted",
 }
 
-_sr_event_map:   dict[int, int] = {}   # event_id → external_id
-_sr_event_sport: dict[int, int] = {}   # event_id → sport_id
+_sr_event_map:   dict[int, int] = {}
+_sr_event_sport: dict[int, int] = {}
 _sr_map_lock     = threading.Lock()
 
 _SR_THREAD: threading.Thread | None = None
@@ -359,8 +566,7 @@ def _fetch_sr_timeline(external_id: int) -> dict | None:
 
 
 def _parse_sr_event_update(
-    external_id: int, data: dict,
-    event_id: int, sport_id: int,
+    external_id: int, data: dict, event_id: int, sport_id: int,
 ) -> dict | None:
     try:
         doc      = (data.get("doc") or [{}])[0]
@@ -374,10 +580,10 @@ def _parse_sr_event_update(
         status_id = int(status.get("_id") or 0)
 
         if p and ptime:
-            base_sec  = _PERIOD_BASE_SEC.get(p, 0)
-            elapsed   = int(time.time()) - int(ptime)
-            total     = base_sec + (elapsed if running else 0)
-            mm, ss    = divmod(max(0, total), 60)
+            base_sec = _PERIOD_BASE_SEC.get(p, 0)
+            elapsed  = int(time.time()) - int(ptime)
+            total    = base_sec + (elapsed if running else 0)
+            mm, ss   = divmod(max(0, total), 60)
             match_time_str = f"{mm}:{ss:02d}"
         else:
             match_time_str = ""
@@ -405,14 +611,6 @@ def _parse_sr_event_update(
 
 
 def _sr_poll_loop() -> None:
-    """
-    Background thread: poll Sportradar match_timelinedelta for every live
-    event that has an external (betradar) ID.
-
-    FIX-D: per-event sleep reduced from 0.25 s → 0.05 s.
-    Old: 100 events × 0.25 s = 25 s gaps → 30 s sweep — clock sync lags.
-    New: 100 events × 0.05 s =  5 s gaps → 10 s sweep — clock stays tight.
-    """
     r = _get_redis()
     log.info("[SR] timeline polling started")
 
@@ -437,16 +635,16 @@ def _sr_poll_loop() -> None:
                     json.dumps({k: v for k, v in payload.items() if k != "type"}),
                     ex=300,
                 )
+                # ⑤ Record state snapshot for history
+                _record_state_snapshot(r, event_id, payload)
                 _publish_live_update(r, sport_id, event_id, payload)
             except Exception as exc:
                 log.debug("[SR] event=%d: %s", event_id, exc)
 
-            # FIX-D: 0.05 s gap between events (was 0.25 s)
             _SR_STOP.wait(0.05)
             if _SR_STOP.is_set():
                 break
 
-        # 5 s pause before next full sweep
         _SR_STOP.wait(5)
 
     log.info("[SR] timeline polling stopped")
@@ -471,13 +669,13 @@ def _stop_sr_thread() -> None:
 
 
 # =============================================================================
-# WS HARVESTER  (correct URL + EIO=3 heartbeat + single subscribe per event)
+# WS HARVESTER
 # =============================================================================
 
 _HARVESTER_THREAD: threading.Thread | None = None
 _HARVESTER_STOP   = threading.Event()
 
-_WS_BASE = "wss://realtime-notificator.ke.sportpesa.com"   # ① correct host
+_WS_BASE = "wss://realtime-notificator.ke.sportpesa.com"
 
 
 def _ws_url() -> str:
@@ -525,8 +723,7 @@ def _state_from_event_update(msg: dict) -> dict:
 
 
 def _market_from_buffered_update(
-    msg: dict,
-    sport_id_map: dict[int, int],
+    msg: dict, sport_id_map: dict[int, int],
 ) -> dict | None:
     event_id    = msg.get("eventId")
     market_type = msg.get("type")
@@ -617,12 +814,6 @@ def _cache_event_state(r, payload: dict) -> None:
 
 
 def _harvester_loop() -> None:
-    """
-    Main WS harvester loop.
-    ① Connects to realtime-notificator.ke.sportpesa.com
-    ② Sends "21" heartbeat every 20 s; ignores "31" server ack
-    ③ Subscribes only buffered-event-{id}-194-0.00 per event
-    """
     try:
         import websocket
     except ImportError:
@@ -633,7 +824,6 @@ def _harvester_loop() -> None:
 
     while not _HARVESTER_STOP.is_set():
 
-        # ── 1. Build event / external-ID maps ────────────────────────────
         sport_id_map:    dict[int, int] = {}
         external_id_map: dict[int, int] = {}
         subscribed:      set[int]       = set()
@@ -663,7 +853,6 @@ def _harvester_loop() -> None:
             except Exception as exc:
                 log.warning("[WS] snapshot sport=%d: %s", sport_id, exc)
 
-        # Share with SR polling thread
         with _sr_map_lock:
             _sr_event_map.clear()
             _sr_event_map.update(external_id_map)
@@ -677,13 +866,11 @@ def _harvester_loop() -> None:
             _HARVESTER_STOP.wait(30)
             continue
 
-        # ── 2. WebSocket connection ───────────────────────────────────────
         ws_connected = threading.Event()
 
         def on_open(ws):
             log.info("[WS] connected to realtime-notificator")
             ws_connected.set()
-            # ③ One subscription per event — type 194 only
             for ev_id in sport_id_map:
                 ws.send(f'42["subscribe","buffered-event-{ev_id}-194-0.00"]')
                 subscribed.add(ev_id)
@@ -692,10 +879,10 @@ def _harvester_loop() -> None:
         def on_message(ws, raw: str):
             try:
                 if raw == "2":
-                    ws.send("3")   # server PING → client PONG
+                    ws.send("3")
                     return
                 if raw == "31":
-                    return         # ack for our "21" ping — ignore
+                    return
 
                 event_name, data = _parse_ws_frame(raw)
                 if not event_name or not data:
@@ -706,7 +893,13 @@ def _harvester_loop() -> None:
                     if not payload:
                         return
                     payload  = _diff_and_record(r, payload)
-                    _publish_live_update(r, payload["sport_id"], payload["event_id"], payload)
+                    event_id = payload["event_id"]
+                    sport_id = payload["sport_id"]
+
+                    # ⑤ Record market snapshot for history
+                    _record_market_snapshot(r, event_id, payload)
+
+                    _publish_live_update(r, sport_id, event_id, payload)
 
                 elif event_name == "EVENT_UPDATE":
                     event_id = data.get("id")
@@ -715,6 +908,10 @@ def _harvester_loop() -> None:
                     sport_id = data.get("sportId") or sport_id_map.get(event_id, 1)
                     payload  = _state_from_event_update(data)
                     _cache_event_state(r, payload)
+
+                    # ⑤ Record state snapshot for history
+                    _record_state_snapshot(r, event_id, payload)
+
                     _publish_live_update(r, sport_id, event_id, payload)
 
                     if event_id not in sport_id_map:
@@ -744,7 +941,7 @@ def _harvester_loop() -> None:
 
         ws_thread = threading.Thread(
             target=ws.run_forever,
-            kwargs={"ping_interval": 0},   # we handle EIO=3 heartbeat ourselves
+            kwargs={"ping_interval": 0},
             daemon=True,
             name="sp-live-ws",
         )
@@ -756,14 +953,12 @@ def _harvester_loop() -> None:
             _HARVESTER_STOP.wait(10)
             continue
 
-        # ── 3. Heartbeat + refresh loop ───────────────────────────────────
         last_refresh = time.monotonic()
         last_ping    = time.monotonic()
 
         while not _HARVESTER_STOP.is_set() and ws_thread.is_alive():
             now_m = time.monotonic()
 
-            # ② Send "21" heartbeat every 20 s
             if now_m - last_ping >= 20:
                 try:
                     ws.send("21")
@@ -814,9 +1009,7 @@ def harvester_alive() -> bool:
 
 
 def start_harvester_thread() -> threading.Thread:
-    """Launch the WS harvester + Sportradar polling. Safe to call multiple times."""
     global _HARVESTER_THREAD, _HARVESTER_STOP
-
     if not harvester_alive():
         _HARVESTER_STOP.clear()
         _HARVESTER_THREAD = threading.Thread(
@@ -824,13 +1017,11 @@ def start_harvester_thread() -> threading.Thread:
         )
         _HARVESTER_THREAD.start()
         log.info("[harvester] WS thread started")
-
     _start_sr_thread()
     return _HARVESTER_THREAD  # type: ignore[return-value]
 
 
 def stop_harvester() -> None:
-    """Stop both the WS harvester and Sportradar polling threads."""
     global _HARVESTER_THREAD
     _HARVESTER_STOP.set()
     _stop_sr_thread()
