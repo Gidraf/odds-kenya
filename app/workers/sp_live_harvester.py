@@ -1260,3 +1260,4 @@ if __name__ == "__main__":
     except Exception as exc:
         _D("snapshot failed: %s", exc, level="error")
     SpLiveHarvester().run_forever()
+    
