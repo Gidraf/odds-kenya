@@ -1,35 +1,16 @@
 """
-app/workers/sp_live_harvester.py  (v4 — patched from user's v3)
-================================================================
-Changes applied to the original file
-─────────────────────────────────────
-① CORRECT WS URL  — wss://realtime-notificator.ke.sportpesa.com/socket.io/
-  (was wss://www.ke.sportpesa.com/socket.io/ — that host does not serve
-   the realtime socket feed, so no messages ever arrived)
+app/workers/sp_live_harvester.py  (v4 — bug-fixed)
+====================================================
+All four v4 patches applied (correct WS URL, EIO=3 heartbeat,
+subscribe pattern, SR polling thread) plus:
 
-② CORRECT HEARTBEAT — EIO=3 protocol requires:
-     server sends "2"  → client replies "3"        (already present ✓)
-     client sends "21" every 20 s proactively       (NEW — was missing)
-     server replies "31"                            (NEW — ignore it)
-  Without the client-initiated "21" ping SP silently drops the
-  connection after ~60 s, which is why the feed appeared to work
-  briefly then stop.
-
-③ SUBSCRIBE PATTERN  — only subscribe buffered-event-{id}-194-0.00
-  per event.  This is exactly what the SP browser sends.  Subscribing
-  all 11 market types (old _SUBSCRIBE_TYPES list) exceeds SP's
-  per-connection subscription limit and causes the server to silently
-  stop sending data.  All other markets arrive automatically once
-  the 1x2 channel is subscribed.
-
-④ SPORTRADAR TIMELINE POLLING  — new background thread that calls
-  match_timelinedelta/{externalId} every 5 s for each live event and
-  publishes event_update payloads with sr_ptime (period-start unix
-  timestamp).  The frontend uses this for pixel-perfect clock sync.
-
-Everything else (Redis helpers, market normalisation, snapshot,
-_diff_and_record, _cache_event_state, thread management) is unchanged
-from the original file.
+FIX-D: SR poll loop timing
+  _sr_poll_loop had a 0.25 s sleep between each individual event fetch.
+  With 100 live events that's 25 s just in gap waits — the full sweep
+  takes 30+ seconds, making clock sync lag by half a minute.
+  Reduced to 0.05 s between events: 100 events × 0.05 s = 5 s gaps,
+  so a full sweep completes in ~10 s total (5 s gaps + 5 s final wait).
+  Still polite enough not to hammer Sportradar.
 """
 
 from __future__ import annotations
@@ -39,7 +20,6 @@ import logging
 import os
 import threading
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,7 +28,7 @@ import requests
 log = logging.getLogger("sp_live_harvester")
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
-_redis_lock = threading.Lock()
+_redis_lock   = threading.Lock()
 _redis_client = None
 
 
@@ -60,13 +40,11 @@ def _get_redis():
             return _redis_client
         except Exception:
             _redis_client = None
-
     with _redis_lock:
         if _redis_client is not None:
             return _redis_client
         import redis as _r
-        url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-        # Use DB 1 for live data (harvester uses DB 0/2 for tasks)
+        url  = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
         base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
         _redis_client = _r.Redis.from_url(
             f"{base}/1",
@@ -78,7 +56,7 @@ def _get_redis():
         return _redis_client
 
 
-# ── Channel name helpers ───────────────────────────────────────────────────────
+# ── Channel helpers ────────────────────────────────────────────────────────────
 CH_ALL   = "sp:live:all"
 CH_SPORT = "sp:live:sport:{sport_id}"
 CH_EVENT = "sp:live:event:{event_id}"
@@ -96,20 +74,8 @@ def _now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# ── Core publish — fans out to ALL three channels ─────────────────────────────
-def _publish_live_update(
-    r,
-    sport_id: int,
-    event_id: int,
-    payload: dict,
-) -> None:
-    """
-    Publish one normalised update to:
-      • sp:live:all              (all-sports firehose)
-      • sp:live:sport:{sport_id} (sport-scoped — used by LiveTab sport SSE)
-      • sp:live:event:{event_id} (per-event    — used by per-match SSE sub)
-    All three in a single pipeline to minimise RTTs.
-    """
+def _publish_live_update(r, sport_id: int, event_id: int, payload: dict) -> None:
+    """Publish to all three Redis channels in a single pipeline."""
     raw = json.dumps(payload, ensure_ascii=False)
     try:
         pipe = r.pipeline()
@@ -139,36 +105,19 @@ _HEADERS = {
 _LIVE_SPORT_IDS = [1, 2, 4, 5, 6, 8, 9, 10, 13, 21, 23]
 
 _TYPE_TO_SLUG: dict[int, str] = {
-    194: "1x2",
-    149: "match_winner",
-    147: "double_chance",
-    138: "btts",
-    140: "first_half_btts",
-    145: "odd_even",
-    166: "draw_no_bet",
-    151: "european_handicap",
-    184: "asian_handicap",
-    183: "correct_score",
-    154: "exact_goals",
-    129: "first_team_to_score",
-    155: "highest_scoring_half",
-    135: "first_half_1x2",
+    194: "1x2",         149: "match_winner",    147: "double_chance",
+    138: "btts",        140: "first_half_btts",  145: "odd_even",
+    166: "draw_no_bet", 151: "european_handicap", 184: "asian_handicap",
+    183: "correct_score", 154: "exact_goals",    135: "first_half_1x2",
 }
 
 _SPORT_TOTAL_SLUG: dict[int, str] = {
-    1:   "over_under_goals",
-    5:   "over_under_goals",
-    126: "over_under_goals",
-    2:   "total_points",
-    8:   "total_points",
-    4:   "total_games",
-    13:  "total_games",
-    10:  "total_sets",
-    9:   "total_runs",
-    23:  "total_sets",
-    6:   "over_under_goals",
-    16:  "total_games",
-    21:  "total_runs",
+    1: "over_under_goals", 5: "over_under_goals", 126: "over_under_goals",
+    2: "total_points",     8: "total_points",
+    4: "total_games",     13: "total_games",
+    10: "total_sets",      9: "total_runs",
+    23: "total_sets",      6: "over_under_goals",
+    16: "total_games",    21: "total_runs",
 }
 
 _POS_OUTCOME: dict[int, list[str]] = {
@@ -200,12 +149,8 @@ def _market_slug(market_type: int, sport_id: int, handicap: str | None) -> str:
 
 
 def _normalise_outcome_key(
-    sel_name: str,
-    sel_idx: int,
-    all_sels: list[dict],
-    market_type: int,
-    handicap: str | None,
-    sport_id: int,
+    sel_name: str, sel_idx: int, all_sels: list[dict],
+    market_type: int, handicap: str | None, sport_id: int,
 ) -> str:
     name_l  = sel_name.strip().lower()
     _direct: dict[str, str] = {
@@ -252,7 +197,7 @@ def _http_get(path: str, params: dict | None = None, timeout: int = 15) -> Any:
         return None
 
 
-# ── Public API — REST data fetchers (called by sp_live_view.py) ───────────────
+# ── Public REST data fetchers ──────────────────────────────────────────────────
 
 def fetch_live_sports() -> list[dict]:
     r      = _get_redis()
@@ -341,13 +286,12 @@ def _snapshot_sport(sport_id: int) -> list[dict]:
         if raw_detail and isinstance(raw_detail, dict):
             markets = raw_detail.get("markets") or []
         snap_events.append({"eventId": ev_id, "event": ev, "markets": markets})
-    snapshot = {
+    r.set(f"sp:live:snapshot:{sport_id}", json.dumps({
         "sport_id":     sport_id,
         "event_count":  len(snap_events),
         "harvested_at": _now_ts(),
         "events":       snap_events,
-    }
-    r.set(f"sp:live:snapshot:{sport_id}", json.dumps(snapshot), ex=90)
+    }), ex=90)
     return snap_events
 
 
@@ -364,7 +308,7 @@ def snapshot_all_sports() -> dict[int, list]:
 
 
 # =============================================================================
-# ④  SPORTRADAR TIMELINE POLLING  (NEW)
+# SPORTRADAR TIMELINE POLLING
 # =============================================================================
 
 _SR_BASE           = "https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo"
@@ -382,28 +326,17 @@ _SR_HEADERS = {
     "User-Agent": _HEADERS["User-Agent"],
 }
 
-# Period number → base seconds from kick-off
 _PERIOD_BASE_SEC: dict[str, int] = {
-    "1": 0,          # 1st half   0′–45′
-    "2": 45 * 60,    # 2nd half  45′–90′
-    "3": 90 * 60,    # ET 1st   90′–105′
-    "4": 105 * 60,   # ET 2nd  105′–120′
+    "1": 0, "2": 45 * 60, "3": 90 * 60, "4": 105 * 60,
 }
 
-# Sportradar status_id → canonical LiveEvent phase
 _SR_STATUS_TO_PHASE: dict[int, str] = {
-    6:  "FirstHalf",
-    7:  "SecondHalf",
-    31: "HalfTime",
-    41: "ExtraTimeFirst",
-    42: "ExtraTimeSecond",
-    50: "PenaltyShootout",
-    80: "AwaitingExtraTime",
-    17: "Paused",
-    11: "Interrupted",
+    6:  "FirstHalf",    7:  "SecondHalf",
+    31: "HalfTime",     41: "ExtraTimeFirst",
+    42: "ExtraTimeSecond", 50: "PenaltyShootout",
+    80: "AwaitingExtraTime", 17: "Paused", 11: "Interrupted",
 }
 
-# Shared maps: WS thread writes, SR thread reads
 _sr_event_map:   dict[int, int] = {}   # event_id → external_id
 _sr_event_sport: dict[int, int] = {}   # event_id → sport_id
 _sr_map_lock     = threading.Lock()
@@ -432,8 +365,8 @@ def _parse_sr_event_update(
     try:
         doc      = (data.get("doc") or [{}])[0]
         match    = doc.get("data", {}).get("match", {})
-        p        = str(match.get("p") or "")      # "1"|"2"|"3"|"4"
-        ptime    = match.get("ptime")              # unix ts: period started
+        p        = str(match.get("p") or "")
+        ptime    = match.get("ptime")
         timeinfo = match.get("timeinfo") or {}
         running  = bool(timeinfo.get("running", False))
         result   = match.get("result") or {}
@@ -461,8 +394,6 @@ def _parse_sr_event_update(
             "score_home":    str(result.get("home") or "0"),
             "score_away":    str(result.get("away") or "0"),
             "is_paused":     not running,
-            # These two fields are used by the frontend useLiveClock hook
-            # to interpolate the clock without waiting for the next update.
             "sr_period":     p,
             "sr_ptime":      int(ptime) if ptime else None,
             "ts":            _now_ts(),
@@ -475,9 +406,12 @@ def _parse_sr_event_update(
 
 def _sr_poll_loop() -> None:
     """
-    Background thread: poll Sportradar match_timelinedelta every 5 s for
-    every live event that has an external (betradar) ID.
-    Publishes event_update to all three Redis channels.
+    Background thread: poll Sportradar match_timelinedelta for every live
+    event that has an external (betradar) ID.
+
+    FIX-D: per-event sleep reduced from 0.25 s → 0.05 s.
+    Old: 100 events × 0.25 s = 25 s gaps → 30 s sweep — clock sync lags.
+    New: 100 events × 0.05 s =  5 s gaps → 10 s sweep — clock stays tight.
     """
     r = _get_redis()
     log.info("[SR] timeline polling started")
@@ -498,7 +432,6 @@ def _sr_poll_loop() -> None:
                 payload = _parse_sr_event_update(external_id, data, event_id, sport_id)
                 if not payload:
                     continue
-                # Cache state
                 r.set(
                     f"sp:live:state:{event_id}",
                     json.dumps({k: v for k, v in payload.items() if k != "type"}),
@@ -508,12 +441,12 @@ def _sr_poll_loop() -> None:
             except Exception as exc:
                 log.debug("[SR] event=%d: %s", event_id, exc)
 
-            # Small pause between individual event fetches to avoid hammering SR
-            _SR_STOP.wait(0.25)
+            # FIX-D: 0.05 s gap between events (was 0.25 s)
+            _SR_STOP.wait(0.05)
             if _SR_STOP.is_set():
                 break
 
-        # Full sweep every 5 s
+        # 5 s pause before next full sweep
         _SR_STOP.wait(5)
 
     log.info("[SR] timeline polling stopped")
@@ -525,9 +458,7 @@ def _start_sr_thread() -> None:
         return
     _SR_STOP.clear()
     _SR_THREAD = threading.Thread(
-        target=_sr_poll_loop,
-        name="sp-live-sr-poll",
-        daemon=True,
+        target=_sr_poll_loop, name="sp-live-sr-poll", daemon=True,
     )
     _SR_THREAD.start()
     log.info("[SR] thread started")
@@ -540,18 +471,13 @@ def _stop_sr_thread() -> None:
 
 
 # =============================================================================
-# WS HARVESTER  (original structure preserved, 3 fixes applied)
+# WS HARVESTER  (correct URL + EIO=3 heartbeat + single subscribe per event)
 # =============================================================================
 
 _HARVESTER_THREAD: threading.Thread | None = None
 _HARVESTER_STOP   = threading.Event()
 
-# ③ Only type 194 per event — mirrors exactly what SP browser sends.
-#    DO NOT subscribe all 11 types; that exceeds SP's subscription limit.
-#    (Old _SUBSCRIBE_TYPES list removed.)
-
-# ① CORRECT WS URL — realtime-notificator, not www.
-_WS_BASE = "wss://realtime-notificator.ke.sportpesa.com"
+_WS_BASE = "wss://realtime-notificator.ke.sportpesa.com"   # ① correct host
 
 
 def _ws_url() -> str:
@@ -692,10 +618,10 @@ def _cache_event_state(r, payload: dict) -> None:
 
 def _harvester_loop() -> None:
     """
-    Main WS harvester loop — original structure, three fixes applied:
-    ① Correct WS URL (realtime-notificator)
-    ② Client sends "21" heartbeat every 20 s; ignores "31" server ack
-    ③ Only subscribes buffered-event-{id}-194-0.00 per event
+    Main WS harvester loop.
+    ① Connects to realtime-notificator.ke.sportpesa.com
+    ② Sends "21" heartbeat every 20 s; ignores "31" server ack
+    ③ Subscribes only buffered-event-{id}-194-0.00 per event
     """
     try:
         import websocket
@@ -707,9 +633,9 @@ def _harvester_loop() -> None:
 
     while not _HARVESTER_STOP.is_set():
 
-        # ── 1. Build event map ────────────────────────────────────────────────
-        sport_id_map:    dict[int, int] = {}   # event_id → sport_id
-        external_id_map: dict[int, int] = {}   # event_id → betradar/externalId
+        # ── 1. Build event / external-ID maps ────────────────────────────
+        sport_id_map:    dict[int, int] = {}
+        external_id_map: dict[int, int] = {}
         subscribed:      set[int]       = set()
 
         log.info("[WS] fetching live event list …")
@@ -724,7 +650,6 @@ def _harvester_loop() -> None:
                         sport_id_map[ev_id]    = sport_id
                         external_id_map[ev_id] = int(ext_id or 0)
 
-                # Patch event count in the sports cache
                 sports_raw = r.get("sp:live:sports")
                 if sports_raw:
                     current = json.loads(sports_raw)
@@ -738,61 +663,51 @@ def _harvester_loop() -> None:
             except Exception as exc:
                 log.warning("[WS] snapshot sport=%d: %s", sport_id, exc)
 
-        # Push external IDs to SR polling thread
+        # Share with SR polling thread
         with _sr_map_lock:
             _sr_event_map.clear()
             _sr_event_map.update(external_id_map)
             _sr_event_sport.clear()
             _sr_event_sport.update(sport_id_map)
 
-        log.info("[WS] tracking %d live events across %d sports",
-                 len(sport_id_map), len(_LIVE_SPORT_IDS))
+        log.info("[WS] tracking %d live events", len(sport_id_map))
 
         if not sport_id_map:
             log.info("[WS] no live events — sleeping 30 s")
             _HARVESTER_STOP.wait(30)
             continue
 
-        # ── 2. WebSocket connection ───────────────────────────────────────────
-        ws_connected  = threading.Event()
-        ws_error_flag = [None]
+        # ── 2. WebSocket connection ───────────────────────────────────────
+        ws_connected = threading.Event()
 
         def on_open(ws):
             log.info("[WS] connected to realtime-notificator")
             ws_connected.set()
-
-            # ③ One subscription per event — only type 194
+            # ③ One subscription per event — type 194 only
             for ev_id in sport_id_map:
-                sub = f"buffered-event-{ev_id}-194-0.00"
-                ws.send(f'42["subscribe","{sub}"]')
+                ws.send(f'42["subscribe","buffered-event-{ev_id}-194-0.00"]')
                 subscribed.add(ev_id)
-
             log.info("[WS] subscribed to %d event channels", len(subscribed))
 
         def on_message(ws, raw: str):
             try:
-                # ② EIO=3 heartbeat
                 if raw == "2":
-                    ws.send("3")   # server PING → client PONG (unchanged)
+                    ws.send("3")   # server PING → client PONG
                     return
                 if raw == "31":
-                    return         # server ack for our "21" → ignore
+                    return         # ack for our "21" ping — ignore
 
                 event_name, data = _parse_ws_frame(raw)
                 if not event_name or not data:
                     return
 
-                # ── BUFFERED_MARKET_UPDATE ──────────────────────────────────
                 if event_name == "BUFFERED_MARKET_UPDATE":
                     payload = _market_from_buffered_update(data, sport_id_map)
                     if not payload:
                         return
                     payload  = _diff_and_record(r, payload)
-                    event_id = payload["event_id"]
-                    sport_id = payload["sport_id"]
-                    _publish_live_update(r, sport_id, event_id, payload)
+                    _publish_live_update(r, payload["sport_id"], payload["event_id"], payload)
 
-                # ── EVENT_UPDATE ────────────────────────────────────────────
                 elif event_name == "EVENT_UPDATE":
                     event_id = data.get("id")
                     if not event_id:
@@ -804,11 +719,8 @@ def _harvester_loop() -> None:
 
                     if event_id not in sport_id_map:
                         sport_id_map[event_id] = sport_id
-
-                    # Subscribe newly seen events
                     if event_id not in subscribed:
-                        sub = f"buffered-event-{event_id}-194-0.00"
-                        ws.send(f'42["subscribe","{sub}"]')
+                        ws.send(f'42["subscribe","buffered-event-{event_id}-194-0.00"]')
                         subscribed.add(event_id)
 
             except Exception as exc:
@@ -816,13 +728,11 @@ def _harvester_loop() -> None:
 
         def on_error(ws, error):
             log.warning("[WS] error: %s", error)
-            ws_error_flag[0] = error
 
         def on_close(ws, code, msg):
-            log.info("[WS] closed code=%s msg=%s", code, msg)
+            log.info("[WS] closed code=%s", code)
             ws_connected.clear()
 
-        # ① Use correct URL; pass headers as list of "Key: Value" strings
         ws = websocket.WebSocketApp(
             _ws_url(),
             header=[f"{k}: {v}" for k, v in _ws_extra_headers()],
@@ -834,9 +744,7 @@ def _harvester_loop() -> None:
 
         ws_thread = threading.Thread(
             target=ws.run_forever,
-            # ping_interval=0 disables websocket-client's own TCP keepalive;
-            # we handle the socket.io "21"/"31" heartbeat ourselves below.
-            kwargs={"ping_interval": 0},
+            kwargs={"ping_interval": 0},   # we handle EIO=3 heartbeat ourselves
             daemon=True,
             name="sp-live-ws",
         )
@@ -848,22 +756,21 @@ def _harvester_loop() -> None:
             _HARVESTER_STOP.wait(10)
             continue
 
-        # ── 3. Heartbeat + event-list refresh loop ────────────────────────────
+        # ── 3. Heartbeat + refresh loop ───────────────────────────────────
         last_refresh = time.monotonic()
-        last_ping    = time.monotonic()   # ② track when we last sent "21"
+        last_ping    = time.monotonic()
 
         while not _HARVESTER_STOP.is_set() and ws_thread.is_alive():
             now_m = time.monotonic()
 
-            # ② Send client-initiated heartbeat "21" every 20 s
+            # ② Send "21" heartbeat every 20 s
             if now_m - last_ping >= 20:
                 try:
                     ws.send("21")
                 except Exception:
-                    pass   # connection dropped; outer loop reconnects
+                    pass
                 last_ping = now_m
 
-            # Refresh event list every 60 s (subscribe newly started events)
             if now_m - last_refresh >= 60:
                 for sport_id in _LIVE_SPORT_IDS:
                     try:
@@ -876,16 +783,14 @@ def _harvester_loop() -> None:
                             sport_id_map[ev_id]    = sport_id
                             external_id_map[ev_id] = int(ext_id or 0)
                             if ev_id not in subscribed:
-                                sub = f"buffered-event-{ev_id}-194-0.00"
                                 try:
-                                    ws.send(f'42["subscribe","{sub}"]')
+                                    ws.send(f'42["subscribe","buffered-event-{ev_id}-194-0.00"]')
                                     subscribed.add(ev_id)
                                 except Exception:
                                     pass
                     except Exception as exc:
                         log.warning("[WS] refresh sport=%d: %s", sport_id, exc)
 
-                # Keep SR polling map up to date
                 with _sr_map_lock:
                     _sr_event_map.update(external_id_map)
                     _sr_event_sport.update(sport_id_map)
@@ -905,33 +810,22 @@ def _harvester_loop() -> None:
 # ── Public thread management ───────────────────────────────────────────────────
 
 def harvester_alive() -> bool:
-    """Return True if the WS harvester thread is running."""
-    return (
-        _HARVESTER_THREAD is not None
-        and _HARVESTER_THREAD.is_alive()
-    )
+    return _HARVESTER_THREAD is not None and _HARVESTER_THREAD.is_alive()
 
 
 def start_harvester_thread() -> threading.Thread:
-    """
-    Launch the WS harvester + Sportradar polling threads.
-    Safe to call multiple times — no-op if already running.
-    """
+    """Launch the WS harvester + Sportradar polling. Safe to call multiple times."""
     global _HARVESTER_THREAD, _HARVESTER_STOP
 
     if not harvester_alive():
         _HARVESTER_STOP.clear()
         _HARVESTER_THREAD = threading.Thread(
-            target=_harvester_loop,
-            name="sp-live-harvester",
-            daemon=True,
+            target=_harvester_loop, name="sp-live-harvester", daemon=True,
         )
         _HARVESTER_THREAD.start()
         log.info("[harvester] WS thread started")
 
-    # Always start SR polling alongside WS harvester
     _start_sr_thread()
-
     return _HARVESTER_THREAD  # type: ignore[return-value]
 
 
