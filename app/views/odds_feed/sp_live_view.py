@@ -171,6 +171,67 @@ def stream_event(event_id: int):
         )
     return Response(generate(), headers=SSE_HEADERS)
 
+@bp_sp_live.route("/stream-matches/<sport_slug>")
+def stream_live_matches(sport_slug: str):
+    """
+    GET /api/sp/live/stream-matches/<sport_slug>
+    SSE: yields one live match at a time with full canonical markets.
+    Events: {type:"start"} → {type:"match", match:{...}} × N → {type:"done"}
+    """
+    @stream_with_context
+    def generate():
+        t0          = time.perf_counter()
+        all_matches = []
+        try:
+            from app.workers.sp_harvester import (
+                fetch_live_stream, SP_SPORT_ID,
+            )
+            sport_id = SP_SPORT_ID.get(sport_slug.lower(), "")
+            estimated = 50  # rough upper bound for progress bar
+
+            yield _sse({
+                "type": "start",
+                "sport": sport_slug,
+                "mode": "live",
+                "estimated_max": estimated,
+            })
+
+            idx = 0
+            for match in fetch_live_stream(
+                sport_slug,
+                fetch_full_markets=True,
+                sleep_between=0.15,
+            ):
+                idx += 1
+                all_matches.append(match)
+                yield _sse({"type": "match", "index": idx, "match": match})
+
+            harvested_at = _now_ts()
+            latency_ms   = int((time.perf_counter() - t0) * 1000)
+
+            # Write to cache so LiveTab refresh also works
+            _cache_set(f"sp:live:{sport_slug}", {
+                "source":       "sportpesa",
+                "sport":        sport_slug,
+                "mode":         "live",
+                "match_count":  len(all_matches),
+                "harvested_at": harvested_at,
+                "latency_ms":   latency_ms,
+                "matches":      all_matches,
+            }, ttl=60)
+
+            yield _sse({
+                "type":         "done",
+                "total":        len(all_matches),
+                "latency_ms":   latency_ms,
+                "harvested_at": harvested_at,
+            })
+
+        except Exception as exc:
+            yield _sse({"type": "error", "message": str(exc)})
+
+    return Response(generate(), headers=SSE_HEADERS)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # REST — SPORTS / EVENTS / SNAPSHOT / MARKETS

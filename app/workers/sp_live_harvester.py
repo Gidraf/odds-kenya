@@ -1,1263 +1,898 @@
 """
 app/workers/sp_live_harvester.py
 =================================
-Sportpesa Live WebSocket harvester.
+Sportpesa Live Odds Harvester
+──────────────────────────────
+Manages the WebSocket connection to Sportpesa's live odds feed and
+publishes normalised delta messages to Redis pub/sub channels consumed
+by the SSE endpoints in sp_live_view.py.
 
-BUGS FIXED (from live WS traffic analysis)
-─────────────────────────────────────────────────────────────────────────────
-1. CRITICAL: was listening for "BUFFERED_MARKET_UPDATE" — actual event name
-   from SP is "MARKET_UPDATE". This single bug caused zero live updates.
+Architecture
+────────────
+1.  HTTP snapshot  — GET /api/live/sports/{sportId}/events
+      Gives us the current event list + initial state (score, phase, clock).
+      Called once on startup and on every REFRESH button click.
 
-2. Live market type IDs differ from upcoming /api/games/markets IDs:
-     Live  194 → 1x2          Upcoming  1/10 → 1x2
-     Live  147 → double_chance Upcoming  46   → double_chance
-     Live  138 → btts          Upcoming  43   → btts
-     Live  145 → odd_even      Upcoming  45   → odd_even
-     Live  166 → draw_no_bet   Upcoming  47   → draw_no_bet
-     Live  151 → eur_handicap  Upcoming  55   → european_handicap
-     Live  184 → asian_handicap Upcoming 51   → asian_handicap
-     Live  105 → total (O/U)   Upcoming  52   → over_under_goals
-     Live  149 → match_winner  (2-way)
-     Live  183 → correct_score
-     Live  154 → exact_goals
-     Live  129 → first_team_to_score
-     Live  155 → highest_scoring_half
-     Live  135 → first_half_1x2
-     Live  140 → first_half_btts
+2.  WebSocket (socket.io v2/v3 framing) — wss://www.ke.sportpesa.com/socket.io/
+      After connecting we subscribe to every visible event's market channels:
+        "subscribe" → "buffered-event-{eventId}-{marketType}-{handicap}"
+      Incoming messages:
+        BUFFERED_MARKET_UPDATE  → normalise + publish market_update
+        EVENT_UPDATE            → normalise + publish event_update
 
-3. Live selection names are FULL names ("over 3.5", "Afghanistan or draw"),
-   NOT shortNames ("OV", "1X") used by upcoming. Outcome normalizer updated.
+3.  Redis pub/sub channels
+      sp:live:all                  — every update (used by /stream)
+      sp:live:sport:{sport_id}     — sport-scoped (used by /stream/sport/<id>)
+      sp:live:event:{event_id}     — per-event  (used by /stream/event/<id>)
 
-4. The SPORT subscription is correct (42["subscribe","sport-1"]) — but
-   the SP frontend also subscribes to individual event channels for detail
-   views. We only need sport-level for the grid; event-level is optional.
+      Publishing to both sport AND event channels on every WS message means
+      the frontend can subscribe at whichever granularity it needs.
 
-Subscription protocol (confirmed from browser WS traffic):
-   SEND  42["subscribe","sport-1"]    ← one per live sport
-   RECV  42["MARKET_UPDATE", {...}]   ← odds change for any event in sport
-   RECV  42["EVENT_UPDATE",  {...}]   ← score/phase update
-   SEND  2   (every pingInterval ms) ← keep-alive PING
-   RECV  3                            ← server PONG (or server sends 2, we reply 3)
+4.  Redis key/value (snapshot / state cache)
+      sp:live:sports               — live sport list  (TTL 60 s)
+      sp:live:snapshot:{sport_id}  — full raw snapshot (TTL 90 s)
+      sp:live:state:{event_id}     — last known score/phase (TTL 300 s)
+      sp:live:odds:{event_id}:{market_id}  — latest odds per market (TTL 300 s)
+      sp:live:history:{event_id}:{market_id}  — last 20 ticks (LIST, TTL 600 s)
 
-Key live API endpoint (polls all events for sport with their default market):
-   GET /api/live/default/markets?sportId=1
-   Returns: {markets: [{eventId, markets:[{id,status,specialValue,selections:[{name,odds}]}]}]}
+Normalised message shapes published to Redis
+────────────────────────────────────────────
+market_update:
+  {
+    "type": "market_update",
+    "event_id": 1093987,
+    "sport_id": 1,
+    "market_id": 68048759,          # eventMarketId
+    "market_type": 194,             # SP type ID  (194=1x2, 105=total, …)
+    "market_name": "1x2",
+    "market_slug": "1x2",           # canonical slug
+    "handicap": "0.00",
+    "all_selections": [
+      {"id": 140732331, "name": "NK Bjelovar", "status": "Open", "odds": "3.35"},
+      …
+    ],
+    "normalised_selections": [
+      {"id": 140732331, "name": "NK Bjelovar", "outcome_key": "1",
+       "odds": "3.35", "status": "Open"},
+      …
+    ],
+    "changed_selections": [          # only those whose odds changed
+      {"id": 140732331, "odds": "3.35"},
+    ],
+    "ts": "2026-03-28T16:05:01Z"
+  }
+
+event_update:
+  {
+    "type": "event_update",
+    "event_id": 1120445,
+    "sport_id": 1,
+    "status": "Started",
+    "phase": "SecondHalf",
+    "match_time": "45:00",
+    "clock_running": false,
+    "remaining_ms": null,
+    "score_home": "1",
+    "score_away": "0",
+    "is_paused": false,
+    "ts": "2026-03-28T16:02:22Z"
+  }
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import logging.handlers
 import os
-import re
 import threading
 import time
-import traceback
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
 import requests
-import websocket  # websocket-client
 
-# ═════════════════════════════════════════════════════════════════════════════
-# DIAGNOSTIC LOGGER
-# ═════════════════════════════════════════════════════════════════════════════
+log = logging.getLogger("sp_live_harvester")
 
-def _setup_diag_logger() -> logging.Logger:
-    diag = logging.getLogger("sp_live_diag")
-    if diag.handlers:
-        return diag
-    diag.setLevel(logging.DEBUG)
-    diag.propagate = False
-    log_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "logs",
-    )
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "sp_live_debug.log")
-    fh = logging.handlers.RotatingFileHandler(
-        log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
-    )
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)-8s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
-    ))
-    diag.addHandler(fh)
-    sh = logging.StreamHandler()
-    sh.setLevel(logging.INFO)
-    sh.setFormatter(logging.Formatter("[sp_live] %(message)s"))
-    diag.addHandler(sh)
-    diag.info("=" * 70)
-    diag.info("sp_live_harvester — log: %s", log_path)
-    diag.info("=" * 70)
-    return diag
-
-
-_diag = _setup_diag_logger()
-log   = logging.getLogger("sp_live")
-
-
-def _D(msg: str, *args, level: str = "debug") -> None:
-    getattr(_diag, level)(msg, *args)
-    getattr(log,   level)(msg, *args)
-
-
-def _D_section(title: str) -> None:
-    _diag.info("")
-    _diag.info("─── %s %s", title, "─" * max(0, 60 - len(title)))
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CONFIG
-# ═════════════════════════════════════════════════════════════════════════════
-
-WS_URL     = "wss://realtime-notificator.ke.sportpesa.com/socket.io/?EIO=3&transport=websocket"
-API_BASE   = "https://www.ke.sportpesa.com/api/live"
-ORIGIN     = "https://www.ke.sportpesa.com"
-USER_AGENT = (
-    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
-)
-
-DEFAULT_MARKET_TYPE = 194
-
-LIVE_SPORT_IDS = [1, 2, 4, 5, 8, 9, 10, 13]
-SPORT_SLUG_MAP = {
-    1:  "soccer",   2: "basketball", 4: "tennis",
-    5:  "handball", 8: "rugby",      9: "cricket",
-    10: "volleyball", 13: "table-tennis",
-}
-
-# ── Live market type ID → (base_slug, uses_line) ─────────────────────────────
-# Confirmed from actual SP live WS MARKET_UPDATE messages.
-# These IDs are DIFFERENT from the upcoming /api/games/markets IDs.
-LIVE_MARKET_MAP: dict[int, tuple[str, bool]] = {
-    194: ("1x2",                     False),
-    149: ("match_winner",            False),
-    147: ("double_chance",           False),
-    138: ("btts",                    False),
-    140: ("first_half_btts",         False),
-    145: ("odd_even",                False),
-    166: ("draw_no_bet",             False),
-    151: ("european_handicap",       True),   # specialValue = line e.g. "2.00"
-    184: ("asian_handicap",          True),   # specialValue = line e.g. "0.50"
-    105: ("__ou__",                  True),   # sport-aware, handled separately
-    183: ("correct_score",           False),
-    154: ("exact_goals",             False),
-    129: ("first_team_to_score",     False),
-    155: ("highest_scoring_half",    False),
-    135: ("first_half_1x2",          False),
-    303: ("match_winner",            False),  # home_no_bet alias
-    304: ("match_winner",            False),  # away_no_bet alias
-}
-
-# ── O/U base slug per live sport ID ──────────────────────────────────────────
-LIVE_OU_SLUG: dict[int, str] = {
-    1:  "over_under_goals",   # Soccer
-    5:  "over_under_goals",   # Handball
-    2:  "total_points",       # Basketball
-    8:  "total_points",       # Rugby
-    4:  "total_games",        # Tennis
-    13: "total_games",        # Table Tennis
-    10: "total_sets",         # Volleyball
-    9:  "total_runs",         # Cricket
-}
-
-
-def live_market_slug(mkt_type: int, handicap: Any, sport_id: int) -> str:
-    """Convert live market_type + handicap + sport_id → canonical slug."""
-    entry = LIVE_MARKET_MAP.get(mkt_type)
-    if not entry:
-        return f"market_{mkt_type}"
-    base, uses_line = entry
-
-    if base == "__ou__":
-        base = LIVE_OU_SLUG.get(sport_id, "over_under")
-
-    if uses_line and handicap is not None:
-        # Normalize "3.50" → "3.5", "2.00" → "2"
-        try:
-            f = float(handicap)
-            line = str(int(f)) if f == int(f) else str(f)
-        except (TypeError, ValueError):
-            line = str(handicap)
-        if line and line != "0":
-            return f"{base}_{line}"
-
-    return base
-
-# ═════════════════════════════════════════════════════════════════════════════
-# LIVE OUTCOME NORMALIZER
-# ═════════════════════════════════════════════════════════════════════════════
-# Live selection.name is the FULL name, not shortName.
-# Examples from actual WS messages:
-#   "over 3.5" → "over"      "under 3.5" → "under"
-#   "Afghanistan or draw" → "1X"   "draw or Myanmar" → "X2"
-#   "Afghanistan or Myanmar" → "12"
-#   "Afghanistan (4:0)" → "1"  (positional — home team first)
-#   "draw (4:0)" → "X"         "Myanmar (4:0)" → "2"
-#   "odd" → "odd"              "even" → "even"
-#   "Yes" → "yes"              "No" → "no"
-
-_OVER_RE  = re.compile(r"^over\s+[\d.]+$",  re.I)
-_UNDER_RE = re.compile(r"^under\s+[\d.]+$", re.I)
-_SCORE_RE = re.compile(r"^\d+:\d+$")
-
-
-def normalize_live_outcome(
-    slug:      str,
-    sel_name:  str,
-    sel_index: int,
-    all_sels:  list[dict],
-) -> str:
-    """
-    Map a live selection.name → canonical outcome key.
-
-    Uses sel_index (0-based position) as ultimate fallback for team-name
-    selections so home=1, draw=X, away=2 still works even for obscure names.
-    """
-    kl = sel_name.strip().lower()
-
-    # Over / Under (e.g. "over 3.5", "under 3.5")
-    if _OVER_RE.match(kl):  return "over"
-    if _UNDER_RE.match(kl): return "under"
-
-    # Simple exact matches
-    exact = {
-        "yes": "yes", "no": "no",
-        "odd": "odd", "even": "even",
-        "1": "1", "x": "X", "2": "2",
-        "draw": "X",
-        "1x": "1X", "x2": "X2", "12": "12",
-        "1st": "1st", "2nd": "2nd",
-        "equal": "equal", "eql": "equal",
-        "none": "none",
-    }
-    if kl in exact:
-        return exact[kl]
-
-    # Correct score "1:2" etc.
-    raw = sel_name.strip()
-    if _SCORE_RE.match(raw):
-        return raw
-
-    # "draw (...)" → X
-    if kl.startswith("draw"):
-        return "X"
-
-    # Double Chance patterns: "X or Y" → figure out which combo
-    if " or " in kl:
-        n = len(all_sels)
-        # Standard order: [1X, X2, 12]  or  [home_or_draw, draw_or_away, home_or_away]
-        dc_map = {0: "1X", 1: "X2", 2: "12"}
-        return dc_map.get(sel_index, f"dc_{sel_index}")
-
-    # Handicap: "Team Name (2:0)" — use position
-    if "(" in kl:
-        pos_map = {0: "1", 1: "X", 2: "2"}
-        # Only map positional if 3 sels (European HC), else 2-way
-        if len(all_sels) == 2:
-            return "1" if sel_index == 0 else "2"
-        return pos_map.get(sel_index, str(sel_index + 1))
-
-    # "other" outcome in correct score
-    if kl in ("other", "othr", "any other"):
-        return "other"
-
-    # Numeric exact goals "0","1","2"…,"5+"
-    if re.match(r"^\d+\+?$", raw):
-        return raw
-
-    # Positional fallback for 2-way markets (home/away team names)
-    if len(all_sels) == 2:
-        return "1" if sel_index == 0 else "2"
-    if len(all_sels) == 3:
-        pos_map = {0: "1", 1: "X", 2: "2"}
-        return pos_map.get(sel_index, kl[:8])
-
-    # Generic sanitise
-    return re.sub(r"[^a-z0-9_:+./\-]+", "_", kl).strip("_") or f"sel_{sel_index}"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# REDIS
-# ═════════════════════════════════════════════════════════════════════════════
-
+# ── Redis ─────────────────────────────────────────────────────────────────────
+_redis_lock = threading.Lock()
 _redis_client = None
 
 
 def _get_redis():
     global _redis_client
-    if _redis_client is None:
-        import redis
-        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        _D("Redis: connecting to %s", url, level="info")
+    if _redis_client is not None:
         try:
-            _redis_client = redis.from_url(url, decode_responses=True)
-            _D("Redis: PING → %s ✓", _redis_client.ping(), level="info")
-        except Exception as exc:
-            _D("Redis: CONNECT FAILED — %s", exc, level="error")
-            raise
-    return _redis_client
+            _redis_client.ping()
+            return _redis_client
+        except Exception:
+            _redis_client = None
 
-# ═════════════════════════════════════════════════════════════════════════════
-# HTTP SESSION
-# ═════════════════════════════════════════════════════════════════════════════
+    with _redis_lock:
+        if _redis_client is not None:
+            return _redis_client
+        import redis as _r
+        url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        # Use DB 1 for live data (harvester uses DB 0/2 for tasks)
+        base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
+        _redis_client = _r.Redis.from_url(
+            f"{base}/1",
+            decode_responses=True,
+            socket_timeout=5,
+            socket_connect_timeout=5,
+            retry_on_timeout=True,
+        )
+        return _redis_client
 
-_SESSION: requests.Session | None = None
 
+# ── Channel name helpers ───────────────────────────────────────────────────────
 CH_ALL   = "sp:live:all"
 CH_SPORT = "sp:live:sport:{sport_id}"
 CH_EVENT = "sp:live:event:{event_id}"
-TTL_ODDS = 7200; TTL_STATE = 3600; TTL_EVENTS = 1800; TTL_SNAPSHOT = 300
 
 
-def _session() -> requests.Session:
-    global _SESSION
-    if _SESSION is None:
-        _SESSION = requests.Session()
-        _SESSION.headers.update({
-            "Origin": ORIGIN, "Referer": ORIGIN + "/", "User-Agent": USER_AGENT,
-        })
-    return _SESSION
+def _ch_sport(sport_id: int) -> str:
+    return CH_SPORT.format(sport_id=sport_id)
 
 
-def _get(path: str, params: dict | None = None, timeout: int = 10) -> Any:
-    url = f"{API_BASE}{path}"
-    _D("HTTP GET %s params=%s", url, params)
-    t0 = time.perf_counter()
+def _ch_event(event_id: int) -> str:
+    return CH_EVENT.format(event_id=event_id)
+
+
+def _now_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── Core publish — fans out to ALL three channels ─────────────────────────────
+def _publish_live_update(
+    r,
+    sport_id: int,
+    event_id: int,
+    payload: dict,
+) -> None:
+    """
+    Publish one normalised update to:
+      • sp:live:all              (all-sports firehose)
+      • sp:live:sport:{sport_id} (sport-scoped — used by LiveTab sport SSE)
+      • sp:live:event:{event_id} (per-event    — used by per-match SSE sub)
+    All three in a single pipeline to minimise RTTs.
+    """
+    raw = json.dumps(payload, ensure_ascii=False)
     try:
-        r = _session().get(url, params=params, timeout=timeout)
-        ms = int((time.perf_counter() - t0) * 1000)
-        _D("HTTP %s → status=%d  %dms  body_len=%d", url, r.status_code, ms, len(r.content))
-        if not r.ok:
-            _D("HTTP ERROR %d: %s", r.status_code, r.text[:300], level="warning")
-            return None
-        data = r.json()
-        if isinstance(data, dict):
-            _D("HTTP response keys: %s", list(data.keys())[:10])
-            for k in ("sports", "events", "data", "markets"):
-                if isinstance(data.get(k), list):
-                    _D("  response[%r] = list(%d items)", k, len(data[k]))
-        elif isinstance(data, list):
-            _D("HTTP response = list(%d items)", len(data))
-        return data
+        pipe = r.pipeline()
+        pipe.publish(CH_ALL, raw)
+        pipe.publish(_ch_sport(sport_id), raw)
+        pipe.publish(_ch_event(event_id), raw)
+        pipe.execute()
     except Exception as exc:
-        _D("HTTP EXCEPTION %s: %s", url, exc, level="error")
-        return None
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PUBLIC HTTP HELPERS
-# ═════════════════════════════════════════════════════════════════════════════
-
-def fetch_live_sports() -> list[dict]:
-    _D_section("fetch_live_sports")
-    data = _get("/sports")
-    if not data:
-        _D("fetch_live_sports: NO DATA from API", level="warning")
-        return []
-    sports = data.get("sports") or []
-    _D("fetch_live_sports: %d sports", len(sports), level="info")
-    for s in sports:
-        _D("  id=%s name=%r events=%s", s.get("id"), s.get("name"), s.get("eventNumber"))
-    return sports
+        log.warning("publish_live_update failed: %s", exc)
 
 
-def fetch_live_events(sport_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
-    _D_section(f"fetch_live_events(sport_id={sport_id})")
-    data = _get(f"/sports/{sport_id}/events", {"limit": limit, "offset": offset})
-    if not data:
-        _D("fetch_live_events sport=%d: no data", sport_id, level="warning")
-        return []
-    # SP API sometimes returns a list directly
-    if isinstance(data, list):
-        events = data
+# ── SP HTTP base ───────────────────────────────────────────────────────────────
+_SP_BASE = "https://www.ke.sportpesa.com"
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept":           "application/json, text/plain, */*",
+    "Accept-Language":  "en-GB,en-US;q=0.9,en;q=0.8",
+    "X-Requested-With": "XMLHttpRequest",
+    "X-App-Timezone":   "Africa/Nairobi",
+    "Origin":           _SP_BASE,
+    "Referer":          _SP_BASE + "/",
+}
+
+# Sport IDs supported for live
+_LIVE_SPORT_IDS = [1, 2, 4, 5, 6, 8, 9, 10, 13, 21, 23]
+
+# SP market type → canonical slug (for normalised_selections outcome_key)
+_TYPE_TO_SLUG: dict[int, str] = {
+    194: "1x2",
+    149: "match_winner",
+    147: "double_chance",
+    138: "btts",
+    140: "first_half_btts",
+    145: "odd_even",
+    166: "draw_no_bet",
+    151: "european_handicap",
+    184: "asian_handicap",
+    183: "correct_score",
+    154: "exact_goals",
+    129: "first_team_to_score",
+    155: "highest_scoring_half",
+    135: "first_half_1x2",
+}
+
+# For market type 105 (total/over-under) the slug depends on sport
+_SPORT_TOTAL_SLUG: dict[int, str] = {
+    1:  "over_under_goals",
+    5:  "over_under_goals",    # football variants
+    126: "over_under_goals",
+    2:  "total_points",
+    8:  "total_points",
+    4:  "total_games",
+    13: "total_games",
+    10: "total_sets",
+    9:  "total_runs",
+    23: "total_sets",
+    6:  "over_under_goals",
+    16: "total_games",
+    21: "total_runs",
+}
+
+# Canonical outcome key by position for common market types
+_POS_OUTCOME: dict[int, list[str]] = {
+    194: ["1", "X", "2"],      # 1x2
+    149: ["1", "2"],            # match winner
+    147: ["1X", "X2", "12"],   # double chance
+    138: ["yes", "no"],         # btts
+    140: ["yes", "no"],         # 1H btts
+    145: ["odd", "even"],
+    166: ["1", "2"],            # draw no bet
+    135: ["1", "X", "2"],      # 1H 1x2
+    155: ["1st", "2nd", "equal"],
+}
+
+
+def _market_slug(market_type: int, sport_id: int, handicap: str | None) -> str:
+    """Return canonical slug for a market, appending line where appropriate."""
+    if market_type == 105:
+        base = _SPORT_TOTAL_SLUG.get(sport_id, "over_under")
     else:
-        events = data.get("events") or data.get("data") or []
-    # Filter to dicts only (guard against nested lists)
-    events = [e for e in events if isinstance(e, dict)]
-    _D("fetch_live_events sport=%d: %d events", sport_id, len(events), level="info")
-    for ev in events[:3]:
-        comps = ev.get("competitors") or []
-        names = " v ".join(c.get("name", "?") for c in comps[:2])
-        _D("  id=%s  %r  state=%s", ev.get("id"), names,
-           (ev.get("state") or {}).get("currentEventPhase", "?"))
-    return events
+        base = _TYPE_TO_SLUG.get(market_type, f"market_{market_type}")
+
+    if handicap and handicap not in ("0.00", "0", "", None):
+        try:
+            fv = float(handicap)
+            line = str(int(fv)) if fv == int(fv) else str(fv)
+            return f"{base}_{line}"
+        except (ValueError, TypeError):
+            pass
+    return base
 
 
-def fetch_live_default_markets(sport_id: int) -> list[dict]:
+def _normalise_outcome_key(
+    sel_name: str,
+    sel_idx: int,
+    all_sels: list[dict],
+    market_type: int,
+    handicap: str | None,
+    sport_id: int,
+) -> str:
     """
-    GET /api/live/default/markets?sportId=1
-    Returns the default market for all live events in one call.
-    Response: {markets: [{eventId, markets:[...]}]}
+    Convert a raw SP selection name to a canonical outcome key.
+
+    Priority:
+      1. Known shortname map (1/X/2/yes/no/over/under/…)
+      2. Positional map from _POS_OUTCOME
+      3. O/U prefix detection ("over …" / "under …")
+      4. Slugified fallback
     """
-    _D_section(f"fetch_live_default_markets(sport_id={sport_id})")
-    data = _get("/default/markets", {"sportId": sport_id})
-    if not data:
-        _D("fetch_live_default_markets sport=%d: no data", sport_id, level="warning")
-        return []
-    if isinstance(data, list):
-        items = data
-    else:
-        items = data.get("markets") or []
-    items = [i for i in items if isinstance(i, dict)]
-    _D("fetch_live_default_markets sport=%d: %d event-market bundles", sport_id, len(items), level="info")
-    return items
+    name_l = sel_name.strip().lower()
+
+    # Direct canonical names
+    _direct: dict[str, str] = {
+        "1": "1", "x": "X", "2": "2", "draw": "X",
+        "over": "over", "under": "under",
+        "yes": "yes", "no": "no",
+        "odd": "odd", "even": "even",
+        "1x": "1X", "x2": "X2", "12": "12",
+        "home": "1", "away": "2",
+    }
+    if name_l in _direct:
+        return _direct[name_l]
+
+    # O/U with line value embedded in name ("Over 2.50", "Under 45.5")
+    if name_l.startswith("over"):
+        return "over"
+    if name_l.startswith("under"):
+        return "under"
+
+    # Correct score patterns  "2:1", "0:0", …
+    if ":" in sel_name and len(sel_name) <= 5:
+        return sel_name.strip()
+
+    # HT/FT combos  "1/1", "X/2", …
+    if "/" in sel_name and len(sel_name) <= 5:
+        return sel_name.strip()
+
+    # Positional map (covers 194, 149, 147, 138, 145, …)
+    pos_map = _POS_OUTCOME.get(market_type)
+    if pos_map and sel_idx < len(pos_map):
+        return pos_map[sel_idx]
+
+    # Market 105: always over/under by position
+    if market_type == 105:
+        return "over" if sel_idx == 0 else "under"
+
+    # Generic slugify
+    slug = name_l.replace(" ", "_").replace("-", "_")
+    slug = "".join(c for c in slug if c.isalnum() or c == "_")
+    return slug[:14] or f"sel_{sel_idx}"
 
 
-def fetch_live_markets(
-    event_ids:   list[int],
-    sport_id:    int,
-    market_type: int = DEFAULT_MARKET_TYPE,
-) -> list[dict]:
-    if not event_ids:
-        return []
-    ids_str = ",".join(str(i) for i in event_ids[:15])
-    _D("fetch_live_markets sport=%d type=%d ids=[%s]", sport_id, market_type, ids_str[:80])
-    data = _get("/event/markets", {
-        "eventId": ids_str, "type": market_type, "sportId": sport_id,
-    })
-    if not data:
-        _D("fetch_live_markets: no data sport=%d type=%d", sport_id, market_type, level="warning")
-        return []
-    markets = data.get("markets") or data.get("data") or []
-    _D("fetch_live_markets: %d objects returned", len(markets))
-    return markets
+# ── HTTP helpers ───────────────────────────────────────────────────────────────
 
-
-def _get_quiet(path: str, params: dict | None = None, timeout: int = 10) -> Any:
-    """Like _get but silently returns None on 404 (expected for ended/pre-match events)."""
-    url = f"{API_BASE}{path}"
+def _http_get(path: str, params: dict | None = None, timeout: int = 15) -> Any:
+    url = f"{_SP_BASE}{path}"
     try:
-        r = _session().get(url, params=params, timeout=timeout)
-        if r.status_code == 404:
-            return None   # silent — event not live, expected
+        r = requests.get(url, headers=_HEADERS, params=params,
+                         timeout=timeout, allow_redirects=True)
         if not r.ok:
-            _D("HTTP ERROR %d: %s", r.status_code, r.text[:200], level="warning")
+            log.warning("HTTP %d → %s", r.status_code, url)
             return None
         return r.json()
     except Exception as exc:
-        _D("HTTP EXCEPTION %s: %s", url, exc, level="error")
+        log.warning("HTTP error %s: %s", url, exc)
         return None
 
 
-def fetch_event_details(event_id: int) -> dict | None:
-    data = _get_quiet(f"/events/{event_id}/details")
-    if isinstance(data, dict):
-        return data
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        return data[0]
-    return None
+# ── Public API — REST data fetchers (called by sp_live_view.py) ───────────────
+
+def fetch_live_sports() -> list[dict]:
+    """
+    Return current live sport list from SP API.
+    Cached in Redis as sp:live:sports (TTL 60 s).
+    """
+    r = _get_redis()
+    cached = r.get("sp:live:sports")
+    if cached:
+        return json.loads(cached)
+
+    raw = _http_get("/api/live/sports")
+    sports = []
+    if isinstance(raw, dict):
+        sports = raw.get("sports") or raw.get("data") or []
+    elif isinstance(raw, list):
+        sports = raw
+
+    if sports:
+        r.set("sp:live:sports", json.dumps(sports), ex=60)
+    return sports
 
 
-def snapshot_all_sports() -> dict[int, list[dict]]:
+def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[dict]:
     """
-    Warm the Redis cache: fetch all live sports + events + default markets.
-    Also fetches from /api/live/default/markets?sportId=N for the full market map.
+    Fetch live events for one sport via HTTP (fresh, no cache).
+    Returns list of raw SP event dicts.
     """
-    _D_section("snapshot_all_sports")
+    # Primary endpoint (confirmed from SP browser traffic)
+    raw = _http_get(
+        f"/api/live/sports/{sport_id}/events",
+        params={"limit": limit, "offset": offset},
+    )
+    if raw:
+        for key in ("events", "data", "items"):
+            if isinstance(raw.get(key), list) and raw[key]:
+                log.debug("fetch_live_events sport=%d → %d events", sport_id, len(raw[key]))
+                return raw[key]
+        if isinstance(raw, list):
+            return raw
+
+    # Fallback: old endpoint
+    raw = _http_get("/api/live/games", params={"sportId": sport_id})
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("data", "games", "items", "events"):
+            if isinstance(raw.get(key), list):
+                return raw[key]
+
+    return []
+
+
+def fetch_live_markets(
+    event_ids: list[int],
+    sport_id:  int,
+    market_type: int = 194,
+) -> list[dict]:
+    """
+    Fetch market odds for a batch of event IDs.
+    Returns list of {eventId, markets: [...]} dicts.
+    """
+    if not event_ids:
+        return []
+    ids_str = ",".join(str(i) for i in event_ids)
+    raw = _http_get(
+        "/api/live/markets",
+        params={"eventIds": ids_str, "marketType": market_type, "sportId": sport_id},
+    )
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("data", "markets", "events"):
+            if isinstance(raw.get(key), list):
+                return raw[key]
+    return []
+
+
+def get_odds_history(
+    event_id:  int,
+    market_id: int,
+    limit:     int = 20,
+) -> list[dict]:
+    """Return last `limit` odds ticks for a market from Redis history list."""
+    r   = _get_redis()
+    key = f"sp:live:history:{event_id}:{market_id}"
+    try:
+        items = r.lrange(key, 0, limit - 1)
+        return [json.loads(i) for i in items]
+    except Exception as exc:
+        log.warning("get_odds_history %s: %s", key, exc)
+        return []
+
+
+# ── Snapshot ───────────────────────────────────────────────────────────────────
+
+def _snapshot_sport(sport_id: int) -> list[dict]:
+    """Fetch events + markets for one sport, store in Redis snapshot key."""
     r      = _get_redis()
-    sports = fetch_live_sports()
-    result: dict[int, list[dict]] = {}
+    events = fetch_live_events(sport_id, limit=200)
+    if not events:
+        return []
 
-    if not sports:
-        _D("snapshot_all_sports: 0 sports — SP live API may be blocking this IP", level="error")
-        return result
-
-    for sport in sports:
-        sport_id   = sport["id"]
-        sport_slug = SPORT_SLUG_MAP.get(sport_id, f"sport_{sport_id}")
-        _D("snapshot sport_id=%d slug=%r expected=%s",
-           sport_id, sport_slug, sport.get("eventNumber"), level="info")
-
-        events = fetch_live_events(sport_id, limit=100)
-        if not events:
-            _D("snapshot sport_id=%d: 0 events", sport_id, level="warning")
-            result[sport_id] = []
+    # Try to get initial market odds for each event via details endpoint
+    snap_events = []
+    for ev in events:
+        ev_id = ev.get("id")
+        if not ev_id:
             continue
+        raw_detail = _http_get(f"/api/live/events/{ev_id}/details")
+        markets = []
+        if raw_detail and isinstance(raw_detail, dict):
+            markets = raw_detail.get("markets") or []
+        snap_events.append({"eventId": ev_id, "event": ev, "markets": markets})
 
-        # Cache event→sport mapping for WS message routing
-        pipe = r.pipeline()
-        for ev in events:
-            pipe.setex(f"sp:live:event_sport:{ev['id']}", TTL_EVENTS, sport_id)
-            pipe.setex(f"sp:live:event_slug:{ev['id']}",  TTL_EVENTS, sport_slug)
-        pipe.execute()
+    snapshot = {
+        "sport_id":     sport_id,
+        "event_count":  len(snap_events),
+        "harvested_at": _now_ts(),
+        "events":       snap_events,
+    }
+    r.set(f"sp:live:snapshot:{sport_id}", json.dumps(snapshot), ex=90)
+    return snap_events
 
-        # Fetch the default markets (type 194 / match winner) for all events
-        # This is the lightweight snapshot — the WS harvester fills in the rest
-        default_mkts = fetch_live_default_markets(sport_id)
 
-        # Also fetch a few more market types for richer initial display
-        event_ids = [ev["id"] for ev in events]
-        extended_mkts: list[dict] = []
-        for i in range(0, min(len(event_ids), 30), 15):
-            batch = fetch_live_markets(event_ids[i:i+15], sport_id, 105)   # O/U
-            extended_mkts.extend(batch)
-            time.sleep(0.2)
-
-        snapshot = {
-            "sport_id":    sport_id,
-            "sport_slug":  sport_slug,
-            "sport_name":  sport.get("name", sport_slug),
-            "event_count": sport.get("eventNumber", len(events)),
-            "events":      events,
-            "markets":     default_mkts,
-            "fetched_at":  _now_iso(),
-        }
-        r.setex(f"sp:live:snapshot:{sport_id}", TTL_SNAPSHOT, json.dumps(snapshot))
-        result[sport_id] = events
-        _D("snapshot sport_id=%d: %d events, %d market bundles → Redis written",
-           sport_id, len(events), len(default_mkts), level="info")
-
-    r.setex("sp:live:sports", TTL_EVENTS, json.dumps(sports))
-    _D("snapshot_all_sports DONE: %d sports, %d total events",
-       len(result), sum(len(v) for v in result.values()), level="info")
+def snapshot_all_sports() -> dict[int, list]:
+    """Force HTTP snapshot of all known live sports. Returns {sport_id: events}."""
+    result = {}
+    for sport_id in _LIVE_SPORT_IDS:
+        try:
+            evs = _snapshot_sport(sport_id)
+            result[sport_id] = evs
+            log.info("[snapshot] sport=%d → %d events", sport_id, len(evs))
+        except Exception as exc:
+            log.warning("[snapshot] sport=%d error: %s", sport_id, exc)
     return result
 
-# ═════════════════════════════════════════════════════════════════════════════
-# UTILS
-# ═════════════════════════════════════════════════════════════════════════════
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# ── WS Harvester ───────────────────────────────────────────────────────────────
+#
+# Sportpesa uses socket.io v2 over WebSocket.
+# Frame format:  "42" prefix + JSON array  ["EVENT_NAME", {...}]
+# Ping/pong:     "2" (server ping) → reply "3" (client pong)
+# Connect:       on open send  42["subscribe", "live-sport-{sportId}"]
+#                then per-event: 42["subscribe", "buffered-event-{evId}-{type}-{sv}"]
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ODDS DELTA + HISTORY
-# ═════════════════════════════════════════════════════════════════════════════
+_HARVESTER_THREAD: threading.Thread | None = None
+_HARVESTER_STOP   = threading.Event()
 
-def _upsert_odds_and_diff(event_id: int, market: dict) -> tuple[list[dict], list[dict]]:
-    r          = _get_redis()
-    market_id  = market["eventMarketId"]
-    selections = market.get("selections") or []
-
-    snap_key = f"sp:live:odds:{event_id}:{market_id}"
-    hist_key = f"sp:live:odds_history:{event_id}:{market_id}"
-
-    prev_raw = r.get(snap_key)
-    prev     = json.loads(prev_raw) if prev_raw else {}
-    current  = {str(s["id"]): s.get("odds", "0") for s in selections}
-
-    changed_ids  = {sid for sid, odds in current.items() if prev.get(sid) != odds}
-    changed_sels = [s for s in selections if str(s["id"]) in changed_ids]
-
-    if not changed_ids:
-        return [], selections
-
-    r.setex(snap_key, TTL_ODDS, json.dumps(current))
-    tick = {"ts": _now_iso(), "odds": {str(s["id"]): s.get("odds") for s in changed_sels}}
-    pipe = r.pipeline()
-    pipe.lpush(hist_key, json.dumps(tick))
-    pipe.ltrim(hist_key, 0, 49)
-    pipe.expire(hist_key, TTL_ODDS)
-    pipe.execute()
-    return changed_sels, selections
+# Market type IDs we subscribe to per event
+_SUBSCRIBE_TYPES: list[tuple[int, str]] = [
+    (194, "0.00"),  # 1x2
+    (149, "0.00"),  # match_winner
+    (105, "2.50"),  # O/U 2.5
+    (105, "1.50"),  # O/U 1.5
+    (105, "3.50"),  # O/U 3.5
+    (147, "0.00"),  # double chance
+    (138, "0.00"),  # btts
+    (145, "0.00"),  # odd/even
+    (166, "0.00"),  # draw no bet
+    (135, "0.00"),  # 1H 1x2
+    (140, "0.00"),  # 1H btts
+]
 
 
-def get_odds_history(event_id: int, market_id: int, limit: int = 20) -> list[dict]:
-    r   = _get_redis()
-    raw = r.lrange(f"sp:live:odds_history:{event_id}:{market_id}", 0, limit - 1)
-    return [json.loads(x) for x in raw]
+def _ws_url() -> str:
+    """Build socket.io WebSocket URL."""
+    return (
+        "wss://www.ke.sportpesa.com/socket.io/"
+        "?EIO=3&transport=websocket"
+    )
 
 
-def get_current_odds(event_id: int, market_id: int) -> dict:
-    r   = _get_redis()
-    raw = r.get(f"sp:live:odds:{event_id}:{market_id}")
-    return json.loads(raw) if raw else {}
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PUB/SUB
-# ═════════════════════════════════════════════════════════════════════════════
-
-def _publish(sport_id: int | None, event_id: int, payload: dict) -> None:
-    r   = _get_redis()
-    msg = json.dumps(payload, ensure_ascii=False)
-    pipe = r.pipeline()
-    pipe.publish(CH_ALL, msg)
-    pipe.publish(CH_EVENT.format(event_id=event_id), msg)
-    if sport_id:
-        pipe.publish(CH_SPORT.format(sport_id=sport_id), msg)
-    results = pipe.execute()
-    _D("publish type=%s event=%s sport=%s → subs all=%s event=%s sport=%s",
-       payload.get("type"), event_id, sport_id,
-       results[0], results[1], results[2] if len(results) > 2 else "n/a")
+def _ws_headers() -> dict:
+    return {
+        "Origin":     _SP_BASE,
+        "User-Agent": _HEADERS["User-Agent"],
+    }
 
 
-def _event_sport_id(event_id: int) -> int | None:
-    r   = _get_redis()
-    val = r.get(f"sp:live:event_sport:{event_id}")
-    if val is None:
-        _D("event_sport_id(%s): no Redis mapping — event not in warm cache", event_id, level="warning")
-    return int(val) if val else None
-
-# ═════════════════════════════════════════════════════════════════════════════
-# MESSAGE HANDLERS
-# ═════════════════════════════════════════════════════════════════════════════
-
-_msg_counter = 0
-
-
-def _handle_market_update(data: dict) -> None:
+def _parse_ws_frame(raw: str) -> tuple[str | None, Any]:
     """
-    Handle MARKET_UPDATE (was incorrectly named BUFFERED_MARKET_UPDATE).
-
-    The live data uses market type IDs that DIFFER from the upcoming API:
-      live 105 = Total (O/U, sport-aware slug)
-      live 147 = Double Chance
-      live 138 = BTTS
-      live 151 = European Handicap (specialValue = line)
-      live 184 = Asian Handicap   (specialValue = line)
+    Parse socket.io frame.
+    Returns (event_name, data) or (None, None).
     """
-    global _msg_counter
-    _msg_counter += 1
-
-    event_id  = data.get("eventId")
-    market_id = data.get("eventMarketId")
-    mkt_type  = data.get("type")
-    handicap  = data.get("handicap")
-    mkt_name  = data.get("name", "?")
-    status    = data.get("status")
-    selections = data.get("selections") or []
-
-    _D("MARKET_UPDATE #%d event=%s market=%s type=%s name=%r handicap=%r status=%s sels=%d",
-       _msg_counter, event_id, market_id, mkt_type, mkt_name, handicap, status, len(selections))
-
-    if not event_id or not market_id:
-        _D("  ⚠ missing event_id or market_id", level="warning")
-        return
-
-    # Skip suspended/closed markets with no selections
-    if status in ("Closed", "Suspended") and not selections:
-        _D("  → market closed/suspended with no sels — skipping publish")
-        return
-
-    changed_sels, all_sels = _upsert_odds_and_diff(event_id, data)
-    if not changed_sels:
-        _D("  → no odds changed")
-        return
-
-    sport_id = _event_sport_id(event_id)
-    slug     = live_market_slug(mkt_type, handicap, sport_id or 1)
-
-    # Build normalised outcome→odd map using live outcome normalizer
-    normalised_sels = []
-    for idx, sel in enumerate(all_sels):
-        if sel.get("status") == "Suspended":
-            continue
+    # socket.io packet types
+    # 0=CONNECT 1=DISCONNECT 2=EVENT 3=ACK 4=ERROR 5=BINARY_EVENT 6=BINARY_ACK
+    # The prefix "42" = engine.io type 4 (message) + socket.io type 2 (EVENT)
+    if raw.startswith("42"):
         try:
-            odd = float(sel.get("odds") or "0")
-        except (TypeError, ValueError):
-            odd = 0.0
-        if odd <= 1.0:
-            continue
-        out_key = normalize_live_outcome(slug, sel.get("name", ""), idx, all_sels)
-        normalised_sels.append({
-            "id":         sel.get("id"),
-            "name":       sel.get("name"),
+            payload = json.loads(raw[2:])
+            if isinstance(payload, list) and payload:
+                return str(payload[0]), payload[1] if len(payload) > 1 else None
+        except (json.JSONDecodeError, IndexError):
+            pass
+    return None, None
+
+
+def _state_from_event_update(msg: dict) -> dict:
+    """Extract normalised event_update payload from SP EVENT_UPDATE message."""
+    state = msg.get("state") or {}
+    score = state.get("matchScore") or {}
+    return {
+        "type":        "event_update",
+        "event_id":    msg.get("id"),
+        "sport_id":    msg.get("sportId", 1),
+        "status":      msg.get("status", ""),
+        "phase":       state.get("currentEventPhase", ""),
+        "match_time":  state.get("matchTime", ""),
+        "clock_running": state.get("clockRunning", False),
+        "remaining_ms":  state.get("remainingTimeMillis"),
+        "score_home":  str(score.get("home") or "0"),
+        "score_away":  str(score.get("away") or "0"),
+        "is_paused":   msg.get("isPaused", False),
+        "ts":          _now_ts(),
+    }
+
+
+def _market_from_buffered_update(
+    msg: dict,
+    sport_id_map: dict[int, int],
+) -> dict | None:
+    """
+    Normalise BUFFERED_MARKET_UPDATE → market_update dict.
+    sport_id_map: {event_id → sport_id}
+    """
+    event_id    = msg.get("eventId")
+    market_type = msg.get("type")
+    if not event_id or market_type is None:
+        return None
+
+    sport_id  = sport_id_map.get(event_id, 1)
+    handicap  = str(msg.get("handicap") or "0.00")
+    slug      = _market_slug(market_type, sport_id, handicap)
+    all_sels  = msg.get("selections") or []
+
+    # Build normalised selections (outcome_key resolved)
+    norm_sels = []
+    for idx, sel in enumerate(all_sels):
+        out_key = _normalise_outcome_key(
+            sel_name   = sel.get("name", ""),
+            sel_idx    = idx,
+            all_sels   = all_sels,
+            market_type = market_type,
+            handicap   = handicap,
+            sport_id   = sport_id,
+        )
+        norm_sels.append({
+            "id":          sel.get("id"),
+            "name":        sel.get("name", ""),
             "outcome_key": out_key,
-            "odds":        sel.get("odds"),
-            "status":      sel.get("status"),
+            "odds":        str(sel.get("odds", "0")),
+            "status":      sel.get("status", "Open"),
         })
 
-    _D("  → slug=%r  %d/%d sels changed  normalised=%d",
-       slug, len(changed_sels), len(all_sels), len(normalised_sels))
-    for s in normalised_sels[:4]:
-        _D("    outcome_key=%r  name=%r  odds=%s", s["outcome_key"], s["name"], s["odds"])
-
-    payload = {
-        "type":               "market_update",
-        "event_id":           event_id,
-        "market_id":          market_id,
-        "sport_id":           sport_id,
-        "sport_slug":         SPORT_SLUG_MAP.get(sport_id) if sport_id else None,
-        "market_name":        mkt_name,
-        "market_type":        mkt_type,
-        "market_slug":        slug,            # ← NEW: canonical slug pre-computed
-        "handicap":           handicap,
-        "status":             status,
-        "template":           data.get("template"),
-        "sequence":           data.get("sequence"),
-        "changed_count":      len(changed_sels),
-        "changed_selections": changed_sels,
-        "all_selections":     all_sels,
-        "normalised_selections": normalised_sels,   # ← NEW: with outcome_key
-        "ts":                 _now_iso(),
+    return {
+        "type":          "market_update",
+        "event_id":      event_id,
+        "sport_id":      sport_id,
+        "market_id":     msg.get("eventMarketId"),
+        "market_type":   market_type,
+        "market_name":   msg.get("name", ""),
+        "market_slug":   slug,
+        "handicap":      handicap,
+        "all_selections":         all_sels,
+        "normalised_selections":  norm_sels,
+        "changed_selections":     [],   # will be filled after prev-odds diff
+        "ts":            _now_ts(),
     }
-    _publish(sport_id, event_id, payload)
 
 
-def _handle_event_update(data: dict) -> None:
-    global _msg_counter
-    _msg_counter += 1
+def _diff_and_record(
+    r,
+    payload: dict,
+) -> dict:
+    """
+    Compare current odds against Redis-cached previous odds.
+    Fills payload["changed_selections"] with selections whose odds changed.
+    Appends to odds history list.
+    Caches latest odds per selection.
+    Returns updated payload.
+    """
+    event_id  = payload["event_id"]
+    market_id = payload["market_id"]
+    changed   = []
 
-    event_id = data.get("id")
-    sport_id = data.get("sportId")
-    state    = data.get("state") or {}
-    score    = state.get("matchScore") or {}
-    phase    = state.get("currentEventPhase", "?")
+    pipe = r.pipeline()
+    history_key = f"sp:live:history:{event_id}:{market_id}"
 
-    _D("EVENT_UPDATE #%d event=%s sport=%s phase=%r score=%s-%s",
-       _msg_counter, event_id, sport_id, phase,
-       score.get("home", "?"), score.get("away", "?"))
+    for sel in payload["normalised_selections"]:
+        sel_id    = sel["id"]
+        odds_key  = f"sp:live:odds:{event_id}:{sel_id}"
+        new_odds  = sel["odds"]
 
+        prev_odds = r.get(odds_key)
+        if prev_odds != new_odds:
+            changed.append({
+                "id":   sel_id,
+                "odds": new_odds,
+                "prev": prev_odds,
+            })
+            pipe.set(odds_key, new_odds, ex=300)
+
+    # Push a compact tick to the history list (newest first)
+    if changed:
+        tick = {
+            "t":       _now_ts(),
+            "market":  payload["market_slug"],
+            "changed": [{"id": c["id"], "odds": c["odds"]} for c in changed],
+        }
+        pipe.lpush(history_key, json.dumps(tick))
+        pipe.ltrim(history_key, 0, 49)   # keep last 50 ticks
+        pipe.expire(history_key, 600)
+
+    pipe.execute()
+    payload["changed_selections"] = changed
+    return payload
+
+
+def _cache_event_state(r, payload: dict) -> None:
+    """Cache the latest event state in Redis for /state/<event_id> endpoint."""
+    event_id = payload.get("event_id")
     if not event_id:
+        return
+    r.set(
+        f"sp:live:state:{event_id}",
+        json.dumps({k: v for k, v in payload.items() if k != "type"}),
+        ex=300,
+    )
+
+
+def _harvester_loop() -> None:
+    """
+    Main harvester loop.
+    Opens a WebSocket to SP, subscribes to all live events, and
+    forwards normalised messages to Redis pub/sub.
+    Reconnects automatically on disconnect.
+    """
+    try:
+        import websocket  # websocket-client library
+    except ImportError:
+        log.error("websocket-client not installed — run: pip install websocket-client")
         return
 
     r = _get_redis()
-    if sport_id:
-        r.setex(f"sp:live:event_sport:{event_id}", TTL_EVENTS, sport_id)
-    r.setex(f"sp:live:state:{event_id}", TTL_STATE, json.dumps(data))
 
-    payload = {
-        "type":          "event_update",
-        "event_id":      event_id,
-        "sport_id":      sport_id,
-        "sport_slug":    SPORT_SLUG_MAP.get(sport_id) if sport_id else None,
-        "status":        data.get("status"),
-        "is_paused":     data.get("isPaused"),
-        "phase":         phase,
-        "clock_running": state.get("clockRunning"),
-        "remaining_ms":  state.get("remainingTimeMillis"),
-        "score_home":    score.get("home"),
-        "score_away":    score.get("away"),
-        "state":         state,
-        "ts":            _now_iso(),
-    }
-    _publish(sport_id, event_id, payload)
+    while not _HARVESTER_STOP.is_set():
+        # ── 1. HTTP snapshot: get current live events for all sports ──────────
+        sport_id_map: dict[int, int] = {}    # event_id → sport_id
+        subscribed_events: set[int]  = set()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# WEBSOCKET HARVESTER
-# ═════════════════════════════════════════════════════════════════════════════
-
-class SpLiveHarvester:
-
-    def __init__(self) -> None:
-        self._ws:            websocket.WebSocketApp | None = None
-        self._stop:          threading.Event = threading.Event()
-        self._ping_thread:   threading.Thread | None = None
-        self._ping_interval: float = 20.0
-        self._connected:     bool = False
-        self._lock:          threading.Lock = threading.Lock()
-        self._connect_count: int = 0
-
-    def _on_open(self, ws) -> None:
-        self._connected = True
-        _D("WS OPEN (attempt #%d)", self._connect_count, level="info")
-        self._ping_thread = threading.Thread(
-            target=self._ping_loop, daemon=True, name="sp-live-ping",
-        )
-        self._ping_thread.start()
-
-    def _on_message(self, ws, raw: str) -> None:
-        # Server PING → reply PONG
-        if raw == "2":
-            with self._lock:
-                if self._ws:
-                    self._ws.send("3")
-            return
-
-        # OPEN handshake
-        if raw.startswith("0"):
+        log.info("[harvester] fetching live event list …")
+        for sport_id in _LIVE_SPORT_IDS:
             try:
-                hs = json.loads(raw[1:])
-                self._ping_interval = hs.get("pingInterval", 20000) / 1000
-                _D("WS HANDSHAKE sid=%s pingInterval=%.1fs",
-                   hs.get("sid"), self._ping_interval, level="info")
-            except Exception as exc:
-                _D("WS HANDSHAKE parse error: %s  raw=%r", exc, raw[:200], level="warning")
-            return
-
-        # Socket.IO CONNECT ack
-        if raw == "40":
-            _D("WS Socket.IO CONNECT ack → subscribing sports", level="info")
-            self._subscribe_sports()
-            return
-
-        # Error frame
-        if raw.startswith("44"):
-            _D("WS ERROR frame: %s", raw[:300], level="error")
-            return
-
-        # EVENT payload
-        if raw.startswith("42"):
-            try:
-                parts = json.loads(raw[2:])
-                name  = parts[0]
-                data  = parts[1] if len(parts) > 1 else {}
-
-                if name == "MARKET_UPDATE":
-                    # ← FIXED: was BUFFERED_MARKET_UPDATE (incorrect!)
-                    _handle_market_update(data)
-                elif name == "EVENT_UPDATE":
-                    _handle_event_update(data)
-                elif name == "BUFFERED_MARKET_UPDATE":
-                    # Some SP environments may still use the old name
-                    _D("WS BUFFERED_MARKET_UPDATE received (legacy) — routing to handler")
-                    _handle_market_update(data)
-                else:
-                    _D("WS EVENT name=%r data_keys=%s",
-                       name, list(data.keys())[:8] if isinstance(data, dict) else type(data))
-
-            except Exception as exc:
-                _D("WS MESSAGE parse error: %s\nraw: %.400s\n%s",
-                   exc, raw, traceback.format_exc(), level="error")
-            return
-
-        # Our PONG — ignore silently
-        if raw == "3":
-            return
-
-        _D("WS RECV unknown frame (len=%d): %s", len(raw), raw[:100])
-
-    def _on_error(self, ws, error) -> None:
-        _D("WS ERROR: %s  type=%s", error, type(error).__name__, level="error")
-
-    def _on_close(self, ws, status, msg) -> None:
-        self._connected = False
-        _D("WS CLOSED  status=%s  msg=%s", status, msg, level="warning")
-        if status == 1006:
-            _D("  → 1006 = abnormal close (network drop / server kick)", level="warning")
-
-    def _send(self, msg: str) -> None:
-        with self._lock:
-            if self._ws and self._connected:
-                try:
-                    self._ws.send(msg)
-                    _D("WS SEND: %s", msg[:120])
-                except Exception as exc:
-                    _D("WS SEND error: %s", exc, level="warning")
-
-    def _subscribe_sports(self) -> None:
-        _D_section("subscribe_sports")
-        for sport_id in LIVE_SPORT_IDS:
-            self._send(f'42["subscribe","sport-{sport_id}"]')
-            _D("  subscribed sport-%d (%s)", sport_id, SPORT_SLUG_MAP.get(sport_id, "?"), level="info")
-        threading.Thread(
-            target=self._warm_event_cache, daemon=True, name="sp-live-warm",
-        ).start()
-
-    def _warm_event_cache(self) -> None:
-        _D_section("warm_event_cache")
-        r = _get_redis()
-        total = 0
-        for sport_id in LIVE_SPORT_IDS:
-            try:
-                events = fetch_live_events(sport_id, limit=100)
-                total += len(events)
-                pipe = r.pipeline()
+                events = fetch_live_events(sport_id, limit=200)
                 for ev in events:
-                    pipe.setex(f"sp:live:event_sport:{ev['id']}", TTL_EVENTS, sport_id)
-                    pipe.setex(f"sp:live:event_slug:{ev['id']}",
-                               TTL_EVENTS, SPORT_SLUG_MAP.get(sport_id, ""))
-                pipe.execute()
-                _D("warm_cache sport=%d: %d events → Redis", sport_id, len(events), level="info")
-                time.sleep(0.3)
-            except Exception as exc:
-                _D("warm_cache sport=%d FAILED: %s", sport_id, exc, level="error")
-        _D("warm_event_cache DONE: %d total events", total, level="info")
-
-    def _ping_loop(self) -> None:
-        n = 0
-        while not self._stop.is_set() and self._connected:
-            time.sleep(self._ping_interval)
-            if self._connected:
-                self._send("2")
-                n += 1
-                if n % 5 == 0:
-                    _D("ping_loop: %d pings sent", n)
-
-    def run_forever(self) -> None:
-        backoff = 2.0
-        while not self._stop.is_set():
-            self._connect_count += 1
-            _D_section(f"WS CONNECT attempt #{self._connect_count}")
-            _D("Connecting → %s", WS_URL, level="info")
-            try:
-                self._ws = websocket.WebSocketApp(
-                    WS_URL,
-                    header=[f"Origin: {ORIGIN}", f"User-Agent: {USER_AGENT}"],
-                    on_open=self._on_open,
-                    on_message=self._on_message,
-                    on_error=self._on_error,
-                    on_close=self._on_close,
-                )
-                self._ws.run_forever(ping_interval=0, sslopt={"check_hostname": True})
-                backoff = 2.0
-            except Exception as exc:
-                _D("run_forever EXCEPTION: %s\n%s", exc, traceback.format_exc(), level="error")
-            if not self._stop.is_set():
-                _D("Reconnecting in %.0fs…", backoff, level="info")
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60)
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._connected = False
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
-
-# ═════════════════════════════════════════════════════════════════════════════
-# SINGLETON
-# ═════════════════════════════════════════════════════════════════════════════
-
-_harvester_instance: SpLiveHarvester | None = None
-_harvester_thread:   threading.Thread | None = None
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# LIVE POLLER — active polling loop for real-time odds + state
-# ═════════════════════════════════════════════════════════════════════════════
-#
-# The WebSocket only fires on changes (not every second).
-# The LivePoller fills the gap:
-#   • Every POLL_DEFAULT_INTERVAL s → GET /api/live/default/markets?sportId=N
-#     This is ONE call per sport that returns 1x2 odds for every live event.
-#     Cheap. Detects 1x2 changes in near-real-time.
-#
-#   • Every POLL_DETAIL_INTERVAL s → GET /api/live/events/{id}/details
-#     Full market book + event state (score, phase, matchTime, isPaused).
-#     Detects DC / O/U / BTTS changes + updates the live clock.
-#
-# All changes are diffed against the Redis odds snapshot and published
-# ONLY if something actually changed → zero noise on the SSE channel.
-#
-# Diagram:
-#   LivePoller thread
-#     ├─ default_poll_loop() → sport loop → diff → publish market_update
-#     └─ detail_poll_loop()  → event loop → diff → publish market_update
-#                                                 → compare state → publish event_update
-
-POLL_DEFAULT_INTERVAL = 4    # seconds between default-markets polls per sport
-POLL_DETAIL_INTERVAL  = 8    # seconds between details polls per event
-POLL_EVENT_LIST_TTL   = 30   # seconds before refreshing the live event list
-
-
-class LivePoller:
-    """
-    Active polling thread — runs alongside the WebSocket harvester.
-    Ensures odds and match state are synced even when WS is quiet.
-    """
-
-    def __init__(self) -> None:
-        self._stop  = threading.Event()
-        self._threads: list[threading.Thread] = []
-        # Cached live event list per sport: {sport_id: (events, fetched_at)}
-        self._event_cache: dict[int, tuple[list[dict], float]] = {}
-        self._lock = threading.Lock()
-
-    def start(self) -> None:
-        t1 = threading.Thread(target=self._default_loop, daemon=True, name="sp-live-poll-default")
-        t2 = threading.Thread(target=self._detail_loop,  daemon=True, name="sp-live-poll-detail")
-        self._threads = [t1, t2]
-        t1.start(); t2.start()
-        _D("LivePoller started (default=%ds  detail=%ds)", POLL_DEFAULT_INTERVAL, POLL_DETAIL_INTERVAL, level="info")
-
-    def stop(self) -> None:
-        self._stop.set()
-
-    def alive(self) -> bool:
-        return any(t.is_alive() for t in self._threads)
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _get_live_events(self, sport_id: int) -> list[dict]:
-        """Return cached event list, refreshing if stale."""
-        with self._lock:
-            cached, fetched_at = self._event_cache.get(sport_id, ([], 0.0))
-            if time.monotonic() - fetched_at < POLL_EVENT_LIST_TTL and cached:
-                return cached
-        events = fetch_live_events(sport_id, limit=100)
-        with self._lock:
-            self._event_cache[sport_id] = (events, time.monotonic())
-        return events
-
-    def _invalidate_event_cache(self, sport_id: int) -> None:
-        with self._lock:
-            self._event_cache.pop(sport_id, None)
-
-    # ── Default markets loop (fast batch — 1x2 for all events) ───────────────
-
-    def _default_loop(self) -> None:
-        """Poll /api/live/default/markets?sportId=N every POLL_DEFAULT_INTERVAL seconds."""
-        while not self._stop.is_set():
-            for sport_id in LIVE_SPORT_IDS:
-                if self._stop.is_set():
-                    break
-                try:
-                    self._poll_default(sport_id)
-                except Exception as exc:
-                    _D("default_loop sport=%d: %s", sport_id, exc, level="error")
-                # Spread polls across the interval window
-                self._stop.wait(POLL_DEFAULT_INTERVAL / len(LIVE_SPORT_IDS))
-
-    def _poll_default(self, sport_id: int) -> None:
-        """One default-markets poll for a sport."""
-        items = fetch_live_default_markets(sport_id)
-        if not items:
-            return
-
-        for item in items:
-            event_id = item.get("eventId")
-            mkts     = item.get("markets") or []
-            if not event_id or not mkts:
-                continue
-            try:
-                event_id = int(event_id)
-            except (TypeError, ValueError):
-                continue
-
-            for mkt in mkts:
-                if not isinstance(mkt, dict):
-                    continue
-                if not mkt.get("eventMarketId"):
-                    mkt["eventMarketId"] = mkt.get("id", 0)
-                changed_sels, all_sels = _upsert_odds_and_diff(event_id, mkt)
-                if not changed_sels:
-                    continue
-
-                mkt_type = mkt.get("id")
-                handicap = mkt.get("specialValue")
-                slug     = live_market_slug(mkt_type or 0, handicap, sport_id)
-                norm_sels = _normalise_sels(slug, all_sels)
-
-                _publish(sport_id, event_id, {
-                    "type":                  "market_update",
-                    "source":                "poll_default",
-                    "event_id":              event_id,
-                    "sport_id":              sport_id,
-                    "sport_slug":            SPORT_SLUG_MAP.get(sport_id),
-                    "market_id":             mkt.get("eventMarketId"),
-                    "market_type":           mkt_type,
-                    "market_slug":           slug,
-                    "market_name":           mkt.get("name", ""),
-                    "handicap":              handicap,
-                    "status":                mkt.get("status"),
-                    "changed_selections":    changed_sels,
-                    "all_selections":        all_sels,
-                    "normalised_selections": norm_sels,
-                    "ts":                    _now_iso(),
-                })
-                _D("poll_default sport=%d event=%d slug=%r → %d changed",
-                   sport_id, event_id, slug, len(changed_sels))
-
-    # ── Detail loop (full markets + state per event) ──────────────────────────
-
-    def _detail_loop(self) -> None:
-        """Poll /api/live/events/{id}/details every POLL_DETAIL_INTERVAL seconds."""
-        while not self._stop.is_set():
-            for sport_id in LIVE_SPORT_IDS:
-                if self._stop.is_set():
-                    break
-                try:
-                    events = self._get_live_events(sport_id)
-                    # Filter to actually in-play events only
-                    live = [
-                        ev for ev in events
-                        if ev.get("status", "").lower() in ("started", "inprogress", "live", "")
-                        and (ev.get("state") or {}).get("currentEventPhase", "") not in ("", "NotStarted")
-                    ]
-                    if not live:
-                        self._invalidate_event_cache(sport_id)
-                        continue
-                    for ev in live[:30]:   # cap at 30 in-play events
-                        if self._stop.is_set():
+                    ev_id = ev.get("id")
+                    if ev_id:
+                        sport_id_map[ev_id] = sport_id
+                # Update sports cache
+                sports_raw = r.get("sp:live:sports")
+                if sports_raw:
+                    current = json.loads(sports_raw)
+                    # Patch eventNumber for this sport
+                    for sp in current:
+                        if sp.get("id") == sport_id:
+                            sp["eventNumber"] = len(events)
                             break
-                        try:
-                            self._poll_detail(ev, sport_id)
-                        except Exception as exc:
-                            _D("detail_loop event=%s: %s", ev.get("id"), exc, level="error")
-                        self._stop.wait(0.15)   # 150ms between detail calls
-                except Exception as exc:
-                    _D("detail_loop sport=%d: %s", sport_id, exc, level="error")
-                self._stop.wait(POLL_DETAIL_INTERVAL / len(LIVE_SPORT_IDS))
+                    else:
+                        current.append({"id": sport_id, "eventNumber": len(events)})
+                    r.set("sp:live:sports", json.dumps(current), ex=60)
+            except Exception as exc:
+                log.warning("[harvester] snapshot sport=%d: %s", sport_id, exc)
 
-    def _poll_detail(self, ev_stub: dict, sport_id: int) -> None:
-        """Fetch full details for one event, publish any changes."""
-        event_id = ev_stub.get("id")
-        if not event_id:
-            return
+        log.info("[harvester] tracking %d live events across %d sports",
+                 len(sport_id_map), len(_LIVE_SPORT_IDS))
 
-        details = fetch_event_details(event_id)
-        if not details or not isinstance(details, dict):
-            return
+        if not sport_id_map:
+            log.info("[harvester] no live events — sleeping 30 s")
+            _HARVESTER_STOP.wait(30)
+            continue
 
-        # ── 1. Market odds diff ───────────────────────────────────────────────
-        for mkt in details.get("markets") or []:
-            if not isinstance(mkt, dict):
-                continue
-            if not mkt.get("eventMarketId"):
-                mkt["eventMarketId"] = mkt.get("id", 0)
-            if mkt.get("status") == "Suspended":
-                continue
+        # ── 2. WebSocket connection ───────────────────────────────────────────
+        ws_connected  = threading.Event()
+        ws_error_flag = [None]
 
-            changed_sels, all_sels = _upsert_odds_and_diff(event_id, mkt)
-            if not changed_sels:
-                continue
+        def on_open(ws):
+            log.info("[ws] connected")
+            ws_connected.set()
+            # Subscribe to each sport's live feed
+            for sport_id in _LIVE_SPORT_IDS:
+                if sport_id in {ev_sport for ev_sport in sport_id_map.values()}:
+                    frame = json.dumps(["subscribe", f"live-sport-{sport_id}"])
+                    ws.send(f"42{frame}")
 
-            mkt_type = mkt.get("id")
-            handicap = mkt.get("specialValue")
-            slug     = live_market_slug(mkt_type or 0, handicap, sport_id)
-            norm_sels = _normalise_sels(slug, all_sels)
+            # Subscribe to each live event's market channels
+            for event_id, sport_id in sport_id_map.items():
+                for mtype, sv in _SUBSCRIBE_TYPES:
+                    chan = f"buffered-event-{event_id}-{mtype}-{sv}"
+                    frame = json.dumps(["subscribe", chan])
+                    ws.send(f"42{frame}")
+                subscribed_events.add(event_id)
 
-            _publish(sport_id, event_id, {
-                "type":                  "market_update",
-                "source":                "poll_detail",
-                "event_id":              event_id,
-                "sport_id":              sport_id,
-                "sport_slug":            SPORT_SLUG_MAP.get(sport_id),
-                "market_id":             mkt.get("eventMarketId"),
-                "market_type":           mkt_type,
-                "market_slug":           slug,
-                "market_name":           mkt.get("name", ""),
-                "handicap":              handicap,
-                "status":                mkt.get("status"),
-                "changed_selections":    changed_sels,
-                "all_selections":        all_sels,
-                "normalised_selections": norm_sels,
-                "ts":                    _now_iso(),
-            })
-            _D("poll_detail event=%d slug=%r → %d changed", event_id, slug, len(changed_sels))
+        def on_message(ws, raw):
+            try:
+                # socket.io ping → pong
+                if raw == "2":
+                    ws.send("3")
+                    return
 
-        # ── 2. Event state diff (score + phase + matchTime) ───────────────────
-        ev_detail = details.get("event") or {}
-        new_state = ev_detail.get("state") or details.get("state") or {}
-        if not new_state:
-            # Fallback: state might be top-level in some response shapes
-            new_state = {k: details[k] for k in ("currentEventPhase", "matchTime", "matchScore", "clockRunning", "remainingTimeMillis") if k in details}
+                event_name, data = _parse_ws_frame(raw)
+                if not event_name or not data:
+                    return
 
-        if not new_state:
-            return
+                # ── BUFFERED_MARKET_UPDATE ─────────────────────────────────
+                if event_name == "BUFFERED_MARKET_UPDATE":
+                    payload = _market_from_buffered_update(data, sport_id_map)
+                    if not payload:
+                        return
 
-        score     = new_state.get("matchScore") or {}
-        new_phase = new_state.get("currentEventPhase", "")
-        new_time  = new_state.get("matchTime", "")
-        new_home  = str(score.get("home", ""))
-        new_away  = str(score.get("away", ""))
-        new_paused = ev_detail.get("isPaused", False)
-        clock_run  = new_state.get("clockRunning", True)
-        remain_ms  = new_state.get("remainingTimeMillis")
+                    # Diff against previous odds, fill changed_selections
+                    payload = _diff_and_record(r, payload)
 
-        # Diff against Redis
-        state_key = f"sp:live:state:{event_id}"
-        r         = _get_redis()
-        prev_raw  = r.get(state_key)
-        prev      = json.loads(prev_raw) if prev_raw else {}
+                    # Publish
+                    event_id = payload["event_id"]
+                    sport_id = payload["sport_id"]
+                    _publish_live_update(r, sport_id, event_id, payload)
 
-        state_changed = (
-            prev.get("phase")      != new_phase or
-            prev.get("matchTime")  != new_time  or
-            prev.get("scoreHome")  != new_home  or
-            prev.get("scoreAway")  != new_away  or
-            prev.get("isPaused")   != new_paused
+                # ── EVENT_UPDATE (score / phase / clock) ───────────────────
+                elif event_name == "EVENT_UPDATE":
+                    event_id = data.get("id")
+                    if not event_id:
+                        return
+                    sport_id = data.get("sportId") or sport_id_map.get(event_id, 1)
+                    payload  = _state_from_event_update(data)
+
+                    # Cache state
+                    _cache_event_state(r, payload)
+
+                    # Publish
+                    _publish_live_update(r, sport_id, event_id, payload)
+
+                    # Also update our local sport→event mapping
+                    if event_id not in sport_id_map:
+                        sport_id_map[event_id] = sport_id
+
+                    # Subscribe new events we haven't seen yet
+                    if event_id not in subscribed_events:
+                        for mtype, sv in _SUBSCRIBE_TYPES:
+                            chan = f"buffered-event-{event_id}-{mtype}-{sv}"
+                            frame = json.dumps(["subscribe", chan])
+                            ws.send(f"42{frame}")
+                        subscribed_events.add(event_id)
+
+            except Exception as exc:
+                log.warning("[ws:on_message] %s", exc)
+
+        def on_error(ws, error):
+            log.warning("[ws] error: %s", error)
+            ws_error_flag[0] = error
+
+        def on_close(ws, code, msg):
+            log.info("[ws] closed code=%s msg=%s", code, msg)
+            ws_connected.clear()
+
+        ws = websocket.WebSocketApp(
+            _ws_url(),
+            header=_ws_headers(),
+            on_open    = on_open,
+            on_message = on_message,
+            on_error   = on_error,
+            on_close   = on_close,
         )
 
-        if not state_changed:
-            return
+        # Run WS in a daemon thread so we can monitor it
+        ws_thread = threading.Thread(
+            target=ws.run_forever,
+            kwargs={"ping_interval": 20, "ping_timeout": 10},
+            daemon=True,
+            name="sp-live-ws",
+        )
+        ws_thread.start()
 
-        new_state_snap = {
-            "phase": new_phase, "matchTime": new_time,
-            "scoreHome": new_home, "scoreAway": new_away, "isPaused": new_paused,
-        }
-        r.setex(state_key, TTL_STATE, json.dumps(new_state_snap))
-
-        _publish(sport_id, event_id, {
-            "type":          "event_update",
-            "source":        "poll_detail",
-            "event_id":      event_id,
-            "sport_id":      sport_id,
-            "sport_slug":    SPORT_SLUG_MAP.get(sport_id),
-            "status":        ev_detail.get("status"),
-            "phase":         new_phase,
-            "is_paused":     new_paused,
-            "clock_running": clock_run,
-            "remaining_ms":  remain_ms,
-            "score_home":    new_home,
-            "score_away":    new_away,
-            "state":         {"matchTime": new_time, "currentEventPhase": new_phase,
-                              "matchScore": score, "clockRunning": clock_run,
-                              "remainingTimeMillis": remain_ms},
-            "ts":            _now_iso(),
-        })
-        _D("poll_detail event=%d state changed: phase=%r time=%r score=%s-%s",
-           event_id, new_phase, new_time, new_home, new_away)
-
-
-def _normalise_sels(slug: str, sels: list[dict]) -> list[dict]:
-    """Build normalised_selections with outcome_key for the frontend."""
-    result = []
-    for idx, sel in enumerate(sels):
-        if not isinstance(sel, dict):
+        # Wait for connect (timeout 15 s)
+        if not ws_connected.wait(timeout=15):
+            log.warning("[harvester] WS connect timeout — retrying in 10 s")
+            ws.close()
+            _HARVESTER_STOP.wait(10)
             continue
-        if sel.get("status") == "Suspended":
-            continue
+
+        # ── 3. While connected: refresh event list every 60 s ─────────────
+        last_refresh = time.monotonic()
+        while not _HARVESTER_STOP.is_set() and ws_thread.is_alive():
+            elapsed = time.monotonic() - last_refresh
+            if elapsed >= 60:
+                # Refresh event list — subscribe to any newly started events
+                for sport_id in _LIVE_SPORT_IDS:
+                    try:
+                        events = fetch_live_events(sport_id, limit=200)
+                        for ev in events:
+                            ev_id = ev.get("id")
+                            if not ev_id:
+                                continue
+                            sport_id_map[ev_id] = sport_id
+                            if ev_id not in subscribed_events:
+                                for mtype, sv in _SUBSCRIBE_TYPES:
+                                    chan = f"buffered-event-{ev_id}-{mtype}-{sv}"
+                                    frame = json.dumps(["subscribe", chan])
+                                    try:
+                                        ws.send(f"42{frame}")
+                                    except Exception:
+                                        pass
+                                subscribed_events.add(ev_id)
+                    except Exception as exc:
+                        log.warning("[harvester] refresh sport=%d: %s", sport_id, exc)
+                last_refresh = time.monotonic()
+
+            _HARVESTER_STOP.wait(2)
+
+        log.info("[harvester] WS disconnected — reconnecting in 5 s …")
         try:
-            odd = float(sel.get("odds") or "0")
-        except (TypeError, ValueError):
-            odd = 0.0
-        if odd <= 1.0:
-            continue
-        out_key = normalize_live_outcome(slug, sel.get("name", ""), idx, sels)
-        result.append({
-            "id":          sel.get("id"),
-            "name":        sel.get("name"),
-            "outcome_key": out_key,
-            "odds":        sel.get("odds"),
-            "status":      sel.get("status"),
-        })
-    return result
+            ws.close()
+        except Exception:
+            pass
+        _HARVESTER_STOP.wait(5)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SINGLETON + START
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Public thread management ───────────────────────────────────────────────────
 
-_poller_instance: LivePoller | None = None
-_poller_thread:   threading.Thread | None = None
+def harvester_alive() -> bool:
+    """Return True if the harvester thread is running."""
+    return (
+        _HARVESTER_THREAD is not None
+        and _HARVESTER_THREAD.is_alive()
+    )
 
 
 def start_harvester_thread() -> threading.Thread:
-    global _harvester_instance, _harvester_thread, _poller_instance, _poller_thread
-    if _harvester_thread and _harvester_thread.is_alive():
-        _D("harvester already running (%s)", _harvester_thread.name, level="info")
-        return _harvester_thread
+    """
+    Launch the WS harvester in a daemon background thread.
+    Safe to call multiple times — returns existing thread if already running.
+    """
+    global _HARVESTER_THREAD, _HARVESTER_STOP
 
-    _D_section("start_harvester_thread")
+    if harvester_alive():
+        log.info("[harvester] already running — skipping start")
+        return _HARVESTER_THREAD  # type: ignore[return-value]
 
-    # ── WebSocket harvester (receives push events from SP) ────────────────────
-    _harvester_instance = SpLiveHarvester()
-    _harvester_thread = threading.Thread(
-        target=_harvester_instance.run_forever, name="sp-live-harvester", daemon=True,
+    _HARVESTER_STOP.clear()
+    _HARVESTER_THREAD = threading.Thread(
+        target=_harvester_loop,
+        name="sp-live-harvester",
+        daemon=True,
     )
-    _harvester_thread.start()
-    _D("harvester thread started: %s", _harvester_thread.name, level="info")
-
-    # ── Active poller (fills gaps — real-time odds + state sync) ─────────────
-    _poller_instance = LivePoller()
-    _poller_instance.start()
-    _D("poller started", level="info")
-
-    return _harvester_thread
+    _HARVESTER_THREAD.start()
+    log.info("[harvester] started thread=%s", _HARVESTER_THREAD.name)
+    return _HARVESTER_THREAD
 
 
 def stop_harvester() -> None:
-    if _harvester_instance:
-        _harvester_instance.stop()
-    if _poller_instance:
-        _poller_instance.stop()
-
-
-def harvester_alive() -> bool:
-    ws_alive    = bool(_harvester_thread and _harvester_thread.is_alive())
-    poll_alive  = bool(_poller_instance and _poller_instance.alive())
-    return ws_alive or poll_alive
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    try:
-        snapshot_all_sports()
-    except Exception as exc:
-        _D("snapshot failed: %s", exc, level="error")
-    SpLiveHarvester().run_forever()
-    
+    """Signal the harvester thread to stop and wait up to 5 s for it."""
+    global _HARVESTER_THREAD
+    _HARVESTER_STOP.set()
+    if _HARVESTER_THREAD and _HARVESTER_THREAD.is_alive():
+        _HARVESTER_THREAD.join(timeout=5)
+        log.info("[harvester] stopped")
+    _HARVESTER_THREAD = None
