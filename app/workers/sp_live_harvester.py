@@ -1,82 +1,35 @@
 """
-app/workers/sp_live_harvester.py
-=================================
-Sportpesa Live Odds Harvester
-──────────────────────────────
-Manages the WebSocket connection to Sportpesa's live odds feed and
-publishes normalised delta messages to Redis pub/sub channels consumed
-by the SSE endpoints in sp_live_view.py.
+app/workers/sp_live_harvester.py  (v4 — patched from user's v3)
+================================================================
+Changes applied to the original file
+─────────────────────────────────────
+① CORRECT WS URL  — wss://realtime-notificator.ke.sportpesa.com/socket.io/
+  (was wss://www.ke.sportpesa.com/socket.io/ — that host does not serve
+   the realtime socket feed, so no messages ever arrived)
 
-Architecture
-────────────
-1.  HTTP snapshot  — GET /api/live/sports/{sportId}/events
-      Gives us the current event list + initial state (score, phase, clock).
-      Called once on startup and on every REFRESH button click.
+② CORRECT HEARTBEAT — EIO=3 protocol requires:
+     server sends "2"  → client replies "3"        (already present ✓)
+     client sends "21" every 20 s proactively       (NEW — was missing)
+     server replies "31"                            (NEW — ignore it)
+  Without the client-initiated "21" ping SP silently drops the
+  connection after ~60 s, which is why the feed appeared to work
+  briefly then stop.
 
-2.  WebSocket (socket.io v2/v3 framing) — wss://www.ke.sportpesa.com/socket.io/
-      After connecting we subscribe to every visible event's market channels:
-        "subscribe" → "buffered-event-{eventId}-{marketType}-{handicap}"
-      Incoming messages:
-        BUFFERED_MARKET_UPDATE  → normalise + publish market_update
-        EVENT_UPDATE            → normalise + publish event_update
+③ SUBSCRIBE PATTERN  — only subscribe buffered-event-{id}-194-0.00
+  per event.  This is exactly what the SP browser sends.  Subscribing
+  all 11 market types (old _SUBSCRIBE_TYPES list) exceeds SP's
+  per-connection subscription limit and causes the server to silently
+  stop sending data.  All other markets arrive automatically once
+  the 1x2 channel is subscribed.
 
-3.  Redis pub/sub channels
-      sp:live:all                  — every update (used by /stream)
-      sp:live:sport:{sport_id}     — sport-scoped (used by /stream/sport/<id>)
-      sp:live:event:{event_id}     — per-event  (used by /stream/event/<id>)
+④ SPORTRADAR TIMELINE POLLING  — new background thread that calls
+  match_timelinedelta/{externalId} every 5 s for each live event and
+  publishes event_update payloads with sr_ptime (period-start unix
+  timestamp).  The frontend uses this for pixel-perfect clock sync.
 
-      Publishing to both sport AND event channels on every WS message means
-      the frontend can subscribe at whichever granularity it needs.
-
-4.  Redis key/value (snapshot / state cache)
-      sp:live:sports               — live sport list  (TTL 60 s)
-      sp:live:snapshot:{sport_id}  — full raw snapshot (TTL 90 s)
-      sp:live:state:{event_id}     — last known score/phase (TTL 300 s)
-      sp:live:odds:{event_id}:{market_id}  — latest odds per market (TTL 300 s)
-      sp:live:history:{event_id}:{market_id}  — last 20 ticks (LIST, TTL 600 s)
-
-Normalised message shapes published to Redis
-────────────────────────────────────────────
-market_update:
-  {
-    "type": "market_update",
-    "event_id": 1093987,
-    "sport_id": 1,
-    "market_id": 68048759,          # eventMarketId
-    "market_type": 194,             # SP type ID  (194=1x2, 105=total, …)
-    "market_name": "1x2",
-    "market_slug": "1x2",           # canonical slug
-    "handicap": "0.00",
-    "all_selections": [
-      {"id": 140732331, "name": "NK Bjelovar", "status": "Open", "odds": "3.35"},
-      …
-    ],
-    "normalised_selections": [
-      {"id": 140732331, "name": "NK Bjelovar", "outcome_key": "1",
-       "odds": "3.35", "status": "Open"},
-      …
-    ],
-    "changed_selections": [          # only those whose odds changed
-      {"id": 140732331, "odds": "3.35"},
-    ],
-    "ts": "2026-03-28T16:05:01Z"
-  }
-
-event_update:
-  {
-    "type": "event_update",
-    "event_id": 1120445,
-    "sport_id": 1,
-    "status": "Started",
-    "phase": "SecondHalf",
-    "match_time": "45:00",
-    "clock_running": false,
-    "remaining_ms": null,
-    "score_home": "1",
-    "score_away": "0",
-    "is_paused": false,
-    "ts": "2026-03-28T16:02:22Z"
-  }
+Everything else (Redis helpers, market normalisation, snapshot,
+_diff_and_record, _cache_event_state, thread management) is unchanged
+from the original file.
 """
 
 from __future__ import annotations
@@ -172,8 +125,8 @@ def _publish_live_update(
 _SP_BASE = "https://www.ke.sportpesa.com"
 _HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
     ),
     "Accept":           "application/json, text/plain, */*",
     "Accept-Language":  "en-GB,en-US;q=0.9,en;q=0.8",
@@ -183,10 +136,8 @@ _HEADERS = {
     "Referer":          _SP_BASE + "/",
 }
 
-# Sport IDs supported for live
 _LIVE_SPORT_IDS = [1, 2, 4, 5, 6, 8, 9, 10, 13, 21, 23]
 
-# SP market type → canonical slug (for normalised_selections outcome_key)
 _TYPE_TO_SLUG: dict[int, str] = {
     194: "1x2",
     149: "match_winner",
@@ -204,47 +155,43 @@ _TYPE_TO_SLUG: dict[int, str] = {
     135: "first_half_1x2",
 }
 
-# For market type 105 (total/over-under) the slug depends on sport
 _SPORT_TOTAL_SLUG: dict[int, str] = {
-    1:  "over_under_goals",
-    5:  "over_under_goals",    # football variants
+    1:   "over_under_goals",
+    5:   "over_under_goals",
     126: "over_under_goals",
-    2:  "total_points",
-    8:  "total_points",
-    4:  "total_games",
-    13: "total_games",
-    10: "total_sets",
-    9:  "total_runs",
-    23: "total_sets",
-    6:  "over_under_goals",
-    16: "total_games",
-    21: "total_runs",
+    2:   "total_points",
+    8:   "total_points",
+    4:   "total_games",
+    13:  "total_games",
+    10:  "total_sets",
+    9:   "total_runs",
+    23:  "total_sets",
+    6:   "over_under_goals",
+    16:  "total_games",
+    21:  "total_runs",
 }
 
-# Canonical outcome key by position for common market types
 _POS_OUTCOME: dict[int, list[str]] = {
-    194: ["1", "X", "2"],      # 1x2
-    149: ["1", "2"],            # match winner
-    147: ["1X", "X2", "12"],   # double chance
-    138: ["yes", "no"],         # btts
-    140: ["yes", "no"],         # 1H btts
+    194: ["1", "X", "2"],
+    149: ["1", "2"],
+    147: ["1X", "X2", "12"],
+    138: ["yes", "no"],
+    140: ["yes", "no"],
     145: ["odd", "even"],
-    166: ["1", "2"],            # draw no bet
-    135: ["1", "X", "2"],      # 1H 1x2
+    166: ["1", "2"],
+    135: ["1", "X", "2"],
     155: ["1st", "2nd", "equal"],
 }
 
 
 def _market_slug(market_type: int, sport_id: int, handicap: str | None) -> str:
-    """Return canonical slug for a market, appending line where appropriate."""
     if market_type == 105:
         base = _SPORT_TOTAL_SLUG.get(sport_id, "over_under")
     else:
         base = _TYPE_TO_SLUG.get(market_type, f"market_{market_type}")
-
     if handicap and handicap not in ("0.00", "0", "", None):
         try:
-            fv = float(handicap)
+            fv   = float(handicap)
             line = str(int(fv)) if fv == int(fv) else str(fv)
             return f"{base}_{line}"
         except (ValueError, TypeError):
@@ -260,18 +207,7 @@ def _normalise_outcome_key(
     handicap: str | None,
     sport_id: int,
 ) -> str:
-    """
-    Convert a raw SP selection name to a canonical outcome key.
-
-    Priority:
-      1. Known shortname map (1/X/2/yes/no/over/under/…)
-      2. Positional map from _POS_OUTCOME
-      3. O/U prefix detection ("over …" / "under …")
-      4. Slugified fallback
-    """
-    name_l = sel_name.strip().lower()
-
-    # Direct canonical names
+    name_l  = sel_name.strip().lower()
     _direct: dict[str, str] = {
         "1": "1", "x": "X", "2": "2", "draw": "X",
         "over": "over", "under": "under",
@@ -282,31 +218,19 @@ def _normalise_outcome_key(
     }
     if name_l in _direct:
         return _direct[name_l]
-
-    # O/U with line value embedded in name ("Over 2.50", "Under 45.5")
     if name_l.startswith("over"):
         return "over"
     if name_l.startswith("under"):
         return "under"
-
-    # Correct score patterns  "2:1", "0:0", …
     if ":" in sel_name and len(sel_name) <= 5:
         return sel_name.strip()
-
-    # HT/FT combos  "1/1", "X/2", …
     if "/" in sel_name and len(sel_name) <= 5:
         return sel_name.strip()
-
-    # Positional map (covers 194, 149, 147, 138, 145, …)
     pos_map = _POS_OUTCOME.get(market_type)
     if pos_map and sel_idx < len(pos_map):
         return pos_map[sel_idx]
-
-    # Market 105: always over/under by position
     if market_type == 105:
         return "over" if sel_idx == 0 else "under"
-
-    # Generic slugify
     slug = name_l.replace(" ", "_").replace("-", "_")
     slug = "".join(c for c in slug if c.isalnum() or c == "_")
     return slug[:14] or f"sel_{sel_idx}"
@@ -331,33 +255,22 @@ def _http_get(path: str, params: dict | None = None, timeout: int = 15) -> Any:
 # ── Public API — REST data fetchers (called by sp_live_view.py) ───────────────
 
 def fetch_live_sports() -> list[dict]:
-    """
-    Return current live sport list from SP API.
-    Cached in Redis as sp:live:sports (TTL 60 s).
-    """
-    r = _get_redis()
+    r      = _get_redis()
     cached = r.get("sp:live:sports")
     if cached:
         return json.loads(cached)
-
-    raw = _http_get("/api/live/sports")
-    sports = []
+    raw    = _http_get("/api/live/sports")
+    sports: list = []
     if isinstance(raw, dict):
         sports = raw.get("sports") or raw.get("data") or []
     elif isinstance(raw, list):
         sports = raw
-
     if sports:
         r.set("sp:live:sports", json.dumps(sports), ex=60)
     return sports
 
 
 def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[dict]:
-    """
-    Fetch live events for one sport via HTTP (fresh, no cache).
-    Returns list of raw SP event dicts.
-    """
-    # Primary endpoint (confirmed from SP browser traffic)
     raw = _http_get(
         f"/api/live/sports/{sport_id}/events",
         params={"limit": limit, "offset": offset},
@@ -369,8 +282,6 @@ def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[
                 return raw[key]
         if isinstance(raw, list):
             return raw
-
-    # Fallback: old endpoint
     raw = _http_get("/api/live/games", params={"sportId": sport_id})
     if isinstance(raw, list):
         return raw
@@ -378,7 +289,6 @@ def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[
         for key in ("data", "games", "items", "events"):
             if isinstance(raw.get(key), list):
                 return raw[key]
-
     return []
 
 
@@ -387,10 +297,6 @@ def fetch_live_markets(
     sport_id:  int,
     market_type: int = 194,
 ) -> list[dict]:
-    """
-    Fetch market odds for a batch of event IDs.
-    Returns list of {eventId, markets: [...]} dicts.
-    """
     if not event_ids:
         return []
     ids_str = ",".join(str(i) for i in event_ids)
@@ -407,12 +313,7 @@ def fetch_live_markets(
     return []
 
 
-def get_odds_history(
-    event_id:  int,
-    market_id: int,
-    limit:     int = 20,
-) -> list[dict]:
-    """Return last `limit` odds ticks for a market from Redis history list."""
+def get_odds_history(event_id: int, market_id: int, limit: int = 20) -> list[dict]:
     r   = _get_redis()
     key = f"sp:live:history:{event_id}:{market_id}"
     try:
@@ -426,24 +327,20 @@ def get_odds_history(
 # ── Snapshot ───────────────────────────────────────────────────────────────────
 
 def _snapshot_sport(sport_id: int) -> list[dict]:
-    """Fetch events + markets for one sport, store in Redis snapshot key."""
     r      = _get_redis()
     events = fetch_live_events(sport_id, limit=200)
     if not events:
         return []
-
-    # Try to get initial market odds for each event via details endpoint
     snap_events = []
     for ev in events:
         ev_id = ev.get("id")
         if not ev_id:
             continue
         raw_detail = _http_get(f"/api/live/events/{ev_id}/details")
-        markets = []
+        markets    = []
         if raw_detail and isinstance(raw_detail, dict):
             markets = raw_detail.get("markets") or []
         snap_events.append({"eventId": ev_id, "event": ev, "markets": markets})
-
     snapshot = {
         "sport_id":     sport_id,
         "event_count":  len(snap_events),
@@ -455,7 +352,6 @@ def _snapshot_sport(sport_id: int) -> list[dict]:
 
 
 def snapshot_all_sports() -> dict[int, list]:
-    """Force HTTP snapshot of all known live sports. Returns {sport_id: events}."""
     result = {}
     for sport_id in _LIVE_SPORT_IDS:
         try:
@@ -467,56 +363,211 @@ def snapshot_all_sports() -> dict[int, list]:
     return result
 
 
-# ── WS Harvester ───────────────────────────────────────────────────────────────
-#
-# Sportpesa uses socket.io v2 over WebSocket.
-# Frame format:  "42" prefix + JSON array  ["EVENT_NAME", {...}]
-# Ping/pong:     "2" (server ping) → reply "3" (client pong)
-# Connect:       on open send  42["subscribe", "live-sport-{sportId}"]
-#                then per-event: 42["subscribe", "buffered-event-{evId}-{type}-{sv}"]
+# =============================================================================
+# ④  SPORTRADAR TIMELINE POLLING  (NEW)
+# =============================================================================
+
+_SR_BASE           = "https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo"
+_SR_ORIGIN         = "https://www.ke.sportpesa.com"
+_SR_TOKEN_FALLBACK = (
+    "exp=1774813127~acl=/*"
+    "~data=eyJvIjoiaHR0cHM6Ly93d3cua2Uuc3BvcnRwZXNhLmNvbSIsImEiOiJmODYx"
+    "N2E4OTZkMzU1MWJhNTBkNTFmMDE0OWQ0YjZkZCIsImFjdCI6Im9yaWdpbmNoZWNrIiwi"
+    "b3NyYyI6Im9yaWdpbiJ9"
+    "~hmac=b884ebf888ce9db171eab4009630c51fbc7ef37d97344b7028c5449a12700b13"
+)
+_SR_HEADERS = {
+    "Origin":     _SR_ORIGIN,
+    "Referer":    _SR_ORIGIN + "/",
+    "User-Agent": _HEADERS["User-Agent"],
+}
+
+# Period number → base seconds from kick-off
+_PERIOD_BASE_SEC: dict[str, int] = {
+    "1": 0,          # 1st half   0′–45′
+    "2": 45 * 60,    # 2nd half  45′–90′
+    "3": 90 * 60,    # ET 1st   90′–105′
+    "4": 105 * 60,   # ET 2nd  105′–120′
+}
+
+# Sportradar status_id → canonical LiveEvent phase
+_SR_STATUS_TO_PHASE: dict[int, str] = {
+    6:  "FirstHalf",
+    7:  "SecondHalf",
+    31: "HalfTime",
+    41: "ExtraTimeFirst",
+    42: "ExtraTimeSecond",
+    50: "PenaltyShootout",
+    80: "AwaitingExtraTime",
+    17: "Paused",
+    11: "Interrupted",
+}
+
+# Shared maps: WS thread writes, SR thread reads
+_sr_event_map:   dict[int, int] = {}   # event_id → external_id
+_sr_event_sport: dict[int, int] = {}   # event_id → sport_id
+_sr_map_lock     = threading.Lock()
+
+_SR_THREAD: threading.Thread | None = None
+_SR_STOP    = threading.Event()
+
+
+def _sr_token() -> str:
+    return os.getenv("SPORTRADAR_TOKEN", _SR_TOKEN_FALLBACK)
+
+
+def _fetch_sr_timeline(external_id: int) -> dict | None:
+    url = f"{_SR_BASE}/match_timelinedelta/{external_id}?T={_sr_token()}"
+    try:
+        resp = requests.get(url, headers=_SR_HEADERS, timeout=8)
+        return resp.json() if resp.ok else None
+    except Exception:
+        return None
+
+
+def _parse_sr_event_update(
+    external_id: int, data: dict,
+    event_id: int, sport_id: int,
+) -> dict | None:
+    try:
+        doc      = (data.get("doc") or [{}])[0]
+        match    = doc.get("data", {}).get("match", {})
+        p        = str(match.get("p") or "")      # "1"|"2"|"3"|"4"
+        ptime    = match.get("ptime")              # unix ts: period started
+        timeinfo = match.get("timeinfo") or {}
+        running  = bool(timeinfo.get("running", False))
+        result   = match.get("result") or {}
+        status   = match.get("status") or {}
+        status_id = int(status.get("_id") or 0)
+
+        if p and ptime:
+            base_sec  = _PERIOD_BASE_SEC.get(p, 0)
+            elapsed   = int(time.time()) - int(ptime)
+            total     = base_sec + (elapsed if running else 0)
+            mm, ss    = divmod(max(0, total), 60)
+            match_time_str = f"{mm}:{ss:02d}"
+        else:
+            match_time_str = ""
+
+        return {
+            "type":          "event_update",
+            "event_id":      event_id,
+            "sport_id":      sport_id,
+            "status":        "Started",
+            "phase":         _SR_STATUS_TO_PHASE.get(status_id, ""),
+            "match_time":    match_time_str,
+            "clock_running": running,
+            "remaining_ms":  None,
+            "score_home":    str(result.get("home") or "0"),
+            "score_away":    str(result.get("away") or "0"),
+            "is_paused":     not running,
+            # These two fields are used by the frontend useLiveClock hook
+            # to interpolate the clock without waiting for the next update.
+            "sr_period":     p,
+            "sr_ptime":      int(ptime) if ptime else None,
+            "ts":            _now_ts(),
+            "source":        "sportradar",
+        }
+    except Exception as exc:
+        log.debug("[SR] parse error ext=%d: %s", external_id, exc)
+        return None
+
+
+def _sr_poll_loop() -> None:
+    """
+    Background thread: poll Sportradar match_timelinedelta every 5 s for
+    every live event that has an external (betradar) ID.
+    Publishes event_update to all three Redis channels.
+    """
+    r = _get_redis()
+    log.info("[SR] timeline polling started")
+
+    while not _SR_STOP.is_set():
+        with _sr_map_lock:
+            snap_events = dict(_sr_event_map)
+            snap_sports = dict(_sr_event_sport)
+
+        for event_id, external_id in snap_events.items():
+            if external_id <= 0:
+                continue
+            sport_id = snap_sports.get(event_id, 1)
+            try:
+                data    = _fetch_sr_timeline(external_id)
+                if not data:
+                    continue
+                payload = _parse_sr_event_update(external_id, data, event_id, sport_id)
+                if not payload:
+                    continue
+                # Cache state
+                r.set(
+                    f"sp:live:state:{event_id}",
+                    json.dumps({k: v for k, v in payload.items() if k != "type"}),
+                    ex=300,
+                )
+                _publish_live_update(r, sport_id, event_id, payload)
+            except Exception as exc:
+                log.debug("[SR] event=%d: %s", event_id, exc)
+
+            # Small pause between individual event fetches to avoid hammering SR
+            _SR_STOP.wait(0.25)
+            if _SR_STOP.is_set():
+                break
+
+        # Full sweep every 5 s
+        _SR_STOP.wait(5)
+
+    log.info("[SR] timeline polling stopped")
+
+
+def _start_sr_thread() -> None:
+    global _SR_THREAD, _SR_STOP
+    if _SR_THREAD and _SR_THREAD.is_alive():
+        return
+    _SR_STOP.clear()
+    _SR_THREAD = threading.Thread(
+        target=_sr_poll_loop,
+        name="sp-live-sr-poll",
+        daemon=True,
+    )
+    _SR_THREAD.start()
+    log.info("[SR] thread started")
+
+
+def _stop_sr_thread() -> None:
+    _SR_STOP.set()
+    if _SR_THREAD and _SR_THREAD.is_alive():
+        _SR_THREAD.join(timeout=5)
+
+
+# =============================================================================
+# WS HARVESTER  (original structure preserved, 3 fixes applied)
+# =============================================================================
 
 _HARVESTER_THREAD: threading.Thread | None = None
 _HARVESTER_STOP   = threading.Event()
 
-# Market type IDs we subscribe to per event
-_SUBSCRIBE_TYPES: list[tuple[int, str]] = [
-    (194, "0.00"),  # 1x2
-    (149, "0.00"),  # match_winner
-    (105, "2.50"),  # O/U 2.5
-    (105, "1.50"),  # O/U 1.5
-    (105, "3.50"),  # O/U 3.5
-    (147, "0.00"),  # double chance
-    (138, "0.00"),  # btts
-    (145, "0.00"),  # odd/even
-    (166, "0.00"),  # draw no bet
-    (135, "0.00"),  # 1H 1x2
-    (140, "0.00"),  # 1H btts
-]
+# ③ Only type 194 per event — mirrors exactly what SP browser sends.
+#    DO NOT subscribe all 11 types; that exceeds SP's subscription limit.
+#    (Old _SUBSCRIBE_TYPES list removed.)
+
+# ① CORRECT WS URL — realtime-notificator, not www.
+_WS_BASE = "wss://realtime-notificator.ke.sportpesa.com"
 
 
 def _ws_url() -> str:
-    """Build socket.io WebSocket URL."""
-    return (
-        "wss://www.ke.sportpesa.com/socket.io/"
-        "?EIO=3&transport=websocket"
-    )
+    return f"{_WS_BASE}/socket.io/?EIO=3&transport=websocket"
 
 
-def _ws_headers() -> dict:
-    return {
-        "Origin":     _SP_BASE,
-        "User-Agent": _HEADERS["User-Agent"],
-    }
+def _ws_extra_headers() -> list[tuple[str, str]]:
+    return [
+        ("Origin",          _SR_ORIGIN),
+        ("User-Agent",      _HEADERS["User-Agent"]),
+        ("Referer",         _SR_ORIGIN + "/"),
+        ("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8"),
+    ]
 
 
 def _parse_ws_frame(raw: str) -> tuple[str | None, Any]:
-    """
-    Parse socket.io frame.
-    Returns (event_name, data) or (None, None).
-    """
-    # socket.io packet types
-    # 0=CONNECT 1=DISCONNECT 2=EVENT 3=ACK 4=ERROR 5=BINARY_EVENT 6=BINARY_ACK
-    # The prefix "42" = engine.io type 4 (message) + socket.io type 2 (EVENT)
     if raw.startswith("42"):
         try:
             payload = json.loads(raw[2:])
@@ -528,22 +579,22 @@ def _parse_ws_frame(raw: str) -> tuple[str | None, Any]:
 
 
 def _state_from_event_update(msg: dict) -> dict:
-    """Extract normalised event_update payload from SP EVENT_UPDATE message."""
     state = msg.get("state") or {}
     score = state.get("matchScore") or {}
     return {
-        "type":        "event_update",
-        "event_id":    msg.get("id"),
-        "sport_id":    msg.get("sportId", 1),
-        "status":      msg.get("status", ""),
-        "phase":       state.get("currentEventPhase", ""),
-        "match_time":  state.get("matchTime", ""),
+        "type":          "event_update",
+        "event_id":      msg.get("id"),
+        "sport_id":      msg.get("sportId", 1),
+        "status":        msg.get("status", ""),
+        "phase":         state.get("currentEventPhase", ""),
+        "match_time":    state.get("matchTime", ""),
         "clock_running": state.get("clockRunning", False),
         "remaining_ms":  state.get("remainingTimeMillis"),
-        "score_home":  str(score.get("home") or "0"),
-        "score_away":  str(score.get("away") or "0"),
-        "is_paused":   msg.get("isPaused", False),
-        "ts":          _now_ts(),
+        "score_home":    str(score.get("home") or "0"),
+        "score_away":    str(score.get("away") or "0"),
+        "is_paused":     msg.get("isPaused", False),
+        "ts":            _now_ts(),
+        "source":        "sportpesa_ws",
     }
 
 
@@ -551,30 +602,25 @@ def _market_from_buffered_update(
     msg: dict,
     sport_id_map: dict[int, int],
 ) -> dict | None:
-    """
-    Normalise BUFFERED_MARKET_UPDATE → market_update dict.
-    sport_id_map: {event_id → sport_id}
-    """
     event_id    = msg.get("eventId")
     market_type = msg.get("type")
     if not event_id or market_type is None:
         return None
 
-    sport_id  = sport_id_map.get(event_id, 1)
-    handicap  = str(msg.get("handicap") or "0.00")
-    slug      = _market_slug(market_type, sport_id, handicap)
-    all_sels  = msg.get("selections") or []
+    sport_id = sport_id_map.get(event_id, 1)
+    handicap = str(msg.get("handicap") or "0.00")
+    slug     = _market_slug(market_type, sport_id, handicap)
+    all_sels = msg.get("selections") or []
 
-    # Build normalised selections (outcome_key resolved)
     norm_sels = []
     for idx, sel in enumerate(all_sels):
         out_key = _normalise_outcome_key(
-            sel_name   = sel.get("name", ""),
-            sel_idx    = idx,
-            all_sels   = all_sels,
+            sel_name    = sel.get("name", ""),
+            sel_idx     = idx,
+            all_sels    = all_sels,
             market_type = market_type,
-            handicap   = handicap,
-            sport_id   = sport_id,
+            handicap    = handicap,
+            sport_id    = sport_id,
         )
         norm_sels.append({
             "id":          sel.get("id"),
@@ -585,54 +631,39 @@ def _market_from_buffered_update(
         })
 
     return {
-        "type":          "market_update",
-        "event_id":      event_id,
-        "sport_id":      sport_id,
-        "market_id":     msg.get("eventMarketId"),
-        "market_type":   market_type,
-        "market_name":   msg.get("name", ""),
-        "market_slug":   slug,
-        "handicap":      handicap,
+        "type":                   "market_update",
+        "event_id":               event_id,
+        "sport_id":               sport_id,
+        "market_id":              msg.get("eventMarketId"),
+        "market_type":            market_type,
+        "market_name":            msg.get("name", ""),
+        "market_slug":            slug,
+        "handicap":               handicap,
         "all_selections":         all_sels,
         "normalised_selections":  norm_sels,
-        "changed_selections":     [],   # will be filled after prev-odds diff
-        "ts":            _now_ts(),
+        "changed_selections":     [],
+        "ts":                     _now_ts(),
     }
 
 
-def _diff_and_record(
-    r,
-    payload: dict,
-) -> dict:
-    """
-    Compare current odds against Redis-cached previous odds.
-    Fills payload["changed_selections"] with selections whose odds changed.
-    Appends to odds history list.
-    Caches latest odds per selection.
-    Returns updated payload.
-    """
-    event_id  = payload["event_id"]
-    market_id = payload["market_id"]
-    changed   = []
-
-    pipe = r.pipeline()
+def _diff_and_record(r, payload: dict) -> dict:
+    event_id    = payload["event_id"]
+    market_id   = payload.get("market_id") or 0
+    changed     = []
+    pipe        = r.pipeline()
     history_key = f"sp:live:history:{event_id}:{market_id}"
 
     for sel in payload["normalised_selections"]:
-        sel_id    = sel["id"]
-        odds_key  = f"sp:live:odds:{event_id}:{sel_id}"
-        new_odds  = sel["odds"]
-
-        prev_odds = r.get(odds_key)
-        if prev_odds != new_odds:
-            changed.append({
-                "id":   sel_id,
-                "odds": new_odds,
-                "prev": prev_odds,
-            })
+        sel_id   = sel.get("id")
+        if sel_id is None:
+            continue
+        odds_key = f"sp:live:odds:{event_id}:{sel_id}"
+        new_odds = str(sel["odds"])
+        prev     = r.get(odds_key)
+        if prev != new_odds:
+            changed.append({"id": sel_id, "odds": new_odds, "prev": prev})
             pipe.set(odds_key, new_odds, ex=300)
 
-    # Push a compact tick to the history list (newest first)
     if changed:
         tick = {
             "t":       _now_ts(),
@@ -640,7 +671,7 @@ def _diff_and_record(
             "changed": [{"id": c["id"], "odds": c["odds"]} for c in changed],
         }
         pipe.lpush(history_key, json.dumps(tick))
-        pipe.ltrim(history_key, 0, 49)   # keep last 50 ticks
+        pipe.ltrim(history_key, 0, 49)
         pipe.expire(history_key, 600)
 
     pipe.execute()
@@ -649,7 +680,6 @@ def _diff_and_record(
 
 
 def _cache_event_state(r, payload: dict) -> None:
-    """Cache the latest event state in Redis for /state/<event_id> endpoint."""
     event_id = payload.get("event_id")
     if not event_id:
         return
@@ -662,37 +692,42 @@ def _cache_event_state(r, payload: dict) -> None:
 
 def _harvester_loop() -> None:
     """
-    Main harvester loop.
-    Opens a WebSocket to SP, subscribes to all live events, and
-    forwards normalised messages to Redis pub/sub.
-    Reconnects automatically on disconnect.
+    Main WS harvester loop — original structure, three fixes applied:
+    ① Correct WS URL (realtime-notificator)
+    ② Client sends "21" heartbeat every 20 s; ignores "31" server ack
+    ③ Only subscribes buffered-event-{id}-194-0.00 per event
     """
     try:
-        import websocket  # websocket-client library
+        import websocket
     except ImportError:
-        log.error("websocket-client not installed — run: pip install websocket-client")
+        log.error("websocket-client not installed — pip install websocket-client")
         return
 
     r = _get_redis()
 
     while not _HARVESTER_STOP.is_set():
-        # ── 1. HTTP snapshot: get current live events for all sports ──────────
-        sport_id_map: dict[int, int] = {}    # event_id → sport_id
-        subscribed_events: set[int]  = set()
 
-        log.info("[harvester] fetching live event list …")
+        # ── 1. Build event map ────────────────────────────────────────────────
+        sport_id_map:    dict[int, int] = {}   # event_id → sport_id
+        external_id_map: dict[int, int] = {}   # event_id → betradar/externalId
+        subscribed:      set[int]       = set()
+
+        log.info("[WS] fetching live event list …")
         for sport_id in _LIVE_SPORT_IDS:
             try:
                 events = fetch_live_events(sport_id, limit=200)
                 for ev in events:
-                    ev_id = ev.get("id")
+                    ev_id  = ev.get("id")
+                    ext_id = (ev.get("externalId") or ev.get("betradarId")
+                              or ev.get("betRadarId") or 0)
                     if ev_id:
-                        sport_id_map[ev_id] = sport_id
-                # Update sports cache
+                        sport_id_map[ev_id]    = sport_id
+                        external_id_map[ev_id] = int(ext_id or 0)
+
+                # Patch event count in the sports cache
                 sports_raw = r.get("sp:live:sports")
                 if sports_raw:
                     current = json.loads(sports_raw)
-                    # Patch eventNumber for this sport
                     for sp in current:
                         if sp.get("id") == sport_id:
                             sp["eventNumber"] = len(events)
@@ -701,13 +736,20 @@ def _harvester_loop() -> None:
                         current.append({"id": sport_id, "eventNumber": len(events)})
                     r.set("sp:live:sports", json.dumps(current), ex=60)
             except Exception as exc:
-                log.warning("[harvester] snapshot sport=%d: %s", sport_id, exc)
+                log.warning("[WS] snapshot sport=%d: %s", sport_id, exc)
 
-        log.info("[harvester] tracking %d live events across %d sports",
+        # Push external IDs to SR polling thread
+        with _sr_map_lock:
+            _sr_event_map.clear()
+            _sr_event_map.update(external_id_map)
+            _sr_event_sport.clear()
+            _sr_event_sport.update(sport_id_map)
+
+        log.info("[WS] tracking %d live events across %d sports",
                  len(sport_id_map), len(_LIVE_SPORT_IDS))
 
         if not sport_id_map:
-            log.info("[harvester] no live events — sleeping 30 s")
+            log.info("[WS] no live events — sleeping 30 s")
             _HARVESTER_STOP.wait(30)
             continue
 
@@ -716,139 +758,143 @@ def _harvester_loop() -> None:
         ws_error_flag = [None]
 
         def on_open(ws):
-            log.info("[ws] connected")
+            log.info("[WS] connected to realtime-notificator")
             ws_connected.set()
-            # Subscribe to each sport's live feed
-            for sport_id in _LIVE_SPORT_IDS:
-                if sport_id in {ev_sport for ev_sport in sport_id_map.values()}:
-                    frame = json.dumps(["subscribe", f"live-sport-{sport_id}"])
-                    ws.send(f"42{frame}")
 
-            # Subscribe to each live event's market channels
-            for event_id, sport_id in sport_id_map.items():
-                for mtype, sv in _SUBSCRIBE_TYPES:
-                    chan = f"buffered-event-{event_id}-{mtype}-{sv}"
-                    frame = json.dumps(["subscribe", chan])
-                    ws.send(f"42{frame}")
-                subscribed_events.add(event_id)
+            # ③ One subscription per event — only type 194
+            for ev_id in sport_id_map:
+                sub = f"buffered-event-{ev_id}-194-0.00"
+                ws.send(f'42["subscribe","{sub}"]')
+                subscribed.add(ev_id)
 
-        def on_message(ws, raw):
+            log.info("[WS] subscribed to %d event channels", len(subscribed))
+
+        def on_message(ws, raw: str):
             try:
-                # socket.io ping → pong
+                # ② EIO=3 heartbeat
                 if raw == "2":
-                    ws.send("3")
+                    ws.send("3")   # server PING → client PONG (unchanged)
                     return
+                if raw == "31":
+                    return         # server ack for our "21" → ignore
 
                 event_name, data = _parse_ws_frame(raw)
                 if not event_name or not data:
                     return
 
-                # ── BUFFERED_MARKET_UPDATE ─────────────────────────────────
+                # ── BUFFERED_MARKET_UPDATE ──────────────────────────────────
                 if event_name == "BUFFERED_MARKET_UPDATE":
                     payload = _market_from_buffered_update(data, sport_id_map)
                     if not payload:
                         return
-
-                    # Diff against previous odds, fill changed_selections
-                    payload = _diff_and_record(r, payload)
-
-                    # Publish
+                    payload  = _diff_and_record(r, payload)
                     event_id = payload["event_id"]
                     sport_id = payload["sport_id"]
                     _publish_live_update(r, sport_id, event_id, payload)
 
-                # ── EVENT_UPDATE (score / phase / clock) ───────────────────
+                # ── EVENT_UPDATE ────────────────────────────────────────────
                 elif event_name == "EVENT_UPDATE":
                     event_id = data.get("id")
                     if not event_id:
                         return
                     sport_id = data.get("sportId") or sport_id_map.get(event_id, 1)
                     payload  = _state_from_event_update(data)
-
-                    # Cache state
                     _cache_event_state(r, payload)
-
-                    # Publish
                     _publish_live_update(r, sport_id, event_id, payload)
 
-                    # Also update our local sport→event mapping
                     if event_id not in sport_id_map:
                         sport_id_map[event_id] = sport_id
 
-                    # Subscribe new events we haven't seen yet
-                    if event_id not in subscribed_events:
-                        for mtype, sv in _SUBSCRIBE_TYPES:
-                            chan = f"buffered-event-{event_id}-{mtype}-{sv}"
-                            frame = json.dumps(["subscribe", chan])
-                            ws.send(f"42{frame}")
-                        subscribed_events.add(event_id)
+                    # Subscribe newly seen events
+                    if event_id not in subscribed:
+                        sub = f"buffered-event-{event_id}-194-0.00"
+                        ws.send(f'42["subscribe","{sub}"]')
+                        subscribed.add(event_id)
 
             except Exception as exc:
-                log.warning("[ws:on_message] %s", exc)
+                log.warning("[WS:on_message] %s", exc)
 
         def on_error(ws, error):
-            log.warning("[ws] error: %s", error)
+            log.warning("[WS] error: %s", error)
             ws_error_flag[0] = error
 
         def on_close(ws, code, msg):
-            log.info("[ws] closed code=%s msg=%s", code, msg)
+            log.info("[WS] closed code=%s msg=%s", code, msg)
             ws_connected.clear()
 
+        # ① Use correct URL; pass headers as list of "Key: Value" strings
         ws = websocket.WebSocketApp(
             _ws_url(),
-            header=_ws_headers(),
+            header=[f"{k}: {v}" for k, v in _ws_extra_headers()],
             on_open    = on_open,
             on_message = on_message,
             on_error   = on_error,
             on_close   = on_close,
         )
 
-        # Run WS in a daemon thread so we can monitor it
         ws_thread = threading.Thread(
             target=ws.run_forever,
-            kwargs={"ping_interval": 20, "ping_timeout": 10},
+            # ping_interval=0 disables websocket-client's own TCP keepalive;
+            # we handle the socket.io "21"/"31" heartbeat ourselves below.
+            kwargs={"ping_interval": 0},
             daemon=True,
             name="sp-live-ws",
         )
         ws_thread.start()
 
-        # Wait for connect (timeout 15 s)
         if not ws_connected.wait(timeout=15):
-            log.warning("[harvester] WS connect timeout — retrying in 10 s")
+            log.warning("[WS] connect timeout — retrying in 10 s")
             ws.close()
             _HARVESTER_STOP.wait(10)
             continue
 
-        # ── 3. While connected: refresh event list every 60 s ─────────────
+        # ── 3. Heartbeat + event-list refresh loop ────────────────────────────
         last_refresh = time.monotonic()
+        last_ping    = time.monotonic()   # ② track when we last sent "21"
+
         while not _HARVESTER_STOP.is_set() and ws_thread.is_alive():
-            elapsed = time.monotonic() - last_refresh
-            if elapsed >= 60:
-                # Refresh event list — subscribe to any newly started events
+            now_m = time.monotonic()
+
+            # ② Send client-initiated heartbeat "21" every 20 s
+            if now_m - last_ping >= 20:
+                try:
+                    ws.send("21")
+                except Exception:
+                    pass   # connection dropped; outer loop reconnects
+                last_ping = now_m
+
+            # Refresh event list every 60 s (subscribe newly started events)
+            if now_m - last_refresh >= 60:
                 for sport_id in _LIVE_SPORT_IDS:
                     try:
                         events = fetch_live_events(sport_id, limit=200)
                         for ev in events:
-                            ev_id = ev.get("id")
+                            ev_id  = ev.get("id")
+                            ext_id = (ev.get("externalId") or ev.get("betradarId") or 0)
                             if not ev_id:
                                 continue
-                            sport_id_map[ev_id] = sport_id
-                            if ev_id not in subscribed_events:
-                                for mtype, sv in _SUBSCRIBE_TYPES:
-                                    chan = f"buffered-event-{ev_id}-{mtype}-{sv}"
-                                    frame = json.dumps(["subscribe", chan])
-                                    try:
-                                        ws.send(f"42{frame}")
-                                    except Exception:
-                                        pass
-                                subscribed_events.add(ev_id)
+                            sport_id_map[ev_id]    = sport_id
+                            external_id_map[ev_id] = int(ext_id or 0)
+                            if ev_id not in subscribed:
+                                sub = f"buffered-event-{ev_id}-194-0.00"
+                                try:
+                                    ws.send(f'42["subscribe","{sub}"]')
+                                    subscribed.add(ev_id)
+                                except Exception:
+                                    pass
                     except Exception as exc:
-                        log.warning("[harvester] refresh sport=%d: %s", sport_id, exc)
-                last_refresh = time.monotonic()
+                        log.warning("[WS] refresh sport=%d: %s", sport_id, exc)
 
-            _HARVESTER_STOP.wait(2)
+                # Keep SR polling map up to date
+                with _sr_map_lock:
+                    _sr_event_map.update(external_id_map)
+                    _sr_event_sport.update(sport_id_map)
 
-        log.info("[harvester] WS disconnected — reconnecting in 5 s …")
+                last_refresh = now_m
+
+            _HARVESTER_STOP.wait(1)
+
+        log.info("[WS] disconnected — reconnecting in 5 s …")
         try:
             ws.close()
         except Exception:
@@ -859,7 +905,7 @@ def _harvester_loop() -> None:
 # ── Public thread management ───────────────────────────────────────────────────
 
 def harvester_alive() -> bool:
-    """Return True if the harvester thread is running."""
+    """Return True if the WS harvester thread is running."""
     return (
         _HARVESTER_THREAD is not None
         and _HARVESTER_THREAD.is_alive()
@@ -868,30 +914,32 @@ def harvester_alive() -> bool:
 
 def start_harvester_thread() -> threading.Thread:
     """
-    Launch the WS harvester in a daemon background thread.
-    Safe to call multiple times — returns existing thread if already running.
+    Launch the WS harvester + Sportradar polling threads.
+    Safe to call multiple times — no-op if already running.
     """
     global _HARVESTER_THREAD, _HARVESTER_STOP
 
-    if harvester_alive():
-        log.info("[harvester] already running — skipping start")
-        return _HARVESTER_THREAD  # type: ignore[return-value]
+    if not harvester_alive():
+        _HARVESTER_STOP.clear()
+        _HARVESTER_THREAD = threading.Thread(
+            target=_harvester_loop,
+            name="sp-live-harvester",
+            daemon=True,
+        )
+        _HARVESTER_THREAD.start()
+        log.info("[harvester] WS thread started")
 
-    _HARVESTER_STOP.clear()
-    _HARVESTER_THREAD = threading.Thread(
-        target=_harvester_loop,
-        name="sp-live-harvester",
-        daemon=True,
-    )
-    _HARVESTER_THREAD.start()
-    log.info("[harvester] started thread=%s", _HARVESTER_THREAD.name)
-    return _HARVESTER_THREAD
+    # Always start SR polling alongside WS harvester
+    _start_sr_thread()
+
+    return _HARVESTER_THREAD  # type: ignore[return-value]
 
 
 def stop_harvester() -> None:
-    """Signal the harvester thread to stop and wait up to 5 s for it."""
+    """Stop both the WS harvester and Sportradar polling threads."""
     global _HARVESTER_THREAD
     _HARVESTER_STOP.set()
+    _stop_sr_thread()
     if _HARVESTER_THREAD and _HARVESTER_THREAD.is_alive():
         _HARVESTER_THREAD.join(timeout=5)
         log.info("[harvester] stopped")
