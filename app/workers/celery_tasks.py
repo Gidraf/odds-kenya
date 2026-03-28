@@ -102,9 +102,6 @@ _SBO_LIVE_SPORTS = ["soccer", "basketball", "tennis"]
 
 PAGE_SIZE   = 15
 MAX_PAGES   = 6
-WS_CHANNEL  = "odds:updates"
-ARB_CHANNEL = "arb:updates"
-EV_CHANNEL  = "ev:updates"
 
 
 # =============================================================================
@@ -262,7 +259,7 @@ def task_status_set(name: str, status: dict):
 
 
 # =============================================================================
-# Redis PubSub
+# Redis PubSub / Topics Emission
 # =============================================================================
 
 @celery.task(name="app.workers.celery_tasks.publish_ws_event",
@@ -278,6 +275,47 @@ def publish_ws_event(channel: str, data: dict) -> bool:
 
 def _publish(channel: str, data: dict):
     publish_ws_event.apply_async(args=[channel, data], queue="notify")
+
+
+def _emit(source: str, sport: str, mode: str, matches: list[dict], latency: int) -> None:
+    """
+    Topic-based emitter that publishes events dynamically depending on the bookmaker, sport,
+    and individual markets present in the batch.
+    """
+    ts = _now_iso()
+    
+    # 1. Base Bookmaker & Sport Topic
+    # Example: odds:sportpesa:soccer:upcoming
+    base_topic = f"odds:{source}:{sport}:{mode}"
+    _publish(base_topic, {
+        "event": "odds_updated",
+        "source": source,
+        "sport": sport,
+        "mode": mode,
+        "count": len(matches),
+        "latency_ms": latency,
+        "ts": ts,
+    })
+
+    # 2. Extract which markets were updated and emit per-market topics
+    # Example: odds:sportpesa:soccer:upcoming:1x2
+    market_counts = {}
+    for m in matches:
+        markets = m.get("markets") or m.get("best_odds") or {}
+        for mkt in markets.keys():
+            market_counts[mkt] = market_counts.get(mkt, 0) + 1
+
+    for mkt, count in market_counts.items():
+        mkt_topic = f"odds:{source}:{sport}:{mode}:{mkt}"
+        _publish(mkt_topic, {
+            "event": "odds_market_updated",
+            "source": source,
+            "sport": sport,
+            "mode": mode,
+            "market": mkt,
+            "count": count,
+            "ts": ts
+        })
 
 
 # =============================================================================
@@ -584,14 +622,6 @@ def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
         logger.error(f"[harvest] upsert {bk_name}: {exc}")
 
 
-def _emit(source: str, sport: str, mode: str, count: int, latency: int) -> None:
-    _publish(WS_CHANNEL, {
-        "event": "odds_updated", "source": source, "sport": sport,
-        "mode": mode, "count": count, "latency_ms": latency,
-        "ts": _now_iso(),
-    })
-
-
 # =============================================================================
 # ════════════════════════════════════════════════════════════════════════════
 # REGISTRY PIPELINE  (new unified harvest — harvest_registry.py)
@@ -605,11 +635,6 @@ def _emit(source: str, sport: str, mode: str, count: int, latency: int) -> None:
     queue="harvest",
 )
 def harvest_bookmaker_sport_task(self, bookmaker_slug: str, sport_slug: str) -> dict:
-    """
-    Registry-based harvest: fetch one bookmaker+sport via harvest_registry.fetch_fn.
-    Writes to Redis + Postgres odds history.
-    Triggers merge_and_broadcast after completion.
-    """
     from app.workers.harvest_registry import get_bookmaker
     from app.models.odds_model import BookmakerOddsHistory
 
@@ -642,11 +667,8 @@ def harvest_bookmaker_sport_task(self, bookmaker_slug: str, sport_slug: str) -> 
     # Write to Postgres via shared upsert
     _upsert_and_chain(matches, bk["label"])
 
-    # Publish harvest_done so SSE clients know a refresh is available
-    _publish("odds:harvest:done", {
-        "type": "harvest_done", "bookmaker": bookmaker_slug,
-        "sport": sport_slug, "count": len(matches), "ts": _now_iso(),
-    })
+    # Delegate market-specific routing dynamically
+    _emit(bookmaker_slug, sport_slug, "upcoming", matches, latency_ms)
 
     logger.info("[registry] %s/%s → %d matches %dms",
                 bookmaker_slug, sport_slug, len(matches), latency_ms)
@@ -659,7 +681,6 @@ def harvest_bookmaker_sport_task(self, bookmaker_slug: str, sport_slug: str) -> 
     soft_time_limit=30, time_limit=60, queue="harvest",
 )
 def harvest_all_registry_upcoming() -> dict:
-    """Fan-out: all enabled bookmaker × sport pairs via the registry."""
     from app.workers.harvest_registry import ENABLED_BOOKMAKERS
 
     sigs = [
@@ -677,11 +698,6 @@ def harvest_all_registry_upcoming() -> dict:
     soft_time_limit=30, time_limit=60, queue="harvest",
 )
 def merge_and_broadcast_task(sport_slug: str) -> dict:
-    """
-    Merge all bookmakers' cached odds for one sport into a single view,
-    then publish to odds:upcoming:{sport} SSE channel.
-    Triggers value bet detection after merge.
-    """
     from app.workers.harvest_registry import ENABLED_BOOKMAKERS
 
     bk_slugs = [bk["slug"] for bk in ENABLED_BOOKMAKERS
@@ -743,8 +759,9 @@ def merge_and_broadcast_task(sport_slug: str) -> dict:
         "matches": merged_list,
     }, ttl=14_400)
 
-    _publish(f"odds:upcoming:{sport_slug}", {
-        "type": "odds_updated", "sport": sport_slug,
+    # Emit overarching 'merged' state to dynamic specific topic
+    _publish(f"odds:merged:{sport_slug}:upcoming", {
+        "type": "odds_merged", "sport": sport_slug,
         "bookmakers": seen_bk, "count": len(merged_list), "ts": _now_iso(),
     })
 
@@ -762,9 +779,6 @@ def merge_and_broadcast_task(sport_slug: str) -> dict:
     soft_time_limit=60, time_limit=90, queue="ev_arb",
 )
 def compute_value_bets_task(sport_slug: str) -> dict:
-    """
-    Scan merged odds for the sport and write ArbitrageOpportunity / EVOpportunity rows.
-    """
     import os
     from decimal import Decimal
     from app.extensions import db
@@ -805,8 +819,7 @@ def compute_value_bets_task(sport_slug: str) -> dict:
                                     "selection":  sel,
                                     "bookmaker":  leg_details[sel][0],
                                     "price":      leg_details[sel][1],
-                                    "stake_pct":  round(
-                                        (1.0 / leg_details[sel][1]) / arb_sum * 100, 2),
+                                    "stake_pct":  round((1.0 / leg_details[sel][1]) / arb_sum * 100, 2),
                                 }
                                 for sel in best_prices
                             ]
@@ -834,7 +847,9 @@ def compute_value_bets_task(sport_slug: str) -> dict:
                                 open_at          = now,
                             ))
                             arb_rows += 1
-                            _publish(ARB_CHANNEL, {
+                            
+                            # Market specific Arb Topic -> arb:{sport}:{market}
+                            _publish(f"arb:{sport_slug}:{mkt_slug}", {
                                 "event": "arb_found", "sport": sport_slug,
                                 "match": f"{match.get('home_team')} v {match.get('away_team')}",
                                 "market": mkt_slug, "profit_pct": round(profit_pct, 2),
@@ -881,6 +896,14 @@ def compute_value_bets_task(sport_slug: str) -> dict:
                                 open_at                 = now,
                             ))
                             ev_rows += 1
+                            
+                            # Market specific EV Topic -> ev:{sport}:{market}
+                            _publish(f"ev:{sport_slug}:{mkt_slug}", {
+                                "event": "ev_found", "sport": sport_slug,
+                                "match": f"{match.get('home_team')} v {match.get('away_team')}",
+                                "market": mkt_slug, "selection": out_key, "bookmaker": bk_name,
+                                "ev_pct": round(ev_pct, 2), "ts": _now_iso(),
+                            })
 
         db.session.commit()
 
@@ -900,7 +923,6 @@ def compute_value_bets_task(sport_slug: str) -> dict:
     soft_time_limit=60, time_limit=90, queue="harvest",
 )
 def cleanup_old_snapshots_task(days_keep: int = 7) -> dict:
-    """Nightly prune of ArbitrageOpportunity and EVOpportunity rows."""
     from app.extensions import db
     from app.models.odds_model import ArbitrageOpportunity, EVOpportunity
 
@@ -943,7 +965,7 @@ def harvest_sp_sport(self, sport_slug: str, mode: str = "upcoming",
         "latency_ms": latency, "matches": matches,
     }, ttl=60 if mode == "live" else 300)
     _upsert_and_chain(matches, "Sportpesa")
-    _emit("sportpesa", sport_slug, mode, len(matches), latency)
+    _emit("sportpesa", sport_slug, mode, matches, latency)
     return {"ok": True, "source": "sportpesa", "sport": sport_slug,
             "mode": mode, "count": len(matches), "latency_ms": latency}
 
@@ -992,7 +1014,7 @@ def harvest_bt_sport(self, sport_slug: str, mode: str = "upcoming",
         "latency_ms": latency, "matches": matches,
     }, ttl=60 if mode == "live" else 300)
     _upsert_and_chain(matches, "Betika")
-    _emit("betika", sport_slug, mode, len(matches), latency)
+    _emit("betika", sport_slug, mode, matches, latency)
     return {"ok": True, "source": "betika", "sport": sport_slug,
             "mode": mode, "count": len(matches), "latency_ms": latency}
 
@@ -1041,7 +1063,7 @@ def harvest_od_for_sport(self, sport_slug: str, mode: str = "upcoming",
         "latency_ms": latency, "matches": matches,
     }, ttl=60 if mode == "live" else 300)
     _upsert_and_chain(matches, "Odibets")
-    _emit("odibets", sport_slug, mode, len(matches), latency)
+    _emit("odibets", sport_slug, mode, matches, latency)
     return {"ok": True, "source": "odibets", "sport": sport_slug,
             "mode": mode, "count": len(matches), "latency_ms": latency}
 
@@ -1092,7 +1114,7 @@ def harvest_b2b_sport(self, sport_slug: str, mode: str = "upcoming") -> dict:
             bk_match["markets"] = bk_data.get("markets") or {}
             _upsert_and_chain([bk_match], bk_name)
 
-    _emit("b2b", sport_slug, mode, len(matches), latency)
+    _emit("b2b", sport_slug, mode, matches, latency)
     return {"ok": True, "source": "b2b", "sport": sport_slug,
             "mode": mode, "count": len(matches), "latency_ms": latency}
 
@@ -1152,11 +1174,8 @@ def harvest_b2b_page(self, bookmaker: dict, sport: str, mode: str, page: int) ->
                 dispatch_notifications.si(mid, "arb"),
             ).apply_async(queue="ev_arb", countdown=1)
 
-    _publish(WS_CHANNEL, {
-        "event": "odds_updated", "source": "b2b",
-        "bookmaker": bk_name, "sport": sport, "mode": mode, "page": page,
-        "count": len(matches), "match_ids": match_ids, "ts": _now_iso(),
-    })
+    bk_slug = bk_name.lower().replace(' ', '_')
+    _emit(bk_slug, sport.lower().replace(' ', '_'), mode, matches, latency)
     return {"ok": True, "count": len(matches), "latency_ms": latency, "db_ids": match_ids}
 
 
@@ -1228,12 +1247,13 @@ def harvest_sbo_sport(self, sport_slug: str, max_matches: int = 90) -> dict:
             ).apply_async(queue="ev_arb", countdown=2)
 
     arb_count = sum(1 for m in matches if m.get("arbitrage"))
-    _publish(WS_CHANNEL, {"event": "odds_updated", "source": "sbo",
-                           "sport": sport_slug, "count": len(matches),
-                           "arb_count": arb_count, "ts": _now_iso()})
+    _emit("sbo", sport_slug, "upcoming", matches, latency)
+    
     if arb_count:
-        _publish(ARB_CHANNEL, {"event": "arb_found", "sport": sport_slug,
+        # Generic fallback topic for sbo arbs since `compute_ev_arb_for_match` will do the detailed routing
+        _publish(f"arb:sbo:{sport_slug}", {"event": "arb_found", "sport": sport_slug,
                                 "arb_count": arb_count, "ts": _now_iso()})
+        
     return {"ok": True, "count": len(matches), "arb_count": arb_count,
             "latency_ms": latency}
 
@@ -1287,17 +1307,33 @@ def compute_ev_arb_for_match(self, match_id: int) -> dict:
 
         db.session.commit()
 
+        # Route dynamically calculated Arbitrages per market
         if arbs:
-            _publish(ARB_CHANNEL, {
-                "event": "arb_updated", "match_id": match_id,
-                "match": f"{um.home_team_name} v {um.away_team_name}",
-                "sport": um.sport_name, "arbs": len(arbs), "ts": _now_iso(),
-            })
+            arbs_by_mkt = {}
+            for a in arbs:
+                m = a.get("market") or "unknown"
+                arbs_by_mkt.setdefault(m, []).append(a)
+            for m, mkt_arbs in arbs_by_mkt.items():
+                _publish(f"arb:{um.sport_name}:{m}", {
+                    "event": "arb_updated", "match_id": match_id,
+                    "match": f"{um.home_team_name} v {um.away_team_name}",
+                    "sport": um.sport_name, "market": m,
+                    "arbs": len(mkt_arbs), "ts": _now_iso(),
+                })
+
+        # Route dynamically calculated EV per market
         if evs:
-            _publish(EV_CHANNEL, {
-                "event": "ev_updated", "match_id": match_id,
-                "evs": len(evs), "ts": _now_iso(),
-            })
+            evs_by_mkt = {}
+            for e in evs:
+                m = e.get("market") or "unknown"
+                evs_by_mkt.setdefault(m, []).append(e)
+            for m, mkt_evs in evs_by_mkt.items():
+                _publish(f"ev:{um.sport_name}:{m}", {
+                    "event": "ev_updated", "match_id": match_id,
+                    "match": f"{um.home_team_name} v {um.away_team_name}",
+                    "sport": um.sport_name, "market": m,
+                    "evs": len(mkt_evs), "ts": _now_iso(),
+                })
 
         return {"ok": True, "match_id": match_id,
                 "arbs": len(arbs), "evs": len(evs)}
@@ -1351,7 +1387,7 @@ def update_match_results() -> dict:
 
         if updated:
             db.session.commit()
-            _publish(WS_CHANNEL, {"event": "results_updated",
+            _publish("match:results", {"event": "results_updated",
                                    "updated": updated, "ts": _now_iso()})
         return {"updated": updated}
 
@@ -1434,7 +1470,7 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
             if not pref.email_enabled:
                 continue
             qa = [a for a in arbs if (a.profit_pct or 0) >= (pref.arb_min_profit or 0)]
-            qe = [e for e in evs  if (e.ev_pct or 0)    >= (pref.ev_min_edge    or 0)]
+            qe = [e for e in evs  if (e.ev_pct or 0)    >= (pref.ev_min_edge  or 0)]
             if not qa and not qe:
                 continue
             try:
