@@ -84,7 +84,7 @@ def create_app() -> Flask:
     from app.views.webhook                            import bp_interceptor
     from app.views.odds_feed.sportpesa_view           import bp_sp
     from app.views.odds_feed.sp_live_view             import bp_sp_live
-    from app.views.odds.odds_view                import bp_odds as bp_unified_odds
+    from app.views.odds_feed.odds_view             import bp_odds as bp_unified_odds
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
