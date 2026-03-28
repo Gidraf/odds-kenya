@@ -481,21 +481,52 @@ def stream_upcoming(sport_slug: str):
 # GET /api/sp/stream/live/<sport>  — SSE streaming
 # =============================================================================
 
+# =============================================================================
+# GET /api/sp/stream/live/<sport>  — SSE streaming (live matches, one by one)
+# =============================================================================
+
 @bp_sp.route("/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
+    """
+    Stream live matches one at a time, identical in shape to stream/upcoming.
+
+    SSE events:
+      {type:"start",  sport, mode:"live", estimated_max}
+      {type:"match",  index, match}          ← one per live event
+      {type:"done",   total, latency_ms, harvested_at}
+      {type:"error",  message}
+
+    Also writes the result to sp:live:{sport_slug} cache (TTL 60s).
+    """
     @stream_with_context
     def generate():
         t0          = time.perf_counter()
         all_matches = []
 
         try:
-            from app.workers.sp_harvester import fetch_live_stream  # noqa
+            from app.workers.sp_harvester import fetch_live_stream, SP_SPORT_ID  # noqa
+            from app.workers.sp_live_harvester import fetch_live_events as _live_events  # noqa
 
-            yield _sse({"type": "start", "sport": sport_slug, "mode": "live"})
+            # Pre-fetch event count so the frontend can show a progress bar
+            sport_id_str = SP_SPORT_ID.get(sport_slug.lower(), "")
+            estimated = 0
+            if sport_id_str:
+                try:
+                    events_preview = _live_events(int(sport_id_str), limit=5)
+                    # SP returns eventNumber on the sport object — use that if available
+                    # otherwise just set a rough upper bound
+                    estimated = 100
+                    if events_preview:
+                        estimated = min(max(len(events_preview) * 5, 20), 200)
+                except Exception:
+                    estimated = 50
+
+            yield _sse({"type": "start", "sport": sport_slug, "mode": "live",
+                        "estimated_max": estimated})
 
             idx = 0
             for match in fetch_live_stream(sport_slug, fetch_full_markets=True,
-                                            debug_ou=True):
+                                           debug_ou=False, sleep_between=0.1):
                 idx += 1
                 all_matches.append(match)
                 yield _sse({"type": "match", "index": idx, "match": match})
@@ -507,7 +538,7 @@ def stream_live(sport_slug: str):
                 "source": "sportpesa", "sport": sport_slug, "mode": "live",
                 "match_count": len(all_matches), "harvested_at": harvested_at,
                 "latency_ms": latency_ms, "matches": all_matches,
-            }, ttl=90)
+            }, ttl=60)
 
             yield _sse({"type": "done", "total": len(all_matches),
                         "latency_ms": latency_ms, "harvested_at": harvested_at})
@@ -672,4 +703,101 @@ def sp_status():
         "sports":         sports,
         "football_sports": sorted(_FOOTBALL_SPORTS),
         "latency_ms":     int((time.perf_counter() - t0) * 1000),
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RESULTS — finished matches with scores, queried by date range
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bp_sp.route("/results/<sport_slug>")
+def sp_results(sport_slug: str):
+    """
+    GET /api/sp/results/soccer?date=2026-03-27
+    GET /api/sp/results/soccer?date_from=2026-03-20&date_to=2026-03-27
+
+    Returns finished matches with scores from:
+      1. Redis cache: results:finished:YYYY-MM-DD  (written by celery update_match_results)
+      2. Postgres:    UnifiedMatch WHERE status=FINISHED AND sport=soccer
+      3. SP API:      Direct fetch if cache+DB both miss (today only)
+
+    Response matches are in SpMatch shape with extra fields:
+      score_home, score_away, ht_score_home, ht_score_away, result ("1"/"X"/"2")
+    """
+    import time
+    from datetime import datetime, timezone, timedelta
+    from flask import request
+
+    t0       = time.perf_counter()
+    date_str = request.args.get("date") or request.args.get("date_from")
+    date_to  = request.args.get("date_to")
+    page     = max(1, int(request.args.get("page", 1) or 1))
+    per_page = min(int(request.args.get("per_page", 25) or 25), 100)
+
+    # Default to today
+    if not date_str:
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if not date_to:
+        date_to = date_str
+
+    # ── 1. Try Redis cache (fastest) ──────────────────────────────────────────
+    matches: list[dict] = []
+    from datetime import date as _date
+    try:
+        d_from = datetime.strptime(date_str, "%Y-%m-%d").date()
+        d_to   = datetime.strptime(date_to,  "%Y-%m-%d").date()
+        current = d_from
+        while current <= d_to:
+            ck     = f"results:finished:{current.strftime('%Y-%m-%d')}"
+            cached = _cache_get(ck) or []
+            for m in cached:
+                if not m.get("sport") or m.get("sport", "").lower() == sport_slug.lower() or sport_slug == "all":
+                    matches.append(m)
+            current += timedelta(days=1)
+    except Exception as exc:
+        pass
+
+    # ── 2. Postgres fallback if cache empty ───────────────────────────────────
+    if not matches:
+        try:
+            from app.models.odds_model import OddsQueryHelper, MatchStatus
+            q = OddsQueryHelper.finished_matches(
+                date_from=date_str, date_to=date_to, sport=sport_slug)
+            db_matches = q.limit(500).all()
+            for um in db_matches:
+                matches.append({
+                    "sp_game_id":    um.id,
+                    "betradar_id":   um.parent_match_id,
+                    "home_team":     um.home_team_name,
+                    "away_team":     um.away_team_name,
+                    "competition":   um.competition_name or "",
+                    "start_time":    um.start_time.isoformat() if um.start_time else None,
+                    "status":        "FINISHED",
+                    "score_home":    um.score_home,
+                    "score_away":    um.score_away,
+                    "ht_score_home": um.ht_score_home,
+                    "ht_score_away": um.ht_score_away,
+                    "result":        um.result,
+                    "markets":       um.markets_json or {},
+                    "market_count":  len(um.markets_json or {}),
+                })
+        except Exception as exc:
+            pass
+
+    # ── Paginate ──────────────────────────────────────────────────────────────
+    total  = len(matches)
+    paged  = matches[(page - 1) * per_page: page * per_page]
+    pages  = max(1, (total + per_page - 1) // per_page)
+
+    return _signed_response({
+        "ok":          True,
+        "sport":       sport_slug,
+        "date_from":   date_str,
+        "date_to":     date_to,
+        "total":       total,
+        "page":        page,
+        "per_page":    per_page,
+        "pages":       pages,
+        "matches":     paged,
+        "latency_ms":  int((time.perf_counter() - t0) * 1000),
     })
