@@ -54,7 +54,7 @@ def _sp_fetch(sport_slug: str) -> list[dict]:
 
 def _betika_fetch(sport_slug: str) -> list[dict]:
     try:
-        from app.workers.betika_harvester import fetch_upcoming as bt_fetch
+        from app.workers.bt_harvester import fetch_upcoming_matches as bt_fetch
         return bt_fetch(sport_slug, days=3, max_matches=300)
     except Exception as exc:
         print(f"[harvest:betika:{sport_slug}] fetch failed: {exc}")
@@ -189,6 +189,6 @@ def get_bookmaker(slug: str) -> dict | None:
 def get_enabled_sports() -> list[str]:
     """All unique sport slugs across all enabled bookmakers."""
     sports: set[str] = set()
-    for b in ENABLED_BOOKMAKERS:
+    for b in BOOKMAKERS:
         sports.update(b["sports"])
     return sorted(sports)

@@ -85,6 +85,7 @@ def create_app() -> Flask:
     from app.views.odds_feed.sportpesa_view           import bp_sp
     from app.views.odds_feed.sp_live_view             import bp_sp_live
     from app.views.odds_feed.odds_view             import bp_odds as bp_unified_odds
+    from app.views.odds_feed.betika_view import bp_betika
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -103,12 +104,13 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_sp)
     flask_app.register_blueprint(bp_sp_live)
     flask_app.register_blueprint(bp_unified_odds)   # GET /api/odds/...
+    flask_app.register_blueprint(bp_betika)
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,
-            BookmakerEntityValue, BookmakerPayment,
+           BookmakerEntityValue, BookmakerPayment,
         )
         from app.models.research_model import (
             ResearchSession, ResearchFinding, ResearchEndpoint,
@@ -138,10 +140,10 @@ def create_app() -> Flask:
 
     # ── Background threads ────────────────────────────────────────────────────
     # SP live WebSocket harvester — always starts inline (like before)
-    from app.workers.sp_live_harvester import start_harvester_thread
-    start_harvester_thread()
+    # from app.workers.sp_live_harvester import start_harvester_thread
+    # start_harvester_thread()
 
-    init_fetcher_manager()
+    # init_fetcher_manager()
 
     # Celery worker + beat — inline threads when NOT running as dedicated
     # Docker services (controlled by CELERY_INLINE env var).
