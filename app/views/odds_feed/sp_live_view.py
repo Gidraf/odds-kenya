@@ -490,22 +490,26 @@ def live_event_markets():
 
 @bp_sp_live.route("/event-details/<int:event_id>")
 def event_details(event_id: int):
-    """
-    GET /api/sp/live/event-details/<event_id>
+    try:
+        """
+        GET /api/sp/live/event-details/<event_id>
 
-    Proxy to /api/live/events/{id}/details — returns the full event state +
-    all markets with team-name selections (handled with positional fallback).
-    """
-    t0   = time.perf_counter()
-    data = _sp_get(f"/api/live/events/{event_id}/details")
-    if data is None:
-        return _err(f"Details unavailable for event {event_id}", 503)
-    return _signed_response({
-        "ok":         True,
-        "event_id":   event_id,
-        "data":       data,
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+        Proxy to /api/live/events/{id}/details — returns the full event state +
+        all markets with team-name selections (handled with positional fallback).
+        """
+        t0   = time.perf_counter()
+        data = _sp_get(f"/api/live/events/{event_id}/details")
+        if data is None:
+            return _err(f"Details unavailable for event {event_id}", 503)
+        return _signed_response({
+            "ok":         True,
+            "event_id":   event_id,
+            "data":       data,
+            "latency_ms": int((time.perf_counter() - t0) * 1000),
+        })
+    except Exception as exc:
+        log.warning("event_details %d: %s", event_id, exc)
+        return _err(f"Error fetching details for event {event_id}: {exc}", 500)
 
 
 # ── REST endpoints (unchanged from v4) ───────────────────────────────────────
