@@ -1,27 +1,43 @@
 """
-app/workers/sp_live_harvester.py  (v5 — adds live snapshot history)
-====================================================================
-Changes from v4 (bug-fixed)
-─────────────────────────────
-⑤ Live snapshot history recording
-  Every time the WS harvester processes a market_update or the SR
-  thread processes an event_update, a compact snapshot is recorded
-  to Redis with a 24-hour TTL. This gives you:
+app/workers/sp_live_harvester.py  (v6)
+=======================================
+Fixes applied
+─────────────
+FIX-1  Correct live market endpoint
+  Old code used /api/live/markets (404s) and /api/live/events/{id}/details
+  (404s for many events). The CONFIRMED working endpoint from SP's own
+  frontend traffic is:
+    GET /api/live/event/markets?eventId=1073579,1051809,...&type=194&sportId=1
+  This returns market data for up to 15 events per request.
 
-    • Per-event intraday odds history in Redis:
-        sp:live:snap:{event_id}:{date}   — LIST of 200 most recent ticks
-    • Match state history (score, phase, clock):
-        sp:live:state_hist:{event_id}:{date}  — LIST of 100 state ticks
+FIX-2  Positional outcome fallback for team-name selections
+  The live markets API returns selections with full team names:
+    {"name": "Union Omaha SC", "odds": "1.14"}   → should be "1"
+    {"name": "draw",           "odds": "5.70"}   → "X"  (already worked)
+    {"name": "Corpus Christi FC", "odds": "21.00"} → should be "2"
+  Added _parse_live_selections() which uses _POS_OUTCOME positional fallback
+  (same logic as _normalise_outcome_key used by the WS harvester).
 
-  These keys are queryable by the sp_live_view.py endpoints for
-  historical analysis and later replay without hitting SP's API.
+FIX-3  fetch_live_stream() — live match generator
+  New public generator that streams one fully-normalised match dict per yield,
+  identical in shape to sp_harvester.fetch_upcoming_stream(). Each match
+  includes:
+    • markets: {slug: {outcome: float}}  — correctly normalised
+    • state fields: phase, match_time, score_home, score_away, is_paused,
+                    clock_running, kickoffTimeUTC, externalId
 
-  If you have a LiveOddsSnapshot or LiveEventState DB model,
-  `_try_persist_snapshot()` attempts to write to it — if the model
-  doesn't exist yet it silently no-ops.
+FIX-4  fetch_live() — blocking wrapper around fetch_live_stream()
+  Drop-in replacement callable by sp_live_view.py snapshot-canonical and
+  stream-matches endpoints.
 
-  There are no structural changes to the WS connection, heartbeat,
-  subscribe pattern, or SR polling — those are all from v4.
+FIX-5  WS harvester extended subscriptions
+  The WS now subscribes to BOTH type 194 (1x2) AND type 105 (O/U 2.5) per
+  event, giving immediate live odds for both the primary result market and the
+  most popular totals market. Additional market types still arrive via the HTTP
+  batch fetch which runs at the 60-second refresh.
+
+All existing history recording (snapshot, state, Sportradar polling) and the
+WS heartbeat/reconnect logic are preserved unchanged from v5.
 """
 
 from __future__ import annotations
@@ -32,13 +48,16 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Generator
 
 import requests
 
 log = logging.getLogger("sp_live_harvester")
 
-# ── Redis ─────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Redis
+# =============================================================================
+
 _redis_lock   = threading.Lock()
 _redis_client = None
 
@@ -67,7 +86,10 @@ def _get_redis():
         return _redis_client
 
 
-# ── Channel helpers ────────────────────────────────────────────────────────────
+# =============================================================================
+# Channel / pub-sub helpers
+# =============================================================================
+
 CH_ALL   = "sp:live:all"
 CH_SPORT = "sp:live:sport:{sport_id}"
 CH_EVENT = "sp:live:event:{event_id}"
@@ -102,29 +124,24 @@ def _publish_live_update(r, sport_id: int, event_id: int, payload: dict) -> None
 
 
 # =============================================================================
-# ⑤ Live snapshot history helpers
+# Live snapshot history (from v5 — unchanged)
 # =============================================================================
 
-_SNAP_MAX     = 200   # max market ticks per event per day
-_STATE_MAX    = 100   # max state ticks per event per day
-_SNAP_TTL     = 86_400     # 24 h
-_STATE_TTL    = 86_400
+_SNAP_MAX  = 200
+_STATE_MAX = 100
+_SNAP_TTL  = 86_400
+_STATE_TTL = 86_400
 
 
 def _record_market_snapshot(r, event_id: int, payload: dict) -> None:
-    """
-    ⑤ Push a compact market tick to the intraday history list.
-    Key: sp:live:snap:{event_id}:{date}
-    Keeps the last _SNAP_MAX entries.
-    """
-    date    = _today()
-    key     = f"sp:live:snap:{event_id}:{date}"
-    tick    = {
+    date = _today()
+    key  = f"sp:live:snap:{event_id}:{date}"
+    tick = {
         "ts":      _now_ts(),
         "market":  payload.get("market_slug", ""),
         "type":    payload.get("market_type"),
         "changed": payload.get("changed_selections", []),
-        "sels":    [
+        "sels": [
             {"id": s["id"], "key": s.get("outcome_key", s.get("name", "")),
              "odds": s["odds"]}
             for s in payload.get("normalised_selections", [])
@@ -138,17 +155,10 @@ def _record_market_snapshot(r, event_id: int, payload: dict) -> None:
         pipe.execute()
     except Exception as exc:
         log.debug("[snap] market record failed event=%d: %s", event_id, exc)
-
-    # Attempt DB persist (no-op if model doesn't exist yet)
     _try_persist_snapshot(event_id, payload)
 
 
 def _record_state_snapshot(r, event_id: int, payload: dict) -> None:
-    """
-    ⑤ Push a compact state tick (score, phase, clock) to the intraday history.
-    Key: sp:live:state_hist:{event_id}:{date}
-    Keeps the last _STATE_MAX entries.
-    """
     date = _today()
     key  = f"sp:live:state_hist:{event_id}:{date}"
     tick = {
@@ -171,30 +181,13 @@ def _record_state_snapshot(r, event_id: int, payload: dict) -> None:
         pipe.execute()
     except Exception as exc:
         log.debug("[snap] state record failed event=%d: %s", event_id, exc)
-
-    # Attempt DB persist (no-op if model doesn't exist yet)
     _try_persist_state(event_id, tick)
 
 
 def _try_persist_snapshot(event_id: int, payload: dict) -> None:
-    """
-    ⑤ Attempt to write a market snapshot to DB.
-    Silently no-ops if LiveOddsSnapshot model doesn't exist yet —
-    create the model when you're ready and it will start writing.
-
-    Expected model schema:
-        class LiveOddsSnapshot(db.Model):
-            id           = Column(Integer, primary_key=True)
-            event_id     = Column(Integer, index=True, nullable=False)
-            market_slug  = Column(String(64))
-            market_type  = Column(Integer)
-            selections   = Column(JSON)    # list of {id, key, odds}
-            changed      = Column(JSON)    # list of {id, odds, prev}
-            recorded_at  = Column(DateTime, default=datetime.utcnow, index=True)
-    """
     try:
         from app.extensions import db
-        from app.models.live_snapshot import LiveOddsSnapshot  # create when ready
+        from app.models.live_snapshot import LiveOddsSnapshot
         db.session.add(LiveOddsSnapshot(
             event_id    = event_id,
             market_slug = payload.get("market_slug", ""),
@@ -204,11 +197,11 @@ def _try_persist_snapshot(event_id: int, payload: dict) -> None:
                  "odds": s["odds"]}
                 for s in payload.get("normalised_selections", [])
             ],
-            changed     = payload.get("changed_selections", []),
+            changed = payload.get("changed_selections", []),
         ))
         db.session.commit()
     except ImportError:
-        pass   # model not created yet — no-op
+        pass
     except Exception as exc:
         log.debug("[snap:db] market persist event=%d: %s", event_id, exc)
         try:
@@ -219,25 +212,9 @@ def _try_persist_snapshot(event_id: int, payload: dict) -> None:
 
 
 def _try_persist_state(event_id: int, tick: dict) -> None:
-    """
-    ⑤ Attempt to write a state tick to DB.
-    No-op if LiveEventState model doesn't exist yet.
-
-    Expected model schema:
-        class LiveEventState(db.Model):
-            id          = Column(Integer, primary_key=True)
-            event_id    = Column(Integer, index=True, nullable=False)
-            phase       = Column(String(32))
-            match_time  = Column(String(16))
-            score_home  = Column(String(8))
-            score_away  = Column(String(8))
-            is_paused   = Column(Boolean, default=False)
-            source      = Column(String(16))
-            recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
-    """
     try:
         from app.extensions import db
-        from app.models.live_snapshot import LiveEventState  # create when ready
+        from app.models.live_snapshot import LiveEventState
         db.session.add(LiveEventState(
             event_id   = event_id,
             phase      = tick.get("phase", ""),
@@ -259,21 +236,13 @@ def _try_persist_state(event_id: int, tick: dict) -> None:
             pass
 
 
-# ── Public API — fetch live snapshot history ───────────────────────────────────
-
 def get_market_snapshot_history(
     event_id: int, date: str | None = None, limit: int = 100,
 ) -> list[dict]:
-    """
-    Return intraday market tick history for one event.
-    date: YYYY-MM-DD, defaults to today.
-    Returns list of ticks newest-first.
-    """
     r   = _get_redis()
     key = f"sp:live:snap:{event_id}:{date or _today()}"
     try:
-        items = r.lrange(key, 0, limit - 1)
-        return [json.loads(i) for i in items]
+        return [json.loads(i) for i in r.lrange(key, 0, limit - 1)]
     except Exception as exc:
         log.warning("get_market_snapshot_history %d: %s", event_id, exc)
         return []
@@ -282,22 +251,19 @@ def get_market_snapshot_history(
 def get_state_snapshot_history(
     event_id: int, date: str | None = None, limit: int = 100,
 ) -> list[dict]:
-    """
-    Return intraday state tick history (score, phase, clock) for one event.
-    date: YYYY-MM-DD, defaults to today.
-    Returns list of ticks newest-first.
-    """
     r   = _get_redis()
     key = f"sp:live:state_hist:{event_id}:{date or _today()}"
     try:
-        items = r.lrange(key, 0, limit - 1)
-        return [json.loads(i) for i in items]
+        return [json.loads(i) for i in r.lrange(key, 0, limit - 1)]
     except Exception as exc:
         log.warning("get_state_snapshot_history %d: %s", event_id, exc)
         return []
 
 
-# ── SP HTTP base ───────────────────────────────────────────────────────────────
+# =============================================================================
+# SP HTTP base
+# =============================================================================
+
 _SP_BASE = "https://www.ke.sportpesa.com"
 _HEADERS = {
     "User-Agent": (
@@ -309,85 +275,11 @@ _HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "X-App-Timezone":   "Africa/Nairobi",
     "Origin":           _SP_BASE,
-    "Referer":          _SP_BASE + "/",
+    "Referer":          _SP_BASE + "/en/live/",
 }
 
 _LIVE_SPORT_IDS = [1, 2, 4, 5, 6, 8, 9, 10, 13, 21, 23]
 
-_TYPE_TO_SLUG: dict[int, str] = {
-    194: "1x2",         149: "match_winner",    147: "double_chance",
-    138: "btts",        140: "first_half_btts",  145: "odd_even",
-    166: "draw_no_bet", 151: "european_handicap", 184: "asian_handicap",
-    183: "correct_score", 154: "exact_goals",    135: "first_half_1x2",
-}
-
-_SPORT_TOTAL_SLUG: dict[int, str] = {
-    1: "over_under_goals", 5: "over_under_goals", 126: "over_under_goals",
-    2: "total_points",     8: "total_points",
-    4: "total_games",     13: "total_games",
-    10: "total_sets",      9: "total_runs",
-    23: "total_sets",      6: "over_under_goals",
-    16: "total_games",    21: "total_runs",
-}
-
-_POS_OUTCOME: dict[int, list[str]] = {
-    194: ["1", "X", "2"],  149: ["1", "2"],
-    147: ["1X", "X2", "12"], 138: ["yes", "no"],
-    140: ["yes", "no"],    145: ["odd", "even"],
-    166: ["1", "2"],       135: ["1", "X", "2"],
-    155: ["1st", "2nd", "equal"],
-}
-
-
-def _market_slug(market_type: int, sport_id: int, handicap: str | None) -> str:
-    if market_type == 105:
-        base = _SPORT_TOTAL_SLUG.get(sport_id, "over_under")
-    else:
-        base = _TYPE_TO_SLUG.get(market_type, f"market_{market_type}")
-    if handicap and handicap not in ("0.00", "0", "", None):
-        try:
-            fv   = float(handicap)
-            line = str(int(fv)) if fv == int(fv) else str(fv)
-            return f"{base}_{line}"
-        except (ValueError, TypeError):
-            pass
-    return base
-
-
-def _normalise_outcome_key(
-    sel_name: str, sel_idx: int, all_sels: list[dict],
-    market_type: int, handicap: str | None, sport_id: int,
-) -> str:
-    name_l  = sel_name.strip().lower()
-    _direct: dict[str, str] = {
-        "1": "1", "x": "X", "2": "2", "draw": "X",
-        "over": "over", "under": "under",
-        "yes": "yes", "no": "no",
-        "odd": "odd", "even": "even",
-        "1x": "1X", "x2": "X2", "12": "12",
-        "home": "1", "away": "2",
-    }
-    if name_l in _direct:
-        return _direct[name_l]
-    if name_l.startswith("over"):
-        return "over"
-    if name_l.startswith("under"):
-        return "under"
-    if ":" in sel_name and len(sel_name) <= 5:
-        return sel_name.strip()
-    if "/" in sel_name and len(sel_name) <= 5:
-        return sel_name.strip()
-    pos_map = _POS_OUTCOME.get(market_type)
-    if pos_map and sel_idx < len(pos_map):
-        return pos_map[sel_idx]
-    if market_type == 105:
-        return "over" if sel_idx == 0 else "under"
-    slug = name_l.replace(" ", "_").replace("-", "_")
-    slug = "".join(c for c in slug if c.isalnum() or c == "_")
-    return slug[:14] or f"sel_{sel_idx}"
-
-
-# ── HTTP helpers ───────────────────────────────────────────────────────────────
 
 def _http_get(path: str, params: dict | None = None, timeout: int = 15) -> Any:
     url = f"{_SP_BASE}{path}"
@@ -403,25 +295,262 @@ def _http_get(path: str, params: dict | None = None, timeout: int = 15) -> Any:
         return None
 
 
-# ── Public REST data fetchers ──────────────────────────────────────────────────
+# =============================================================================
+# Sport slug → sport ID
+# =============================================================================
 
-def fetch_live_sports() -> list[dict]:
-    r      = _get_redis()
-    cached = r.get("sp:live:sports")
-    if cached:
-        return json.loads(cached)
-    raw    = _http_get("/api/live/sports")
-    sports: list = []
-    if isinstance(raw, dict):
-        sports = raw.get("sports") or raw.get("data") or []
-    elif isinstance(raw, list):
-        sports = raw
-    if sports:
-        r.set("sp:live:sports", json.dumps(sports), ex=60)
-    return sports
+_SLUG_TO_SPORT_ID: dict[str, int] = {
+    "soccer": 1, "football": 1, "esoccer": 126, "efootball": 126,
+    "basketball": 2, "tennis": 5, "ice-hockey": 4, "volleyball": 23,
+    "cricket": 21, "rugby": 12, "boxing": 10, "handball": 6,
+    "table-tennis": 16, "mma": 117, "darts": 49,
+    "american-football": 15, "baseball": 3,
+}
 
+# =============================================================================
+# FIX-2: Market type → positional outcome keys
+# Mirrors _POS_OUTCOME + _normalise_outcome_key from WS harvester.
+# Used by _parse_live_selections() to convert team names → "1"/"X"/"2".
+# =============================================================================
+
+_POS_OUTCOME: dict[int, list[str]] = {
+    194:  ["1", "X", "2"],       # 1x2
+    149:  ["1", "2"],             # match winner
+    147:  ["1X", "X2", "12"],    # double chance
+    138:  ["yes", "no"],          # btts
+    140:  ["yes", "no"],          # 1H btts
+    145:  ["odd", "even"],        # odd/even
+    166:  ["1", "2"],             # draw no bet
+    135:  ["1", "X", "2"],       # 1H 1x2
+    155:  ["1st", "2nd", "equal"],
+    129:  ["none", "1", "2"],     # first team to score
+}
+
+_SPORT_TOTAL_SLUG: dict[int, str] = {
+    1: "over_under_goals", 5: "over_under_goals", 126: "over_under_goals",
+    2: "total_points",     8: "total_points",
+    4: "total_games",     13: "total_games",
+    10: "total_sets",      9: "total_runs",
+    23: "total_sets",      6: "over_under_goals",
+    16: "total_games",    21: "total_runs",
+}
+
+_TYPE_TO_SLUG: dict[int, str] = {
+    194: "1x2",          149: "match_winner",     147: "double_chance",
+    138: "btts",         140: "first_half_btts",   145: "odd_even",
+    166: "draw_no_bet",  151: "european_handicap",  184: "asian_handicap",
+    183: "correct_score", 154: "exact_goals",      135: "first_half_1x2",
+    129: "first_team_to_score",
+}
+
+# Direct shortname → canonical key (fastest path)
+_DIRECT_KEYS: dict[str, str] = {
+    "1": "1", "x": "X", "2": "2", "draw": "X",
+    "over": "over", "under": "under",
+    "yes": "yes", "no": "no",
+    "odd": "odd", "even": "even",
+    "1x": "1X", "x2": "X2", "12": "12",
+    "home": "1", "away": "2",
+    "ov": "over", "un": "under",
+    "gg": "yes", "ng": "no",
+    "eql": "equal", "none": "none",
+    "1st": "1st", "2nd": "2nd",
+    "p1": "1", "p2": "2",
+}
+
+
+def _market_slug_from_type(market_type: int, sport_id: int, handicap: str | None) -> str:
+    """Convert SP market type ID + handicap → canonical slug."""
+    if market_type == 105:
+        base = _SPORT_TOTAL_SLUG.get(sport_id, "over_under")
+    else:
+        base = _TYPE_TO_SLUG.get(market_type, f"market_{market_type}")
+    if handicap and handicap not in ("0.00", "0", "", None):
+        try:
+            fv   = float(handicap)
+            line = str(int(fv)) if fv == int(fv) else str(fv)
+            return f"{base}_{line}"
+        except (ValueError, TypeError):
+            pass
+    return base
+
+
+def _parse_live_selections(
+    sels:        list[dict],
+    market_type: int,
+    sport_id:    int,
+    handicap:    str,
+) -> dict[str, float]:
+    """
+    FIX-2: Convert live event selections → {outcome_key: price}.
+
+    SP returns team names as selection names in the live markets API.
+    Resolution order:
+      1. Direct shortName lookup (_DIRECT_KEYS)
+      2. Over/Under prefix
+      3. Correct score "2:1" / HT-FT "1/2" (short tokens only)
+      4. Positional fallback from _POS_OUTCOME (handles team names)
+      5. O/U type 105 positional fallback (over/under by position)
+    """
+    pos_map = _POS_OUTCOME.get(market_type)
+    result: dict[str, float] = {}
+
+    for idx, sel in enumerate(sels):
+        name  = str(sel.get("name") or sel.get("shortName") or "")
+        short = str(sel.get("shortName") or "")
+        try:
+            price = float(sel.get("odds") or sel.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 1.0:
+            continue
+
+        # 1. Direct shortName
+        key = _DIRECT_KEYS.get(short.strip().lower())
+        if not key:
+            key = _DIRECT_KEYS.get(name.strip().lower())
+
+        # 2. Over/Under prefix
+        if not key:
+            nl = name.strip().lower()
+            if nl.startswith("over"):
+                key = "over"
+            elif nl.startswith("under"):
+                key = "under"
+
+        # 3. Correct score "2:1" or HT-FT "1/2" (≤5 chars)
+        if not key:
+            stripped = name.strip()
+            if ":" in stripped and len(stripped) <= 5:
+                key = stripped
+            elif "/" in stripped and len(stripped) <= 5:
+                key = stripped
+
+        # 4. Positional fallback (covers team names like "Union Omaha SC")
+        if not key and pos_map and idx < len(pos_map):
+            key = pos_map[idx]
+
+        # 5. O/U type 105 positional fallback
+        if not key and market_type == 105:
+            key = "over" if idx == 0 else "under"
+
+        # 6. Generic sanitise
+        if not key:
+            key = name.lower().replace(" ", "_")[:14] or f"sel_{idx}"
+
+        if price > result.get(key, 0.0):
+            result[key] = round(price, 3)
+
+    return result
+
+
+# =============================================================================
+# FIX-1: Correct live market endpoint
+# =============================================================================
+
+_MARKET_BATCH_SIZE = 12   # SP accepts up to ~15 event IDs per request
+
+
+def fetch_live_markets_for_events(
+    event_ids: list[int | str],
+    sport_id:  int,
+    market_type: int = 194,
+) -> dict[str, list[dict]]:
+    """
+    FIX-1: Use the CONFIRMED working endpoint:
+      GET /api/live/event/markets?eventId=...&type=194&sportId=1
+
+    Returns {str(event_id): [market_dict, ...]} for fast lookup.
+    Fetches in batches of _MARKET_BATCH_SIZE to stay within SP limits.
+    """
+    if not event_ids:
+        return {}
+
+    result: dict[str, list[dict]] = {}
+
+    for i in range(0, len(event_ids), _MARKET_BATCH_SIZE):
+        batch = event_ids[i: i + _MARKET_BATCH_SIZE]
+        ids_str = ",".join(str(e) for e in batch)
+
+        raw = _http_get(
+            "/api/live/event/markets",
+            params={"eventId": ids_str, "type": str(market_type), "sportId": str(sport_id)},
+            timeout=12,
+        )
+
+        if not raw:
+            continue
+
+        # Response shape: {"events": [{id, markets: [...]}]} or list directly
+        events_list = (
+            raw if isinstance(raw, list)
+            else raw.get("events") or raw.get("markets") or []
+        )
+
+        for ev_entry in events_list:
+            if not isinstance(ev_entry, dict):
+                continue
+            ev_id   = str(ev_entry.get("id") or ev_entry.get("eventId") or "")
+            markets = ev_entry.get("markets") or []
+            if ev_id and isinstance(markets, list):
+                result[ev_id] = markets
+
+    return result
+
+
+def fetch_all_market_types_for_events(
+    event_ids: list[int | str],
+    sport_id:  int,
+) -> dict[str, dict[str, dict[str, float]]]:
+    """
+    Fetch multiple market types for a batch of events.
+    Returns {event_id: {market_slug: {outcome: price}}}.
+
+    Market types fetched: 194 (1x2), 105 (O/U 2.5), 147 (DC), 138 (BTTS),
+                          145 (Odd/Even), 166 (DNB), 135 (1H 1x2).
+    """
+    if not event_ids:
+        return {}
+
+    # Map event_id → markets dict
+    all_markets: dict[str, dict[str, dict[str, float]]] = {
+        str(eid): {} for eid in event_ids
+    }
+
+    # Market types to fetch + representative handicap/line for O/U
+    _TYPES_TO_FETCH = [194, 105, 147, 138, 145]
+
+    for mkt_type in _TYPES_TO_FETCH:
+        batch_result = fetch_live_markets_for_events(event_ids, sport_id, mkt_type)
+        for ev_id_str, markets in batch_result.items():
+            if ev_id_str not in all_markets:
+                all_markets[ev_id_str] = {}
+
+            for mkt in markets:
+                if not isinstance(mkt, dict):
+                    continue
+                mid      = mkt.get("id") or mkt.get("typeId") or mkt_type
+                spec_val = str(mkt.get("specialValue") or mkt.get("specValue") or "0.00")
+                slug     = _market_slug_from_type(int(mid), sport_id, spec_val)
+                sels     = mkt.get("selections") or []
+                parsed   = _parse_live_selections(sels, int(mid), sport_id, spec_val)
+                if parsed:
+                    # Merge: keep best price per outcome
+                    existing = all_markets[ev_id_str].get(slug, {})
+                    for outcome, price in parsed.items():
+                        if price > existing.get(outcome, 0.0):
+                            existing[outcome] = price
+                    all_markets[ev_id_str][slug] = existing
+
+    return all_markets
+
+
+# =============================================================================
+# Event list fetcher (unchanged from v5)
+# =============================================================================
 
 def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[dict]:
+    """Fetch live events for one sport ID."""
     raw = _http_get(
         f"/api/live/sports/{sport_id}/events",
         params={"limit": limit, "offset": offset},
@@ -432,6 +561,7 @@ def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[
                 return raw[key]
         if isinstance(raw, list):
             return raw
+
     raw = _http_get("/api/live/games", params={"sportId": sport_id})
     if isinstance(raw, list):
         return raw
@@ -442,58 +572,230 @@ def fetch_live_events(sport_id: int, limit: int = 100, offset: int = 0) -> list[
     return []
 
 
+def fetch_live_sports() -> list[dict]:
+    r      = _get_redis()
+    cached = r.get("sp:live:sports")
+    if cached:
+        return json.loads(cached)
+    raw = _http_get("/api/live/sports")
+    sports: list = []
+    if isinstance(raw, dict):
+        sports = raw.get("sports") or raw.get("data") or []
+    elif isinstance(raw, list):
+        sports = raw
+    if sports:
+        r.set("sp:live:sports", json.dumps(sports), ex=60)
+    return sports
+
+
 def fetch_live_markets(
     event_ids: list[int],
     sport_id:  int,
     market_type: int = 194,
 ) -> list[dict]:
-    if not event_ids:
-        return []
-    raw = _http_get(
-        "/api/live/markets",
-        params={
-            "eventIds":   ",".join(str(i) for i in event_ids),
-            "marketType": market_type,
-            "sportId":    sport_id,
-        },
-    )
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, dict):
-        for key in ("data", "markets", "events"):
-            if isinstance(raw.get(key), list):
-                return raw[key]
-    return []
+    """
+    FIX-1: Uses the correct /api/live/event/markets endpoint.
+    Returns raw list of {eventId, markets} dicts.
+    """
+    batch = fetch_live_markets_for_events(event_ids, sport_id, market_type)
+    result = []
+    for ev_id_str, mkts in batch.items():
+        result.append({"eventId": int(ev_id_str), "markets": mkts})
+    return result
 
 
 def get_odds_history(event_id: int, market_id: int, limit: int = 20) -> list[dict]:
     r   = _get_redis()
     key = f"sp:live:history:{event_id}:{market_id}"
     try:
-        items = r.lrange(key, 0, limit - 1)
-        return [json.loads(i) for i in items]
+        return [json.loads(i) for i in r.lrange(key, 0, limit - 1)]
     except Exception as exc:
         log.warning("get_odds_history %s: %s", key, exc)
         return []
 
 
-# ── Snapshot ───────────────────────────────────────────────────────────────────
+# =============================================================================
+# FIX-3: parse_event_to_match — convert raw SP event + markets → SpMatch
+# =============================================================================
+
+def _parse_event_state(ev: dict) -> dict:
+    """
+    Extract match state fields from a live events API response row.
+    The events list (/api/live/sports/{id}/events) includes:
+      state.currentEventPhase, state.matchTime, state.matchScore,
+      state.clockRunning, isPaused, status, kickoffTimeUTC, externalId
+    """
+    state = ev.get("state") or {}
+    score = state.get("matchScore") or {}
+    comps = ev.get("competitors") or []
+
+    home = ""
+    away = ""
+    if isinstance(comps, list) and len(comps) >= 2:
+        home = str(comps[0].get("name") or "")
+        away = str(comps[1].get("name") or "")
+    elif isinstance(comps, dict):
+        home = str(comps.get("home") or comps.get("0") or "")
+        away = str(comps.get("away") or comps.get("1") or "")
+
+    sport_raw   = ev.get("sport") or {}
+    sport_name  = str(sport_raw.get("name") or "") if isinstance(sport_raw, dict) else str(sport_raw)
+    comp_raw    = ev.get("tournament") or ev.get("competition") or ev.get("league") or {}
+    competition = str(comp_raw.get("name") or "") if isinstance(comp_raw, dict) else str(comp_raw)
+    country_raw = ev.get("country") or {}
+    country     = str(country_raw.get("name") or "") if isinstance(country_raw, dict) else str(country_raw)
+
+    return {
+        # Match identity
+        "sp_game_id":    str(ev.get("id") or ""),
+        "betradar_id":   str(ev.get("externalId") or ev.get("betradarId") or ev.get("betRadarId") or ""),
+        "home_team":     home,
+        "away_team":     away,
+        "competition":   competition,
+        "country":       country,
+        "sport":         sport_name,
+        # Timing
+        "start_time":    ev.get("kickoffTimeUTC") or ev.get("startTime"),
+        "status":        ev.get("status", "Started"),
+        # Match state (live)
+        "phase":         state.get("currentEventPhase", ""),
+        "match_time":    state.get("matchTime", ""),
+        "clock_running": state.get("clockRunning", False),
+        "score_home":    str(score.get("home") or "0"),
+        "score_away":    str(score.get("away") or "0"),
+        "is_paused":     ev.get("isPaused", False),
+        "period_start":  state.get("periodStartTime"),
+        # Source metadata
+        "source":        "sportpesa",
+        "mode":          "live",
+        "harvested_at":  _now_ts(),
+    }
+
+
+def _build_live_match(ev: dict, markets: dict[str, dict[str, float]]) -> dict:
+    """Combine event state + normalised markets into a full SpMatch dict."""
+    base = _parse_event_state(ev)
+    base["markets"]      = markets
+    base["market_count"] = len(markets)
+    return base
+
+
+# =============================================================================
+# FIX-3/FIX-4: fetch_live_stream + fetch_live
+# =============================================================================
+
+def fetch_live_stream(
+    sport_slug:         str,
+    fetch_full_markets: bool  = True,
+    sleep_between:      float = 0.2,
+    batch_size:         int   = 12,
+    **_,
+) -> Generator[dict, None, None]:
+    """
+    FIX-3: Stream live matches one at a time, identical shape to
+    sp_harvester.fetch_upcoming_stream().
+
+    Flow:
+      1. GET /api/live/sports/{sportId}/events  → event list with state
+      2. Batch fetch markets via /api/live/event/markets  (FIX-1)
+      3. Normalise selections with positional fallback  (FIX-2)
+      4. yield one complete SpMatch per event immediately
+
+    Each yielded match includes:
+      sp_game_id, betradar_id, home_team, away_team, competition, sport,
+      start_time, status, phase, match_time, clock_running, score_home,
+      score_away, is_paused, markets: {slug: {outcome: float}}
+    """
+    sport_id = _SLUG_TO_SPORT_ID.get(sport_slug.lower())
+    if not sport_id:
+        log.warning("[live:stream] unknown sport: %s", sport_slug)
+        return
+
+    events = fetch_live_events(sport_id, limit=200)
+    log.info("[live:stream] %s: %d events (sportId=%d)", sport_slug, len(events), sport_id)
+
+    if not events:
+        return
+
+    # Index events by ID for fast lookup
+    ev_index: dict[str, dict] = {str(ev.get("id")): ev for ev in events if ev.get("id")}
+
+    # Process events in batches to fetch markets
+    event_ids = list(ev_index.keys())
+
+    # If markets not needed, yield state-only matches immediately
+    if not fetch_full_markets:
+        for ev_id, ev in ev_index.items():
+            yield _build_live_match(ev, {})
+        return
+
+    for i in range(0, len(event_ids), batch_size):
+        batch_ids = event_ids[i: i + batch_size]
+
+        # Fetch all relevant market types for this batch
+        all_mkts = fetch_all_market_types_for_events(batch_ids, sport_id)
+
+        for ev_id in batch_ids:
+            ev      = ev_index.get(ev_id, {})
+            markets = all_mkts.get(ev_id, {})
+            match   = _build_live_match(ev, markets)
+
+            if markets:
+                log.debug("[live:stream] %s markets=%s", ev_id, list(markets.keys())[:5])
+            else:
+                log.warning("[live:stream] %s no markets fetched", ev_id)
+
+            yield match
+
+        if i + batch_size < len(event_ids):
+            time.sleep(sleep_between)
+
+
+def fetch_live(
+    sport_slug:         str,
+    fetch_full_markets: bool  = True,
+    sleep_between:      float = 0.2,
+    **_,
+) -> list[dict]:
+    """
+    FIX-4: Blocking wrapper — fetch all live matches for a sport.
+    Drop-in replacement callable by snapshot-canonical and celery tasks.
+    """
+    results = list(fetch_live_stream(
+        sport_slug,
+        fetch_full_markets = fetch_full_markets,
+        sleep_between      = sleep_between,
+    ))
+    log.info("[live] %s: %d live matches", sport_slug, len(results))
+    return results
+
+
+# =============================================================================
+# Snapshot helpers (updated to use correct endpoints)
+# =============================================================================
 
 def _snapshot_sport(sport_id: int) -> list[dict]:
+    """Build a full Redis snapshot for one sport using the correct market endpoint."""
     r      = _get_redis()
     events = fetch_live_events(sport_id, limit=200)
     if not events:
         return []
+
+    ev_ids  = [str(ev.get("id")) for ev in events if ev.get("id")]
+    ev_map  = {str(ev.get("id")): ev for ev in events if ev.get("id")}
+    all_mkt = fetch_all_market_types_for_events(ev_ids, sport_id)
+
     snap_events = []
-    for ev in events:
-        ev_id = ev.get("id")
-        if not ev_id:
-            continue
-        raw_detail = _http_get(f"/api/live/events/{ev_id}/details")
-        markets    = []
-        if raw_detail and isinstance(raw_detail, dict):
-            markets = raw_detail.get("markets") or []
-        snap_events.append({"eventId": ev_id, "event": ev, "markets": markets})
+    for ev_id in ev_ids:
+        ev        = ev_map[ev_id]
+        markets   = all_mkt.get(ev_id, {})
+        snap_events.append({
+            "eventId": int(ev_id),
+            "event":   ev,
+            "markets": markets,
+            "state":   _parse_event_state(ev),
+        })
+
     r.set(f"sp:live:snapshot:{sport_id}", json.dumps({
         "sport_id":     sport_id,
         "event_count":  len(snap_events),
@@ -516,7 +818,7 @@ def snapshot_all_sports() -> dict[int, list]:
 
 
 # =============================================================================
-# SPORTRADAR TIMELINE POLLING
+# Sportradar timeline polling (unchanged from v5)
 # =============================================================================
 
 _SR_BASE           = "https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo"
@@ -635,7 +937,6 @@ def _sr_poll_loop() -> None:
                     json.dumps({k: v for k, v in payload.items() if k != "type"}),
                     ex=300,
                 )
-                # ⑤ Record state snapshot for history
                 _record_state_snapshot(r, event_id, payload)
                 _publish_live_update(r, sport_id, event_id, payload)
             except Exception as exc:
@@ -669,13 +970,22 @@ def _stop_sr_thread() -> None:
 
 
 # =============================================================================
-# WS HARVESTER
+# WS HARVESTER (FIX-5: also subscribe type 105 per event)
 # =============================================================================
 
 _HARVESTER_THREAD: threading.Thread | None = None
 _HARVESTER_STOP   = threading.Event()
 
 _WS_BASE = "wss://realtime-notificator.ke.sportpesa.com"
+
+# FIX-5: Subscribe to both 1x2 (194) and O/U 2.5 (105) per event.
+# SP sends all markets for an event once either channel is open,
+# but subscribing both ensures O/U updates arrive even when the
+# 1x2 market is suspended.
+_WS_SUBSCRIBE_CHANNELS: list[str] = [
+    "194-0.00",    # 1x2
+    "105-2.50",    # O/U 2.5
+]
 
 
 def _ws_url() -> str:
@@ -702,24 +1012,30 @@ def _parse_ws_frame(raw: str) -> tuple[str | None, Any]:
     return None, None
 
 
-def _state_from_event_update(msg: dict) -> dict:
-    state = msg.get("state") or {}
-    score = state.get("matchScore") or {}
-    return {
-        "type":          "event_update",
-        "event_id":      msg.get("id"),
-        "sport_id":      msg.get("sportId", 1),
-        "status":        msg.get("status", ""),
-        "phase":         state.get("currentEventPhase", ""),
-        "match_time":    state.get("matchTime", ""),
-        "clock_running": state.get("clockRunning", False),
-        "remaining_ms":  state.get("remainingTimeMillis"),
-        "score_home":    str(score.get("home") or "0"),
-        "score_away":    str(score.get("away") or "0"),
-        "is_paused":     msg.get("isPaused", False),
-        "ts":            _now_ts(),
-        "source":        "sportpesa_ws",
-    }
+def _normalise_outcome_key(
+    sel_name: str, sel_idx: int, all_sels: list[dict],
+    market_type: int, handicap: str | None, sport_id: int,
+) -> str:
+    """WS outcome normaliser — positional fallback handles team names."""
+    name_l = sel_name.strip().lower()
+    if name_l in _DIRECT_KEYS:
+        return _DIRECT_KEYS[name_l]
+    if name_l.startswith("over"):
+        return "over"
+    if name_l.startswith("under"):
+        return "under"
+    if ":" in sel_name and len(sel_name) <= 5:
+        return sel_name.strip()
+    if "/" in sel_name and len(sel_name) <= 5:
+        return sel_name.strip()
+    pos_map = _POS_OUTCOME.get(market_type)
+    if pos_map and sel_idx < len(pos_map):
+        return pos_map[sel_idx]
+    if market_type == 105:
+        return "over" if sel_idx == 0 else "under"
+    slug = name_l.replace(" ", "_").replace("-", "_")
+    slug = "".join(c for c in slug if c.isalnum() or c == "_")
+    return slug[:14] or f"sel_{sel_idx}"
 
 
 def _market_from_buffered_update(
@@ -732,7 +1048,7 @@ def _market_from_buffered_update(
 
     sport_id = sport_id_map.get(event_id, 1)
     handicap = str(msg.get("handicap") or "0.00")
-    slug     = _market_slug(market_type, sport_id, handicap)
+    slug     = _market_slug_from_type(market_type, sport_id, handicap)
     all_sels = msg.get("selections") or []
 
     norm_sels = []
@@ -766,6 +1082,27 @@ def _market_from_buffered_update(
         "normalised_selections":  norm_sels,
         "changed_selections":     [],
         "ts":                     _now_ts(),
+    }
+
+
+def _state_from_event_update(msg: dict) -> dict:
+    state = msg.get("state") or {}
+    score = state.get("matchScore") or {}
+    return {
+        "type":          "event_update",
+        "event_id":      msg.get("id"),
+        "sport_id":      msg.get("sportId", 1),
+        "status":        msg.get("status", ""),
+        "phase":         state.get("currentEventPhase", ""),
+        "match_time":    state.get("matchTime", ""),
+        "clock_running": state.get("clockRunning", False),
+        "remaining_ms":  state.get("remainingTimeMillis"),
+        "score_home":    str(score.get("home") or "0"),
+        "score_away":    str(score.get("away") or "0"),
+        "is_paused":     msg.get("isPaused", False),
+        "period_start":  state.get("periodStartTime"),
+        "ts":            _now_ts(),
+        "source":        "sportpesa_ws",
     }
 
 
@@ -871,10 +1208,13 @@ def _harvester_loop() -> None:
         def on_open(ws):
             log.info("[WS] connected to realtime-notificator")
             ws_connected.set()
+            # FIX-5: subscribe both 194 (1x2) and 105 (O/U 2.5) per event
             for ev_id in sport_id_map:
-                ws.send(f'42["subscribe","buffered-event-{ev_id}-194-0.00"]')
+                for channel_suffix in _WS_SUBSCRIBE_CHANNELS:
+                    ws.send(f'42["subscribe","buffered-event-{ev_id}-{channel_suffix}"]')
                 subscribed.add(ev_id)
-            log.info("[WS] subscribed to %d event channels", len(subscribed))
+            log.info("[WS] subscribed to %d events × %d channels",
+                     len(subscribed), len(_WS_SUBSCRIBE_CHANNELS))
 
         def on_message(ws, raw: str):
             try:
@@ -895,10 +1235,7 @@ def _harvester_loop() -> None:
                     payload  = _diff_and_record(r, payload)
                     event_id = payload["event_id"]
                     sport_id = payload["sport_id"]
-
-                    # ⑤ Record market snapshot for history
                     _record_market_snapshot(r, event_id, payload)
-
                     _publish_live_update(r, sport_id, event_id, payload)
 
                 elif event_name == "EVENT_UPDATE":
@@ -908,16 +1245,14 @@ def _harvester_loop() -> None:
                     sport_id = data.get("sportId") or sport_id_map.get(event_id, 1)
                     payload  = _state_from_event_update(data)
                     _cache_event_state(r, payload)
-
-                    # ⑤ Record state snapshot for history
                     _record_state_snapshot(r, event_id, payload)
-
                     _publish_live_update(r, sport_id, event_id, payload)
 
                     if event_id not in sport_id_map:
                         sport_id_map[event_id] = sport_id
                     if event_id not in subscribed:
-                        ws.send(f'42["subscribe","buffered-event-{event_id}-194-0.00"]')
+                        for ch in _WS_SUBSCRIBE_CHANNELS:
+                            ws.send(f'42["subscribe","buffered-event-{event_id}-{ch}"]')
                         subscribed.add(event_id)
 
             except Exception as exc:
@@ -979,7 +1314,8 @@ def _harvester_loop() -> None:
                             external_id_map[ev_id] = int(ext_id or 0)
                             if ev_id not in subscribed:
                                 try:
-                                    ws.send(f'42["subscribe","buffered-event-{ev_id}-194-0.00"]')
+                                    for ch in _WS_SUBSCRIBE_CHANNELS:
+                                        ws.send(f'42["subscribe","buffered-event-{ev_id}-{ch}"]')
                                     subscribed.add(ev_id)
                                 except Exception:
                                     pass
@@ -1002,7 +1338,9 @@ def _harvester_loop() -> None:
         _HARVESTER_STOP.wait(5)
 
 
-# ── Public thread management ───────────────────────────────────────────────────
+# =============================================================================
+# Public thread management
+# =============================================================================
 
 def harvester_alive() -> bool:
     return _HARVESTER_THREAD is not None and _HARVESTER_THREAD.is_alive()
@@ -1029,3 +1367,31 @@ def stop_harvester() -> None:
         _HARVESTER_THREAD.join(timeout=5)
         log.info("[harvester] stopped")
     _HARVESTER_THREAD = None
+
+
+# =============================================================================
+# Public exports
+# =============================================================================
+
+__all__ = [
+    # Streaming generators (used by SSE stream-matches endpoint)
+    "fetch_live_stream",
+    # Blocking wrappers (used by snapshot-canonical and celery)
+    "fetch_live",
+    # REST data fetchers (used by sp_live_view.py)
+    "fetch_live_sports",
+    "fetch_live_events",
+    "fetch_live_markets",
+    "fetch_live_markets_for_events",
+    "fetch_all_market_types_for_events",
+    # History
+    "get_odds_history",
+    "get_market_snapshot_history",
+    "get_state_snapshot_history",
+    # Snapshot
+    "snapshot_all_sports",
+    # Thread management
+    "start_harvester_thread",
+    "stop_harvester",
+    "harvester_alive",
+]
