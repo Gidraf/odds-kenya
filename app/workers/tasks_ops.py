@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 from celery.utils.log import get_task_logger
 
-from app.workers.celery_app import (
+from app.workers.celery_tasks import (
     celery, cache_set, cache_get, _now_iso, _publish,
 )
 from app.workers.tasks_live import sp_poll_all_event_details

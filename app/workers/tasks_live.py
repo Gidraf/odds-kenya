@@ -40,7 +40,7 @@ import requests
 from celery import group
 from celery.utils.log import get_task_logger
 
-from app.workers.celery_app import (
+from app.workers.celery_tasks import (
     celery, cache_set, cache_get, _now_iso, _upsert_and_chain, _publish,
 )
 
@@ -731,7 +731,7 @@ def b2b_harvest_all_live() -> dict:
     soft_time_limit=45, time_limit=60, acks_late=True,
 )
 def b2b_page_harvest_page_live(self, bookmaker: dict, sport: str) -> dict:
-    from app.workers.celery_app import _upsert_unified_match
+    from app.workers.celery_tasks import _upsert_unified_match
     bk_name = bookmaker.get("name") or bookmaker.get("domain", "?")
     bk_id   = bookmaker.get("id")
     t0      = time.perf_counter()
@@ -762,7 +762,7 @@ def b2b_page_harvest_page_live(self, bookmaker: dict, sport: str) -> dict:
              soft_time_limit=30, time_limit=60)
 def b2b_page_harvest_all_live() -> dict:
     import json as _json
-    from app.workers.celery_app import _redis
+    from app.workers.celery_tasks import _redis
     raw        = _redis().get("cache:bookmakers:active")
     bookmakers = _json.loads(raw) if raw else []
     sigs = [

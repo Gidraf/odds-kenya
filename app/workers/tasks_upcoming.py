@@ -24,7 +24,7 @@ from decimal import Decimal
 from celery import group
 from celery.utils.log import get_task_logger
 
-from app.workers.celery_app import (
+from app.workers.celery_tasks import (
     celery, cache_set, cache_get, _now_iso,
     _upsert_and_chain, _upsert_unified_match, _publish,
 )
@@ -477,12 +477,12 @@ def b2b_harvest_all_upcoming() -> dict:
     soft_time_limit=45, time_limit=60, acks_late=True,
 )
 def b2b_page_harvest_page(self, bookmaker: dict, sport: str, page: int) -> dict:
-    from app.workers.celery_app import _upsert_unified_match
+    from app.workers.celery_tasks import _upsert_unified_match
     bk_name = bookmaker.get("name") or bookmaker.get("domain", "?")
     bk_id   = bookmaker.get("id")
     t0      = time.perf_counter()
     try:
-        from app.workers.bookmaker_fetcher import fetch_bookmaker
+        from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
         matches = fetch_bookmaker(bookmaker, sport_name=sport, mode="upcoming",
                                   page=page, page_size=PAGE_SIZE, timeout=20)
     except Exception as exc:
@@ -507,7 +507,7 @@ def b2b_page_harvest_page(self, bookmaker: dict, sport: str, page: int) -> dict:
 
 @celery.task(name="tasks.b2b_page.harvest_all_upcoming", soft_time_limit=30, time_limit=60)
 def b2b_page_harvest_all_upcoming() -> dict:
-    from app.workers.celery_app import _redis
+    from app.workers.celery_tasks import _redis
     import json as _json
     # Load bookmakers from cache (already built by load_bookmakers)
     raw = _redis().get("cache:bookmakers:active")
@@ -534,7 +534,7 @@ def b2b_page_harvest_all_upcoming() -> dict:
     soft_time_limit=120, time_limit=150, acks_late=True,
 )
 def sbo_harvest_sport(self, sport_slug: str, max_matches: int = 90) -> dict:
-    from app.workers.celery_app import _upsert_unified_match
+    from app.workers.celery_tasks import _upsert_unified_match
     t0 = time.perf_counter()
     try:
         from app.views.sbo.sbo_fetcher import OddsAggregator, SPORT_CONFIG

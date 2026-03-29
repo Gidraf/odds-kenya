@@ -34,7 +34,7 @@ log = get_task_logger(__name__)
 # ── Lazy app import (avoids circular imports) ─────────────────────────────────
 
 def _get_celery() -> Celery:
-    from app.workers.celery_app import celery_app
+    from app.workers.celery_tasks import celery_app
     return celery_app
 
 
