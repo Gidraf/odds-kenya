@@ -23,6 +23,7 @@ from celery.utils.log import get_task_logger
 from app.workers.celery_app import (
     celery, cache_set, cache_get, _now_iso, _publish,
 )
+from app.workers.tasks_live import sp_poll_all_event_details
 
 logger = get_task_logger(__name__)
 
@@ -75,8 +76,10 @@ def setup_periodic_tasks(sender, **kwargs):
     # ── Ops ───────────────────────────────────────────────────────────────────
     sender.add_periodic_task(300.0,  update_match_results.s(),             name="results-5min")
     sender.add_periodic_task(3600.0, cache_finished_games.s(),             name="cache-finished-hourly")
-    sender.add_periodic_task( 30.0,  health_check.s(),                     name="health-30s")
-    sender.add_periodic_task(3600.0, expire_subscriptions.s(),             name="expire-subs-hourly")
+    sender.add_periodic_task( 30.0,  health_check.s(),   
+    sender.add_periodic_task(5.0, sp_poll_all_event_details.s(), name="sp-details-5s"),                    name="health-30s")
+    sender.add_periodic_task(3600.0, expire_subscriptions.s(),  
+                                        name="expire-subs-hourly")
 
     logger.info("[beat] All periodic tasks registered")
 

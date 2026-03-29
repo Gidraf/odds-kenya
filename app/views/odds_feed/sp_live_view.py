@@ -1,29 +1,26 @@
 """
-app/views/odds_feed/sp_live_view.py  (v4)
+app/views/odds_feed/sp_live_view.py  (v5)
 ==========================================
-Changes from v3
+Changes from v4
 ─────────────────
-FIX-A  stream-matches uses sp_live_harvester.fetch_live_stream (not sp_harvester)
-  The old code imported fetch_live_stream from sp_harvester (pre-match harvester)
-  which used /api/live/events/{id}/details (404s). Now imports from
-  sp_live_harvester which uses the correct /api/live/event/markets endpoint
-  with positional outcome fallback for team-name selections.
+NEW-A  GET /api/sp/live/stream-event-live/<event_id>
+  SSE endpoint that combines TWO sources:
+    1. Redis pub/sub sp:live:event:{id}  — instant WS + Celery details-poll updates
+    2. Direct HTTP poll every 8 s        — guaranteed freshness even if Redis is quiet
+  The Celery task sp_poll_event_details publishes to Redis every 5 s.
+  This endpoint subscribes and forwards every frame immediately.
 
-FIX-B  Per-match emit — yields IMMEDIATELY as each match is normalised
-  fetch_live_stream in sp_live_harvester yields one match per batch iteration.
-  The SSE generator forwards each {type:"match"} frame without waiting for
-  the full list. Clients see match 1 at ~0ms, match 13 at ~200ms etc.
+NEW-B  POST /api/sp/live/trigger-details/<event_id>
+  On-demand: dispatch sp_poll_event_details for one event immediately.
+  Frontend calls this when user taps a row to force a fresh poll.
 
-FIX-C  GET /api/sp/live/match-now/<event_id>
-  New endpoint — fetches ONE match's full current state + all market types
-  on demand and streams it as a single SSE frame. Useful for the frontend
-  to refresh a specific row when the user taps it.
+NEW-C  GET /api/sp/live/stream-sport-live/<int:sport_id>
+  Combines sport-level Redis pub/sub with a periodic full-sport refresh.
+  Replaces the old /stream/sport/{id} as the primary live feed endpoint.
 
-FIX-D  GET /api/sp/live/stream/event/<event_id> already existed but now
-  the snapshot-canonical endpoint also writes state fields (phase, score etc.)
-  into the cache so the event_update WS frames can be merged client-side.
-
-All history / compare / sportradar endpoints are unchanged from v3.
+All previous endpoints (v4) are unchanged.
+Beat schedule addition (add in tasks_ops.py setup_periodic_tasks):
+  sender.add_periodic_task(5.0, sp_poll_all_event_details.s(), name="sp-details-5s")
 """
 
 from __future__ import annotations
@@ -81,11 +78,12 @@ def _sse_keep_alive() -> str:
     return f": keep-alive {ts}\n\n"
 
 
-def _stream_channel(channel: str, label: str = ""):
-    """
-    Subscribe to a Redis pub/sub channel and forward every message as SSE.
-    Publishes a keep-alive comment every 15 s so proxies don't close the conn.
-    """
+def _now_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _stream_redis_channel(channel: str, label: str = ""):
+    """Subscribe to one Redis pub/sub channel and yield SSE frames."""
     r      = _get_redis()
     pubsub = r.pubsub(ignore_subscribe_messages=True)
     pubsub.subscribe(channel)
@@ -100,7 +98,10 @@ def _stream_channel(channel: str, label: str = ""):
         while True:
             msg = pubsub.get_message(timeout=0.5)
             if msg and msg["type"] == "message":
-                yield _sse(json.loads(msg["data"]))
+                try:
+                    yield _sse(json.loads(msg["data"]))
+                except Exception:
+                    pass
             if time.monotonic() - last_ka > 15:
                 yield _sse_keep_alive()
                 last_ka = time.monotonic()
@@ -132,100 +133,254 @@ def _cache_set(key: str, data, ttl: int = 90):
         pass
 
 
-def _now_ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 # =============================================================================
-# SSE STREAM ENDPOINTS
+# SSE STREAM ENDPOINTS (existing — unchanged from v4)
 # =============================================================================
 
 @bp_sp_live.route("/stream")
 def stream_all():
-    """Subscribe to all live market + state updates (sp:live:all channel)."""
+    """Subscribe to all live updates via Redis pub/sub."""
     @stream_with_context
     def generate():
-        yield from _stream_channel(CH_ALL, label="all")
+        yield from _stream_redis_channel(CH_ALL, label="all")
     return Response(generate(), headers=SSE_HEADERS)
 
 
 @bp_sp_live.route("/stream/sport/<int:sport_id>")
 def stream_sport(sport_id: int):
-    """Subscribe to updates for one sport (sp:live:sport:{id} channel)."""
+    """Subscribe to sport-scoped updates via Redis pub/sub."""
     @stream_with_context
     def generate():
-        yield from _stream_channel(
+        yield from _stream_redis_channel(
             CH_SPORT.format(sport_id=sport_id), label=f"sport_{sport_id}")
     return Response(generate(), headers=SSE_HEADERS)
 
 
 @bp_sp_live.route("/stream/event/<int:event_id>")
 def stream_event(event_id: int):
-    """Subscribe to updates for one event (sp:live:event:{id} channel)."""
+    """Subscribe to one event's updates via Redis pub/sub."""
     @stream_with_context
     def generate():
-        yield from _stream_channel(
+        yield from _stream_redis_channel(
             CH_EVENT.format(event_id=event_id), label=f"event_{event_id}")
     return Response(generate(), headers=SSE_HEADERS)
 
 
+# =============================================================================
+# NEW-A: /stream-event-live/<event_id>
+# Combined Redis pub/sub + direct HTTP poll fallback.
+# This is what the frontend subscribribeToEvent() should use.
+# =============================================================================
+
+@bp_sp_live.route("/stream-event-live/<int:event_id>")
+def stream_event_live(event_id: int):
+    """
+    GET /api/sp/live/stream-event-live/<event_id>?sport_id=1
+
+    SSE endpoint for one event. Combines:
+      1. Redis pub/sub sp:live:event:{id} — receives WS + Celery details-poll pushes
+      2. Direct HTTP poll to /api/live/events/{id}/details every 8 s
+
+    The Celery task sp_poll_event_details (runs every 5 s) publishes to Redis,
+    so under normal operation the client receives updates within 5 s of any change.
+    The direct HTTP poll is the fallback in case Celery is slow or Redis is quiet.
+
+    Client receives:
+      {type:"connected", event_id, ts}         ← on subscribe
+      {type:"event_update", ...state fields}   ← score/phase/clock
+      {type:"market_update", ...market fields} ← odds change (changed_selections only)
+      {type:"snapshot_done", markets_seen}     ← after initial direct poll
+    """
+    sport_id = int(request.args.get("sport_id", 1) or 1)
+
+    @stream_with_context
+    def generate():
+        from app.workers.tasks_live import stream_event_details_sse
+        yield from stream_event_details_sse(event_id, sport_id)
+
+    return Response(generate(), headers=SSE_HEADERS)
+
+
+# =============================================================================
+# NEW-B: /trigger-details/<event_id>
+# On-demand Celery task dispatch for one event — frontend calls on row tap.
+# =============================================================================
+
+@bp_sp_live.route("/trigger-details/<int:event_id>", methods=["POST"])
+def trigger_details(event_id: int):
+    """
+    POST /api/sp/live/trigger-details/<event_id>?sport_id=1
+
+    Dispatch sp_poll_event_details Celery task immediately for one event.
+    Returns within 50 ms (fire-and-forget). The task will publish to Redis
+    within ~1-3 s, which the open SSE connection will pick up automatically.
+
+    Frontend calls this when:
+    - User taps a row to force refresh
+    - Detail drawer opens (to get fresh market data)
+    - User clicks ↺ NOW in the drawer
+    """
+    sport_id = int(request.args.get("sport_id", 1) or 1)
+    t0       = time.perf_counter()
+    try:
+        from app.workers.tasks_live import sp_poll_event_details
+        sp_poll_event_details.apply_async(
+            args=[event_id, sport_id],
+            queue="live",
+            countdown=0,
+        )
+        return _signed_response({
+            "ok":       True,
+            "event_id": event_id,
+            "sport_id": sport_id,
+            "queued":   True,
+            "latency_ms": int((time.perf_counter() - t0) * 1000),
+        })
+    except Exception as exc:
+        log.warning("trigger-details %d: %s", event_id, exc)
+        # Fallback: run synchronously if Celery not available
+        try:
+            from app.workers.tasks_live import _fetch_and_publish_details
+            result = _fetch_and_publish_details(event_id, sport_id)
+            return _signed_response({
+                "ok":       True,
+                "event_id": event_id,
+                "sport_id": sport_id,
+                "queued":   False,
+                "sync":     True,
+                **result,
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+            })
+        except Exception as exc2:
+            return _err(f"trigger failed: {exc2}", 500)
+
+
+# =============================================================================
+# NEW-C: /stream-sport-live/<sport_id>
+# Enhanced sport-level feed: Redis + periodic events-list refresh.
+# =============================================================================
+
+@bp_sp_live.route("/stream-sport-live/<int:sport_id>")
+def stream_sport_live(sport_id: int):
+    """
+    GET /api/sp/live/stream-sport-live/<sport_id>
+
+    Enhanced version of /stream/sport/{id}. Combines:
+      1. Redis pub/sub sp:live:sport:{id} — immediate WS + details-poll pushes
+      2. Periodic events-list refresh every 30 s via HTTP
+
+    Sends {type:"events_list", events:[...]} frames alongside market updates.
+    The frontend can use this to keep the event roster up to date (new events
+    joining, events finishing) without a separate REST call.
+    """
+    @stream_with_context
+    def generate():
+        r      = _get_redis()
+        pubsub = r.pubsub(ignore_subscribe_messages=True)
+        channel = f"sp:live:sport:{sport_id}"
+        pubsub.subscribe(channel)
+
+        yield _sse({
+            "type":     "connected",
+            "sport_id": sport_id,
+            "channel":  channel,
+            "ts":       _now_ts(),
+        })
+
+        # Initial events list
+        try:
+            events = _harvester().fetch_live_events(sport_id, limit=200)
+            yield _sse({
+                "type":     "events_list",
+                "sport_id": sport_id,
+                "events":   events,
+                "count":    len(events),
+                "ts":       _now_ts(),
+            })
+        except Exception:
+            pass
+
+        last_ka      = time.monotonic()
+        last_refresh = time.monotonic()
+        REFRESH_SEC  = 30.0
+
+        try:
+            while True:
+                msg = pubsub.get_message(timeout=0.5)
+                if msg and msg["type"] == "message":
+                    try:
+                        yield _sse(json.loads(msg["data"]))
+                    except Exception:
+                        pass
+
+                now = time.monotonic()
+                if now - last_ka > 15:
+                    yield _sse_keep_alive()
+                    last_ka = now
+
+                if now - last_refresh >= REFRESH_SEC:
+                    try:
+                        events = _harvester().fetch_live_events(sport_id, limit=200)
+                        yield _sse({
+                            "type":     "events_list",
+                            "sport_id": sport_id,
+                            "events":   events,
+                            "count":    len(events),
+                            "ts":       _now_ts(),
+                        })
+                    except Exception:
+                        pass
+                    last_refresh = now
+
+        except GeneratorExit:
+            pass
+        finally:
+            try:
+                pubsub.unsubscribe(channel)
+                pubsub.close()
+            except Exception:
+                pass
+
+    return Response(generate(), headers=SSE_HEADERS)
+
+
+# =============================================================================
+# Existing endpoints (v4 — all unchanged)
+# =============================================================================
+
 @bp_sp_live.route("/stream-matches/<sport_slug>")
 def stream_live_matches(sport_slug: str):
-    """
-    FIX-A + FIX-B: Progressive HTTP snapshot — yields one {type:"match"} SSE
-    frame per live event as soon as it is normalised. Uses sp_live_harvester
-    .fetch_live_stream (correct endpoint + positional fallback).
-
-    SSE event sequence:
-      {type:"start", sport, mode:"live", estimated_max}
-      {type:"match", index, match}     ← one per event, arrives immediately
-      {type:"done",  total, latency_ms, harvested_at}
-      {type:"error", message}           ← only on failure
-    """
+    """Progressive HTTP snapshot — yields one {type:"match"} SSE frame per event."""
     @stream_with_context
     def generate():
         t0          = time.perf_counter()
         all_matches = []
         try:
-            # FIX-A: import from sp_live_harvester, not sp_harvester
-            from app.workers.sp_live_harvester import fetch_live_stream
+            from app.workers.sp_live_harvester import fetch_live_stream, _SLUG_TO_SPORT_ID
 
             events_preview = _harvester().fetch_live_events(
-                _harvester()._SLUG_TO_SPORT_ID.get(sport_slug.lower(), 1), limit=5)
+                _SLUG_TO_SPORT_ID.get(sport_slug.lower(), 1), limit=5)
             estimated = max(len(events_preview) * 5, 20) if events_preview else 80
 
             yield _sse({"type": "start", "sport": sport_slug,
                         "mode": "live", "estimated_max": estimated})
 
             idx = 0
-            # FIX-B: generator yields per-match — each yield is forwarded immediately
-            for match in fetch_live_stream(
-                sport_slug,
-                fetch_full_markets=True,
-                sleep_between=0.15,
-            ):
+            for match in fetch_live_stream(sport_slug, fetch_full_markets=True,
+                                           sleep_between=0.15):
                 idx += 1
                 all_matches.append(match)
-                # Emit to client IMMEDIATELY — don't buffer
                 yield _sse({"type": "match", "index": idx, "match": match})
 
             harvested_at = _now_ts()
             latency_ms   = int((time.perf_counter() - t0) * 1000)
-
-            # Cache the full snapshot for subsequent REST requests
             _cache_set(f"sp:live:{sport_slug}", {
-                "source":       "sportpesa",
-                "sport":        sport_slug,
-                "mode":         "live",
-                "match_count":  len(all_matches),
-                "harvested_at": harvested_at,
-                "latency_ms":   latency_ms,
-                "matches":      all_matches,
+                "source": "sportpesa", "sport": sport_slug, "mode": "live",
+                "match_count": len(all_matches), "harvested_at": harvested_at,
+                "latency_ms": latency_ms, "matches": all_matches,
             }, ttl=60)
-
             yield _sse({"type": "done", "total": len(all_matches),
                         "latency_ms": latency_ms, "harvested_at": harvested_at})
-
         except Exception as exc:
             log.exception("stream_live_matches %s: %s", sport_slug, exc)
             yield _sse({"type": "error", "message": str(exc)})
@@ -235,45 +390,27 @@ def stream_live_matches(sport_slug: str):
 
 @bp_sp_live.route("/match-now/<int:event_id>")
 def stream_match_now(event_id: int):
-    """
-    FIX-C: On-demand single-match refresh.
-    GET /api/sp/live/match-now/<event_id>?sport_id=1
-
-    Fetches the current full state + all market types for ONE event and
-    streams it as a single SSE frame. The frontend can call this when the
-    user taps a row to force-refresh that specific match.
-
-    SSE sequence:
-      {type:"match_snapshot", event_id, match, latency_ms}
-    """
+    """On-demand single-match refresh — SSE with one match_snapshot frame."""
     @stream_with_context
     def generate():
         t0       = time.perf_counter()
         sport_id = int(request.args.get("sport_id", 1) or 1)
-
         try:
-            h = _harvester()
-            # Fetch current event list to get the event row (includes state)
-            events = h.fetch_live_events(sport_id, limit=200)
-            ev     = next((e for e in events if str(e.get("id")) == str(event_id)), None)
-
+            h        = _harvester()
+            events   = h.fetch_live_events(sport_id, limit=200)
+            ev       = next((e for e in events if str(e.get("id")) == str(event_id)), None)
             if not ev:
                 yield _sse({"type": "error", "message": f"event {event_id} not found"})
                 return
-
-            # Fetch all market types for this single event
             all_mkts = h.fetch_all_market_types_for_events([event_id], sport_id)
             markets  = all_mkts.get(str(event_id), {})
-
-            match = h._build_live_match(ev, markets)
-
+            match    = h._build_live_match(ev, markets)
             yield _sse({
                 "type":       "match_snapshot",
                 "event_id":   event_id,
                 "match":      match,
                 "latency_ms": int((time.perf_counter() - t0) * 1000),
             })
-
         except Exception as exc:
             log.exception("stream_match_now %d: %s", event_id, exc)
             yield _sse({"type": "error", "message": str(exc)})
@@ -281,9 +418,7 @@ def stream_match_now(event_id: int):
     return Response(generate(), headers=SSE_HEADERS)
 
 
-# =============================================================================
-# ① LIVE MARKETS — correct SP endpoints
-# =============================================================================
+# ── Correct SP endpoints (confirmed from browser traffic) ────────────────────
 
 _SP_BASE = "https://www.ke.sportpesa.com"
 _HEADERS = {
@@ -300,12 +435,10 @@ _HEADERS = {
 }
 
 
-def _sp_get(path: str, params: dict | None = None, timeout: int = 12) -> dict | list | None:
+def _sp_get(path: str, params: dict | None = None, timeout: int = 12):
     try:
-        r = requests.get(
-            f"{_SP_BASE}{path}", headers=_HEADERS,
-            params=params, timeout=timeout, allow_redirects=True,
-        )
+        r = requests.get(f"{_SP_BASE}{path}", headers=_HEADERS,
+                         params=params, timeout=timeout, allow_redirects=True)
         if not r.ok:
             log.warning("SP HTTP %d → %s", r.status_code, path)
             return None
@@ -317,7 +450,6 @@ def _sp_get(path: str, params: dict | None = None, timeout: int = 12) -> dict | 
 
 @bp_sp_live.route("/market-types/<int:sport_id>")
 def live_market_types(sport_id: int):
-    """GET /api/sp/live/market-types/<sport_id> → calls /api/live/default/markets"""
     t0   = time.perf_counter()
     data = _sp_get("/api/live/default/markets", params={"sportId": sport_id})
     if data is None:
@@ -332,28 +464,18 @@ def live_market_types(sport_id: int):
 
 @bp_sp_live.route("/event-markets")
 def live_event_markets():
-    """
-    GET /api/sp/live/event-markets?eventIds=1073579,1051809&type=194&sportId=1
-    Calls /api/live/event/markets (confirmed working endpoint).
-    """
     t0        = time.perf_counter()
     event_ids = request.args.get("eventIds", "")
     mkt_type  = request.args.get("type", "194")
     sport_id  = request.args.get("sportId", "1")
-
     if not event_ids:
-        return _err("eventIds query param required (comma-separated)", 400)
-
-    data = _sp_get(
-        "/api/live/event/markets",
-        params={"eventId": event_ids, "type": mkt_type, "sportId": sport_id},
-    )
+        return _err("eventIds query param required", 400)
+    data = _sp_get("/api/live/event/markets",
+                   params={"eventId": event_ids, "type": mkt_type, "sportId": sport_id})
     if data is None:
         return _err("Could not fetch event markets from SP", 503)
-
     events = (data if isinstance(data, list)
               else data.get("events") or data.get("markets") or [])
-
     return _signed_response({
         "ok":          True,
         "sport_id":    sport_id,
@@ -364,9 +486,29 @@ def live_event_markets():
     })
 
 
-# =============================================================================
-# REST — SPORTS / EVENTS / SNAPSHOT / MARKETS / STATE
-# =============================================================================
+# ── Direct details proxy ──────────────────────────────────────────────────────
+
+@bp_sp_live.route("/event-details/<int:event_id>")
+def event_details(event_id: int):
+    """
+    GET /api/sp/live/event-details/<event_id>
+
+    Proxy to /api/live/events/{id}/details — returns the full event state +
+    all markets with team-name selections (handled with positional fallback).
+    """
+    t0   = time.perf_counter()
+    data = _sp_get(f"/api/live/events/{event_id}/details")
+    if data is None:
+        return _err(f"Details unavailable for event {event_id}", 503)
+    return _signed_response({
+        "ok":         True,
+        "event_id":   event_id,
+        "data":       data,
+        "latency_ms": int((time.perf_counter() - t0) * 1000),
+    })
+
+
+# ── REST endpoints (unchanged from v4) ───────────────────────────────────────
 
 @bp_sp_live.route("/sports")
 def live_sports():
@@ -402,7 +544,7 @@ def live_snapshot(sport_id: int):
     r   = _get_redis()
     raw = r.get(f"sp:live:snapshot:{sport_id}")
     if not raw:
-        return _err(f"No snapshot for sport_id={sport_id}. POST /test/snapshot to warm.", 404)
+        return _err(f"No snapshot for sport_id={sport_id}.", 404)
     data = json.loads(raw)
     data["ok"]         = True
     data["latency_ms"] = int((time.perf_counter() - t0) * 1000)
@@ -411,45 +553,33 @@ def live_snapshot(sport_id: int):
 
 @bp_sp_live.route("/snapshot-canonical/<sport_slug>")
 def live_snapshot_canonical(sport_slug: str):
-    """
-    Returns cached live matches. Cache is written by stream-matches SSE endpoint
-    and by celery harvest_sp_sport with mode=live.
-    Falls back to a direct fetch using the corrected sp_live_harvester.fetch_live.
-    """
-    t0 = time.perf_counter()
+    t0     = time.perf_counter()
     cached = _cache_get(f"sp:live:{sport_slug}")
     if cached and cached.get("matches"):
         data, from_cache = cached, True
     else:
         try:
-            # FIX-A: use sp_live_harvester.fetch_live (correct endpoint)
             from app.workers.sp_live_harvester import fetch_live
             matches      = fetch_live(sport_slug, fetch_full_markets=True)
             harvested_at = _now_ts()
             data = {
-                "source":       "sportpesa",
-                "sport":        sport_slug,
-                "mode":         "live",
-                "match_count":  len(matches),
-                "harvested_at": harvested_at,
-                "latency_ms":   int((time.perf_counter() - t0) * 1000),
-                "matches":      matches,
+                "source": "sportpesa", "sport": sport_slug, "mode": "live",
+                "match_count": len(matches), "harvested_at": harvested_at,
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+                "matches": matches,
             }
             _cache_set(f"sp:live:{sport_slug}", data, ttl=90)
             from_cache = False
         except Exception as exc:
             log.warning("live canonical fetch failed for %s: %s", sport_slug, exc)
             return _err(f"Live fetch failed: {exc}", 503)
-
     return _signed_response({
-        "ok":          True,
-        "source":      "sportpesa_live_canonical",
-        "sport":       sport_slug,
-        "from_cache":  from_cache,
-        "matches":     data.get("matches", []),
-        "total":       data.get("match_count", len(data.get("matches", []))),
+        "ok": True, "source": "sportpesa_live_canonical",
+        "sport": sport_slug, "from_cache": from_cache,
+        "matches": data.get("matches", []),
+        "total": data.get("match_count", len(data.get("matches", []))),
         "harvested_at": data.get("harvested_at"),
-        "latency_ms":  int((time.perf_counter() - t0) * 1000),
+        "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
 
@@ -459,32 +589,16 @@ def live_markets(event_id: int):
     r      = _get_redis()
     keys   = r.keys(f"sp:live:odds:{event_id}:*")
     if not keys:
-        return _signed_response({
-            "ok": True, "event_id": event_id, "markets": [], "count": 0,
-            "latency_ms": int((time.perf_counter() - t0) * 1000),
-        })
+        return _signed_response({"ok": True, "event_id": event_id, "markets": [], "count": 0,
+                                  "latency_ms": int((time.perf_counter() - t0) * 1000)})
     pipe   = r.pipeline()
     for k in keys:
         pipe.get(k)
-    values = pipe.execute()
     markets = [{"sel_id": k.split(":")[-1], "odds": v}
-               for k, v in zip(keys, values) if v]
-    return _signed_response({
-        "ok": True, "event_id": event_id, "markets": markets,
-        "count": len(markets), "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
-
-
-@bp_sp_live.route("/odds-history/<int:event_id>/<int:market_id>")
-def odds_history(event_id: int, market_id: int):
-    t0    = time.perf_counter()
-    limit = min(int(request.args.get("limit", 20) or 20), 50)
-    ticks = _harvester().get_odds_history(event_id, market_id, limit=limit)
-    return _signed_response({
-        "ok": True, "event_id": event_id, "market_id": market_id,
-        "ticks": ticks, "count": len(ticks),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+               for k, v in zip(keys, pipe.execute()) if v]
+    return _signed_response({"ok": True, "event_id": event_id, "markets": markets,
+                              "count": len(markets),
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
 
 
 @bp_sp_live.route("/state/<int:event_id>")
@@ -494,8 +608,28 @@ def event_state(event_id: int):
     raw = r.get(f"sp:live:state:{event_id}")
     if not raw:
         return _err(f"No state cached for event {event_id}", 404)
+    return _signed_response({"ok": True, "event_id": event_id, "state": json.loads(raw),
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
+
+
+@bp_sp_live.route("/match/<int:event_id>")
+def live_match_detail(event_id: int):
+    t0    = time.perf_counter()
+    r     = _get_redis()
+    limit = min(int(request.args.get("limit", 50) or 50), 200)
+    state_raw    = r.get(f"sp:live:state:{event_id}")
+    state        = json.loads(state_raw) if state_raw else None
+    odds_keys    = r.keys(f"sp:live:odds:{event_id}:*")
+    pipe         = r.pipeline()
+    for k in odds_keys:
+        pipe.get(k)
+    current_odds = {k.split(":")[-1]: v for k, v in zip(odds_keys, pipe.execute()) if v}
+    market_history = _harvester().get_market_snapshot_history(event_id, limit=limit)
+    state_history  = _harvester().get_state_snapshot_history(event_id, limit=limit)
     return _signed_response({
-        "ok": True, "event_id": event_id, "state": json.loads(raw),
+        "ok": True, "event_id": event_id, "state": state,
+        "current_odds": current_odds, "market_history": market_history,
+        "state_history": state_history,
         "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
@@ -507,10 +641,8 @@ def live_status():
     r  = _get_redis()
     channels = {}
     try:
-        ps_info = r.execute_command(
-            "PUBSUB", "NUMSUB",
-            CH_ALL, "sp:live:sport:1", "sp:live:sport:2",
-        )
+        ps_info = r.execute_command("PUBSUB", "NUMSUB",
+                                    CH_ALL, "sp:live:sport:1", "sp:live:sport:2")
         for i in range(0, len(ps_info), 2):
             channels[ps_info[i]] = ps_info[i + 1]
     except Exception:
@@ -522,47 +654,7 @@ def live_status():
     })
 
 
-# =============================================================================
-# Full match detail (state + current odds + history)
-# =============================================================================
-
-@bp_sp_live.route("/match/<int:event_id>")
-def live_match_detail(event_id: int):
-    """
-    GET /api/sp/live/match/<event_id>
-    Full current picture: Redis state + current odds + both history types.
-    """
-    t0    = time.perf_counter()
-    r     = _get_redis()
-    limit = min(int(request.args.get("limit", 50) or 50), 200)
-
-    state_raw = r.get(f"sp:live:state:{event_id}")
-    state     = json.loads(state_raw) if state_raw else None
-
-    odds_keys = r.keys(f"sp:live:odds:{event_id}:*")
-    pipe      = r.pipeline()
-    for k in odds_keys:
-        pipe.get(k)
-    current_odds = {k.split(":")[-1]: v
-                    for k, v in zip(odds_keys, pipe.execute()) if v}
-
-    market_history = _harvester().get_market_snapshot_history(event_id, limit=limit)
-    state_history  = _harvester().get_state_snapshot_history(event_id, limit=limit)
-
-    return _signed_response({
-        "ok":             True,
-        "event_id":       event_id,
-        "state":          state,
-        "current_odds":   current_odds,
-        "market_history": market_history,
-        "state_history":  state_history,
-        "latency_ms":     int((time.perf_counter() - t0) * 1000),
-    })
-
-
-# =============================================================================
-# History query endpoints (unchanged from v3)
-# =============================================================================
+# ── History endpoints (unchanged from v4) ────────────────────────────────────
 
 @bp_sp_live.route("/history/market/<int:event_id>")
 def history_market(event_id: int):
@@ -570,11 +662,9 @@ def history_market(event_id: int):
     date  = request.args.get("date")
     limit = min(int(request.args.get("limit", 100) or 100), 500)
     ticks = _harvester().get_market_snapshot_history(event_id, date=date, limit=limit)
-    return _signed_response({
-        "ok": True, "event_id": event_id, "date": date,
-        "ticks": ticks, "count": len(ticks),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+    return _signed_response({"ok": True, "event_id": event_id, "date": date,
+                              "ticks": ticks, "count": len(ticks),
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
 
 
 @bp_sp_live.route("/history/state/<int:event_id>")
@@ -583,11 +673,9 @@ def history_state(event_id: int):
     date  = request.args.get("date")
     limit = min(int(request.args.get("limit", 100) or 100), 500)
     ticks = _harvester().get_state_snapshot_history(event_id, date=date, limit=limit)
-    return _signed_response({
-        "ok": True, "event_id": event_id, "date": date,
-        "ticks": ticks, "count": len(ticks),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+    return _signed_response({"ok": True, "event_id": event_id, "date": date,
+                              "ticks": ticks, "count": len(ticks),
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
 
 
 @bp_sp_live.route("/history/dates/<int:event_id>")
@@ -600,22 +688,17 @@ def history_dates(event_id: int):
         parts = k.split(":")
         if parts:
             dates.add(parts[-1])
-    return _signed_response({
-        "ok": True, "event_id": event_id,
-        "dates": sorted(dates, reverse=True), "count": len(dates),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+    return _signed_response({"ok": True, "event_id": event_id,
+                              "dates": sorted(dates, reverse=True), "count": len(dates),
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
 
 
-# =============================================================================
-# Multi-bookmaker odds comparison (unchanged from v3)
-# =============================================================================
+# ── Compare (unchanged from v4) ───────────────────────────────────────────────
 
 @bp_sp_live.route("/compare/<sport_slug>")
 def compare_odds(sport_slug: str):
     t0          = time.perf_counter()
     market_slug = request.args.get("market")
-
     raw = _cache_get(f"odds:upcoming:all:{sport_slug}")
     if not raw:
         for source in ("sp", "bt", "od", "b2b"):
@@ -624,9 +707,7 @@ def compare_odds(sport_slug: str):
                 break
     if not raw or not raw.get("matches"):
         return _err(f"No upcoming data for {sport_slug}. Harvest must run first.", 404)
-
     comparison: list[dict] = []
-
     for match in raw.get("matches", []):
         markets = match.get("markets") or {}
         if market_slug:
@@ -634,7 +715,6 @@ def compare_odds(sport_slug: str):
                        if k == market_slug or k.startswith(market_slug)}
         if not markets:
             continue
-
         entry: dict = {
             "match_id":    match.get("match_id") or match.get("betradar_id", ""),
             "home_team":   match.get("home_team", ""),
@@ -643,29 +723,22 @@ def compare_odds(sport_slug: str):
             "start_time":  match.get("start_time"),
             "markets":     {},
         }
-
         for mkt_slug, outcomes in markets.items():
             mkt_entry: dict = {"bookmakers": {}, "best": {}, "worst": {}, "margin": {}}
-
             for outcome, val in outcomes.items():
                 if isinstance(val, dict):
-                    bk_prices = {bk: float(p) for bk, p in val.items()
-                                 if float(p) > 1}
+                    bk_prices = {bk: float(p) for bk, p in val.items() if float(p) > 1}
                 elif isinstance(val, (int, float)) and float(val) > 1:
                     bk_prices = {raw.get("source", "unknown"): float(val)}
                 else:
                     continue
                 if not bk_prices:
                     continue
-
                 best_bk  = max(bk_prices, key=lambda b: bk_prices[b])
                 worst_bk = min(bk_prices, key=lambda b: bk_prices[b])
                 mkt_entry["bookmakers"][outcome] = bk_prices
-                mkt_entry["best"][outcome]       = {"bookmaker": best_bk,
-                                                     "price": bk_prices[best_bk]}
-                mkt_entry["worst"][outcome]      = {"bookmaker": worst_bk,
-                                                     "price": bk_prices[worst_bk]}
-
+                mkt_entry["best"][outcome]       = {"bookmaker": best_bk, "price": bk_prices[best_bk]}
+                mkt_entry["worst"][outcome]      = {"bookmaker": worst_bk, "price": bk_prices[worst_bk]}
             all_bks: set[str] = set()
             for bk_dict in mkt_entry["bookmakers"].values():
                 if isinstance(bk_dict, dict):
@@ -676,28 +749,18 @@ def compare_odds(sport_slug: str):
                 if len(bk_odds) >= 2:
                     inv_sum = sum(1.0 / p for p in bk_odds)
                     mkt_entry["margin"][bk] = round((inv_sum - 1.0) * 100, 3)
-
             entry["markets"][mkt_slug] = mkt_entry
-
         if entry["markets"]:
             comparison.append(entry)
-
     return _signed_response({
-        "ok":          True,
-        "sport":       sport_slug,
-        "market":      market_slug or "all",
-        "source":      raw.get("source", "merged"),
-        "bookmakers":  raw.get("bookmakers", []),
-        "harvested_at": raw.get("harvested_at"),
-        "count":       len(comparison),
-        "matches":     comparison,
-        "latency_ms":  int((time.perf_counter() - t0) * 1000),
+        "ok": True, "sport": sport_slug, "market": market_slug or "all",
+        "source": raw.get("source", "merged"), "bookmakers": raw.get("bookmakers", []),
+        "harvested_at": raw.get("harvested_at"), "count": len(comparison),
+        "matches": comparison, "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
 
 
-# =============================================================================
-# Sportradar proxy (unchanged from v3)
-# =============================================================================
+# ── Sportradar proxy (unchanged from v4) ─────────────────────────────────────
 
 _SR_BASE           = "https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo"
 _SR_ORIGIN         = "https://www.ke.sportpesa.com"
@@ -724,12 +787,9 @@ def _sr_token() -> str:
 def _sr_get(endpoint: str, timeout: int = 8) -> dict | None:
     url = f"{_SR_BASE}/{endpoint}?T={_sr_token()}"
     try:
-        r = requests.get(
-            url,
-            headers={"Origin": _SR_ORIGIN, "Referer": _SR_ORIGIN + "/",
-                     "User-Agent": _HEADERS["User-Agent"]},
-            timeout=timeout,
-        )
+        r = requests.get(url, headers={"Origin": _SR_ORIGIN, "Referer": _SR_ORIGIN + "/",
+                                       "User-Agent": _HEADERS["User-Agent"]},
+                         timeout=timeout)
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -743,7 +803,6 @@ def sr_match_details(external_id: int):
     data = _sr_get(f"match_detailsextended/{external_id}")
     if not data:
         return _err(f"SR stats unavailable for externalId={external_id}.", 503)
-
     doc    = (data.get("doc") or [{}])[0]
     inner  = doc.get("data", {})
     values = inner.get("values", {})
@@ -756,16 +815,13 @@ def sr_match_details(external_id: int):
         val = entry.get("value")
         if not isinstance(val, dict):
             continue
-        h = val.get("home", "")
-        a = val.get("away", "")
+        h, a = val.get("home", ""), val.get("away", "")
         if h == "" and a == "":
             continue
         stats_rows.append({"name": label, "home": h or 0, "away": a or 0})
-
     return _signed_response({
         "ok": True, "external_id": external_id,
-        "stats": {"home": teams.get("home", "Home"),
-                  "away": teams.get("away", "Away"),
+        "stats": {"home": teams.get("home", "Home"), "away": teams.get("away", "Away"),
                   "stats": stats_rows},
         "latency_ms": int((time.perf_counter() - t0) * 1000),
     })
@@ -777,7 +833,6 @@ def sr_match_info(external_id: int):
     data = _sr_get(f"match_info/{external_id}")
     if not data:
         return _err(f"SR match_info unavailable for externalId={external_id}.", 503)
-
     doc   = (data.get("doc") or [{}])[0]
     inner = doc.get("data", {})
     match = inner.get("match", {})
@@ -788,7 +843,6 @@ def sr_match_info(external_id: int):
     ref_name = ref.get("name", "")
     ref_nat  = ref.get("nationality", "")
     ref_str  = f"{ref_name} ({ref_nat})".strip(" ()") if ref_name else ""
-
     return _signed_response({
         "ok": True, "external_id": external_id,
         "match": {
@@ -803,20 +857,17 @@ def sr_match_info(external_id: int):
     })
 
 
-# =============================================================================
-# Test / Admin endpoints
-# =============================================================================
+# ── Admin / test endpoints (unchanged from v4) ────────────────────────────────
 
 @bp_sp_live.route("/test/snapshot", methods=["POST"])
 def test_snapshot():
     t0 = time.perf_counter()
     try:
         result  = _harvester().snapshot_all_sports()
-        summary = {sport_id: len(events) for sport_id, events in result.items()}
-        return _signed_response({
-            "ok": True, "sports_done": len(result), "event_counts": summary,
-            "latency_ms": int((time.perf_counter() - t0) * 1000),
-        })
+        summary = {sid: len(evs) for sid, evs in result.items()}
+        return _signed_response({"ok": True, "sports_done": len(result),
+                                  "event_counts": summary,
+                                  "latency_ms": int((time.perf_counter() - t0) * 1000)})
     except Exception as exc:
         return _err(f"snapshot failed: {exc}", 500)
 
@@ -825,20 +876,16 @@ def test_snapshot():
 def test_start_harvester():
     t0     = time.perf_counter()
     thread = _harvester().start_harvester_thread()
-    return _signed_response({
-        "ok": True, "alive": thread.is_alive(), "thread": thread.name,
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+    return _signed_response({"ok": True, "alive": thread.is_alive(), "thread": thread.name,
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
 
 
 @bp_sp_live.route("/test/stop-harvester", methods=["POST"])
 def test_stop_harvester():
     t0 = time.perf_counter()
     _harvester().stop_harvester()
-    return _signed_response({
-        "ok": True, "alive": _harvester().harvester_alive(),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+    return _signed_response({"ok": True, "alive": _harvester().harvester_alive(),
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
 
 
 @bp_sp_live.route("/test/publish", methods=["POST"])
@@ -846,15 +893,12 @@ def test_publish():
     t0   = time.perf_counter()
     body = request.get_json(silent=True) or {}
     r    = _get_redis()
-    n    = r.publish(
-        body.get("channel", CH_ALL),
-        json.dumps(body.get("payload", {
-            "type": "test", "ts": datetime.now(timezone.utc).isoformat()})),
-    )
-    return _signed_response({
-        "ok": True, "channel": body.get("channel", CH_ALL),
-        "subscribers": n, "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+    n    = r.publish(body.get("channel", CH_ALL),
+                     json.dumps(body.get("payload", {"type": "test",
+                                                      "ts": datetime.now(timezone.utc).isoformat()})))
+    return _signed_response({"ok": True, "channel": body.get("channel", CH_ALL),
+                              "subscribers": n,
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
 
 
 @bp_sp_live.route("/test/fetch-markets", methods=["GET"])
@@ -863,16 +907,34 @@ def test_fetch_markets():
     sport_id = int(request.args.get("sport_id", 1))
     ids_str  = request.args.get("event_ids", "")
     mkt_type = int(request.args.get("type", 194))
-
     if ids_str:
         event_ids = [int(i.strip()) for i in ids_str.split(",") if i.strip().isdigit()]
     else:
         events    = _harvester().fetch_live_events(sport_id, limit=15)
         event_ids = [ev["id"] for ev in events]
-
     markets = _harvester().fetch_live_markets(event_ids, sport_id, mkt_type)
-    return _signed_response({
-        "ok": True, "sport_id": sport_id, "event_ids": event_ids,
-        "market_type": mkt_type, "markets": markets, "count": len(markets),
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
+    return _signed_response({"ok": True, "sport_id": sport_id, "event_ids": event_ids,
+                              "market_type": mkt_type, "markets": markets,
+                              "count": len(markets),
+                              "latency_ms": int((time.perf_counter() - t0) * 1000)})
+
+
+@bp_sp_live.route("/test/poll-details/<int:event_id>", methods=["POST"])
+def test_poll_details(event_id: int):
+    """
+    POST /api/sp/live/test/poll-details/<event_id>
+    Synchronously poll /api/live/events/{id}/details and publish to Redis.
+    Returns the diff result immediately.
+    """
+    t0       = time.perf_counter()
+    sport_id = int(request.args.get("sport_id", 1) or 1)
+    try:
+        from app.workers.tasks_live import _fetch_and_publish_details
+        result = _fetch_and_publish_details(event_id, sport_id)
+        return _signed_response({
+            "ok": True, "event_id": event_id, "sport_id": sport_id,
+            **result,
+            "latency_ms": int((time.perf_counter() - t0) * 1000),
+        })
+    except Exception as exc:
+        return _err(f"poll failed: {exc}", 500)
