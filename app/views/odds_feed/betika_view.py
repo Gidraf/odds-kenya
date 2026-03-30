@@ -74,7 +74,7 @@ from app.workers.bt_mapper import (
 
 logger = logging.getLogger(__name__)
 
-bp = Blueprint("bt", __name__, url_prefix="/api/bt")
+bp_betika = Blueprint("bt", __name__, url_prefix="/api/bt")
 
 # TTL constants
 _UPC_TTL = 300    # 5 min cache for upcoming
