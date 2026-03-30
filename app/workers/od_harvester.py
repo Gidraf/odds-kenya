@@ -23,6 +23,31 @@ OdiBets API endpoints
                       ?resource=sportevents&platform=mobile&mode=1
                       &sport_id=1&day=2026-03-30&sub_type_id=1
 
+  Response shape:
+    {
+      "status_code": 200,
+      "data": {
+        "leagues": [
+          {
+            "competition_id": "851",
+            "competition_name": "Int. Friendly Games",
+            "category_name": "International",
+            "matches": [
+              {
+                "game_id": "70352408",
+                "parent_match_id": "...",
+                "home_team": "Arsenal",
+                "away_team": "Chelsea",
+                "start_time": "2026-03-30T15:00:00",
+                "sport_id": "soccer",          ← string slug, NOT int
+                "markets": [ { "sub_type_id": "1", "odds": [...] } ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+
   Live list:      GET https://api.odi.site/sportsbook/v1
                       ?resource=live&sport_id=&sub_type_id=
 
@@ -63,6 +88,7 @@ import json
 import logging
 import threading
 import time
+from datetime import date as _date
 from typing import Any
 
 import httpx
@@ -82,24 +108,55 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 
 OD_SPORT_IDS: dict[str, int] = {
-    "soccer":       1,
-    "basketball":   2,
-    "tennis":       3,
-    "cricket":      4,
-    "rugby":        5,
-    "ice-hockey":   6,
-    "volleyball":   7,
-    "handball":     8,
-    "table-tennis": 9,
-    "baseball":     10,
-    "esoccer":      1001,
-    "mma":          15,
-    "boxing":       16,
-    "darts":        17,
+    "soccer":            1,
+    "basketball":        2,
+    "tennis":            3,
+    "cricket":           4,
+    "rugby":             5,
+    "ice-hockey":        6,
+    "volleyball":        7,
+    "handball":          8,
+    "table-tennis":      9,
+    "baseball":          10,
     "american-football": 11,
+    "mma":               15,
+    "boxing":            16,
+    "darts":             17,
+    "esoccer":           1001,
 }
 
 OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
+
+# OdiBets API sometimes returns string sport slugs like "soccer", "ITL",
+# "internationals", "football" — map them to canonical slugs.
+_OD_STRING_SPORT_MAP: dict[str, str] = {
+    "soccer":           "soccer",
+    "football":         "soccer",
+    "internationals":   "soccer",
+    "itl":              "soccer",
+    "basketball":       "basketball",
+    "tennis":           "tennis",
+    "cricket":          "cricket",
+    "rugby":            "rugby",
+    "rugby union":      "rugby",
+    "rugby league":     "rugby",
+    "ice-hockey":       "ice-hockey",
+    "icehockey":        "ice-hockey",
+    "ice hockey":       "ice-hockey",
+    "volleyball":       "volleyball",
+    "handball":         "handball",
+    "table-tennis":     "table-tennis",
+    "tabletennis":      "table-tennis",
+    "table tennis":     "table-tennis",
+    "baseball":         "baseball",
+    "mma":              "mma",
+    "boxing":           "boxing",
+    "darts":            "darts",
+    "american football":"american-football",
+    "american-football":"american-football",
+    "esoccer":          "esoccer",
+    "e-soccer":         "esoccer",
+}
 
 
 def slug_to_od_sport_id(slug: str) -> int:
@@ -108,6 +165,37 @@ def slug_to_od_sport_id(slug: str) -> int:
 
 def od_sport_to_slug(sport_id: int) -> str:
     return OD_SPORT_SLUGS.get(sport_id, "soccer")
+
+
+def _resolve_sport(raw_sport: Any, fallback_od_id: int) -> tuple[int, str]:
+    """
+    Resolve a raw sport value (int id OR string slug) to (od_sport_id, sport_slug).
+    OdiBets upcoming returns string slugs like "soccer" or "ITL";
+    live returns integer ids like 1.
+    """
+    if raw_sport is None:
+        return fallback_od_id, od_sport_to_slug(fallback_od_id)
+
+    # Try integer first
+    try:
+        od_id = int(raw_sport)
+        return od_id, od_sport_to_slug(od_id)
+    except (TypeError, ValueError):
+        pass
+
+    # String slug
+    str_val   = str(raw_sport).lower().strip()
+    canonical = _OD_STRING_SPORT_MAP.get(str_val)
+    if canonical:
+        od_id = slug_to_od_sport_id(canonical)
+        return od_id, canonical
+
+    # Last resort: try direct lookup
+    od_id = OD_SPORT_IDS.get(str_val)
+    if od_id:
+        return od_id, str_val
+
+    return fallback_od_id, od_sport_to_slug(fallback_od_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -119,12 +207,12 @@ SBOOK_V1  = f"{API_BASE}/sportsbook/v1"    # live, sportevent, sport
 SBOOK_ODI = f"{API_BASE}/odi/sportsbook"   # upcoming (sportevents)
 
 HEADERS: dict[str, str] = {
-    "accept":           "application/json, text/plain, */*",
-    "accept-language":  "en-GB,en;q=0.9",
-    "authorization":    "Bearer",
-    "content-type":     "application/json",
-    "origin":           "https://odibets.com",
-    "referer":          "https://odibets.com/",
+    "accept":             "application/json, text/plain, */*",
+    "accept-language":    "en-GB,en;q=0.9",
+    "authorization":      "Bearer",
+    "content-type":       "application/json",
+    "origin":             "https://odibets.com",
+    "referer":            "https://odibets.com/",
     "user-agent": (
         "Mozilla/5.0 (Linux; Android 10; K) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -168,6 +256,111 @@ def _get(url: str, params: dict | None = None, timeout: float = 10.0) -> dict | 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# RESPONSE UNWRAPPING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _unwrap_upcoming_response(
+    data:           dict | list,
+    fallback_sport_id: int,
+) -> list[dict]:
+    """
+    Unwrap the OdiBets upcoming API envelope into a flat list of raw match dicts.
+
+    Confirmed response shape (2026-03):
+    {
+      "status_code": 200,
+      "data": {
+        "leagues": [
+          {
+            "competition_id":   "851",
+            "competition_name": "Int. Friendly Games",
+            "category_name":    "International",
+            "matches": [ { "game_id": "...", "home_team": "...", ... } ]
+          }
+        ]
+      }
+    }
+
+    Each match already carries competition_name / category_name from its
+    parent league, but we back-fill them if missing.
+    """
+    if isinstance(data, list):
+        # Bare list — return as-is
+        return data
+
+    if not isinstance(data, dict):
+        return []
+
+    # Top-level envelope: {"status_code": 200, "data": {...}}
+    inner = data.get("data")
+
+    if isinstance(inner, list):
+        # data.data is already a flat list
+        return inner
+
+    if isinstance(inner, dict):
+        leagues: list[dict] = inner.get("leagues") or []
+        raw_events: list[dict] = []
+
+        for league in leagues:
+            comp_name = str(league.get("competition_name") or "")
+            cat_name  = str(league.get("category_name")   or "")
+
+            matches_in_league: list[dict] = league.get("matches") or []
+
+            for m in matches_in_league:
+                if not isinstance(m, dict):
+                    continue
+                # Back-fill competition / category if the match row doesn't carry them
+                if not m.get("competition_name") and comp_name:
+                    m["competition_name"] = comp_name
+                if not m.get("category_name") and cat_name:
+                    m["category_name"] = cat_name
+                raw_events.append(m)
+
+        if raw_events:
+            logger.debug(
+                "OD upcoming unwrap: %d leagues → %d matches",
+                len(leagues), len(raw_events),
+            )
+            return raw_events
+
+        # data.data is a dict but has no leagues — try common flat keys
+        for key in ("events", "matches", "results", "sport_events", "sportevents"):
+            if isinstance(inner.get(key), list) and inner[key]:
+                return inner[key]
+
+        return []
+
+    # data.data is absent — try top-level flat keys
+    for key in ("events", "matches", "results", "sport_events", "sportevents"):
+        if isinstance(data.get(key), list) and data[key]:
+            return data[key]
+
+    return []
+
+
+def _unwrap_live_response(data: dict | list) -> list[dict]:
+    """Unwrap the OdiBets live endpoint response into a flat list of match dicts."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    inner = data.get("data")
+    if isinstance(inner, list):
+        return inner
+    if isinstance(inner, dict):
+        for key in ("matches", "events", "live", "results"):
+            if isinstance(inner.get(key), list) and inner[key]:
+                return inner[key]
+    for key in ("matches", "events", "live", "results", "data"):
+        candidate = data.get(key)
+        if isinstance(candidate, list) and candidate:
+            return candidate
+    return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MARKET NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -196,14 +389,30 @@ def _extract_line(spec_str: str) -> str:
 
 def _parse_market_group(
     sub_type_id: int | str,
-    mkt_name: str,
-    odds_list: list[dict],
+    mkt_name:    str,
+    odds_list:   list[dict],
     od_sport_id: int,
 ) -> dict[str, dict[str, float]]:
     """
     Parse one OdiBets market group (sub_type_id + odds list) into
     {canonical_slug → {canonical_outcome → odd}} — potentially multiple
     slugs when a market has multiple specifier values (e.g. Total at O/U 1.5, 2.5…).
+
+    Upcoming match odds shape (inside markets[]):
+      {
+        "sub_type_id": "1",
+        "odds": [
+          {
+            "odd_key":           "1",
+            "odd_value":         "2.10",
+            "display":           "1",
+            "special_bet_value": "",
+            "odd_def":           "Home",
+            "active":            1
+          },
+          ...
+        ]
+      }
     """
     if not odds_list:
         return {}
@@ -219,11 +428,15 @@ def _parse_market_group(
     result: dict[str, dict[str, float]] = {}
 
     for spec, group in by_spec.items():
-        line = _extract_line(spec)
         slug = normalize_od_market(sid, spec)
 
         outcomes: dict[str, float] = {}
         for o in group:
+            # Skip inactive / suspended outcomes
+            active = o.get("active")
+            if active is not None and str(active) in ("0", "false", "False"):
+                continue
+
             try:
                 val = float(o.get("odd_value") or 0)
             except (TypeError, ValueError):
@@ -231,9 +444,9 @@ def _parse_market_group(
             if val <= 1.0:
                 continue  # suspended / void
 
-            raw_key  = str(o.get("odd_key")  or o.get("odd_def") or "")
-            display  = str(o.get("display")  or "")
-            can_key  = normalize_outcome(slug, raw_key, display)
+            raw_key = str(o.get("odd_key") or o.get("odd_def") or "")
+            display = str(o.get("display") or o.get("odd_def") or "")
+            can_key = normalize_outcome(slug, raw_key, display)
             if can_key:
                 outcomes[can_key] = val
 
@@ -247,11 +460,19 @@ def _parse_all_markets(
     markets_raw: list[dict],
     od_sport_id: int,
 ) -> dict[str, dict[str, float]]:
-    """Parse a full markets list (from sportevent detail) into canonical form."""
+    """
+    Parse a full markets list into canonical form.
+
+    Each element may be:
+      { "sub_type_id": "1", "odds": [...] }          ← upcoming / detail
+      { "type_id": 1,       "outcomes": [...] }       ← alternate shape
+    """
     merged: dict[str, dict[str, float]] = {}
     for mkt in markets_raw:
+        if not isinstance(mkt, dict):
+            continue
         sub_type_id = mkt.get("sub_type_id") or mkt.get("type_id") or 0
-        mkt_name    = str(mkt.get("name") or mkt.get("type_name") or "")
+        mkt_name    = str(mkt.get("name") or mkt.get("type_name") or mkt.get("odd_type") or "")
         odds_list   = mkt.get("odds") or mkt.get("outcomes") or []
         if not isinstance(odds_list, list):
             continue
@@ -271,54 +492,84 @@ def _parse_all_markets(
 def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict | None:
     """
     Convert one raw OdiBets API match/event dict into canonical form.
-    Handles both list-endpoint rows and sportevent detail responses.
+
+    Key field differences between upcoming and live endpoints:
+      Upcoming:  id field = "game_id",  sport_id = string slug e.g. "soccer"
+      Live:      id field = "id",       sport_id = int e.g. 1
+      Detail:    id field = "id" / "game_id"
     """
     try:
-        # Identity
-        match_id    = str(raw.get("id") or raw.get("match_id") or raw.get("event_id") or "")
+        # ── Identity ─────────────────────────────────────────────────────────
+        # Upcoming uses game_id; live/detail use id or match_id
+        match_id = str(
+            raw.get("game_id")   or
+            raw.get("id")        or
+            raw.get("match_id")  or
+            raw.get("event_id")  or
+            ""
+        )
         parent_id   = str(raw.get("parent_match_id") or raw.get("parent_id") or match_id)
         betradar_id = str(raw.get("betradar_id") or raw.get("sr_id") or "") or None
 
         if not match_id:
             return None
 
-        # Teams / competition
+        # ── Teams / competition ───────────────────────────────────────────────
         home        = str(raw.get("home_team") or raw.get("home") or "Home")
         away        = str(raw.get("away_team") or raw.get("away") or "Away")
-        competition = str(raw.get("competition_name") or raw.get("competition") or raw.get("league") or "")
-        category    = str(raw.get("category") or raw.get("country") or "")
+        competition = str(
+            raw.get("competition_name") or raw.get("competition") or
+            raw.get("league") or ""
+        )
+        # Upcoming has category_name; live may have category or country
+        category = str(
+            raw.get("category_name") or raw.get("category") or
+            raw.get("country_name")  or raw.get("country") or ""
+        )
 
-        # Sport
-        raw_sport   = raw.get("sport_id") or raw.get("sport") or od_sport_id
-        try:
-            od_sport_id_ = int(raw_sport)
-        except (TypeError, ValueError):
-            od_sport_id_ = slug_to_od_sport_id(str(raw_sport).lower())
-        sport_slug  = od_sport_to_slug(od_sport_id_)
+        # ── Sport ─────────────────────────────────────────────────────────────
+        # Upcoming endpoint: sport_id is a string e.g. "soccer", "ITL"
+        # Live endpoint:     sport_id is an int e.g. 1
+        raw_sport = raw.get("sport_id") or raw.get("sport") or raw.get("s_binomen")
+        od_sport_id_, sport_slug = _resolve_sport(raw_sport, od_sport_id)
 
-        # Time
-        start_time  = str(raw.get("start_time") or raw.get("event_date") or raw.get("date") or "")
+        # ── Time ──────────────────────────────────────────────────────────────
+        start_time = str(raw.get("start_time") or raw.get("event_date") or raw.get("date") or "")
 
-        # Live state
-        current_score = str(raw.get("current_score") or raw.get("score") or "")
-        match_time    = str(raw.get("match_time") or raw.get("game_time") or "")
-        event_status  = str(raw.get("event_status") or raw.get("status") or "")
-        bet_status    = str(raw.get("bet_status") or "")
-        score_parts   = current_score.split(":") if ":" in current_score else current_score.split("-")
-        score_home    = score_parts[0].strip() if len(score_parts) >= 2 else None
-        score_away    = score_parts[1].strip() if len(score_parts) >= 2 else None
+        # ── Live state ────────────────────────────────────────────────────────
+        current_score = str(
+            raw.get("current_score") or raw.get("score") or
+            raw.get("result") or ""
+        )
+        match_time = str(
+            raw.get("match_time") or raw.get("game_time") or
+            raw.get("periodic_time") or ""
+        )
+        event_status = str(
+            raw.get("event_status") or raw.get("status_desc") or
+            raw.get("status") or ""
+        )
+        bet_status = str(raw.get("bet_status") or "")
 
-        # Markets — handle both list format and detail format
-        markets_raw  = raw.get("markets") or raw.get("odds") or []
+        score_parts = (
+            current_score.split(":") if ":" in current_score
+            else current_score.split("-") if "-" in current_score
+            else []
+        )
+        score_home = score_parts[0].strip() if len(score_parts) >= 2 else None
+        score_away = score_parts[1].strip() if len(score_parts) >= 2 else None
+
+        # ── Markets ───────────────────────────────────────────────────────────
+        markets_raw = raw.get("markets") or raw.get("odds") or []
         if isinstance(markets_raw, list):
             markets = _parse_all_markets(markets_raw, od_sport_id_)
         elif isinstance(markets_raw, dict):
-            # Already parsed (e.g. cached entry)
+            # Already parsed canonical form (e.g. from cache)
             markets = markets_raw
         else:
             markets = {}
 
-        # Inline top-level 1X2 odds (list endpoint quick odds)
+        # Inline top-level 1X2 quick-odds (some list endpoints embed them)
         if "1x2" not in markets:
             try:
                 ho = float(raw.get("home_odd") or raw.get("h_odd") or 0)
@@ -377,46 +628,53 @@ def fetch_upcoming_matches(
     competition_id: str  = "",
     sub_type_id:    int  = 1,
     mode:           int  = 1,
-    # Celery task compat params — ignored but accepted
-    fetch_full_markets: bool = False,
-    fetch_extended:     bool = False,
+    # Celery task compat params — accepted but not used here
+    fetch_full_markets: bool      = False,
+    fetch_extended:     bool      = False,
     max_matches:        int | None = None,
     **kwargs,
 ) -> list[dict]:
     """
     Fetch upcoming matches from:
-    GET https://api.odi.site/odi/sportsbook?resource=sportevents&platform=mobile&mode=1
-        &sport_id=1&day=YYYY-MM-DD&sub_type_id=1
+      GET https://api.odi.site/odi/sportsbook
+          ?resource=sportevents&platform=mobile&mode=1
+          &sport_id=1&day=YYYY-MM-DD&sub_type_id=1
+
+    The OdiBets API REQUIRES a day parameter — defaults to today if omitted.
+    Response is unwrapped from data.leagues[].matches[] structure.
     """
     od_sport_id = slug_to_od_sport_id(sport_slug)
+
+    # OdiBets API requires a day param — default to today
+    if not day:
+        day = _date.today().isoformat()
+
     params: dict[str, Any] = {
-        "resource":   "sportevents",
-        "platform":   "mobile",
-        "mode":       mode,
-        "sport_id":   od_sport_id,
+        "resource":    "sportevents",
+        "platform":    "mobile",
+        "mode":        mode,
+        "sport_id":    od_sport_id,
         "sub_type_id": sub_type_id,
+        "day":         day,
     }
-    if day:
-        params["day"] = day
     if competition_id:
         params["competition_id"] = competition_id
 
     data = _get(SBOOK_ODI, params=params)
     if not data:
+        logger.warning("OD upcoming %s %s: no response from API", sport_slug, day)
         return []
 
-    # Response can be a list or {"data": [...], "events": [...]}
-    if isinstance(data, list):
-        raw_events = data
-    elif isinstance(data, dict):
-        raw_events = (
-            data.get("data") or data.get("events") or
-            data.get("matches") or data.get("results") or []
+    raw_events = _unwrap_upcoming_response(data, od_sport_id)
+    if not raw_events:
+        logger.warning(
+            "OD upcoming %s %s: 0 events after unwrap (top-level keys: %s)",
+            sport_slug, day,
+            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
         )
-    else:
-        raw_events = []
+        return []
 
-    matches = []
+    matches: list[dict] = []
     for raw in raw_events:
         if not isinstance(raw, dict):
             continue
@@ -424,7 +682,7 @@ def fetch_upcoming_matches(
         if m:
             matches.append(m)
 
-    logger.info("OD upcoming %s: %d matches", sport_slug, len(matches))
+    logger.info("OD upcoming %s %s: %d matches (from %d raw)", sport_slug, day, len(matches), len(raw_events))
     return matches
 
 
@@ -434,6 +692,7 @@ def fetch_upcoming_all_sports(
 ) -> list[dict]:
     """Fetch upcoming across multiple sports concurrently."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
     if sports is None:
         sports = ["soccer", "basketball", "tennis", "cricket"]
 
@@ -455,14 +714,14 @@ def fetch_upcoming_all_sports(
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     """
     Fetch currently live matches from:
-    GET https://api.odi.site/sportsbook/v1?resource=live&sport_id=&sub_type_id=
+      GET https://api.odi.site/sportsbook/v1?resource=live&sport_id=&sub_type_id=
     """
     params: dict[str, Any] = {
-        "resource":   "live",
-        "sportsbook": "sportsbook",
-        "ua":         HEADERS["user-agent"],
+        "resource":    "live",
+        "sportsbook":  "sportsbook",
+        "ua":          HEADERS["user-agent"],
         "sub_type_id": "",
-        "sport_id":   "",
+        "sport_id":    "",
     }
     if sport_slug:
         params["sport_id"] = slug_to_od_sport_id(sport_slug)
@@ -471,22 +730,18 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     if not data:
         return []
 
-    if isinstance(data, list):
-        raw_events = data
-    elif isinstance(data, dict):
-        raw_events = (
-            data.get("data") or data.get("events") or
-            data.get("matches") or data.get("live") or []
-        )
-    else:
-        raw_events = []
+    raw_events = _unwrap_live_response(data)
 
-    matches = []
+    matches: list[dict] = []
     for raw in raw_events:
         if not isinstance(raw, dict):
             continue
-        od_sport_id = int(raw.get("sport_id") or 1)
-        m = _normalise_match(raw, od_sport_id, is_live=True)
+        # Live endpoint returns integer sport_id
+        try:
+            raw_sport_id = int(raw.get("sport_id") or 1)
+        except (TypeError, ValueError):
+            raw_sport_id = 1
+        m = _normalise_match(raw, raw_sport_id, is_live=True)
         if m:
             matches.append(m)
 
@@ -498,34 +753,45 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
 # MATCH DETAIL (single event — all markets)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[str, dict[str, float]], dict]:
+def fetch_event_detail(
+    event_id:    str | int,
+    od_sport_id: int = 1,
+) -> tuple[dict[str, dict[str, float]], dict]:
     """
     Fetch full market list for one event.
-    GET https://api.odi.site/sportsbook/v1?resource=sportevent&id={event_id}
+      GET https://api.odi.site/sportsbook/v1?resource=sportevent&id={event_id}
 
     Returns (markets, meta_dict).
     """
     params = {
-        "resource":   "sportevent",
-        "id":         str(event_id),
+        "resource":    "sportevent",
+        "id":          str(event_id),
         "category_id": "",
         "sub_type_id": "",
-        "builder":    0,
-        "sportsbook": "sportsbook",
-        "ua":         HEADERS["user-agent"],
+        "builder":     0,
+        "sportsbook":  "sportsbook",
+        "ua":          HEADERS["user-agent"],
     }
     data = _get(SBOOK_V1, params=params)
     if not data:
         return {}, {}
 
     if isinstance(data, dict):
-        raw_event   = data.get("event") or data.get("data") or data
+        # Unwrap envelope: {"data": {"event": {...}}} or {"event": {...}} or flat
+        inner     = data.get("data") or data
+        raw_event = (
+            inner.get("event") if isinstance(inner, dict)
+            else inner
+        ) or inner
+        if not isinstance(raw_event, dict):
+            raw_event = data
+
         markets_raw = raw_event.get("markets") or raw_event.get("odds") or []
         meta = {
             "home_team":     raw_event.get("home_team", ""),
             "away_team":     raw_event.get("away_team", ""),
             "competition":   raw_event.get("competition_name") or raw_event.get("competition", ""),
-            "category":      raw_event.get("category", ""),
+            "category":      raw_event.get("category_name") or raw_event.get("category", ""),
             "start_time":    raw_event.get("start_time", ""),
             "current_score": raw_event.get("current_score", ""),
             "match_time":    raw_event.get("match_time", ""),
@@ -547,7 +813,9 @@ def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _payload_hash(obj: Any) -> str:
-    return hashlib.md5(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return hashlib.md5(
+        json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 class OdiBetsLivePoller:
@@ -563,20 +831,22 @@ class OdiBetsLivePoller:
     def __init__(
         self,
         redis_client: Any,
-        interval:     float = 2.0,   # polling interval seconds
+        interval:     float = 2.0,
     ) -> None:
-        self.redis       = redis_client
-        self.interval    = interval
-        self._running    = False
-        self._thread:    threading.Thread | None = None
-        self._prev_hashes: dict[int, str]  = {}
+        self.redis         = redis_client
+        self.interval      = interval
+        self._running      = False
+        self._thread:      threading.Thread | None = None
+        self._prev_hashes: dict[int, str]   = {}
         self._prev_odds:   dict[str, float] = {}   # "od_match_id:slug:outcome" → float
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
-        self._thread  = threading.Thread(target=self._poll_loop, daemon=True, name="od-live")
+        self._thread  = threading.Thread(
+            target=self._poll_loop, daemon=True, name="od-live"
+        )
         self._thread.start()
         logger.info("OdiBetsLivePoller started (interval=%.1fs)", self.interval)
 
@@ -635,7 +905,6 @@ class OdiBetsLivePoller:
                     "ts":         time.time(),
                 }, ensure_ascii=False)
                 self.redis.publish(channel, payload)
-
                 logger.debug(
                     "OD live delta: sport=%s matches=%d events=%d",
                     sport_slug, len(sport_matches), len(events),
@@ -760,15 +1029,17 @@ class OdiBetsHarvesterPlugin:
         return fetch_live_matches(sport_slug)
 
 
-# ── Celery task compatibility aliases ─────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CELERY TASK COMPATIBILITY ALIASES
+# ══════════════════════════════════════════════════════════════════════════════
 # tasks_live.py and tasks_upcoming.py call:
 #   from app.workers.od_harvester import fetch_live, fetch_upcoming
-# These are thin wrappers that absorb any extra kwargs.
+# These thin wrappers absorb any extra kwargs Celery passes.
 
 def fetch_upcoming(
-    sport_slug:         str  = "soccer",
-    fetch_full_markets: bool = False,
-    fetch_extended:     bool = False,
+    sport_slug:         str        = "soccer",
+    fetch_full_markets: bool       = False,
+    fetch_extended:     bool       = False,
     max_matches:        int | None = None,
     **kwargs,
 ) -> list[dict]:
