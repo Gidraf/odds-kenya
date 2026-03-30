@@ -84,8 +84,9 @@ def create_app() -> Flask:
     from app.views.webhook                            import bp_interceptor
     from app.views.odds_feed.sportpesa_view           import bp_sp
     from app.views.odds_feed.sp_live_view             import bp_sp_live
-    from app.views.odds_feed.odds_view             import bp_odds as bp_unified_odds
-    from app.views.odds_feed.betika_view import bp_betika
+    from app.views.odds_feed.odds_view                import bp_odds as bp_unified_odds
+    from app.views.odds_feed.betika_view              import bp_betika
+    from app.views.odds_feed.odibets_view             import bp as bp_od
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -104,13 +105,14 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_sp)
     flask_app.register_blueprint(bp_sp_live)
     flask_app.register_blueprint(bp_unified_odds)   # GET /api/odds/...
-    flask_app.register_blueprint(bp_betika)
+    flask_app.register_blueprint(bp_betika)          # GET /api/bt/...
+    flask_app.register_blueprint(bp_od)              # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,
-           BookmakerEntityValue, BookmakerPayment,
+            BookmakerEntityValue, BookmakerPayment,
         )
         from app.models.research_model import (
             ResearchSession, ResearchFinding, ResearchEndpoint,
@@ -139,11 +141,40 @@ def create_app() -> Flask:
     import app.sockets  # noqa: registers /admin namespace handlers
 
     # ── Background threads ────────────────────────────────────────────────────
-    # SP live WebSocket harvester — always starts inline (like before)
-    # from app.workers.sp_live_harvester import start_harvester_thread
-    # start_harvester_thread()
+    # These must ONLY run in the web process (gunicorn / flask run).
+    # Celery workers call create_app() too — if we start threads there we get:
+    #   • Multiple WS connections to Sportpesa (one per worker replica)
+    #   • Duplicate Redis pub/sub messages → duplicate odds flashes on the frontend
+    #   • SP may rate-limit or ban the IP
+    #
+    # ENABLE_HARVESTER=1   →  set automatically by docker-compose on the `wss` service
+    # ENABLE_HARVESTER=0   →  default for celery-worker / celery-beat / celery-flower
+    #
+    # In local dev without Docker just run:
+    #   ENABLE_HARVESTER=1 flask run   (or set it in your .env)
+    if os.environ.get("ENABLE_HARVESTER", "0") == "1":
+        from app.workers.sp_live_harvester import start_harvester_thread
+        start_harvester_thread()
+        init_fetcher_manager()
 
-    # init_fetcher_manager()
+        # OdiBets live poller (REST polling, 2 s interval)
+        try:
+            import redis as _redis_lib
+            _rd = _redis_lib.from_url(
+                flask_app.config.get("CELERY_BROKER_URL", "redis://localhost:6379/1"),
+                decode_responses=False, socket_timeout=3,
+            )
+            from app.workers.od_harvester import init_live_poller as od_init
+            od_init(_rd, interval=2.0)
+        except Exception as _e:
+            print(f"[init] OdiBets live poller skipped: {_e}")
+
+        # Betika live poller (REST polling, 1.5 s interval)
+        try:
+            from app.workers.bt_harvester import init_live_poller as bt_init
+            bt_init(_rd, interval=1.5)
+        except Exception as _e:
+            print(f"[init] Betika live poller skipped: {_e}")
 
     # Celery worker + beat — inline threads when NOT running as dedicated
     # Docker services (controlled by CELERY_INLINE env var).
