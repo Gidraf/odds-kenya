@@ -80,8 +80,9 @@ API_BASE   = "https://api.betika.com/v1/uo"
 
 LIVE_SPORTS_URL    = f"{LIVE_BASE}/sports"
 LIVE_MATCHES_URL   = f"{LIVE_BASE}/matches"
+LIVE_MATCH_URL     = f"{LIVE_BASE}/match"      # GET ?id=match_id  (live detail)
 UPCOMING_URL       = f"{API_BASE}/matches"
-MATCH_MARKETS_URL  = f"{API_BASE}/match"
+MATCH_MARKETS_URL  = f"{API_BASE}/match"        # GET ?parent_match_id=X  (pre-match detail)
 
 HEADERS: dict[str, str] = {
     "accept":          "application/json, text/plain, */*",
@@ -353,7 +354,7 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
 
 def get_full_markets(parent_match_id: str | int, bt_sport_id: int = 14) -> dict[str, dict[str, float]]:
     """
-    Fetch all markets for one match from the Betika detail endpoint.
+    Fetch all markets for one pre-match event from api.betika.com.
     Returns canonical {slug → {outcome → odd}} dict.
     """
     data = _get(MATCH_MARKETS_URL, params={"parent_match_id": str(parent_match_id)})
@@ -361,6 +362,27 @@ def get_full_markets(parent_match_id: str | int, bt_sport_id: int = 14) -> dict[
         return {}
     raw_mkts = data.get("data") or []
     return _parse_all_inline_markets(raw_mkts, bt_sport_id)
+
+
+def get_live_match_markets(match_id: str | int, bt_sport_id: int = 14) -> tuple[dict[str, dict[str, float]], dict]:
+    """
+    Fetch all available markets for one LIVE event from live.betika.com.
+
+    Live endpoint:  GET https://live.betika.com/v1/uo/match?id={match_id}
+    Uses `match_id` (integer game id), NOT `parent_match_id`.
+
+    Returns:
+      (markets, meta) where:
+        markets = canonical {slug → {outcome → odd}}
+        meta    = raw meta dict from response (score, match_time, etc.)
+    """
+    data = _get(LIVE_MATCH_URL, params={"id": str(match_id)}, timeout=6.0)
+    if not data:
+        return {}, {}
+    raw_mkts = data.get("data") or []
+    meta     = data.get("meta") or {}
+    markets  = _parse_all_inline_markets(raw_mkts, bt_sport_id)
+    return markets, meta
 
 
 def enrich_matches_with_full_markets(

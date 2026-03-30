@@ -56,6 +56,7 @@ from app.workers.bt_harvester import (
     get_cached_live_sports,
     get_cached_upcoming,
     get_full_markets,
+    get_live_match_markets,
     cache_upcoming,
     slug_to_bt_sport_id,
     bt_sport_to_slug,
@@ -74,7 +75,7 @@ from app.workers.bt_mapper import (
 
 logger = logging.getLogger(__name__)
 
-bp_betika = Blueprint("bt", __name__, url_prefix="/api/bt")
+bp = Blueprint("bt", __name__, url_prefix="/api/bt")
 
 # TTL constants
 _UPC_TTL = 300    # 5 min cache for upcoming
@@ -152,7 +153,7 @@ def _market_metas(bt_sport_id: int) -> list[dict]:
 # UPCOMING — CACHED
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/upcoming/<sport>")
+@bp.route("/upcoming/<sport>")
 def upcoming_cached(sport: str):
     """
     GET /api/bt/upcoming/<sport>
@@ -209,7 +210,7 @@ def upcoming_cached(sport: str):
 # UPCOMING — DIRECT
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/direct/upcoming/<sport>")
+@bp.route("/direct/upcoming/<sport>")
 def upcoming_direct(sport: str):
     """
     GET /api/bt/direct/upcoming/<sport>
@@ -249,7 +250,7 @@ def upcoming_direct(sport: str):
 # UPCOMING — SSE STREAM  (same format as sp_module /stream/upcoming)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/stream/upcoming/<sport>")
+@bp.route("/stream/upcoming/<sport>")
 def stream_upcoming(sport: str):
     """
     SSE GET /api/bt/stream/upcoming/<sport>
@@ -341,7 +342,7 @@ def stream_upcoming(sport: str):
 # LIVE — SNAPSHOT  (Redis cache from BetikaLivePoller)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/live/snapshot/<sport>")
+@bp.route("/live/snapshot/<sport>")
 def live_snapshot(sport: str):
     """
     GET /api/bt/live/snapshot/<sport>
@@ -375,7 +376,7 @@ def live_snapshot(sport: str):
 # LIVE — SSE STREAM  (Redis pub/sub → browser)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/live/stream/<sport>")
+@bp.route("/live/stream/<sport>")
 def live_stream(sport: str):
     """
     SSE GET /api/bt/live/stream/<sport>
@@ -471,7 +472,7 @@ def live_stream(sport: str):
 # LIVE — SPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/live/sports")
+@bp.route("/live/sports")
 def live_sports():
     """GET /api/bt/live/sports — current live sport counts."""
     rd = _redis()
@@ -494,7 +495,7 @@ def live_sports():
 # MATCH FULL MARKETS  (on-demand)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/match/markets")
+@bp.route("/match/markets")
 def match_markets():
     """
     GET /api/bt/match/markets?parent_match_id=...&sport=soccer
@@ -540,11 +541,91 @@ def match_markets():
             "source": "live", "latency_ms": latency}
 
 
+@bp.route("/live/match/<match_id>")
+def live_match_detail(match_id: str):
+    """
+    GET /api/bt/live/match/<match_id>?bt_sport_id=14
+
+    Fetch ALL available markets for one LIVE Betika match.
+    Calls:  GET https://live.betika.com/v1/uo/match?id={match_id}
+
+    The live endpoint uses the integer `match_id` (bt_match_id), NOT
+    `parent_match_id`. Live matches return fewer markets than pre-match
+    detail (only currently-open markets), but this gets everything available.
+
+    Also returns live meta: score, match_time, event_status, etc.
+
+    Returns:
+      {ok, match_id, markets, market_count, meta, source, latency_ms}
+    """
+    t0          = time.time()
+    bt_sport_id = int(request.args.get("bt_sport_id", 14))
+
+    # Redis cache (30 s TTL for live — short because odds change fast)
+    rd        = _redis()
+    cache_key = f"bt:live:match:{match_id}:markets"
+    if rd:
+        try:
+            cached = rd.get(cache_key)
+            if cached:
+                payload = json.loads(cached)
+                payload["source"]     = "cache"
+                payload["latency_ms"] = int((time.time() - t0) * 1000)
+                return payload
+        except Exception:
+            pass
+
+    try:
+        markets, meta = get_live_match_markets(match_id, bt_sport_id)
+    except Exception as exc:
+        logger.warning("bt live match detail %s: %s", match_id, exc)
+        return {"ok": False, "error": str(exc)}, 500
+
+    if not markets and not meta:
+        return {"ok": False, "error": "No data returned from live API"}, 404
+
+    # Extract useful live state from meta
+    live_state = {
+        "match_id":    meta.get("match_id"),
+        "score":       meta.get("current_score", ""),
+        "match_time":  meta.get("match_time", ""),
+        "event_status":meta.get("event_status", ""),
+        "match_status":meta.get("match_status", ""),
+        "bet_status":  meta.get("bet_status", ""),
+        "home_team":   meta.get("home_team", ""),
+        "away_team":   meta.get("away_team", ""),
+        "competition": meta.get("competition_name", ""),
+        "home_corners":meta.get("home_corners", 0),
+        "away_corners":meta.get("away_corners", 0),
+        "home_red":    meta.get("home_red_card", 0),
+        "away_red":    meta.get("away_red_card", 0),
+    }
+
+    payload = {
+        "ok":           True,
+        "match_id":     match_id,
+        "markets":      markets,
+        "market_count": len(markets),
+        "live_state":   live_state,
+        "source":       "live",
+        "latency_ms":   int((time.time() - t0) * 1000),
+    }
+
+    # Cache 30 s (live odds change fast, don't cache longer)
+    if rd:
+        try:
+            rd.set(cache_key, json.dumps(payload, ensure_ascii=False), ex=30)
+        except Exception:
+            pass
+
+    return payload
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TRIGGER HARVEST  (mirrors sp /stream/trigger)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/stream/trigger/<sport>", methods=["POST"])
+@bp.route("/stream/trigger/<sport>", methods=["POST"])
 def trigger_harvest(sport: str):
     """
     POST /api/bt/stream/trigger/<sport>
@@ -577,7 +658,7 @@ def trigger_harvest(sport: str):
         return {"ok": False, "error": str(exc)}, 500
 
 
-@bp_betika.route("/cache/bust/<sport>", methods=["POST"])
+@bp.route("/cache/bust/<sport>", methods=["POST"])
 def cache_bust(sport: str):
     """POST /api/bt/cache/bust/<sport> — delete cached data so next GET re-fetches."""
     rd = _redis()
@@ -598,7 +679,7 @@ def cache_bust(sport: str):
 # METADATA
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/meta/sports")
+@bp.route("/meta/sports")
 def meta_sports():
     """GET /api/bt/meta/sports — sport list for the sport pill row."""
     SPORT_NAMES = {
@@ -632,7 +713,7 @@ def meta_sports():
     return {"ok": True, "sports": sports}
 
 
-@bp_betika.route("/meta/markets/<sport>")
+@bp.route("/meta/markets/<sport>")
 def meta_markets(sport: str):
     """GET /api/bt/meta/markets/<sport> — market list for the market filter drawer."""
     bt_sport_id = slug_to_bt_sport_id(sport)
@@ -640,7 +721,7 @@ def meta_markets(sport: str):
     return {"ok": True, "markets": markets, "sport": sport}
 
 
-@bp_betika.route("/status")
+@bp.route("/status")
 def status():
     """Health check."""
     rd = _redis()
