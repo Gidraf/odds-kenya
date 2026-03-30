@@ -529,26 +529,49 @@ def match_markets():
 def trigger_harvest(sport: str):
     """
     POST /api/bt/stream/trigger/<sport>
-    Queue a background Celery task to harvest upcoming matches for a sport.
-    Falls back to synchronous fetch if Celery is unavailable.
+    Force-refetch upcoming matches, busting the cache first so fresh data
+    includes all market sub_type_ids (1,10,18,29,186,340).
     """
+    rd = _redis()
+    # Bust stale cache so fresh fetch replaces it immediately
+    if rd:
+        try:
+            from app.workers.bt_harvester import _UPC_DATA_KEY, _UPC_HASH_KEY
+            rd.delete(_UPC_DATA_KEY.format(sport_slug=sport))
+            rd.delete(_UPC_HASH_KEY.format(sport_slug=sport))
+        except Exception:
+            pass
+    # Synchronous fetch with all markets
     try:
         from app.workers.bt_harvester import fetch_upcoming_matches, cache_upcoming
-        from celery import current_app as celery_app
-        # Try firing as Celery task
-        celery_app.send_task("betika.harvest_upcoming", args=[sport])
-        return {"ok": True, "queued": True, "sport": sport}
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Fallback: synchronous fetch (blocking)
-    try:
-        rd      = _redis()
-        matches = fetch_upcoming_matches(sport_slug=sport, max_pages=5)
+        matches = fetch_upcoming_matches(sport_slug=sport, max_pages=5, fetch_full=False)
         if matches and rd:
             cache_upcoming(rd, sport, matches)
-        return {"ok": True, "queued": False, "count": len(matches), "sport": sport}
+        try:
+            from celery import current_app as celery_app
+            celery_app.send_task("tasks.bt.harvest_all_upcoming")
+        except Exception:
+            pass
+        return {"ok": True, "count": len(matches), "sport": sport,
+                "markets_sample": list((matches[0].get("markets") or {}).keys())[:8] if matches else []}
     except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}, 500
+
+
+@bp_betika.route("/cache/bust/<sport>", methods=["POST"])
+def cache_bust(sport: str):
+    """POST /api/bt/cache/bust/<sport> — delete cached data so next GET re-fetches."""
+    rd = _redis()
+    if not rd:
+        return {"ok": False, "error": "Redis unavailable"}, 503
+    try:
+        from app.workers.bt_harvester import _UPC_DATA_KEY, _UPC_HASH_KEY
+        deleted = sum(rd.delete(k) for k in [
+            _UPC_DATA_KEY.format(sport_slug=sport),
+            _UPC_HASH_KEY.format(sport_slug=sport),
+        ])
+        return {"ok": True, "sport": sport, "keys_deleted": deleted}
+    except Exception as exc:
         return {"ok": False, "error": str(exc)}, 500
 
 

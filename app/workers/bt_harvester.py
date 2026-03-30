@@ -416,7 +416,7 @@ def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
     params: dict[str, Any] = {
         "page":        1,
         "limit":       1000,
-        "sub_type_id": "1,186,340",
+        "sub_type_id": "1,10,18,29,186,340",
         "sport":       bt_sport_id if bt_sport_id is not None else "null",
         "sort":        1,
     }
@@ -449,16 +449,27 @@ def fetch_upcoming_matches(
     """
     Paginate through Betika upcoming matches for one sport.
     Optionally fetches full markets (slower but richer data).
+
+    sub_type_id covers all primary columns shown in the grid:
+      1   = 1X2
+      10  = Double Chance (1X, X2, 12)
+      18  = Over/Under Goals (OV/UN 2.5 etc)
+      29  = BTTS (GG/NG)
+      186 = Match Winner (live 1X2 alt)
+      340 = Over/Under alt (live)
     """
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
     all_matches: list[dict] = []
+
+    # Request all primary market sub_type_ids so every grid column has data
+    _PRIMARY_SUB_TYPE_IDS = "1,10,18,29,186,340"
 
     for page in range(1, max_pages + 1):
         params: dict[str, Any] = {
             "page":        page,
             "limit":       50,
             "tab":         "upcoming",
-            "sub_type_id": "1,186,340",
+            "sub_type_id": _PRIMARY_SUB_TYPE_IDS,
             "sport_id":    bt_sport_id,
             "sort_id":     2,
             "period_id":   period_id,
