@@ -74,7 +74,7 @@ from app.workers.bt_mapper import (
 
 logger = logging.getLogger(__name__)
 
-bp_betika = Blueprint("bt", __name__, url_prefix="/api/bt")
+bp = Blueprint("bt", __name__, url_prefix="/api/bt")
 
 # TTL constants
 _UPC_TTL = 300    # 5 min cache for upcoming
@@ -152,7 +152,7 @@ def _market_metas(bt_sport_id: int) -> list[dict]:
 # UPCOMING — CACHED
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/upcoming/<sport>")
+@bp.route("/upcoming/<sport>")
 def upcoming_cached(sport: str):
     """
     GET /api/bt/upcoming/<sport>
@@ -209,7 +209,7 @@ def upcoming_cached(sport: str):
 # UPCOMING — DIRECT
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/direct/upcoming/<sport>")
+@bp.route("/direct/upcoming/<sport>")
 def upcoming_direct(sport: str):
     """
     GET /api/bt/direct/upcoming/<sport>
@@ -249,7 +249,7 @@ def upcoming_direct(sport: str):
 # UPCOMING — SSE STREAM  (same format as sp_module /stream/upcoming)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/stream/upcoming/<sport>")
+@bp.route("/stream/upcoming/<sport>")
 def stream_upcoming(sport: str):
     """
     SSE GET /api/bt/stream/upcoming/<sport>
@@ -341,7 +341,7 @@ def stream_upcoming(sport: str):
 # LIVE — SNAPSHOT  (Redis cache from BetikaLivePoller)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/live/snapshot/<sport>")
+@bp.route("/live/snapshot/<sport>")
 def live_snapshot(sport: str):
     """
     GET /api/bt/live/snapshot/<sport>
@@ -375,7 +375,7 @@ def live_snapshot(sport: str):
 # LIVE — SSE STREAM  (Redis pub/sub → browser)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/live/stream/<sport>")
+@bp.route("/live/stream/<sport>")
 def live_stream(sport: str):
     """
     SSE GET /api/bt/live/stream/<sport>
@@ -471,7 +471,7 @@ def live_stream(sport: str):
 # LIVE — SPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/live/sports")
+@bp.route("/live/sports")
 def live_sports():
     """GET /api/bt/live/sports — current live sport counts."""
     rd = _redis()
@@ -494,38 +494,57 @@ def live_sports():
 # MATCH FULL MARKETS  (on-demand)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/match/markets")
+@bp.route("/match/markets")
 def match_markets():
     """
     GET /api/bt/match/markets?parent_match_id=...&sport=soccer
-    Fetch full market list for one match (all sub_type_ids).
+    Fetch ALL markets for one match (all sub_type_ids — 40+ for soccer).
+    Redis-cached for 90 s so drawer opens fast on re-open.
     """
     parent_id   = request.args.get("parent_match_id", "")
     sport       = request.args.get("sport", "soccer")
-    bt_sport_id = slug_to_bt_sport_id(sport)
+    bt_sport_id = int(request.args.get("bt_sport_id", slug_to_bt_sport_id(sport)))
     t0          = time.time()
 
     if not parent_id:
         return {"ok": False, "error": "parent_match_id required"}, 400
 
-    markets = get_full_markets(parent_id, bt_sport_id)
-    latency = int((time.time() - t0) * 1000)
+    # Try cache
+    rd        = _redis()
+    cache_key = f"bt:match:{parent_id}:markets"
+    if rd:
+        try:
+            cached = rd.get(cache_key)
+            if cached:
+                markets = json.loads(cached)
+                return {"ok": True, "parent_match_id": parent_id, "sport": sport,
+                        "markets": markets, "market_count": len(markets),
+                        "source": "cache", "latency_ms": int((time.time() - t0) * 1000)}
+        except Exception:
+            pass
 
-    return {
-        "ok":             True,
-        "parent_match_id": parent_id,
-        "sport":          sport,
-        "markets":        markets,
-        "market_count":   len(markets),
-        "latency_ms":     latency,
-    }
+    markets = get_full_markets(parent_id, bt_sport_id)
+    if not markets:
+        return {"ok": False, "error": "No markets returned"}, 404
+
+    # Cache 90 s
+    if rd:
+        try:
+            rd.set(cache_key, json.dumps(markets, ensure_ascii=False), ex=90)
+        except Exception:
+            pass
+
+    latency = int((time.time() - t0) * 1000)
+    return {"ok": True, "parent_match_id": parent_id, "sport": sport,
+            "markets": markets, "market_count": len(markets),
+            "source": "live", "latency_ms": latency}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TRIGGER HARVEST  (mirrors sp /stream/trigger)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/stream/trigger/<sport>", methods=["POST"])
+@bp.route("/stream/trigger/<sport>", methods=["POST"])
 def trigger_harvest(sport: str):
     """
     POST /api/bt/stream/trigger/<sport>
@@ -558,7 +577,7 @@ def trigger_harvest(sport: str):
         return {"ok": False, "error": str(exc)}, 500
 
 
-@bp_betika.route("/cache/bust/<sport>", methods=["POST"])
+@bp.route("/cache/bust/<sport>", methods=["POST"])
 def cache_bust(sport: str):
     """POST /api/bt/cache/bust/<sport> — delete cached data so next GET re-fetches."""
     rd = _redis()
@@ -579,7 +598,7 @@ def cache_bust(sport: str):
 # METADATA
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bp_betika.route("/meta/sports")
+@bp.route("/meta/sports")
 def meta_sports():
     """GET /api/bt/meta/sports — sport list for the sport pill row."""
     SPORT_NAMES = {
@@ -613,7 +632,7 @@ def meta_sports():
     return {"ok": True, "sports": sports}
 
 
-@bp_betika.route("/meta/markets/<sport>")
+@bp.route("/meta/markets/<sport>")
 def meta_markets(sport: str):
     """GET /api/bt/meta/markets/<sport> — market list for the market filter drawer."""
     bt_sport_id = slug_to_bt_sport_id(sport)
@@ -621,7 +640,7 @@ def meta_markets(sport: str):
     return {"ok": True, "markets": markets, "sport": sport}
 
 
-@bp_betika.route("/status")
+@bp.route("/status")
 def status():
     """Health check."""
     rd = _redis()
