@@ -607,6 +607,62 @@ def upcoming_rest(sport_slug: str):
     }
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEBUG — inspect raw harvester output fields
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bp_combined.route("/debug/fields/<sport_slug>")
+def debug_fields(sport_slug: str):
+    """
+    GET /api/combined/debug/fields/<sport_slug>
+    Returns the first 3 matches from each bookmaker showing ALL field names.
+    Use this to verify betradar_id is being passed through correctly.
+    """
+    import json
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    fetchers = {
+        "sp": _fetch_sp_upcoming,
+        "bt": _fetch_bt_upcoming,
+        "od": _fetch_od_upcoming,
+    }
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(fn, sport_slug): bk for bk, fn in fetchers.items()}
+        for fut in as_completed(futures):
+            bk, matches, elapsed = fut.result()
+            sample = matches[:3] if matches else []
+            results[bk] = {
+                "total":   len(matches),
+                "latency_ms": int(elapsed * 1000),
+                "sample":  [
+                    {
+                        "fields": list(m.keys()),
+                        "betradar_fields": {
+                            k: m.get(k)
+                            for k in ("betradar_id", "betradarId", "sr_id",
+                                      "sportradar_id", "betradar_event_id")
+                            if m.get(k)
+                        },
+                        "join_key_would_be": (
+                            f"br_{m.get('betradar_id') or m.get('betradarId')}"
+                            if (m.get("betradar_id") or m.get("betradarId"))
+                            else f"bt_p_{m.get('bt_parent_id')}" if bk == "bt" and m.get("bt_parent_id")
+                            else f"od_p_{m.get('od_parent_id')}" if bk == "od" and m.get("od_parent_id")
+                            else f"fuzzy_{m.get('home_team','?')}_vs_{m.get('away_team','?')}"
+                        ),
+                        "home_team": m.get("home_team"),
+                        "away_team": m.get("away_team"),
+                        "start_time": m.get("start_time"),
+                    }
+                    for m in sample
+                ],
+            }
+
+    return json.dumps(results, indent=2, default=str), 200, {"Content-Type": "application/json"}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE — SSE STREAM  (long-lived, delta push, Odispedia-style grouping)
