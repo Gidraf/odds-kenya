@@ -115,6 +115,35 @@ def _cache_set(key: str, data: Any, ttl: int = 300) -> None:
     except Exception:
         pass
 
+def _normalise_betradar(matches: list[dict], bk: str) -> list[dict]:
+    """
+    Ensure every match dict has a snake_case `betradar_id` field so the
+    merger's make_join_key can link the same game across bookmakers.
+
+    Each bookmaker API uses a different field name / casing:
+      Betika  → betradarId   (integer in the raw event object)
+      SportPesa → betradar_id (already snake_case)
+      OdiBets → betradar_id or sr_id
+
+    This is THE critical step that makes cross-bk deduplication work.
+    Without it every match falls through to fuzzy (home+away+date) matching,
+    which often fails when team names differ slightly.
+    """
+    out = []
+    for m in (matches or []):
+        # Already normalised — nothing to do
+        if m.get("betradar_id") and str(m["betradar_id"]).strip() not in ("", "0", "None"):
+            out.append(m)
+            continue
+        # Betika raw: "betradarId": 69227288  (camelCase integer)
+        for field in ("betradarId", "sr_id", "sportradar_id", "betradar_event_id", "betradar"):
+            val = m.get(field)
+            if val and str(val).strip() not in ("", "0", "None", "null"):
+                m = {**m, "betradar_id": str(val).strip()}
+                break
+        out.append(m)
+    return out
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BOOKMAKER FETCHERS  (wrapped with error isolation)
@@ -142,7 +171,9 @@ def _fetch_bt_upcoming(sport_slug: str) -> tuple[str, list[dict], float]:
         matches = get_cached_upcoming(rd, sport_slug) if rd else None
         if not matches:
             matches = fetch_upcoming_matches(sport_slug=sport_slug, max_pages=8, fetch_full=False)
-        return "bt", matches or [], time.perf_counter() - t0
+        # CRITICAL: normalise betradarId → betradar_id so the merger can link
+        # BT matches to SP/OD matches for the same game via Sportradar event ID
+        return "bt", _normalise_betradar(matches or [], "bt"), time.perf_counter() - t0
     except Exception as exc:
         logger.warning("combined: BT upcoming %s: %s", sport_slug, exc)
         return "bt", [], time.perf_counter() - t0
@@ -156,7 +187,7 @@ def _fetch_od_upcoming(sport_slug: str) -> tuple[str, list[dict], float]:
         matches = get_cached_upcoming(rd, sport_slug) if rd else None
         if not matches:
             matches = fetch_upcoming_matches(sport_slug=sport_slug)
-        return "od", matches or [], time.perf_counter() - t0
+        return "od", _normalise_betradar(matches or [], "od"), time.perf_counter() - t0
     except Exception as exc:
         logger.warning("combined: OD upcoming %s: %s", sport_slug, exc)
         return "od", [], time.perf_counter() - t0
@@ -274,7 +305,7 @@ def _fetch_bt_live(sport_slug: str) -> tuple[str, list[dict], float]:
         # 2. Direct REST
         if not matches:
             matches = fetch_live_matches(sid)
-        return "bt", matches or [], time.perf_counter() - t0
+        return "bt", _normalise_betradar(matches or [], "bt"), time.perf_counter() - t0
     except Exception as exc:
         logger.warning("combined: BT live %s: %s", sport_slug, exc)
         return "bt", [], time.perf_counter() - t0
@@ -293,7 +324,7 @@ def _fetch_od_live(sport_slug: str) -> tuple[str, list[dict], float]:
         # 2. Direct REST
         if not matches:
             matches = fetch_live_matches(sport_slug=sport_slug)
-        return "od", matches or [], time.perf_counter() - t0
+        return "od", _normalise_betradar(matches or [], "od"), time.perf_counter() - t0
     except Exception as exc:
         logger.warning("combined: OD live %s: %s", sport_slug, exc)
         return "od", [], time.perf_counter() - t0
@@ -429,12 +460,19 @@ def stream_upcoming(sport_slug: str):
                     "latency_ms": bk_latencies[bk],
                 })
 
-                # Stream individual matches from this bk
-                for m in matches[:50]:    # cap streaming matches per bk
+                # Stream ALL individual raw matches from this bk immediately.
+                # The frontend ingests these into the table while waiting for
+                # the server merge (which comes after ALL three bks complete).
+                # These raw rows are replaced by merge_update events later.
+                for m in matches:
+                    # Ensure betradar_id (snake_case) is present for frontend
+                    # join key derivation — normalise here in case the harvester
+                    # stored it as betradarId (Betika camelCase) or similar.
+                    m_out = _normalise_betradar([m], bk)[0] if m else m
                     yield _sse({
                         "type":  "match",
                         "bk":    bk,
-                        "match": m,
+                        "match": m_out,
                     })
 
         # Merge all three sets
@@ -456,13 +494,15 @@ def stream_upcoming(sport_slug: str):
             ttl=UPC_TTL_CACHE,
         )
 
-        # Stream merged matches with arb/EV flags
+        # Stream ALL merged matches (not just multi-bk ones).
+        # Single-bk matches are still useful — they show odds for that book
+        # and will be enriched when the other books are added later.
+        # The frontend replaces the raw "match" event row with this richer one.
         for cm in combined:
-            if cm.bk_count >= 2 or cm.has_arb or cm.has_ev:
-                yield _sse({
-                    "type":           "merge_update",
-                    "combined_match": cm.to_dict(),
-                })
+            yield _sse({
+                "type":           "merge_update",
+                "combined_match": cm.to_dict(),
+            })
 
         # Opportunities summary
         yield _sse(_opps_payload(combined))

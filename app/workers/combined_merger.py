@@ -252,17 +252,35 @@ def _norm_team(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower().replace(" ", ""))
 
 
+def _extract_betradar_id(raw: dict) -> str | None:
+    """
+    Extract the Sportradar / betradar event ID from any raw match dict,
+    handling all field name variants used by each bookmaker:
+      • Betika API:      betradarId  (camelCase integer)
+      • SportPesa API:   betradar_id (snake_case string)
+      • OdiBets:         betradar_id or sr_id
+      • Combined merger: betradar_id (normalised)
+    """
+    for field in ("betradar_id", "betradarId", "sr_id", "sportradar_id",
+                  "betradar", "betradar_event_id"):
+        val = raw.get(field)
+        if val and str(val).strip() not in ("", "None", "null", "0", "none"):
+            return str(val).strip()
+    return None
+
+
 def make_join_key(raw: dict, bk: BK) -> str:
     """
     Derive a stable join key for a raw match dict.
 
     Priority:
       1. betradar_id  (cross-book Sportradar ID — most reliable)
+         Handles: betradarId (Betika camelCase), betradar_id (SP/OD snake_case)
       2. bt_parent_id / od_parent_id  (both come from Sportradar SRUID)
       3. fuzzy home+away+date
     """
-    br = raw.get("betradar_id")
-    if br and str(br).strip() not in ("", "None", "null", "0"):
+    br = _extract_betradar_id(raw)
+    if br:
         return f"br_{br}"
 
     if bk == "bt":
@@ -515,6 +533,8 @@ class MultiBookMerger:
         for bk, raw_list in [("sp", sp_matches), ("bt", bt_matches), ("od", od_matches)]:
             for raw in (raw_list or []):
                 jk = make_join_key(raw, bk)
+                # Normalise betradar_id from all possible field name variants
+                _br_id = _extract_betradar_id(raw) or ""
                 if jk not in rows:
                     rows[jk] = CombinedMatch(
                         join_key=jk,
@@ -523,7 +543,7 @@ class MultiBookMerger:
                         competition=raw.get("competition", ""),
                         start_time=raw.get("start_time", ""),
                         is_live=is_live or bool(raw.get("is_live")),
-                        betradar_id=str(raw.get("betradar_id") or ""),
+                        betradar_id=_br_id,
                     )
                 row = rows[jk]
                 # Update live state from any bk that has it
@@ -533,8 +553,11 @@ class MultiBookMerger:
                     row.score_home = str(raw["score_home"])
                 if raw.get("score_away") is not None:
                     row.score_away = str(raw["score_away"])
-                if not row.betradar_id and raw.get("betradar_id"):
-                    row.betradar_id = str(raw["betradar_id"])
+                if not row.betradar_id and _br_id:
+                    row.betradar_id = _br_id
+                # Also pick up competition from any bk that has it
+                if not row.competition and raw.get("competition"):
+                    row.competition = raw["competition"]
                 if not row.competition and raw.get("competition"):
                     row.competition = raw["competition"]
 
