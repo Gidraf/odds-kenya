@@ -162,14 +162,99 @@ def _fetch_od_upcoming(sport_slug: str) -> tuple[str, list[dict], float]:
         return "od", [], time.perf_counter() - t0
 
 
+# SP sport_slug -> live sport_id
+_SP_SLUG_TO_ID: dict[str, int] = {
+    "soccer": 1, "football": 1, "esoccer": 1, "efootball": 1,
+    "basketball": 2, "baseball": 3, "ice-hockey": 4, "tennis": 5,
+    "handball": 6, "rugby": 8, "cricket": 9, "volleyball": 10,
+    "table-tennis": 13, "boxing": 10, "mma": 117, "darts": 49,
+    "american-football": 15,
+}
+
+
+def _sp_live_from_harvester(sport_slug: str) -> list[dict]:
+    # 1. Canonical cache key written by /api/sp/live/stream-matches/<sport>
+    cached = _cache_get(f"sp:live:{sport_slug}")
+    if cached and cached.get("matches"):
+        return cached["matches"]
+
+    # 2. Raw WS-harvester snapshot keyed by numeric sport_id
+    sport_id = _SP_SLUG_TO_ID.get(sport_slug.lower(), 1)
+    rd = _redis()
+    if rd:
+        try:
+            raw = rd.get(f"sp:live:snapshot:{sport_id}")
+            if raw:
+                snap = json.loads(raw)
+                events = snap.get("events") or []
+                if events:
+                    matches = []
+                    for ev in events:
+                        comps = ev.get("competitors") or []
+                        home = comps[0].get("name", "") if len(comps) > 0 else ""
+                        away = comps[1].get("name", "") if len(comps) > 1 else ""
+                        state = ev.get("state") or {}
+                        score = state.get("matchScore") or {}
+                        matches.append({
+                            "sp_game_id": ev.get("id"),
+                            "home_team": home,
+                            "away_team": away,
+                            "competition": (ev.get("competition") or {}).get("name", ""),
+                            "start_time": ev.get("startTime") or ev.get("kickOffTime"),
+                            "sport": sport_slug,
+                            "is_live": True,
+                            "match_time": state.get("matchTime", ""),
+                            "score_home": str(score.get("home", "")),
+                            "score_away": str(score.get("away", "")),
+                            "markets": {},
+                            "market_count": 0,
+                            "source": "sp_live",
+                            "betradar_id": ev.get("betradarId"),
+                        })
+                    if matches:
+                        logger.info("combined SP live snapshot: %d from Redis", len(matches))
+                        return matches
+        except Exception as exc:
+            logger.debug("combined: SP live Redis: %s", exc)
+
+    # 3. Direct HTTP fallback
+    try:
+        from app.workers.sp_live_harvester import fetch_live_events
+        events = fetch_live_events(sport_id, limit=200)
+        matches = []
+        for ev in events:
+            comps = ev.get("competitors") or []
+            home = comps[0].get("name", "") if len(comps) > 0 else ""
+            away = comps[1].get("name", "") if len(comps) > 1 else ""
+            state = ev.get("state") or {}
+            score = state.get("matchScore") or {}
+            matches.append({
+                "sp_game_id": ev.get("id"),
+                "home_team": home,
+                "away_team": away,
+                "competition": (ev.get("competition") or {}).get("name", ""),
+                "start_time": ev.get("startTime") or ev.get("kickOffTime"),
+                "sport": sport_slug,
+                "is_live": True,
+                "match_time": state.get("matchTime", ""),
+                "score_home": str(score.get("home", "")),
+                "score_away": str(score.get("away", "")),
+                "markets": {},
+                "market_count": 0,
+                "source": "sp_live_http",
+                "betradar_id": ev.get("betradarId"),
+            })
+        logger.info("combined SP live HTTP: %d events", len(matches))
+        return matches
+    except Exception as exc:
+        logger.warning("combined: SP live HTTP %s: %s", sport_slug, exc)
+        return []
+
+
 def _fetch_sp_live(sport_slug: str) -> tuple[str, list[dict], float]:
     t0 = time.perf_counter()
     try:
-        cached = _cache_get(f"sp:live:{sport_slug}")
-        if cached and cached.get("matches"):
-            return "sp", cached["matches"], time.perf_counter() - t0
-        from app.workers.sp_harvester import fetch_live
-        matches = fetch_live(sport_slug, fetch_full_markets=True)
+        matches = _sp_live_from_harvester(sport_slug)
         return "sp", matches, time.perf_counter() - t0
     except Exception as exc:
         logger.warning("combined: SP live %s: %s", sport_slug, exc)
@@ -182,9 +267,11 @@ def _fetch_bt_live(sport_slug: str) -> tuple[str, list[dict], float]:
         from app.workers.bt_harvester import (
             slug_to_bt_sport_id, fetch_live_matches, get_cached_live,
         )
-        rd  = _redis()
+        rd = _redis()
         sid = slug_to_bt_sport_id(sport_slug)
+        # 1. Redis cache (BetikaLivePoller)
         matches = get_cached_live(rd, sid) if rd else None
+        # 2. Direct REST
         if not matches:
             matches = fetch_live_matches(sid)
         return "bt", matches or [], time.perf_counter() - t0
@@ -199,15 +286,20 @@ def _fetch_od_live(sport_slug: str) -> tuple[str, list[dict], float]:
         from app.workers.od_harvester import (
             slug_to_od_sport_id, fetch_live_matches, get_cached_live,
         )
-        rd  = _redis()
+        rd = _redis()
         sid = slug_to_od_sport_id(sport_slug)
+        # 1. Redis cache (OdiBets live poller)
         matches = get_cached_live(rd, sid) if rd else None
+        # 2. Direct REST
         if not matches:
             matches = fetch_live_matches(sport_slug=sport_slug)
         return "od", matches or [], time.perf_counter() - t0
     except Exception as exc:
         logger.warning("combined: OD live %s: %s", sport_slug, exc)
         return "od", [], time.perf_counter() - t0
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
