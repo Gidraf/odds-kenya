@@ -247,9 +247,38 @@ class OpportunityReport:
 # JOIN KEY COMPUTATION
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Common suffixes/prefixes stripped for fuzzy team matching
+_TEAM_STRIP = re.compile(
+    r"\b(fc|afc|sc|bc|bk|sk|ac|cf|rc|fk|nk|as|ss|if|ik|gk|ff|sf|"
+    r"united|utd|city|town|rovers|wanderers|athletic|athletics|"
+    r"albion|villa|hotspur|county|rangers|forest|wednesday|"
+    r"reserves?|reserve|res|u\d{1,2}|under\d{1,2}|"
+    r"ii|iii|iv|\d+|b\b|a\b)\b",
+    re.IGNORECASE
+)
+
 def _norm_team(name: str) -> str:
-    """Normalise team name for fuzzy matching."""
-    return re.sub(r"[^a-z0-9]", "", name.lower().replace(" ", ""))
+    """
+    Normalise team name for fuzzy cross-bookmaker matching.
+    Strips common suffixes (FC, United, AFC, U21, etc.) and punctuation
+    so  "Wealdstone FC"  ==  "Wealdstone"
+    and "Hartlepool United" == "Hartlepool"
+    """
+    if not name:
+        return ""
+    s = name.lower()
+    # strip punctuation except spaces
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    # strip common football suffixes/prefixes
+    s = _TEAM_STRIP.sub(" ", s)
+    # collapse whitespace
+    s = re.sub(r"\s+", "", s).strip()
+    return s
+
+
+def _team_key(home: str, away: str, date: str) -> str:
+    """Compact key used for second-pass fuzzy linking."""
+    return f"{_norm_team(home)}|{_norm_team(away)}|{date[:10]}"
 
 
 def _extract_betradar_id(raw: dict) -> str | None:
@@ -525,15 +554,46 @@ class MultiBookMerger:
     ) -> list[CombinedMatch]:
         """
         Merge three lists of raw match dicts into a deduplicated list of CombinedMatch.
-        Updates internal prev_odds state for sharp detection across calls.
+
+        Grouping strategy (in order of reliability):
+          Pass 1 — betradar_id  exact match  (br_XXXX)
+          Pass 1 — bt_parent_id / od_parent_id exact match
+          Pass 1 — fuzzy key: _norm_team(home) | _norm_team(away) | date
+          Pass 2 — second-pass re-link: any two single-bk rows whose
+                   stripped team names match get merged into one row
         """
-        # Phase 1: group by join key
         rows: dict[str, CombinedMatch] = {}
 
+        def _absorb(row: CombinedMatch, raw: dict, bk: BK, _br_id: str) -> None:
+            """Add one raw match's data into an existing CombinedMatch row."""
+            if raw.get("match_time"):
+                row.match_time = raw["match_time"]
+            if raw.get("score_home") is not None:
+                row.score_home = str(raw["score_home"])
+            if raw.get("score_away") is not None:
+                row.score_away = str(raw["score_away"])
+            if not row.betradar_id and _br_id:
+                row.betradar_id = _br_id
+            if not row.competition and raw.get("competition"):
+                row.competition = raw["competition"]
+            mid = get_bk_match_id(raw, bk)
+            if mid:
+                row.bk_ids[bk] = mid
+            row.markets.setdefault(bk, {})
+            for slug, outcomes in (raw.get("markets") or {}).items():
+                row.markets[bk].setdefault(slug, {})
+                for out, odd in outcomes.items():
+                    try:
+                        fv = float(odd)
+                    except (TypeError, ValueError):
+                        continue
+                    if fv > 1.0:
+                        row.markets[bk][slug][out] = round(fv, 3)
+
+        # ── Pass 1: group by primary join key ─────────────────────────────────
         for bk, raw_list in [("sp", sp_matches), ("bt", bt_matches), ("od", od_matches)]:
             for raw in (raw_list or []):
-                jk = make_join_key(raw, bk)
-                # Normalise betradar_id from all possible field name variants
+                jk     = make_join_key(raw, bk)
                 _br_id = _extract_betradar_id(raw) or ""
                 if jk not in rows:
                     rows[jk] = CombinedMatch(
@@ -545,46 +605,65 @@ class MultiBookMerger:
                         is_live=is_live or bool(raw.get("is_live")),
                         betradar_id=_br_id,
                     )
-                row = rows[jk]
-                # Update live state from any bk that has it
-                if raw.get("match_time"):
-                    row.match_time = raw["match_time"]
-                if raw.get("score_home") is not None:
-                    row.score_home = str(raw["score_home"])
-                if raw.get("score_away") is not None:
-                    row.score_away = str(raw["score_away"])
-                if not row.betradar_id and _br_id:
-                    row.betradar_id = _br_id
-                # Also pick up competition from any bk that has it
-                if not row.competition and raw.get("competition"):
-                    row.competition = raw["competition"]
-                if not row.competition and raw.get("competition"):
-                    row.competition = raw["competition"]
+                _absorb(rows[jk], raw, bk, _br_id)
 
-                mid = get_bk_match_id(raw, bk)
-                if mid:
-                    row.bk_ids[bk] = mid
+        # ── Pass 2: fuzzy re-link ─────────────────────────────────────────────
+        # Any two rows that have different join keys but share the same
+        # normalised team names + date are the SAME match from different books.
+        # Build a fuzzy-key → canonical-join-key index, then merge orphan rows.
+        fuzzy_index: dict[str, str] = {}   # team_key → first jk seen
+        redirect:    dict[str, str] = {}   # orphan jk → canonical jk
 
+        for jk, row in list(rows.items()):
+            tk = _team_key(row.home_team, row.away_team, row.start_time or "")
+            if not tk or tk == "||":          # empty names → skip
+                continue
+            if tk not in fuzzy_index:
+                fuzzy_index[tk] = jk          # first row for this team pair = canonical
+            elif fuzzy_index[tk] != jk:
+                redirect[jk] = fuzzy_index[tk]   # this row is a duplicate → redirect
+
+        if redirect:
+            merged_away: set[str] = set()
+            for orphan_jk, canonical_jk in redirect.items():
+                if orphan_jk not in rows or canonical_jk not in rows:
+                    continue
+                orphan = rows[orphan_jk]
+                canon  = rows[canonical_jk]
+                # Merge bk_ids
+                for bk, mid in orphan.bk_ids.items():
+                    if bk not in canon.bk_ids:
+                        canon.bk_ids[bk] = mid
                 # Merge markets
-                row.markets.setdefault(bk, {})
-                for slug, outcomes in (raw.get("markets") or {}).items():
-                    row.markets[bk].setdefault(slug, {})
-                    for out, odd in outcomes.items():
-                        try:
-                            fv = float(odd)
-                        except (TypeError, ValueError):
-                            continue
-                        if fv > 1.0:
-                            row.markets[bk][slug][out] = round(fv, 3)
+                for bk, bk_mkts in orphan.markets.items():
+                    canon.markets.setdefault(bk, {})
+                    for slug, outs in bk_mkts.items():
+                        canon.markets[bk].setdefault(slug, {})
+                        canon.markets[bk][slug].update(outs)
+                # Prefer the row with the best/most complete data
+                if not canon.betradar_id and orphan.betradar_id:
+                    canon.betradar_id = orphan.betradar_id
+                if not canon.competition and orphan.competition:
+                    canon.competition = orphan.competition
+                # If the canonical key is fuzzy but orphan has a betradar key, upgrade
+                if orphan.join_key.startswith("br_") and not canon.join_key.startswith("br_"):
+                    # Move canonical row to the betradar key
+                    rows[orphan.join_key] = canon
+                    canon.join_key = orphan.join_key
+                    merged_away.add(canonical_jk)
+                else:
+                    merged_away.add(orphan_jk)
 
-        # Phase 2: compute derived fields for each row
+            for dead_jk in merged_away:
+                rows.pop(dead_jk, None)
+
+        # ── Phase 2: compute derived fields ──────────────────────────────────
         result: list[CombinedMatch] = []
         new_odds: dict[str, float] = {}
 
         for jk, row in rows.items():
             row.bk_count = len(row.bk_ids)
 
-            # Track current odds for sharp detection
             for bk in BOOKMAKERS:
                 for slug, outcomes in (row.markets.get(bk) or {}).items():
                     for out, odd in outcomes.items():
@@ -605,9 +684,7 @@ class MultiBookMerger:
 
             result.append(row)
 
-        # Update previous odds state for next call (sharp detection)
         self._prev_odds.update(new_odds)
-
         return result
 
     def reset(self) -> None:
