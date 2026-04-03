@@ -439,8 +439,7 @@ function addLine(pts){
   const g = new THREE.BufferGeometry().setFromPoints(pts.map(([x,z])=>new THREE.Vector3(x,0.05,z)));
   scene.add(new THREE.Line(g,lmat));
 }
-const hw=PW/2;
-hh=PH/2;
+const hw=PW/2, hh=PH/2;
 addLine([[-hw,hh],[hw,hh],[hw,-hh],[-hw,-hh],[-hw,hh]]);
 addLine([[-hw,0],[hw,0]]);
 const cc=[];for(let a=0;a<=360;a+=4)cc.push([Math.cos(a*Math.PI/180)*9.15,Math.sin(a*Math.PI/180)*9.15]);

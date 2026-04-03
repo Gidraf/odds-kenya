@@ -7,6 +7,7 @@ Also added Bookmaker.to_dict() for easy serialization.
 """
 from datetime import datetime, timezone
 from app.extensions import db
+from app.models.enums_tools import _utcnow_naive
 
 
 class Bookmaker(db.Model):
@@ -235,3 +236,178 @@ class BookmakerEntityValue(db.Model):
     extra_json   = db.Column(db.Text)                          # any extra metadata as JSON
 
     bookmaker = db.relationship("Bookmaker", lazy="joined", foreign_keys=[bookmaker_id])
+
+
+class BookmakerEntityMap(db.Model):
+    """
+    Maps our canonical entity IDs to each bookmaker's external IDs.
+ 
+    Examples:
+      bookmaker=Betika, entity_type=team, our_id=42, external_id="BT_TEAM_8899",
+        external_name="Arsenal FC"
+ 
+      bookmaker=SportPesa, entity_type=competition, our_id=7,
+        external_id="SP_LEAGUE_123", external_name="English Premier League"
+ 
+    This replaces stringly-typed BookmakerEntityValue with proper structure.
+    """
+    __tablename__ = "bookmaker_entity_maps"
+ 
+    id           = db.Column(db.Integer, primary_key=True)
+    bookmaker_id = db.Column(db.Integer, db.ForeignKey("bookmakers.id", ondelete="CASCADE"),
+                             nullable=False, index=True)
+ 
+    # What type of entity: "sport", "country", "competition", "team", "player"
+    entity_type  = db.Column(db.String(20), nullable=False, index=True)
+ 
+    # Our canonical ID (the FK target depends on entity_type — polymorphic)
+    canonical_id = db.Column(db.Integer, nullable=False, index=True)
+ 
+    # The bookmaker's own ID for this entity
+    external_id   = db.Column(db.String(200), nullable=False)
+    # The bookmaker's display name for this entity
+    external_name = db.Column(db.String(250), nullable=True)
+ 
+    # Optional betradar cross-ref stored at mapping time
+    betradar_id = db.Column(db.String(32), nullable=True)
+ 
+    is_verified = db.Column(db.Boolean, default=False,
+                            comment="True if mapping was confirmed by betradar_id match")
+    created_at  = db.Column(db.DateTime, default=_utcnow_naive)
+    updated_at  = db.Column(db.DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
+ 
+    __table_args__ = (
+        db.UniqueConstraint("bookmaker_id", "entity_type", "canonical_id",
+                            name="uq_bem_bk_type_canonical"),
+        db.Index("ix_bem_bk_external", "bookmaker_id", "entity_type", "external_id"),
+        db.Index("ix_bem_canonical",   "entity_type", "canonical_id"),
+    )
+ 
+    @classmethod
+    def get_canonical_id(cls, bookmaker_id: int, entity_type: str,
+                         external_id: str) -> int | None:
+        """Look up our canonical ID from a bookmaker's external ID."""
+        row = cls.query.filter_by(
+            bookmaker_id=bookmaker_id,
+            entity_type=entity_type,
+            external_id=external_id,
+        ).first()
+        return row.canonical_id if row else None
+ 
+    @classmethod
+    def get_external_id(cls, bookmaker_id: int, entity_type: str,
+                        canonical_id: int) -> str | None:
+        """Look up a bookmaker's external ID from our canonical ID."""
+        row = cls.query.filter_by(
+            bookmaker_id=bookmaker_id,
+            entity_type=entity_type,
+            canonical_id=canonical_id,
+        ).first()
+        return row.external_id if row else None
+ 
+    @classmethod
+    def upsert(cls, bookmaker_id: int, entity_type: str, canonical_id: int,
+               external_id: str, external_name: str | None = None,
+               betradar_id: str | None = None) -> "BookmakerEntityMap":
+        row = cls.query.filter_by(
+            bookmaker_id=bookmaker_id,
+            entity_type=entity_type,
+            canonical_id=canonical_id,
+        ).first()
+        if not row:
+            row = cls(
+                bookmaker_id=bookmaker_id,
+                entity_type=entity_type,
+                canonical_id=canonical_id,
+                external_id=external_id,
+                external_name=external_name,
+                betradar_id=betradar_id,
+            )
+            db.session.add(row)
+        else:
+            row.external_id   = external_id
+            row.external_name = external_name or row.external_name
+            if betradar_id:
+                row.betradar_id = betradar_id
+                row.is_verified = True
+        db.session.flush()
+        return row
+ 
+    def to_dict(self) -> dict:
+        return {
+            "id":            self.id,
+            "bookmaker_id":  self.bookmaker_id,
+            "entity_type":   self.entity_type,
+            "canonical_id":  self.canonical_id,
+            "external_id":   self.external_id,
+            "external_name": self.external_name,
+            "betradar_id":   self.betradar_id,
+            "is_verified":   self.is_verified,
+        }
+ 
+ 
+# ═════════════════════════════════════════════════════════════════════════════
+# BOOKMAKER ↔ MATCH LINK  (maps each bk's match ID to our UnifiedMatch)
+# ═════════════════════════════════════════════════════════════════════════════
+ 
+class BookmakerMatchLink(db.Model):
+    """
+    Explicit: "For UnifiedMatch 42, Betika calls it BT_12345,
+    SportPesa calls it SP_67890, OdiBets calls it OD_ABCDE."
+    """
+    __tablename__ = "bookmaker_match_links"
+ 
+    id           = db.Column(db.Integer, primary_key=True)
+    match_id     = db.Column(
+        db.Integer, db.ForeignKey("unified_matches.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    bookmaker_id = db.Column(
+        db.Integer, db.ForeignKey("bookmakers.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+ 
+    # The bookmaker's own match / event ID
+    external_match_id = db.Column(db.String(100), nullable=False)
+ 
+    # Betradar ID as seen by this bookmaker (may differ in format)
+    betradar_id = db.Column(db.String(64), nullable=True, index=True)
+ 
+    # Optional deep-link URL to the match on the bookmaker's site
+    match_url = db.Column(db.String(500), nullable=True)
+ 
+    created_at = db.Column(db.DateTime, default=_utcnow_naive)
+ 
+    __table_args__ = (
+        db.UniqueConstraint("match_id", "bookmaker_id", name="uq_bml_match_bk"),
+        db.Index("ix_bml_bk_external", "bookmaker_id", "external_match_id"),
+    )
+ 
+    @classmethod
+    def upsert(cls, match_id: int, bookmaker_id: int,
+               external_match_id: str, betradar_id: str | None = None,
+               match_url: str | None = None) -> "BookmakerMatchLink":
+        row = cls.query.filter_by(match_id=match_id, bookmaker_id=bookmaker_id).first()
+        if not row:
+            row = cls(match_id=match_id, bookmaker_id=bookmaker_id,
+                      external_match_id=external_match_id,
+                      betradar_id=betradar_id, match_url=match_url)
+            db.session.add(row)
+        else:
+            row.external_match_id = external_match_id
+            if betradar_id:
+                row.betradar_id = betradar_id
+            if match_url:
+                row.match_url = match_url
+        db.session.flush()
+        return row
+ 
+    def to_dict(self) -> dict:
+        return {
+            "id":                self.id,
+            "match_id":          self.match_id,
+            "bookmaker_id":      self.bookmaker_id,
+            "external_match_id": self.external_match_id,
+            "betradar_id":       self.betradar_id,
+            "match_url":         self.match_url,
+        }
