@@ -116,7 +116,7 @@ def create_app() -> Flask:
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,
-            BookmakerEntityValue, BookmakerPayment,
+            BookmakerEntityValue, BookmakerPayment, BookmakerEntityMap, BookmakerMatchLink
         )
         from app.models.research_model import (
             ResearchSession, ResearchFinding, ResearchEndpoint,
@@ -125,7 +125,7 @@ def create_app() -> Flask:
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
             MarketDefinition, ArbitrageOpportunity, EVOpportunity,
         )
-        from app.models.competions_model  import Team, Sport, Competition
+        from app.models.competions_model  import Team, Sport, Competition, Player, TeamPlayer
         from app.models.harvest_workflow  import HarvestWorkflow, HarvestWorkflowStep
         from app.models.mapping_models    import (
             Market, MarketAlias, TeamAlias, CompetitionAlias,
@@ -141,6 +141,7 @@ def create_app() -> Flask:
         from app.models.bank_roll             import BankrollAccount, BankrollTarget
         from app.models.customer              import Customer
         from app.models.email_tokens          import EmailToken
+        from app.models.match               import MatchEvent, MatchEventType, MatchLineup, PlayerPosition, MatchPeriod 
 
     import app.sockets  # noqa: registers /admin namespace handlers
 
