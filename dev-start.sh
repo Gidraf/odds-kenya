@@ -52,7 +52,7 @@ echo ""
 # Tries tmux → gnome-terminal → macOS Terminal (osascript)
 # Falls back to printing manual commands if none found.
 
-CELERY_APP="app.workers.celery_app"
+CELERY_APP="app.workers.celery_tasks"
 
 CMD_FLASK="flask run --host=0.0.0.0 --port=${FLASK_PORT} --debug --reload"
 
