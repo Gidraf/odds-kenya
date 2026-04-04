@@ -370,7 +370,7 @@ def bt_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     t0 = time.perf_counter()
     try:
         from app.workers.bt_harvester import fetch_upcoming_matches
-        matches = fetch_upcoming(sport_slug, fetch_full_markets=True, max_matches=max_matches)
+        matches = fetch_upcoming_matches(sport_slug, fetch_full_markets=True, max_matches=max_matches)
     except Exception as exc:
         raise self.retry(exc=exc)
     latency = int((time.perf_counter() - t0) * 1000)
