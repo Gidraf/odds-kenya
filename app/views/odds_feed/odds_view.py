@@ -1,548 +1,558 @@
 """
-app/views/odds_feed/odds_view.py
-=================================
-Unified upcoming odds API — all bookmakers, one stream.
+ADD THESE ROUTES to app/views/odds_feed/odds_view.py
+=====================================================
+Direct PostgreSQL endpoints — work regardless of Redis cache state.
+Query unified_matches + bookmaker_match_odds grouped by parent_match_id.
 
-Endpoints
----------
-GET  /api/odds/upcoming/<sport>
-     Merged view of all bookmakers for a sport (from Redis cache).
-     Query params:
-       bookmakers   comma-sep list (default: all enabled)
-       market       filter by market slug
-       comp         filter by competition name
-       team         filter by team name
-       date         YYYY-MM-DD
-       page / per_page / sort / order
-       best_only    if=1, only return rows where this bookie has the best odd
+New endpoints added:
+  GET /api/odds/unified/<sport_slug>
+      All unified matches for a sport, each row showing odds from every
+      bookmaker that has data for that match.
 
-GET  /api/odds/upcoming/<sport>/<bookmaker>
-     Single bookmaker upcoming (from that bookmaker's Redis cache).
+  GET /api/odds/unified/match/<match_id>
+      Full detail for one unified match — all bookmakers, all markets,
+      odds history summary.
 
-GET  /api/odds/compare/<sport>/<event_id>
-     Side-by-side odds for one event across all bookmakers.
-     event_id = betradar_id (cross-bookmaker canonical ID)
+  GET /api/odds/unified/search
+      Search by team name, competition, or betradar_id across all sports.
 
-GET  /api/odds/value-bets/<sport>
-     Latest value bets detected for a sport.
-
-SSE  /api/odds/stream/upcoming/<sport>
-     ONE stream for ALL bookmakers.
-     Receives:
-       {type:"odds_updated",   sport, bookmakers, count, ts}  ← after each harvest
-       {type:"harvest_done",   bookmaker, sport, count, ts}   ← after each bk finishes
-       {type:"value_bets",     sport, count, bets[], ts}      ← when value bets found
-
-GET  /api/odds/history/<sport>/<betradar_id>/<market_slug>
-     Odds movement for a specific event+market across time and bookmakers.
-
-GET  /api/odds/status
-     Health check: last harvest time per bookmaker+sport.
+  GET /api/odds/unified/stats
+      Aggregate stats: total matches, coverage per bookmaker, arb count.
 """
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone, timedelta
 
-from flask import Blueprint, Response, request, stream_with_context
+from flask import request
 
-from app.utils.customer_jwt_helpers import _err, _signed_response
-
-bp_odds = Blueprint("odds-customer", __name__, url_prefix="/api/odds")
-
-
-# ── Imports ───────────────────────────────────────────────────────────────────
-
-def _registry():
-    from app.workers.harvest_registry import ENABLED_BOOKMAKERS, BOOKMAKER_BY_SLUG
-    return ENABLED_BOOKMAKERS, BOOKMAKER_BY_SLUG
+# ── paste these route functions into the existing bp_odds Blueprint ───────────
+# from app.views.odds_feed.odds_view import bp_odds  (already exists)
 
 
-def _get_redis():
-    import redis, os
-    return redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
-
-
-# Redis channel pattern (matches harvest_tasks.py)
-CH_HARVEST_DONE = "odds:harvest:done"
-CH_ODDS_UPDATED = "odds:upcoming:{sport}"
-CH_VALUE_BET    = "odds:value_bets:{sport}"
-KEY_UPCOMING    = "odds:upcoming:{bookmaker}:{sport}"
-KEY_ALL_BK      = "odds:upcoming:all:{sport}"
-
-SSE_HEADERS = {
-    "Content-Type":      "text/event-stream",
-    "Cache-Control":     "no-cache",
-    "X-Accel-Buffering": "no",
-    "Connection":        "keep-alive",
-}
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _sse(data: dict) -> str:
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _sse_ka() -> str:
-    return f": ka {datetime.now(timezone.utc).strftime('%H:%M:%S')}\n\n"
-
-
-def _cache_get(key: str) -> dict | None:
-    r   = _get_redis()
-    raw = r.get(key)
-    return json.loads(raw) if raw else None
-
-
-def _parse_bookmakers(param: str | None) -> list[str]:
-    enabled, _ = _registry()
-    enabled_slugs = [b["slug"] for b in enabled]
-    if not param:
-        return enabled_slugs
-    requested = [s.strip().lower() for s in param.split(",") if s.strip()]
-    return [s for s in requested if s in enabled_slugs] or enabled_slugs
-
-
-def _apply_filter(matches: list[dict], args) -> list[dict]:
-    comp   = (args.get("comp")   or "").strip().lower()
-    team   = (args.get("team")   or "").strip().lower()
-    market = (args.get("market") or "").strip().lower()
-    date_s = (args.get("date")   or "").strip()
-
-    fdt = tdt = None
-    if date_s:
-        try:
-            day = datetime.strptime(date_s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            fdt, tdt = day, day + timedelta(days=1)
-        except ValueError:
-            pass
-
-    out = []
-    for m in matches:
-        if comp   and comp   not in m.get("competition", "").lower():   continue
-        if team   and team   not in m.get("home_team", "").lower() and team not in m.get("away_team", "").lower(): continue
-        if market and not any(market in k for k in (m.get("markets") or {})): continue
-        if fdt:
-            st = m.get("start_time")
-            if st:
-                try:
-                    dt = datetime.fromisoformat(str(st).replace("Z", "+00:00"))
-                    if dt < fdt or dt >= tdt: continue
-                except Exception: pass
-        out.append(m)
-    return out
-
-
-def _sort_matches(matches: list[dict], sort: str, order: str) -> list[dict]:
-    reverse = order == "desc"
-    if sort == "competition":
-        return sorted(matches, key=lambda m: m.get("competition", ""), reverse=reverse)
-    # default: start_time
-    def _dt(m):
-        st = m.get("start_time")
-        if not st: return datetime.max.replace(tzinfo=timezone.utc)
-        try: return datetime.fromisoformat(str(st).replace("Z", "+00:00"))
-        except Exception: return datetime.max.replace(tzinfo=timezone.utc)
-    return sorted(matches, key=_dt, reverse=reverse)
-
-
-def _paginate(matches: list[dict], page: int, per_page: int):
-    total = len(matches)
-    return matches[(page-1)*per_page : page*per_page], total
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# REST ENDPOINTS
-# ══════════════════════════════════════════════════════════════════════════════
-
-@bp_odds.route("/upcoming/<sport_slug>")
-def upcoming_all_bookmakers(sport_slug: str):
+@bp_odds.route("/unified/<sport_slug>")
+def unified_matches(sport_slug: str):
     """
-    GET /api/odds/upcoming/soccer
-    Returns merged matches with per-bookmaker odds and best-odd flags.
-    Uses the pre-computed KEY_ALL_BK cache written by merge_and_broadcast().
-    Falls back to building the merge on-the-fly if cache is cold.
+    GET /api/odds/unified/soccer
+    Queries PostgreSQL directly — no Redis dependency.
+
+    Returns unified matches grouped by parent_match_id, each match
+    showing odds from every bookmaker that has recorded data.
+
+    Query params:
+      page        default 1
+      per_page    default 25 (max 100)
+      sort        start_time | home_team | competition  (default: start_time)
+      order       asc | desc  (default: asc)
+      comp        filter by competition name (partial match)
+      team        filter by home or away team (partial match)
+      status      PRE_MATCH | IN_PLAY | FINISHED | all  (default: all)
+      has_arb     1 → only matches with arbitrage opportunities
+      bk          sp,bt,od → only matches where ALL listed bookmakers have odds
+      date        YYYY-MM-DD → filter by start date
     """
     t0 = time.perf_counter()
 
-    page     = max(1, int(request.args.get("page", 1) or 1))
-    per_page = min(int(request.args.get("per_page", 25) or 25), 100)
-    sort     = request.args.get("sort", "start_time") or "start_time"
-    order    = request.args.get("order", "asc") or "asc"
-    bk_param = request.args.get("bookmakers")
-
-    bk_slugs = _parse_bookmakers(bk_param)
-
-    # Try pre-computed merged cache first
-    cached = _cache_get(KEY_ALL_BK.format(sport=sport_slug))
-    if cached and cached.get("matches"):
-        matches = cached["matches"]
-        from_cache = True
-    else:
-        # On-the-fly merge (cache cold)
-        from app.workers.celery_tasks import merge_and_broadcast_task
-        merge_and_broadcast_task.apply_async(args=[sport_slug], queue="harvest")
-        cached = _cache_get(KEY_ALL_BK.format(sport=sport_slug))
-        matches = (cached or {}).get("matches", [])
-        from_cache = False
-
-    # Filter by requested bookmakers (prune others from markets dict)
-    if bk_param:
-        for m in matches:
-            m["markets"] = {
-                slug: {
-                    out: {bk: odd for bk, odd in bk_odds.items() if bk in bk_slugs}
-                    for out, bk_odds in outcomes.items()
-                }
-                for slug, outcomes in (m.get("markets") or {}).items()
-            }
-
-    matches = _apply_filter(matches, request.args)
-    matches = _sort_matches(matches, sort, order)
-    paged, total = _paginate(matches, page, per_page)
-
-    return _signed_response({
-        "ok":           True,
-        "sport":        sport_slug,
-        "bookmakers":   bk_slugs,
-        "from_cache":   from_cache,
-        "total":        total,
-        "page":         page,
-        "per_page":     per_page,
-        "pages":        max(1, (total + per_page - 1) // per_page),
-        "harvested_at": (cached or {}).get("harvested_at"),
-        "matches":      paged,
-        "latency_ms":   int((time.perf_counter() - t0) * 1000),
-    })
-
-
-@bp_odds.route("/upcoming/<sport_slug>/<bookmaker_slug>")
-def upcoming_single_bookmaker(sport_slug: str, bookmaker_slug: str):
-    """GET /api/odds/upcoming/soccer/sportpesa — single bookmaker view."""
-    t0 = time.perf_counter()
-
-    _, bk_map = _registry()
-    if bookmaker_slug not in bk_map:
-        return _err(f"Unknown bookmaker: {bookmaker_slug}", 404)
-
-    page     = max(1, int(request.args.get("page", 1) or 1))
-    per_page = min(int(request.args.get("per_page", 25) or 25), 100)
-    sort     = request.args.get("sort", "start_time") or "start_time"
-    order    = request.args.get("order", "asc") or "asc"
-
-    cached = _cache_get(KEY_UPCOMING.format(bookmaker=bookmaker_slug, sport=sport_slug))
-
-    if not cached or not cached.get("matches"):
-        return _signed_response({
-            "ok": True, "bookmaker": bookmaker_slug, "sport": sport_slug,
-            "matches": [], "total": 0, "from_cache": False,
-            "latency_ms": int((time.perf_counter() - t0) * 1000),
-        })
-
-    matches = _apply_filter(cached["matches"], request.args)
-    matches = _sort_matches(matches, sort, order)
-    paged, total = _paginate(matches, page, per_page)
-
-    return _signed_response({
-        "ok":           True,
-        "bookmaker":    bookmaker_slug,
-        "sport":        sport_slug,
-        "from_cache":   True,
-        "total":        total,
-        "page":         page,
-        "per_page":     per_page,
-        "pages":        max(1, (total + per_page - 1) // per_page),
-        "harvested_at": cached.get("harvested_at"),
-        "matches":      paged,
-        "latency_ms":   int((time.perf_counter() - t0) * 1000),
-    })
-
-
-@bp_odds.route("/compare/<sport_slug>/<betradar_id>")
-def compare_event(sport_slug: str, betradar_id: str):
-    """
-    GET /api/odds/compare/soccer/12345678
-    Side-by-side odds for one event across all bookmakers.
-    Uses pre-built merged cache — O(1) lookup.
-    """
-    t0 = time.perf_counter()
-
-    cached = _cache_get(KEY_ALL_BK.format(sport=sport_slug))
-    if not cached:
-        return _err(f"No cached data for sport: {sport_slug}", 404)
-
-    match = next(
-        (m for m in cached.get("matches", []) if str(m.get("betradar_id")) == betradar_id),
-        None,
-    )
-    if not match:
-        return _err(f"Event {betradar_id} not found in {sport_slug} cache", 404)
-
-    return _signed_response({
-        "ok":          True,
-        "betradar_id": betradar_id,
-        "sport":       sport_slug,
-        "match":       match,
-        "latency_ms":  int((time.perf_counter() - t0) * 1000),
-    })
-
-
-@bp_odds.route("/value-bets/<sport_slug>")
-def value_bets(sport_slug: str):
-    """GET /api/odds/value-bets/soccer — latest value bets from Postgres."""
-    t0      = time.perf_counter()
-    min_pct = float(request.args.get("min_pct", 5))
-    limit   = min(int(request.args.get("limit", 50) or 50), 200)
-    kind    = request.args.get("kind", "arb")   # "arb" | "ev" | "all"
+    page     = max(1,   int(request.args.get("page",     1)))
+    per_page = min(100, int(request.args.get("per_page", 25)))
+    sort     = request.args.get("sort",   "start_time")
+    order    = request.args.get("order",  "asc").lower()
+    comp_flt = (request.args.get("comp",  "") or "").strip().lower()
+    team_flt = (request.args.get("team",  "") or "").strip().lower()
+    status_flt = (request.args.get("status", "all") or "all").upper()
+    has_arb  = request.args.get("has_arb", "") in ("1", "true")
+    bk_flt   = [b.strip() for b in (request.args.get("bk", "") or "").split(",") if b.strip()]
+    date_flt = (request.args.get("date", "") or "").strip()
 
     try:
+        from app.extensions import db
         from app.models.odds_model import (
-            ArbitrageOpportunity, EVOpportunity, OpportunityStatus,
+            UnifiedMatch, BookmakerMatchOdds,
+            ArbitrageOpportunity,
         )
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
+        from sqlalchemy import or_, and_, func
 
-        arbs, evs = [], []
-        if kind in ("arb", "all"):
-            arbs = (
-                ArbitrageOpportunity.query
-                .filter(
-                    ArbitrageOpportunity.sport      == sport_slug,
-                    ArbitrageOpportunity.profit_pct >= min_pct,
-                    ArbitrageOpportunity.open_at    >= cutoff,
-                    ArbitrageOpportunity.status     == OpportunityStatus.OPEN,
-                )
-                .order_by(ArbitrageOpportunity.profit_pct.desc())
-                .limit(limit).all()
-            )
-        if kind in ("ev", "all"):
-            evs = (
-                EVOpportunity.query
-                .filter(
-                    EVOpportunity.sport    == sport_slug,
-                    EVOpportunity.ev_pct   >= min_pct,
-                    EVOpportunity.open_at  >= cutoff,
-                    EVOpportunity.status   == OpportunityStatus.OPEN,
-                )
-                .order_by(EVOpportunity.ev_pct.desc())
-                .limit(limit).all()
-            )
+        # ── Base query ────────────────────────────────────────────────────────
+        q = UnifiedMatch.query
 
-        return _signed_response({
-            "ok":         True,
-            "sport":      sport_slug,
-            "arb_count":  len(arbs),
-            "ev_count":   len(evs),
-            "arbs":       [a.to_dict() for a in arbs],
-            "evs":        [e.to_dict() for e in evs],
-            "latency_ms": int((time.perf_counter() - t0) * 1000),
-        })
-    except Exception as exc:
-        return _err(f"DB error: {exc}", 503)
+        # Sport filter (sport_name column)
+        if sport_slug and sport_slug != "all":
+            q = q.filter(UnifiedMatch.sport_name.ilike(f"%{sport_slug}%"))
 
+        # Status filter
+        if status_flt != "ALL":
+            q = q.filter(UnifiedMatch.status == status_flt)
 
-@bp_odds.route("/history/<sport_slug>/<betradar_id>/<market_slug>")
-def odds_history(sport_slug: str, betradar_id: str, market_slug: str):
-    """
-    GET /api/odds/history/soccer/12345678/1x2
-    Time-series odds for one event+market across all bookmakers.
-    Returns last 30 days of OddsSnapshot rows, grouped by bookmaker+outcome.
-    """
-    t0      = time.perf_counter()
-    days    = min(int(request.args.get("days", 7) or 7), 30)
-    outcome = request.args.get("outcome")
+        # Competition filter
+        if comp_flt:
+            q = q.filter(UnifiedMatch.competition_name.ilike(f"%{comp_flt}%"))
 
-    try:
-        from app.models.odds_model import BookmakerOddsHistory, UnifiedMatch
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        # Team filter
+        if team_flt:
+            q = q.filter(or_(
+                UnifiedMatch.home_team_name.ilike(f"%{team_flt}%"),
+                UnifiedMatch.away_team_name.ilike(f"%{team_flt}%"),
+            ))
 
-        # Resolve match_id from betradar_id
-        um = UnifiedMatch.query.filter_by(parent_match_id=betradar_id).first()
-        if not um:
-            return _err(f"Event {betradar_id} not found", 404)
-
-        q = (
-            BookmakerOddsHistory.query
-            .filter(
-                BookmakerOddsHistory.match_id  == um.id,
-                BookmakerOddsHistory.market    == market_slug,
-                BookmakerOddsHistory.recorded_at >= cutoff,
-            )
-            .order_by(BookmakerOddsHistory.recorded_at.asc())
-        )
-        if outcome:
-            q = q.filter(BookmakerOddsHistory.selection == outcome)
-
-        rows = q.all()
-
-        # Group: {bookmaker_id: {selection: [{ts, old, new, delta}]}}
-        grouped: dict[str, dict[str, list]] = {}
-        for row in rows:
-            bk_key = str(row.bookmaker_id)
-            sel    = row.selection or ""
-            grouped.setdefault(bk_key, {}).setdefault(sel, [])
-            grouped[bk_key][sel].append({
-                "ts":          row.recorded_at.isoformat(),
-                "old_price":   row.old_price,
-                "new_price":   row.new_price,
-                "price_delta": row.price_delta,
-            })
-
-        return _signed_response({
-            "ok":          True,
-            "betradar_id": betradar_id,
-            "match_id":    um.id,
-            "sport":       sport_slug,
-            "market":      market_slug,
-            "days":        days,
-            "history":     grouped,
-            "total_rows":  len(rows),
-            "latency_ms":  int((time.perf_counter() - t0) * 1000),
-        })
-    except Exception as exc:
-        return _err(f"DB error: {exc}", 503)
-
-
-@bp_odds.route("/status")
-def odds_status():
-    """GET /api/odds/status — harvest health per bookmaker+sport."""
-    t0 = time.perf_counter()
-    enabled, _ = _registry()
-    r  = _get_redis()
-
-    status = []
-    for bk in enabled:
-        bk_status = {"bookmaker": bk["slug"], "label": bk["label"], "sports": []}
-        for sport in bk["sports"][:6]:   # cap to first 6 sports per bookmaker
-            key    = KEY_UPCOMING.format(bookmaker=bk["slug"], sport=sport)
-            cached = r.get(key)
-            if cached:
-                d = json.loads(cached)
-                bk_status["sports"].append({
-                    "sport":        sport,
-                    "match_count":  d.get("match_count", 0),
-                    "harvested_at": d.get("harvested_at"),
-                    "ttl_s":        r.ttl(key),
-                })
-            else:
-                bk_status["sports"].append({
-                    "sport": sport, "match_count": 0,
-                    "harvested_at": None, "ttl_s": -2,
-                })
-        status.append(bk_status)
-
-    return _signed_response({
-        "ok": True, "bookmakers": status,
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-    })
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SSE STREAM — ONE STREAM FOR ALL BOOKMAKERS
-# ══════════════════════════════════════════════════════════════════════════════
-
-@bp_odds.route("/stream/upcoming/<sport_slug>")
-def stream_upcoming(sport_slug: str):
-    """
-    GET /api/odds/stream/upcoming/soccer
-
-    SSE stream that notifies clients whenever:
-      1. Any bookmaker finishes harvesting (harvest_done)
-      2. The merged view is rebuilt (odds_updated)
-      3. Value bets are detected (value_bets)
-
-    Client should call GET /api/odds/upcoming/{sport} on receipt of odds_updated
-    to get fresh data. The stream itself doesn't carry full match data (too large).
-
-    Optional query param: bookmakers=sp,betika (filter events to these only)
-    """
-    bk_filter = set(_parse_bookmakers(request.args.get("bookmakers")))
-
-    @stream_with_context
-    def generate():
-        r      = _get_redis()
-        pubsub = r.pubsub(ignore_subscribe_messages=True)
-
-        # Subscribe to: sport-specific updates + harvest done + value bets
-        pubsub.subscribe(
-            CH_ODDS_UPDATED.format(sport=sport_slug),
-            CH_VALUE_BET.format(sport=sport_slug),
-            CH_HARVEST_DONE,
-        )
-
-        yield _sse({
-            "type":       "connected",
-            "sport":      sport_slug,
-            "bookmakers": sorted(bk_filter),
-            "ts":         datetime.now(timezone.utc).isoformat(),
-        })
-
-        last_ka = time.monotonic()
-        try:
-            while True:
-                msg = pubsub.get_message(timeout=0.5)
-                if msg and msg["type"] == "message":
-                    try:
-                        data = json.loads(msg["data"])
-                    except Exception:
-                        continue
-
-                    # Filter harvest_done to only relevant bookmakers
-                    if data.get("type") == "harvest_done":
-                        if data.get("bookmaker") not in bk_filter:
-                            continue
-                        if data.get("sport") != sport_slug:
-                            continue
-
-                    yield _sse(data)
-
-                if time.monotonic() - last_ka > 15:
-                    yield _sse_ka()
-                    last_ka = time.monotonic()
-
-        except GeneratorExit:
-            pass
-        finally:
+        # Date filter
+        if date_flt:
             try:
-                pubsub.unsubscribe()
-                pubsub.close()
-            except Exception:
+                day = datetime.strptime(date_flt, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                q   = q.filter(
+                    UnifiedMatch.start_time >= day,
+                    UnifiedMatch.start_time <  day + timedelta(days=1),
+                )
+            except ValueError:
                 pass
 
-    return Response(generate(), headers=SSE_HEADERS)
+        # Sort
+        sort_col = {
+            "start_time":  UnifiedMatch.start_time,
+            "home_team":   UnifiedMatch.home_team_name,
+            "competition": UnifiedMatch.competition_name,
+        }.get(sort, UnifiedMatch.start_time)
+        q = q.order_by(sort_col.desc() if order == "desc" else sort_col.asc())
+
+        total   = q.count()
+        matches = q.offset((page - 1) * per_page).limit(per_page).all()
+
+        if not matches:
+            return {
+                "ok": True, "sport": sport_slug,
+                "total": 0, "page": page, "per_page": per_page, "pages": 0,
+                "matches": [],
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+            }
+
+        match_ids = [m.id for m in matches]
+
+        # ── Load all bookmaker odds for these matches in one query ────────────
+        bmo_rows = (
+            BookmakerMatchOdds.query
+            .filter(BookmakerMatchOdds.match_id.in_(match_ids))
+            .all()
+        )
+
+        # ── Load bookmaker names ──────────────────────────────────────────────
+        bk_ids   = {bmo.bookmaker_id for bmo in bmo_rows}
+        bk_objs  = Bookmaker.query.filter(Bookmaker.id.in_(bk_ids)).all() if bk_ids else []
+        bk_map   = {b.id: b for b in bk_objs}
+
+        # ── Load bookmaker match links (deep-link URLs) ───────────────────────
+        links_rows = (
+            BookmakerMatchLink.query
+            .filter(BookmakerMatchLink.match_id.in_(match_ids))
+            .all()
+        )
+        links_by_match: dict[int, dict] = {}
+        for lnk in links_rows:
+            links_by_match.setdefault(lnk.match_id, {})[lnk.bookmaker_id] = lnk.to_dict()
+
+        # ── Load open arb opportunities for these matches ─────────────────────
+        try:
+            arb_match_ids = {
+                row.match_id
+                for row in (
+                    ArbitrageOpportunity.query
+                    .filter(
+                        ArbitrageOpportunity.match_id.in_(match_ids),
+                        ArbitrageOpportunity.status == "OPEN",
+                    )
+                    .with_entities(ArbitrageOpportunity.match_id)
+                    .all()
+                )
+            }
+        except Exception:
+            arb_match_ids = set()
+
+        # ── Group BMO rows by match ───────────────────────────────────────────
+        bmo_by_match: dict[int, list] = {}
+        for bmo in bmo_rows:
+            bmo_by_match.setdefault(bmo.match_id, []).append(bmo)
+
+        # ── Build response rows ───────────────────────────────────────────────
+        BK_SLUG_MAP = {
+            "sportpesa": "sp", "betika": "bt", "odibets": "od",
+            "sp": "sp", "bt": "bt", "od": "od",
+        }
+
+        result_rows = []
+        for um in matches:
+            bmos      = bmo_by_match.get(um.id, [])
+            bookmakers: dict[str, dict] = {}
+
+            for bmo in bmos:
+                bk_obj  = bk_map.get(bmo.bookmaker_id)
+                bk_name = (bk_obj.name if bk_obj else str(bmo.bookmaker_id)).lower()
+                bk_slug = BK_SLUG_MAP.get(bk_name, bk_name)
+                bk_label = bk_obj.name if bk_obj else bk_slug.upper()
+
+                # markets_json on BMO is {market_slug: {outcome: odd}}
+                markets = bmo.markets_json or {}
+
+                bookmakers[bk_slug] = {
+                    "bookmaker_id":  bmo.bookmaker_id,
+                    "bookmaker":     bk_label,
+                    "slug":          bk_slug,
+                    "markets":       markets,
+                    "market_count":  len(markets),
+                    "link":          links_by_match.get(um.id, {}).get(bmo.bookmaker_id),
+                    "updated_at":    bmo.updated_at.isoformat() if getattr(bmo, "updated_at", None) else None,
+                }
+
+            # Apply bk filter — skip match if not all requested bks present
+            if bk_flt and not all(b in bookmakers for b in bk_flt):
+                total -= 1
+                continue
+
+            # Build best-odds map: {market: {outcome: {odd, bk}}}
+            best: dict[str, dict[str, dict]] = {}
+            for bk_slug, bk_data in bookmakers.items():
+                for mkt, outcomes in (bk_data.get("markets") or {}).items():
+                    best.setdefault(mkt, {})
+                    for out, odd in (outcomes or {}).items():
+                        try:
+                            fv = float(odd)
+                        except (TypeError, ValueError):
+                            continue
+                        if fv <= 1.0:
+                            continue
+                        if out not in best[mkt] or fv > best[mkt][out]["odd"]:
+                            best[mkt][out] = {"odd": fv, "bk": bk_slug}
+
+            # Detect arbitrage from best odds
+            arb_markets: list[dict] = []
+            for mkt, outcomes in best.items():
+                if len(outcomes) < 2:
+                    continue
+                arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
+                if arb_sum < 1.0:
+                    profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
+                    arb_markets.append({
+                        "market":     mkt,
+                        "profit_pct": profit_pct,
+                        "arb_sum":    round(arb_sum, 6),
+                        "legs": [
+                            {"outcome": out, "bk": v["bk"], "odd": v["odd"]}
+                            for out, v in outcomes.items()
+                        ],
+                    })
+            arb_markets.sort(key=lambda x: -x["profit_pct"])
+
+            has_arb_flag  = bool(arb_markets) or um.id in arb_match_ids
+
+            # Skip if has_arb filter is active and no arb found
+            if has_arb and not has_arb_flag:
+                total -= 1
+                continue
+
+            result_rows.append({
+                # ── Identity ──────────────────────────────────────────────────
+                "match_id":       um.id,
+                "parent_match_id": um.parent_match_id,
+                "betradar_id":    um.parent_match_id,   # alias — same field
+                # ── Teams ─────────────────────────────────────────────────────
+                "home_team":      um.home_team_name,
+                "away_team":      um.away_team_name,
+                "competition":    um.competition_name,
+                "sport":          um.sport_name,
+                # ── Timing ────────────────────────────────────────────────────
+                "start_time":     um.start_time.isoformat() if um.start_time else None,
+                "status":         getattr(um, "status", "PRE_MATCH"),
+                # ── Coverage ──────────────────────────────────────────────────
+                "bookmaker_count": len(bookmakers),
+                "bookmakers":     bookmakers,
+                "markets_json":   um.markets_json or {},   # aggregated best odds
+                "best":           best,
+                # ── Opportunities ─────────────────────────────────────────────
+                "has_arb":        has_arb_flag,
+                "arb_markets":    arb_markets,
+                "best_arb_pct":   arb_markets[0]["profit_pct"] if arb_markets else 0.0,
+            })
+
+        pages = max(1, (total + per_page - 1) // per_page)
+
+        return {
+            "ok":         True,
+            "sport":      sport_slug,
+            "total":      total,
+            "page":       page,
+            "per_page":   per_page,
+            "pages":      pages,
+            "arb_count":  sum(1 for r in result_rows if r["has_arb"]),
+            "bk_filter":  bk_flt or None,
+            "matches":    result_rows,
+            "latency_ms": int((time.perf_counter() - t0) * 1000),
+            "source":     "postgresql",
+        }
+
+    except Exception as exc:
+        import traceback
+        return {"ok": False, "error": str(exc),
+                "trace": traceback.format_exc()}, 500
 
 
-@bp_odds.route("/stream/trigger/<sport_slug>", methods=["POST"])
-def trigger_harvest(sport_slug: str):
+@bp_odds.route("/unified/match/<int:match_id>")
+def unified_match_detail(match_id: int):
     """
-    POST /api/odds/stream/trigger/soccer
-    Manually trigger an immediate harvest for a sport across all bookmakers.
-    Use for on-demand refresh without waiting for Celery Beat.
+    GET /api/odds/unified/match/42
+    Full detail for one unified match — all bookmakers, all markets,
+    recent odds movement.
     """
     t0 = time.perf_counter()
     try:
-        from app.workers.celery_tasks import harvest_bookmaker_sport_task
-        from app.workers.harvest_registry import ENABLED_BOOKMAKERS
+        from app.extensions import db
+        from app.models.odds_model import (
+            UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
+            ArbitrageOpportunity, EVOpportunity,
+        )
+        from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
 
-        bk_param = request.args.get("bookmakers")
-        bk_slugs = _parse_bookmakers(bk_param)
+        um = UnifiedMatch.query.get(match_id)
+        if not um:
+            return {"ok": False, "error": "Match not found"}, 404
 
-        scheduled = []
-        for bk in ENABLED_BOOKMAKERS:
-            if bk["slug"] not in bk_slugs:
-                continue
-            if sport_slug not in bk["sports"]:
-                continue
-            harvest_bookmaker_sport_task.apply_async(
-                args=[bk["slug"], sport_slug], queue="harvest")
-            scheduled.append(bk["slug"])
+        # Bookmaker odds
+        bmo_list = BookmakerMatchOdds.query.filter_by(match_id=match_id).all()
+        bk_ids   = {bmo.bookmaker_id for bmo in bmo_list}
+        bk_map   = {b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(bk_ids)).all()} if bk_ids else {}
 
-        return _signed_response({
-            "ok":         True,
-            "sport":      sport_slug,
-            "scheduled":  scheduled,
-            "latency_ms": int((time.perf_counter() - t0) * 1000),
-        })
+        BK_SLUG_MAP = {"sportpesa":"sp","betika":"bt","odibets":"od","sp":"sp","bt":"bt","od":"od"}
+
+        bookmakers = {}
+        for bmo in bmo_list:
+            bk_obj   = bk_map.get(bmo.bookmaker_id)
+            bk_name  = (bk_obj.name if bk_obj else str(bmo.bookmaker_id)).lower()
+            bk_slug  = BK_SLUG_MAP.get(bk_name, bk_name)
+            bookmakers[bk_slug] = {
+                "bookmaker_id": bmo.bookmaker_id,
+                "bookmaker":    bk_obj.name if bk_obj else bk_slug.upper(),
+                "markets":      bmo.markets_json or {},
+                "market_count": len(bmo.markets_json or {}),
+                "updated_at":   bmo.updated_at.isoformat() if getattr(bmo,"updated_at",None) else None,
+            }
+
+        # Links
+        links = {
+            lnk.bookmaker_id: lnk.to_dict()
+            for lnk in BookmakerMatchLink.query.filter_by(match_id=match_id).all()
+        }
+        for bk_slug, bk_data in bookmakers.items():
+            bk_data["link"] = links.get(bk_data["bookmaker_id"])
+
+        # Recent odds history (last 50 changes)
+        history = (
+            BookmakerOddsHistory.query
+            .filter_by(match_id=match_id)
+            .order_by(BookmakerOddsHistory.recorded_at.desc())
+            .limit(50).all()
+        )
+        history_rows = []
+        for h in history:
+            bk_obj = bk_map.get(h.bookmaker_id)
+            history_rows.append({
+                "bookmaker":   bk_obj.name if bk_obj else str(h.bookmaker_id),
+                "market":      h.market,
+                "selection":   h.selection,
+                "old_price":   h.old_price,
+                "new_price":   h.new_price,
+                "price_delta": h.price_delta,
+                "recorded_at": h.recorded_at.isoformat() if h.recorded_at else None,
+            })
+
+        # Open arbs / EVs
+        arbs = ArbitrageOpportunity.query.filter_by(
+            match_id=match_id, status="OPEN").all()
+        evs  = EVOpportunity.query.filter_by(
+            match_id=match_id, status="OPEN").all()
+
+        return {
+            "ok":           True,
+            "match_id":     um.id,
+            "parent_match_id": um.parent_match_id,
+            "betradar_id":  um.parent_match_id,
+            "home_team":    um.home_team_name,
+            "away_team":    um.away_team_name,
+            "competition":  um.competition_name,
+            "sport":        um.sport_name,
+            "start_time":   um.start_time.isoformat() if um.start_time else None,
+            "status":       getattr(um, "status", "PRE_MATCH"),
+            "bookmaker_count": len(bookmakers),
+            "bookmakers":   bookmakers,
+            "aggregated_markets": um.markets_json or {},
+            "arbs":         [a.to_dict() for a in arbs],
+            "evs":          [e.to_dict() for e in evs],
+            "odds_history": history_rows,
+            "latency_ms":   int((time.perf_counter() - t0) * 1000),
+            "source":       "postgresql",
+        }
+
     except Exception as exc:
-        return _err(f"Trigger failed: {exc}", 500)
+        return {"ok": False, "error": str(exc)}, 500
+
+
+@bp_odds.route("/unified/search")
+def unified_search():
+    """
+    GET /api/odds/unified/search?q=arsenal
+    Search by team name, competition, or betradar_id across all sports.
+    """
+    t0 = time.perf_counter()
+    q_str = (request.args.get("q") or "").strip()
+    if len(q_str) < 2:
+        return {"ok": False, "error": "query must be at least 2 characters"}, 400
+
+    limit = min(int(request.args.get("limit", 20)), 50)
+
+    try:
+        from app.extensions import db
+        from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+        from sqlalchemy import or_, func
+
+        matches = (
+            UnifiedMatch.query
+            .filter(or_(
+                UnifiedMatch.home_team_name.ilike(f"%{q_str}%"),
+                UnifiedMatch.away_team_name.ilike(f"%{q_str}%"),
+                UnifiedMatch.competition_name.ilike(f"%{q_str}%"),
+                UnifiedMatch.parent_match_id.ilike(f"%{q_str}%"),
+            ))
+            .order_by(UnifiedMatch.start_time.desc())
+            .limit(limit).all()
+        )
+
+        match_ids = [m.id for m in matches]
+        bk_counts = {}
+        if match_ids:
+            rows = (
+                db.session.query(
+                    BookmakerMatchOdds.match_id,
+                    func.count(BookmakerMatchOdds.bookmaker_id).label("cnt"),
+                )
+                .filter(BookmakerMatchOdds.match_id.in_(match_ids))
+                .group_by(BookmakerMatchOdds.match_id)
+                .all()
+            )
+            bk_counts = {r.match_id: r.cnt for r in rows}
+
+        results = []
+        for um in matches:
+            results.append({
+                "match_id":        um.id,
+                "parent_match_id": um.parent_match_id,
+                "home_team":       um.home_team_name,
+                "away_team":       um.away_team_name,
+                "competition":     um.competition_name,
+                "sport":           um.sport_name,
+                "start_time":      um.start_time.isoformat() if um.start_time else None,
+                "status":          getattr(um, "status", "PRE_MATCH"),
+                "bookmaker_count": bk_counts.get(um.id, 0),
+                "detail_url":      f"/api/odds/unified/match/{um.id}",
+            })
+
+        return {
+            "ok":         True,
+            "query":      q_str,
+            "total":      len(results),
+            "results":    results,
+            "latency_ms": int((time.perf_counter() - t0) * 1000),
+            "source":     "postgresql",
+        }
+
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 500
+
+
+@bp_odds.route("/unified/stats")
+def unified_stats():
+    """
+    GET /api/odds/unified/stats
+    Aggregate stats: total matches, per-bookmaker coverage, arb count.
+    """
+    t0 = time.perf_counter()
+    try:
+        from app.extensions import db
+        from app.models.odds_model import (
+            UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity,
+        )
+        from app.models.bookmakers_model import Bookmaker
+        from sqlalchemy import func
+
+        total_matches = UnifiedMatch.query.count()
+
+        # Per-status breakdown
+        status_counts = dict(
+            db.session.query(
+                UnifiedMatch.status,
+                func.count(UnifiedMatch.id),
+            ).group_by(UnifiedMatch.status).all()
+        ) if hasattr(UnifiedMatch, "status") else {}
+
+        # Per-sport breakdown
+        sport_counts = dict(
+            db.session.query(
+                UnifiedMatch.sport_name,
+                func.count(UnifiedMatch.id),
+            ).group_by(UnifiedMatch.sport_name)
+            .order_by(func.count(UnifiedMatch.id).desc())
+            .all()
+        )
+
+        # Per-bookmaker coverage
+        bk_coverage_rows = (
+            db.session.query(
+                BookmakerMatchOdds.bookmaker_id,
+                func.count(BookmakerMatchOdds.match_id).label("match_count"),
+            )
+            .group_by(BookmakerMatchOdds.bookmaker_id)
+            .all()
+        )
+        bk_objs = {b.id: b for b in Bookmaker.query.all()}
+        bk_coverage = []
+        for row in bk_coverage_rows:
+            bk  = bk_objs.get(row.bookmaker_id)
+            pct = round(row.match_count / total_matches * 100, 1) if total_matches else 0
+            bk_coverage.append({
+                "bookmaker_id": row.bookmaker_id,
+                "bookmaker":    bk.name if bk else str(row.bookmaker_id),
+                "match_count":  row.match_count,
+                "coverage_pct": pct,
+            })
+        bk_coverage.sort(key=lambda x: -x["match_count"])
+
+        # Matches covered by 2+ bookmakers
+        multi_bk = (
+            db.session.query(BookmakerMatchOdds.match_id)
+            .group_by(BookmakerMatchOdds.match_id)
+            .having(func.count(BookmakerMatchOdds.bookmaker_id) >= 2)
+            .count()
+        )
+
+        # Matches covered by all 3 main bookmakers
+        all_three = (
+            db.session.query(BookmakerMatchOdds.match_id)
+            .group_by(BookmakerMatchOdds.match_id)
+            .having(func.count(BookmakerMatchOdds.bookmaker_id) >= 3)
+            .count()
+        )
+
+        # Open arbs
+        open_arbs = ArbitrageOpportunity.query.filter_by(status="OPEN").count()
+
+        return {
+            "ok":             True,
+            "total_matches":  total_matches,
+            "multi_bk_matches": multi_bk,
+            "all_three_bk_matches": all_three,
+            "open_arbs":      open_arbs,
+            "by_status":      status_counts,
+            "by_sport":       sport_counts,
+            "bookmaker_coverage": bk_coverage,
+            "latency_ms":     int((time.perf_counter() - t0) * 1000),
+            "source":         "postgresql",
+        }
+
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 500
