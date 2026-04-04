@@ -1,20 +1,25 @@
 """
 app/workers/tasks_ops.py
 ========================
-Operational tasks: EV/arb, results, notifications, health, subscriptions.
-Also owns setup_periodic_tasks — the single beat schedule registration.
+Operational tasks: EV/arb, results, notifications, health, subscriptions,
+immediate startup harvesting, minute-by-minute health reports, job logging.
 
 Celery beat entry point:
-  celery -A app.workers.tasks_ops worker --beat ...
+  celery -A app.workers.celery_tasks worker -B ...
 """
 
 from __future__ import annotations
 
 import base64
+import json
+import logging
 import os
+import time
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import requests
+from celery.signals import worker_ready
 from celery.utils.log import get_task_logger
 
 from app.workers.celery_tasks import (
@@ -30,26 +35,127 @@ EV_CHANNEL  = "ev:updates"
 whatsapp_bot = os.environ.get("WA_BOT", "")
 message_url  = f"{whatsapp_bot}/api/v1/send-message" if whatsapp_bot else ""
 
-# Sports whose combined snapshots are flushed to PostgreSQL every 5 minutes
 PERSIST_SPORTS: list[str] = [
-    "soccer",
-    "basketball",
-    "tennis",
-    "ice-hockey",
-    "rugby",
-    "handball",
-    "volleyball",
-    "cricket",
-    "table-tennis",
-    "esoccer",
-    "mma",
-    "boxing",
-    "darts",
+    "soccer", "basketball", "tennis", "ice-hockey",
+    "rugby", "handball", "volleyball", "cricket",
+    "table-tennis", "esoccer", "mma", "boxing", "darts",
 ]
+
+# ── Structured job logger → logs/harvest_jobs.log ────────────────────────────
+LOG_DIR = Path(os.environ.get("LOG_DIR", "logs"))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+_job_logger = logging.getLogger("harvest_jobs")
+if not _job_logger.handlers:
+    _fh = logging.FileHandler(LOG_DIR / "harvest_jobs.log")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%dT%H:%M:%SZ"))
+    _job_logger.addHandler(_fh)
+    _job_logger.setLevel(logging.INFO)
+    _job_logger.propagate = False
+
+
+def log_job(
+    bookmaker: str,
+    sport: str,
+    mode: str,
+    count: int,
+    status: str,
+    unified_ok: int = 0,
+    unified_fail: int = 0,
+    latency_ms: int = 0,
+    detail: str = "",
+) -> None:
+    """
+    Write one JSON line to logs/harvest_jobs.log and push to
+    Redis key 'monitor:job_log' (rolling 500-entry list).
+
+    Fields:
+      bookmaker   — sp | bt | od | b2b | sbo | combined
+      sport       — soccer | basketball | …
+      mode        — upcoming | live
+      count       — number of matches in the response
+      status      — ok | empty | error
+      unified_ok  — matches successfully persisted to PostgreSQL
+      unified_fail— matches that failed to persist
+      latency_ms  — task wall-clock time
+      detail      — error message or extra info
+    """
+    entry = {
+        "ts":           _now_iso(),
+        "bookmaker":    bookmaker,
+        "sport":        sport,
+        "mode":         mode,
+        "count":        count,
+        "status":       status,
+        "unified_ok":   unified_ok,
+        "unified_fail": unified_fail,
+        "latency_ms":   latency_ms,
+        "detail":       detail,
+    }
+    _job_logger.info(json.dumps(entry))
+    try:
+        from app.workers.celery_tasks import _redis
+        r = _redis()
+        r.lpush("monitor:job_log", json.dumps(entry, default=str))
+        r.ltrim("monitor:job_log", 0, 499)
+    except Exception:
+        pass
 
 
 # =============================================================================
-# Beat schedule — ALL periodic tasks registered here
+# ── IMMEDIATE STARTUP HARVEST
+#    Fires the moment a worker connects to Redis — no waiting for the first
+#    beat tick.  All bookmakers + all sports kicked in parallel with a small
+#    stagger so we don't slam every external API at once.
+# =============================================================================
+
+@worker_ready.connect
+def on_worker_ready(sender, **kwargs):
+    logger.info("[startup] Worker ready — dispatching immediate harvest")
+    try:
+        _dispatch_startup_harvests()
+    except Exception as exc:
+        logger.error("[startup] Dispatch failed: %s", exc)
+
+
+def _dispatch_startup_harvests() -> None:
+    """Fan-out all harvest tasks immediately with staggered countdowns."""
+    # Upcoming — one task per bookmaker covers all sports internally
+    upcoming_tasks = [
+        ("tasks.sp.harvest_all_upcoming", 2),
+        ("tasks.bt.harvest_all_upcoming", 5),
+        ("tasks.od.harvest_all_upcoming", 8),
+        ("tasks.b2b.harvest_all_upcoming", 11),
+        ("tasks.b2b_page.harvest_all_upcoming", 12),
+        ("tasks.sbo.harvest_all_upcoming", 14),
+    ]
+    for task_name, cd in upcoming_tasks:
+        celery.send_task(task_name, queue="harvest", countdown=cd)
+
+    # Live snapshots
+    live_tasks = [
+        ("tasks.sp.harvest_all_live",      3),
+        ("tasks.bt.harvest_all_live",      6),
+        ("tasks.od.harvest_all_live",      9),
+        ("tasks.b2b.harvest_all_live",     12),
+        ("tasks.b2b_page.harvest_all_live", 13),
+        ("tasks.sbo.harvest_all_live",     15),
+    ]
+    for task_name, cd in live_tasks:
+        celery.send_task(task_name, queue="live", countdown=cd)
+
+    # Kick health-check so heartbeat is set immediately
+    celery.send_task("tasks.ops.health_check", queue="default", countdown=1)
+
+    # Kick first health report after 20 s (caches should be seeded by then)
+    celery.send_task("tasks.ops.build_health_report", queue="default", countdown=20)
+
+    logger.info("[startup] All %d harvest tasks dispatched",
+                len(upcoming_tasks) + len(live_tasks))
+
+
+# =============================================================================
+# Beat schedule
 # =============================================================================
 
 @celery.on_after_configure.connect
@@ -67,11 +173,11 @@ def setup_periodic_tasks(sender, **kwargs):
         sp_poll_all_event_details,
     )
 
-    # ── Registry pipeline ─────────────────────────────────────────────────────
+    # Registry
     sender.add_periodic_task(14400.0, harvest_all_registry_upcoming.s(), name="registry-upcoming-4h")
     sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),          name="registry-cleanup-daily")
 
-    # ── Upcoming ──────────────────────────────────────────────────────────────
+    # Upcoming
     sender.add_periodic_task(300.0, sp_harvest_all_upcoming.s(),       name="sp-upcoming-5min")
     sender.add_periodic_task(360.0, bt_harvest_all_upcoming.s(),       name="bt-upcoming-6min")
     sender.add_periodic_task(420.0, od_harvest_all_upcoming.s(),       name="od-upcoming-7min")
@@ -79,7 +185,7 @@ def setup_periodic_tasks(sender, **kwargs):
     sender.add_periodic_task(300.0, b2b_page_harvest_all_upcoming.s(), name="b2b-page-5min")
     sender.add_periodic_task(180.0, sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-3min")
 
-    # ── Live (HTTP fallback — WS is primary for SP) ───────────────────────────
+    # Live
     sender.add_periodic_task( 60.0, sp_harvest_all_live.s(),           name="sp-live-60s")
     sender.add_periodic_task(  5.0, sp_poll_all_event_details.s(),     name="sp-details-5s")
     sender.add_periodic_task( 90.0, bt_harvest_all_live.s(),           name="bt-live-90s")
@@ -88,16 +194,17 @@ def setup_periodic_tasks(sender, **kwargs):
     sender.add_periodic_task( 30.0, b2b_page_harvest_all_live.s(),     name="b2b-page-live-30s")
     sender.add_periodic_task( 60.0, sbo_harvest_all_live.s(),          name="sbo-live-60s")
 
-    # ── Ops ───────────────────────────────────────────────────────────────────
+    # Ops
     sender.add_periodic_task(300.0,  update_match_results.s(),         name="results-5min")
     sender.add_periodic_task(3600.0, cache_finished_games.s(),         name="cache-finished-hourly")
     sender.add_periodic_task( 30.0,  health_check.s(),                 name="health-30s")
     sender.add_periodic_task(3600.0, expire_subscriptions.s(),         name="expire-subs-hourly")
+    sender.add_periodic_task(300.0,  persist_all_sports.s(),           name="persist-combined-5min")
 
-    # ── Persist combined snapshots to PostgreSQL every 5 minutes ─────────────
-    sender.add_periodic_task(300.0, persist_all_sports.s(),            name="persist-combined-5min")
+    # Health report every 60 s → served at /api/monitor/report
+    sender.add_periodic_task(60.0,   build_health_report.s(),          name="health-report-1min")
 
-    logger.info("[beat] All periodic tasks registered — SP/BT/OD/B2B/SBO + persist")
+    logger.info("[beat] All periodic tasks registered")
 
 
 # =============================================================================
@@ -166,7 +273,7 @@ def compute_ev_arb(self, match_id: int) -> dict:
 
 
 # =============================================================================
-# Match results (every 5 min)
+# Match results
 # =============================================================================
 
 @celery.task(name="tasks.ops.update_match_results",
@@ -222,7 +329,7 @@ def _settle_bankroll_bets(match_id: int) -> None:
 
 
 # =============================================================================
-# Cache finished games (hourly)
+# Cache finished games
 # =============================================================================
 
 @celery.task(name="tasks.ops.cache_finished_games",
@@ -306,7 +413,7 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
 
 
 # =============================================================================
-# Subscription expiry (hourly)
+# Subscription expiry
 # =============================================================================
 
 @celery.task(name="tasks.ops.expire_subscriptions",
@@ -341,7 +448,7 @@ def expire_subscriptions() -> dict:
 
 
 # =============================================================================
-# Health check (every 30 s)
+# Health check
 # =============================================================================
 
 @celery.task(name="tasks.ops.health_check",
@@ -404,12 +511,8 @@ def send_message(msg: str, whatsapp_number: str):
 
 @celery.task(
     name="tasks.ops.persist_combined_batch",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-    soft_time_limit=90,
-    time_limit=120,
-    acks_late=True,
+    bind=True, max_retries=3, default_retry_delay=30,
+    soft_time_limit=90, time_limit=120, acks_late=True,
 )
 def persist_combined_batch(
     self,
@@ -417,74 +520,52 @@ def persist_combined_batch(
     sport_slug: str = "soccer",
     mode: str = "upcoming",
 ) -> dict:
-    """
-    Persist a serialised list of CombinedMatch dicts (output of cm.to_dict())
-    to PostgreSQL via persist_hook.persist_from_serialized.
-
-    Called by:
-      • persist_hook.persist_merged_async  — fire-and-forget after each SSE merge
-      • persist_all_sports                 — beat fan-out every 5 minutes
-
-    Retries up to 3× with a 30-second backoff on any exception.
-    """
     if not match_dicts:
-        logger.debug("[persist_combined_batch] %s/%s — empty batch, skipping", sport_slug, mode)
         return {"persisted": 0, "failed": 0, "sport": sport_slug, "mode": mode}
 
-    logger.info(
-        "[persist_combined_batch] %s/%s — %d matches",
-        sport_slug, mode, len(match_dicts),
-    )
+    t0 = time.perf_counter()
     try:
         from app.services.persist_hook import persist_from_serialized
         stats = persist_from_serialized(match_dicts, sport_slug=sport_slug, mode=mode)
         stats.update({"sport": sport_slug, "mode": mode})
+        log_job(
+            bookmaker="combined", sport=sport_slug, mode=mode,
+            count=len(match_dicts), status="ok",
+            unified_ok=stats.get("persisted", 0),
+            unified_fail=stats.get("failed", 0),
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+        )
         return stats
     except Exception as exc:
-        logger.error(
-            "[persist_combined_batch] %s/%s error (retry %d/%d): %s",
-            sport_slug, mode, self.request.retries, self.max_retries, exc,
+        log_job(
+            bookmaker="combined", sport=sport_slug, mode=mode,
+            count=len(match_dicts), status="error",
+            detail=str(exc)[:200],
+            latency_ms=int((time.perf_counter() - t0) * 1000),
         )
         raise self.retry(exc=exc)
 
 
 @celery.task(
     name="tasks.ops.persist_all_sports",
-    soft_time_limit=60,
-    time_limit=90,
-    acks_late=True,
+    soft_time_limit=60, time_limit=90, acks_late=True,
 )
 def persist_all_sports() -> dict:
-    """
-    Beat task — runs every 5 minutes (registered in setup_periodic_tasks).
-
-    Reads each sport's combined:upcoming and combined:live snapshots from
-    Redis and fans out one persist_combined_batch task per sport/mode so
-    every sport is persisted independently and a single failure is isolated.
-
-    Live mode tasks get countdown=2 s; upcoming get countdown=10 s to
-    spread the DB load across the 5-minute window.
-    """
     dispatched = 0
     skipped    = 0
     summary: dict[str, dict] = {}
 
     for sport in PERSIST_SPORTS:
         summary[sport] = {"upcoming": 0, "live": 0}
-
         for mode, countdown in (("upcoming", 10), ("live", 2)):
             cached = cache_get(f"combined:{mode}:{sport}")
-
             if not cached or not cached.get("matches"):
-                logger.debug("[persist_all_sports] %s/%s — cache miss, skipping", sport, mode)
                 skipped += 1
                 continue
-
-            match_dicts: list[dict] = cached["matches"]
+            match_dicts = cached["matches"]
             if not match_dicts:
                 skipped += 1
                 continue
-
             persist_combined_batch.apply_async(
                 args=[match_dicts, sport, mode],
                 queue="results",
@@ -492,13 +573,172 @@ def persist_all_sports() -> dict:
             )
             summary[sport][mode] = len(match_dicts)
             dispatched += 1
-            logger.info(
-                "[persist_all_sports] dispatched %s/%s — %d matches",
-                sport, mode, len(match_dicts),
-            )
 
-    logger.info(
-        "[persist_all_sports] cycle complete — dispatched=%d skipped=%d",
-        dispatched, skipped,
-    )
+    logger.info("[persist_all_sports] dispatched=%d skipped=%d", dispatched, skipped)
     return {"dispatched": dispatched, "skipped": skipped, "summary": summary}
+
+
+# =============================================================================
+# ── HEALTH REPORT  (every 60 s → Redis → /api/monitor/report)
+# =============================================================================
+
+@celery.task(
+    name="tasks.ops.build_health_report",
+    soft_time_limit=30, time_limit=45, acks_late=True,
+)
+def build_health_report() -> dict:
+    """
+    Runs every 60 seconds via beat.
+
+    Collects worker heartbeat, Redis status, per-sport cache stats,
+    arb/EV totals, and the last 20 job log entries.
+
+    Stored under Redis key 'monitor:report' (TTL 180 s) — served at:
+      GET /api/monitor/report        full report
+      GET /api/monitor/report/history  last 60 snapshots (1 hour)
+      GET /api/monitor/jobs          last 100 job log entries
+    """
+    t0  = time.perf_counter()
+    now = _now_iso()
+
+    # ── Worker heartbeat ──────────────────────────────────────────────────────
+    hb           = cache_get("worker_heartbeat") or {}
+    worker_alive = bool(hb.get("alive"))
+    hb_age: int | None = None
+    if hb.get("checked_at"):
+        try:
+            checked = datetime.fromisoformat(hb["checked_at"].replace("Z", "+00:00"))
+            hb_age  = int((datetime.now(timezone.utc) - checked).total_seconds())
+        except Exception:
+            pass
+
+    # ── Redis ping ────────────────────────────────────────────────────────────
+    redis_ok = False
+    try:
+        from app.workers.celery_tasks import _redis
+        _redis().ping()
+        redis_ok = True
+    except Exception:
+        pass
+
+    # ── Per-sport snapshot ────────────────────────────────────────────────────
+    sports_report: list[dict] = []
+    total_upcoming = total_live = total_arbs = total_evs = 0
+    cold_sports: list[str] = []
+
+    for sport in PERSIST_SPORTS:
+        u = cache_get(f"combined:upcoming:{sport}") or {}
+        l = cache_get(f"combined:live:{sport}")     or {}
+        u_m = u.get("matches", [])
+        l_m = l.get("matches", [])
+        u_arbs = sum(1 for m in u_m if m.get("has_arb"))
+        l_arbs = sum(1 for m in l_m if m.get("has_arb"))
+        u_evs  = sum(1 for m in u_m if m.get("has_ev"))
+        l_evs  = sum(1 for m in l_m if m.get("has_ev"))
+        populated = bool(u_m or l_m)
+        if not populated:
+            cold_sports.append(sport)
+        total_upcoming += len(u_m)
+        total_live     += len(l_m)
+        total_arbs     += u_arbs + l_arbs
+        total_evs      += u_evs  + l_evs
+
+        sports_report.append({
+            "sport":            sport,
+            "upcoming_count":   len(u_m),
+            "live_count":       len(l_m),
+            "upcoming_arbs":    u_arbs,
+            "live_arbs":        l_arbs,
+            "upcoming_evs":     u_evs,
+            "live_evs":         l_evs,
+            "harvested_at_up":  u.get("harvested_at"),
+            "harvested_at_lv":  l.get("harvested_at"),
+            "bk_counts_up":     u.get("bk_counts", {}),
+            "bk_counts_lv":     l.get("bk_counts", {}),
+            "populated":        populated,
+            "status":           "ok" if populated else "cold",
+        })
+
+    # ── Last 20 job log entries ───────────────────────────────────────────────
+    recent_jobs: list[dict] = []
+    try:
+        from app.workers.celery_tasks import _redis
+        for rj in _redis().lrange("monitor:job_log", 0, 19):
+            try:
+                recent_jobs.append(json.loads(rj))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ── Test checks ───────────────────────────────────────────────────────────
+    checks: list[dict] = []
+
+    def _chk(name: str, passed: bool, detail: str = "") -> None:
+        checks.append({"name": name, "passed": passed, "detail": detail})
+
+    _chk("Worker heartbeat",  worker_alive,             f"age={hb_age}s")
+    _chk("Redis reachable",   redis_ok)
+    _chk("Sports cache warm", not cold_sports,
+         f"{len(PERSIST_SPORTS)-len(cold_sports)}/{len(PERSIST_SPORTS)} warm"
+         + (f" — cold: {', '.join(cold_sports)}" if cold_sports else ""))
+    _chk("Upcoming matches",  total_upcoming > 0,       f"{total_upcoming} total")
+    _chk("Live matches",      total_live >= 0,           f"{total_live} total")
+    _chk("Arb opportunities", total_arbs >= 0,           f"{total_arbs}")
+    _chk("EV opportunities",  total_evs  >= 0,           f"{total_evs}")
+
+    passed = sum(1 for c in checks if c["passed"])
+    failed = sum(1 for c in checks if not c["passed"])
+
+    report = {
+        "generated_at": now,
+        "latency_ms":   int((time.perf_counter() - t0) * 1000),
+        "overall": {
+            "passed":       passed,
+            "failed":       failed,
+            "total_checks": len(checks),
+            "healthy":      failed == 0,
+        },
+        "worker": {
+            "alive":           worker_alive,
+            "heartbeat_at":    hb.get("checked_at"),
+            "heartbeat_age_s": hb_age,
+            "pid":             hb.get("pid"),
+        },
+        "redis":  {"ok": redis_ok},
+        "totals": {
+            "upcoming_matches":   total_upcoming,
+            "live_matches":       total_live,
+            "arb_opportunities":  total_arbs,
+            "ev_opportunities":   total_evs,
+            "cold_sports":        cold_sports,
+        },
+        "sports":      sports_report,
+        "checks":      checks,
+        "recent_jobs": recent_jobs,
+    }
+
+    # Persist latest report
+    cache_set("monitor:report", report, ttl=180)
+
+    # Rolling 1-hour history (60 entries × 1 min)
+    try:
+        from app.workers.celery_tasks import _redis
+        _redis().lpush("monitor:report_history", json.dumps({
+            "ts":       now,
+            "healthy":  failed == 0,
+            "passed":   passed,
+            "failed":   failed,
+            "upcoming": total_upcoming,
+            "live":     total_live,
+            "arbs":     total_arbs,
+            "evs":      total_evs,
+        }, default=str))
+        _redis().ltrim("monitor:report_history", 0, 59)
+    except Exception:
+        pass
+
+    logger.info("[health_report] healthy=%s passed=%d failed=%d upcoming=%d live=%d",
+                failed == 0, passed, failed, total_upcoming, total_live)
+    return report
+    

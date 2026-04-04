@@ -27,7 +27,7 @@ warn()   { echo -e "${YELLOW}⚠${RESET} $1"; }
 # ── Config — edit these to match your environment ────────────────────────────
 FLASK_APP="${FLASK_APP:-app}"
 FLASK_ENV="${FLASK_ENV:-development}"
-FLASK_PORT="${FLASK_PORT:-5000}"
+FLASK_PORT="${FLASK_PORT:-5500}"
 REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 CONCURRENCY_HARVEST="${CONCURRENCY_HARVEST:-4}"
 CONCURRENCY_LIVE="${CONCURRENCY_LIVE:-8}"
