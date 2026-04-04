@@ -741,4 +741,3 @@ def build_health_report() -> dict:
     logger.info("[health_report] healthy=%s passed=%d failed=%d upcoming=%d live=%d",
                 failed == 0, passed, failed, total_upcoming, total_live)
     return report
-    
