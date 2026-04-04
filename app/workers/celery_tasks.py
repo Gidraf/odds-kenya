@@ -88,6 +88,11 @@ def make_celery(app=None):
         result_serializer          = "json",
         accept_content             = ["json"],
         task_routes                = TASK_ROUTES,
+        include = [
+        "app.workers.tasks_ops",
+        "app.workers.tasks_live",
+        "app.workers.tasks_upcoming",
+    ],
     )
     return celery_service
 
