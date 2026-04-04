@@ -46,7 +46,7 @@ from flask import Blueprint, Response, request, stream_with_context
 from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
 from app.utils.decorators_ import log_event
 
-bp_odds = Blueprint("odds", __name__, url_prefix="/api")
+bp_odds = Blueprint("odds-main", __name__, url_prefix="/api")
 
 # ─── Access configuration ────────────────────────────────────────────────────
 # Set FREE_ACCESS = True to bypass all tier restrictions platform-wide.
