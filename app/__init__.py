@@ -90,6 +90,7 @@ def create_app() -> Flask:
     from app.views.odds_feed.combined_module import bp_combined 
     from app.views.odds_feed.odds_data_view import bp_data
     from app.views.monitor import bp_monitor
+    from app.views.monitor.harvest_control import bp_harvest_ctrl
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -112,7 +113,8 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_od) 
     flask_app.register_blueprint(bp_combined) 
     flask_app.register_blueprint(bp_data)
-    flask_app.register_blueprint(bp_monitor)             # GET /api/od/...
+    flask_app.register_blueprint(bp_monitor) 
+    flask_app.register_blueprint(bp_harvest_ctrl)            # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
