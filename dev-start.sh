@@ -15,7 +15,7 @@ warn() { echo -e "${YELLOW}⚠${RESET} $1"; }
 
 # ── Config ────────────────────────────────────────────────────────────────────
 FLASK_APP="${FLASK_APP:-app}"
-FLASK_PORT="${FLASK_PORT:-5500}"
+FLASK_PORT="${FLASK_PORT:-5050}"
 REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 LOG_DIR="${LOG_DIR:-logs}"
 CELERY_APP="app.workers.celery_tasks"
@@ -64,7 +64,7 @@ if command -v tmux >/dev/null 2>&1; then
   # Tail window — watch all logs at once
   tmux new-window -t "$SESSION" -n "logs"
   tmux send-keys -t "$SESSION:logs" \
-    "tail -f ${LOG_DIR}/celery.log ${LOG_DIR}/tasks.log ${LOG_DIR}/harvest_jobs.log 2>/dev/null" Enter
+    "tail -f ${LOG_DIR}/flask.log ${LOG_DIR}/celery.log ${LOG_DIR}/tasks.log ${LOG_DIR}/harvest_jobs.log 2>/dev/null" Enter
 
   echo ""
   ok "All services launched"
@@ -106,6 +106,6 @@ echo "# Terminal 3 — Flower"
 echo "celery -A ${CELERY_APP} flower --port=5555"
 echo ""
 echo "# Terminal 4 — Log tail"
-echo "tail -f ${LOG_DIR}/celery.log ${LOG_DIR}/harvest_jobs.log"
+echo "tail -f ${LOG_DIR}/flask.log ${LOG_DIR}/celery.log ${LOG_DIR}/harvest_jobs.log"
 echo ""
 echo "Monitor dashboard → http://localhost:${FLASK_PORT}/api/monitor/dashboard"

@@ -28,7 +28,7 @@ from datetime import datetime, timezone, timedelta
 from flask import request
 
 # ── paste these route functions into the existing bp_odds Blueprint ───────────
-# from app.views.odds_feed.odds_view import bp_odds  (already exists)
+from app.views.odds_feed.odds_view import bp_odds 
 
 
 @bp_odds.route("/unified/<sport_slug>")
