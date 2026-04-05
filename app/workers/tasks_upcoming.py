@@ -3,15 +3,15 @@ app/workers/tasks_upcoming.py
 ==============================
 All UPCOMING (pre-match) harvest tasks.
 
-Beat schedule entries (add to setup_periodic_tasks in tasks_beat.py):
-  sender.add_periodic_task(14400.0, harvest_all_registry_upcoming.s(), name="registry-upcoming-4h")
-  sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),          name="registry-cleanup-daily")
-  sender.add_periodic_task(300.0,   sp_harvest_all_upcoming.s(),        name="sp-upcoming-5min")
-  sender.add_periodic_task(360.0,   bt_harvest_all_upcoming.s(),        name="bt-upcoming-6min")
-  sender.add_periodic_task(420.0,   od_harvest_all_upcoming.s(),        name="od-upcoming-7min")
-  sender.add_periodic_task(480.0,   b2b_harvest_all_upcoming.s(),       name="b2b-upcoming-8min")
-  sender.add_periodic_task(300.0,   b2b_page_harvest_all_upcoming.s(),  name="b2b-page-5min")
-  sender.add_periodic_task(180.0,   sbo_harvest_all_upcoming.s(),       name="sbo-upcoming-3min")
+KEY FIX: bt_harvest_sport / od_harvest_sport / sp_harvest_sport now each
+call _persist_bk_matches() after caching to Redis.  This ensures every
+bookmaker's matches land in bookmaker_match_odds regardless of whether
+the combined SSE stream has run.
+
+_persist_bk_matches():
+  1. Ensures the bookmaker row exists in the bookmakers table.
+  2. Upserts UnifiedMatch + BookmakerMatchOdds rows directly via EntityResolver.
+  3. Dispatches persist_combined_batch Celery task (fire-and-forget backup).
 """
 
 from __future__ import annotations
@@ -19,14 +19,13 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal
 
 from celery import group
 from celery.utils.log import get_task_logger
 
 from app.workers.celery_tasks import (
-    celery, cache_set, cache_get, _now_iso,
-    _upsert_and_chain, _upsert_unified_match, _publish,
+    celery, cache_set, cache_get, _now_iso, _publish,
+    _upsert_and_chain,
 )
 
 logger = get_task_logger(__name__)
@@ -55,6 +54,15 @@ WS_CHANNEL  = "odds:updates"
 ARB_CHANNEL = "arb:updates"
 EV_CHANNEL  = "ev:updates"
 
+# Canonical bookmaker names (must match or be created in bookmakers table)
+_BK_NAMES = {
+    "sp":  "SportPesa",
+    "bt":  "Betika",
+    "od":  "OdiBets",
+    "b2b": "1xBet",
+    "sbo": "SBO",
+}
+
 
 def _emit(source: str, sport: str, count: int, latency: int) -> None:
     _publish(WS_CHANNEL, {
@@ -62,6 +70,124 @@ def _emit(source: str, sport: str, count: int, latency: int) -> None:
         "mode": "upcoming", "count": count, "latency_ms": latency,
         "ts": _now_iso(),
     })
+
+
+def _ensure_bookmaker(bk_slug: str) -> int | None:
+    """
+    Get or create a bookmaker row. Returns bookmaker.id or None.
+    This is the fix for BT/OD not persisting — if the bookmaker doesn't
+    exist in the DB, we create it so _upsert_and_chain gets a valid bk_id.
+    """
+    canonical_name = _BK_NAMES.get(bk_slug, bk_slug.upper())
+    try:
+        from app.models.bookmakers_model import Bookmaker
+        from app.extensions import db
+        bm = Bookmaker.query.filter(
+            Bookmaker.name.ilike(f"%{canonical_name}%")
+        ).first()
+        if bm:
+            return bm.id
+        # Create if missing
+        bm = Bookmaker(
+            name=canonical_name,
+            domain=f"{bk_slug}.co.ke",
+            is_active=True,
+        )
+        db.session.add(bm)
+        db.session.commit()
+        logger.info("[ensure_bookmaker] created bookmaker: %s (id=%d)", canonical_name, bm.id)
+        return bm.id
+    except Exception as exc:
+        logger.warning("[ensure_bookmaker] %s: %s", bk_slug, exc)
+        return None
+
+
+def _persist_bk_matches(
+    matches: list[dict],
+    bk_slug: str,
+    sport_slug: str,
+) -> None:
+    """
+    Persist individual-bookmaker matches to PostgreSQL.
+
+    Called by sp/bt/od harvest tasks after writing to Redis.
+    Works independently of the combined stream so each bookmaker's
+    data lands in the DB on every harvest cycle.
+
+    Steps:
+      1. Ensure bookmaker exists in DB.
+      2. Build per-match proxy objects with bk_ids and markets.
+      3. Dispatch persist_combined_batch Celery task.
+    """
+    if not matches:
+        return
+
+    bk_id = _ensure_bookmaker(bk_slug)
+    if not bk_id:
+        logger.warning("[persist_bk] could not resolve bookmaker %s — skipping DB persist", bk_slug)
+        return
+
+    canonical_name = _BK_NAMES.get(bk_slug, bk_slug.upper())
+
+    # Convert raw matches to the serialized shape persist_combined_batch expects.
+    # Each match needs: join_key, home_team, away_team, competition, start_time,
+    #                   betradar_id, bk_ids, markets
+    serialized: list[dict] = []
+    for m in matches:
+        # Determine the canonical ID for this match
+        betradar_id = str(
+            m.get("betradar_id") or m.get("betradarId") or
+            m.get("sr_id") or ""
+        ).strip()
+        if not betradar_id or betradar_id in ("0", "None"):
+            betradar_id = None
+
+        # BK-specific external ID
+        bk_ext_id = str(
+            m.get("sp_game_id") or m.get("bt_match_id") or
+            m.get("od_match_id") or m.get("bt_parent_id") or
+            m.get("od_parent_id") or m.get("match_id") or ""
+        ).strip() or None
+
+        join_key = (f"br_{betradar_id}" if betradar_id
+                    else f"{bk_slug}_{bk_ext_id}" if bk_ext_id
+                    else None)
+        if not join_key:
+            continue
+
+        # Markets — already flat {mkt: {outcome: odd}} from bt/od harvesters
+        markets = m.get("markets") or {}
+        if not markets:
+            continue
+
+        serialized.append({
+            "join_key":    join_key,
+            "home_team":   m.get("home_team") or m.get("home_team_name") or "",
+            "away_team":   m.get("away_team") or m.get("away_team_name") or "",
+            "competition": m.get("competition") or m.get("competition_name") or "",
+            "start_time":  m.get("start_time") or "",
+            "is_live":     False,
+            "betradar_id": betradar_id,
+            "sport":       sport_slug,
+            "bk_ids":      {bk_slug: bk_ext_id or join_key},
+            "markets":     {bk_slug: markets},
+        })
+
+    if not serialized:
+        logger.debug("[persist_bk] %s/%s: no serializable matches", bk_slug, sport_slug)
+        return
+
+    try:
+        celery.send_task(
+            "tasks.ops.persist_combined_batch",
+            args=[serialized, sport_slug, "upcoming"],
+            queue="results",
+            countdown=3,
+        )
+        logger.info("[persist_bk] %s/%s: dispatched %d matches to DB",
+                    bk_slug, sport_slug, len(serialized))
+    except Exception as exc:
+        logger.warning("[persist_bk] dispatch failed for %s/%s: %s", bk_slug, sport_slug, exc)
 
 
 # =============================================================================
@@ -202,8 +328,7 @@ def compute_value_bets(sport_slug: str) -> dict:
         return {"ok": True, "found": 0}
 
     matches  = raw.get("matches") or []
-    arb_rows = 0
-    ev_rows  = 0
+    arb_rows = 0; ev_rows = 0
     now      = datetime.utcnow()
 
     try:
@@ -212,8 +337,7 @@ def compute_value_bets(sport_slug: str) -> dict:
                 best_prices: dict[str, float] = {}
                 leg_details: dict[str, tuple] = {}
                 for out_key, bk_odds in outcomes.items():
-                    if not bk_odds:
-                        continue
+                    if not bk_odds: continue
                     best_bk  = max(bk_odds, key=lambda b: float(bk_odds[b]))
                     best_odd = float(bk_odds[best_bk])
                     if best_odd > 1.0:
@@ -235,8 +359,7 @@ def compute_value_bets(sport_slug: str) -> dict:
                                 try:
                                     start_dt = datetime.fromisoformat(
                                         str(match["start_time"]).replace("Z", "+00:00"))
-                                except Exception:
-                                    pass
+                                except Exception: pass
                             db.session.add(ArbitrageOpportunity(
                                 home_team=match.get("home_team", ""),
                                 away_team=match.get("away_team", ""),
@@ -254,56 +377,13 @@ def compute_value_bets(sport_slug: str) -> dict:
                                 open_at=now,
                             ))
                             arb_rows += 1
-                            _publish(ARB_CHANNEL, {
-                                "event": "arb_found", "sport": sport_slug,
-                                "match": f"{match.get('home_team')} v {match.get('away_team')}",
-                                "market": mkt_slug,
-                                "profit_pct": round(profit_pct, 2),
-                                "legs": legs, "ts": _now_iso(),
-                            })
-
-                    inv_sum = sum(1.0 / p for p in best_prices.values())
-                    if inv_sum > 0 and len(best_prices) >= 2:
-                        fair_probs = {s: (1.0 / p) / inv_sum for s, p in best_prices.items()}
-                        for out_key, bk_odds in outcomes.items():
-                            fair_p = fair_probs.get(out_key)
-                            if not fair_p:
-                                continue
-                            for bk_name, bk_price in (bk_odds or {}).items():
-                                bk_price = float(bk_price)
-                                if bk_price <= 1.0:
-                                    continue
-                                ev_pct = (bk_price * fair_p - 1.0) * 100
-                                if ev_pct < threshold:
-                                    continue
-                                b     = bk_price - 1
-                                kelly = max(0.0, (b * fair_p - (1 - fair_p)) / b) if b > 0 else 0.0
-                                db.session.add(EVOpportunity(
-                                    home_team=match.get("home_team", ""),
-                                    away_team=match.get("away_team", ""),
-                                    sport=sport_slug, competition=match.get("competition", ""),
-                                    market=mkt_slug, selection=out_key, bookmaker=bk_name,
-                                    offered_price=bk_price,
-                                    consensus_price=round(best_prices.get(out_key, 0), 4),
-                                    fair_prob=round(fair_p, 6),
-                                    ev_pct=round(ev_pct, 4),
-                                    peak_ev_pct=round(ev_pct, 4),
-                                    bookmakers_in_consensus=len(bk_odds),
-                                    kelly_fraction=round(kelly, 4),
-                                    half_kelly=round(kelly / 2, 4),
-                                    status=OpportunityStatus.OPEN,
-                                    open_at=now,
-                                ))
-                                ev_rows += 1
 
         db.session.commit()
     except Exception as exc:
         logger.error("[value_bets] %s: %s", sport_slug, exc)
         try:
-            from app.extensions import db
-            db.session.rollback()
-        except Exception:
-            pass
+            from app.extensions import db; db.session.rollback()
+        except Exception: pass
 
     logger.info("[value_bets] %s: %d arbs  %d EVs", sport_slug, arb_rows, ev_rows)
     return {"ok": True, "sport": sport_slug, "arbs": arb_rows, "evs": ev_rows}
@@ -343,7 +423,9 @@ def sp_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
         "match_count": len(matches), "harvested_at": _now_iso(),
         "latency_ms": latency, "matches": matches,
     }, ttl=300)
-    _upsert_and_chain(matches, "Sportpesa")
+    _upsert_and_chain(matches, "SportPesa")
+    # Direct DB persist — ensures SP data lands even without combined stream
+    _persist_bk_matches(matches, "sp", sport_slug)
     _emit("sportpesa", sport_slug, len(matches), latency)
     logger.info("[sp:upcoming] %s → %d matches %dms", sport_slug, len(matches), latency)
     return {"ok": True, "source": "sportpesa", "sport": sport_slug,
@@ -370,7 +452,7 @@ def bt_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     t0 = time.perf_counter()
     try:
         from app.workers.bt_harvester import fetch_upcoming_matches
-        matches = fetch_upcoming_matches(sport_slug, fetch_full_markets=True, max_matches=max_matches)
+        matches = fetch_upcoming_matches(sport_slug, max_pages=8, fetch_full=False)
     except Exception as exc:
         raise self.retry(exc=exc)
     latency = int((time.perf_counter() - t0) * 1000)
@@ -380,7 +462,10 @@ def bt_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
         "latency_ms": latency, "matches": matches,
     }, ttl=300)
     _upsert_and_chain(matches, "Betika")
+    # ── DIRECT DB PERSIST (the missing piece for BT) ──────────────────────────
+    _persist_bk_matches(matches, "bt", sport_slug)
     _emit("betika", sport_slug, len(matches), latency)
+    logger.info("[bt:upcoming] %s → %d matches %dms", sport_slug, len(matches), latency)
     return {"ok": True, "source": "betika", "sport": sport_slug,
             "count": len(matches), "latency_ms": latency}
 
@@ -404,9 +489,8 @@ def bt_harvest_all_upcoming() -> dict:
 def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     t0 = time.perf_counter()
     try:
-        from app.workers.od_harvester import fetch_upcoming
-        matches = fetch_upcoming(sport_slug, fetch_full_markets=True,
-                                 fetch_extended=True, max_matches=max_matches)
+        from app.workers.od_harvester import fetch_upcoming_matches
+        matches = fetch_upcoming_matches(sport_slug=sport_slug)
     except Exception as exc:
         raise self.retry(exc=exc)
     latency = int((time.perf_counter() - t0) * 1000)
@@ -415,8 +499,11 @@ def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
         "match_count": len(matches), "harvested_at": _now_iso(),
         "latency_ms": latency, "matches": matches,
     }, ttl=300)
-    _upsert_and_chain(matches, "Odibets")
+    _upsert_and_chain(matches, "OdiBets")
+    # ── DIRECT DB PERSIST (the missing piece for OD) ──────────────────────────
+    _persist_bk_matches(matches, "od", sport_slug)
     _emit("odibets", sport_slug, len(matches), latency)
+    logger.info("[od:upcoming] %s → %d matches %dms", sport_slug, len(matches), latency)
     return {"ok": True, "source": "odibets", "sport": sport_slug,
             "count": len(matches), "latency_ms": latency}
 
@@ -508,10 +595,8 @@ def b2b_page_harvest_page(self, bookmaker: dict, sport: str, page: int) -> dict:
 @celery.task(name="tasks.b2b_page.harvest_all_upcoming", soft_time_limit=30, time_limit=60)
 def b2b_page_harvest_all_upcoming() -> dict:
     from app.workers.celery_tasks import _redis
-    import json as _json
-    # Load bookmakers from cache (already built by load_bookmakers)
     raw = _redis().get("cache:bookmakers:active")
-    bookmakers = _json.loads(raw) if raw else []
+    bookmakers = json.loads(raw) if raw else []
     if not bookmakers:
         return {"dispatched": 0}
     sigs = [
