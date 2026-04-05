@@ -21,7 +21,12 @@ class Bookmaker(db.Model):
     # AI-observed UI metadata
     brand_color = db.Column(db.String(20))
     logo_url = db.Column(db.String(255))
-    payments = db.relationship("BookmakerPayment")  # New relationship to payments
+    payments = db.relationship(
+        "BookmakerPayment", 
+        back_populates="bookmaker", 
+        lazy="dynamic"  # (Keep whatever lazy/cascade settings you already had)
+    )
+    # payments = db.relationship("BookmakerPayment")  # New relationship to payments
     harvest_config = db.Column(db.JSON, nullable=True)  # e.g. {"odds_format": "decimal", "supports_live_betting": true}
 
     # Configs
