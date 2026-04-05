@@ -1,7 +1,11 @@
-
 from datetime import datetime
+from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models.enums_tools import Gender, PlayerPosition, _utcnow_naive
+
+# ═════════════════════════════════════════════════════════════════════════════
+# COUNTRY
+# ═════════════════════════════════════════════════════════════════════════════
 
 class Country(db.Model):
     __tablename__ = "countries"
@@ -34,9 +38,14 @@ class Country(db.Model):
     def get_or_create(cls, name: str, **kw) -> "Country":
         obj = cls.query.filter(db.func.lower(cls.name) == name.lower()).first()
         if not obj:
-            obj = cls(name=name, **kw)
-            db.session.add(obj)
-            db.session.flush()
+            try:
+                with db.session.begin_nested():
+                    obj = cls(name=name, **kw)
+                    db.session.add(obj)
+                    db.session.flush()
+            except IntegrityError:
+                # Race condition: another worker created it. Fetch it instead.
+                obj = cls.query.filter(db.func.lower(cls.name) == name.lower()).first()
         return obj
  
  
@@ -81,10 +90,15 @@ class Sport(db.Model):
         if not obj and slug:
             obj = cls.query.filter(db.func.lower(cls.slug) == slug.lower()).first()
         if not obj:
-            auto_slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-            obj = cls(name=name, slug=auto_slug, **kw)
-            db.session.add(obj)
-            db.session.flush()
+            try:
+                with db.session.begin_nested():
+                    auto_slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+                    obj = cls(name=name, slug=auto_slug, **kw)
+                    db.session.add(obj)
+                    db.session.flush()
+            except IntegrityError:
+                # Race condition: another worker created it. Fetch it instead.
+                obj = cls.query.filter(db.func.lower(cls.name) == name.lower()).first()
         return obj
  
  
@@ -151,10 +165,18 @@ class Competition(db.Model):
             cls.sport_id == sport_id,
         ).first()
         if not obj:
-            auto_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-            obj = cls(name=name, sport_id=sport_id, slug=auto_slug, **kw)
-            db.session.add(obj)
-            db.session.flush()
+            try:
+                with db.session.begin_nested():
+                    auto_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+                    obj = cls(name=name, sport_id=sport_id, slug=auto_slug, **kw)
+                    db.session.add(obj)
+                    db.session.flush()
+            except IntegrityError:
+                # Race condition: another worker created it. Fetch it instead.
+                obj = cls.query.filter(
+                    db.func.lower(cls.name) == name.lower(),
+                    cls.sport_id == sport_id,
+                ).first()
         return obj
  
  
@@ -257,10 +279,18 @@ class Team(db.Model):
             cls.sport_id == sport_id,
         ).first()
         if not obj:
-            auto_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-            obj = cls(name=name, sport_id=sport_id, slug=auto_slug, **kw)
-            db.session.add(obj)
-            db.session.flush()
+            try:
+                with db.session.begin_nested():
+                    auto_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+                    obj = cls(name=name, sport_id=sport_id, slug=auto_slug, **kw)
+                    db.session.add(obj)
+                    db.session.flush()
+            except IntegrityError:
+                # Race condition: another worker created it. Fetch it instead.
+                obj = cls.query.filter(
+                    db.func.lower(cls.name) == name.lower(),
+                    cls.sport_id == sport_id,
+                ).first()
         return obj
  
  
@@ -307,9 +337,14 @@ class Player(db.Model):
     def get_or_create(cls, name: str, **kw) -> "Player":
         obj = cls.query.filter(db.func.lower(cls.name) == name.lower()).first()
         if not obj:
-            obj = cls(name=name, **kw)
-            db.session.add(obj)
-            db.session.flush()
+            try:
+                with db.session.begin_nested():
+                    obj = cls(name=name, **kw)
+                    db.session.add(obj)
+                    db.session.flush()
+            except IntegrityError:
+                # Race condition: another worker created it. Fetch it instead.
+                obj = cls.query.filter(db.func.lower(cls.name) == name.lower()).first()
         return obj
  
  
@@ -349,4 +384,3 @@ class TeamPlayer(db.Model):
             "position":      self.position.value if self.position else None,
             "is_active":     self.is_active,
         }
- 
