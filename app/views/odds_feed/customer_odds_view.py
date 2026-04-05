@@ -7,33 +7,6 @@ Data sources (priority order)
 ------------------------------
   1. PostgreSQL  — UnifiedMatch + BookmakerMatchOdds  (primary, always fresh)
   2. Redis cache — sp/bt/od/b2b/sbo prefixes          (fallback / enrichment)
-
-Every endpoint that returns match data now uses the DB as the primary source.
-The response always includes:
-  • markets_by_bk  {bk_slug: {market_slug: {outcome: odd}}}
-  • best           {market_slug: {outcome: {odd, bk}}}
-  • arb_markets    [{market, profit_pct, arb_sum, legs}]
-  • bookmakers     {bk_slug: {bookmaker, market_count, markets, link}}
-
-These shapes are consumed directly by OddsComparisonTab (odds_api source mode).
-
-Endpoints
----------
-  GET  /api/odds/sports
-  GET  /api/odds/bookmakers
-  GET  /api/odds/markets
-  GET  /api/odds/upcoming/<sport_slug>
-  GET  /api/odds/live/<sport_slug>
-  GET  /api/odds/results
-  GET  /api/odds/results/<date_str>
-  GET  /api/odds/match/<parent_match_id>
-  GET  /api/odds/search
-  GET  /api/odds/status
-  GET  /api/odds/access
-  POST /api/admin/odds/access
-  GET  /api/stream/odds
-  GET  /api/stream/arb
-  GET  /api/stream/ev
 """
 
 from __future__ import annotations
@@ -85,6 +58,25 @@ def _user_has_access(user, endpoint_name: str) -> bool:
     return _TIER_ORDER.get(utier, 0) >= _TIER_ORDER.get(req, 0)
 
 
+def _flatten_db_markets(raw_markets: dict) -> dict:
+    """
+    Strips out the unnecessary 'specifier' level (the "null" key) from the DB JSON.
+    Converts: {"1x2": {"null": {"1": {"price": 2.5}}}}
+    To:       {"1x2": {"1": {"price": 2.5}}}
+    """
+    flat = {}
+    for mkt_slug, spec_dict in (raw_markets or {}).items():
+        flat[mkt_slug] = {}
+        if isinstance(spec_dict, dict):
+            for spec_val, outcomes in spec_dict.items():
+                if isinstance(outcomes, dict):
+                    for out_key, out_val in outcomes.items():
+                        flat[mkt_slug][out_key] = out_val
+        else:
+            flat[mkt_slug] = spec_dict
+    return flat
+
+
 def _load_db_matches(
     sport_slug:  str,
     mode:        str = "upcoming",
@@ -112,9 +104,6 @@ def _load_db_matches(
     if sport_slug and sport_slug.lower() not in ("all", ""):
         q = q.filter(UnifiedMatch.sport_name.ilike(f"%{sport_slug}%"))
 
-    # ── Mode filter ───────────────────────────────────────────────────────────
-    # Freshly persisted rows have NULL status (update_match_results hasn't run
-    # yet).  Treat NULL as "upcoming" — only exclude explicitly terminal states.
     if mode == "upcoming":
         q = q.filter(
             or_(
@@ -126,7 +115,6 @@ def _load_db_matches(
         q = q.filter(UnifiedMatch.status.in_(["IN_PLAY", "live", "INPLAY"]))
     elif mode == "finished":
         q = q.filter(UnifiedMatch.status == "FINISHED")
-    # mode == "all" → no status filter
 
     if status_filter and status_filter.upper() not in ("ALL", ""):
         q = q.filter(UnifiedMatch.status == status_filter.upper())
@@ -213,7 +201,9 @@ def _load_db_matches(
             bk_name  = (bk_obj.name if bk_obj else str(bmo.bookmaker_id)).lower()
             slug     = _bk_slug(bk_name)
             label    = bk_obj.name if bk_obj else slug.upper()
-            mkt_data = bmo.markets_json or {}
+            
+            # FIX: Flatten the DB dictionary to remove the "null" specifier level
+            mkt_data = _flatten_db_markets(bmo.markets_json or {})
 
             bookmakers[slug] = {
                 "bookmaker_id": bmo.bookmaker_id,
@@ -229,11 +219,16 @@ def _load_db_matches(
         for sl, bk_mkts in markets_by_bk.items():
             for mkt, outcomes in bk_mkts.items():
                 best.setdefault(mkt, {})
-                for out, odd in (outcomes or {}).items():
+                for out, odd_data in (outcomes or {}).items():
+                    # FIX: Safely extract float whether it's a dict {"price": 2.5} or float 2.5
                     try:
-                        fv = float(odd)
+                        if isinstance(odd_data, dict):
+                            fv = float(odd_data.get("price") or odd_data.get("odd") or 0)
+                        else:
+                            fv = float(odd_data)
                     except (TypeError, ValueError):
                         continue
+                    
                     if fv <= 1.0:
                         continue
                     if out not in best[mkt] or fv > best[mkt][out]["odd"]:
@@ -301,7 +296,8 @@ def _load_db_matches(
             "markets":         markets_by_bk,
             "best":            best,
             "best_odds":       best_odds,
-            "aggregated":      um.markets_json or {},
+            # FIX: Flatten the aggregated JSON so it doesn't output "null" either
+            "aggregated":      _flatten_db_markets(um.markets_json or {}),
             "has_arb":         has_arb_flag,
             "arb_markets":     arb_markets,
             "arbs":            arb_markets,
@@ -668,21 +664,33 @@ def get_match(parent_match_id: str):
     for bmo in bmos:
         bk_obj = bk_map.get(bmo.bookmaker_id)
         sl     = _bk_slug((bk_obj.name if bk_obj else str(bmo.bookmaker_id)).lower())
-        mkts   = bmo.markets_json or {}
+        
+        # FIX: Flatten the markets so the frontend doesn't see "null" keys
+        mkts   = _flatten_db_markets(bmo.markets_json or {})
+        
         bookmakers[sl] = {"bookmaker_id": bmo.bookmaker_id,
                           "bookmaker": bk_obj.name if bk_obj else sl.upper(),
                           "slug": sl, "markets": mkts, "market_count": len(mkts),
                           "link": links.get(bmo.bookmaker_id)}
         markets_by_bk[sl] = mkts
+        
     best: dict[str, dict] = {}
     for sl, bk_mkts in markets_by_bk.items():
         for mkt, outcomes in bk_mkts.items():
             best.setdefault(mkt, {})
-            for out, odd in (outcomes or {}).items():
-                try: fv = float(odd)
-                except Exception: continue
+            for out, odd_data in (outcomes or {}).items():
+                # FIX: Safely parse the price whether it's a raw float or a dictionary
+                try: 
+                    if isinstance(odd_data, dict):
+                        fv = float(odd_data.get("price") or odd_data.get("odd") or 0)
+                    else:
+                        fv = float(odd_data)
+                except Exception: 
+                    continue
+                    
                 if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
                     best[mkt][out] = {"odd": fv, "bk": sl}
+                    
     history = (BookmakerOddsHistory.query.filter_by(match_id=um.id)
                .order_by(BookmakerOddsHistory.recorded_at.desc()).limit(50).all())
     history_rows = [{
@@ -704,7 +712,8 @@ def get_match(parent_match_id: str):
         "sport": um.sport_name, "start_time": um.start_time.isoformat() if um.start_time else None,
         "status": getattr(um, "status", "PRE_MATCH"),
         "bookmakers": bookmakers, "markets_by_bk": markets_by_bk, "markets": markets_by_bk,
-        "best": best, "aggregated": um.markets_json or {},
+        "best": best, 
+        "aggregated": _flatten_db_markets(um.markets_json or {}),
         "odds_history": history_rows, "arbs": arb_list, "evs": ev_list,
         "bk_ids": {sl: str(bk_data["bookmaker_id"]) for sl, bk_data in bookmakers.items()},
         "latency_ms": int((time.perf_counter() - t0) * 1000), "source": "postgresql",
