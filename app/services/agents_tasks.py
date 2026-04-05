@@ -250,7 +250,7 @@ def harvest_bookmaker_sport(self, bookmaker: dict, sport: str, mode: str = "live
     })
 
     try:
-        from app.workers.bookmaker_fetcher import fetch_bookmaker
+        from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
         matches = fetch_bookmaker(bookmaker, sport_name=sport, mode=mode, timeout=25)
     except Exception as exc:
         latency = int((time.perf_counter() - t0) * 1000)
@@ -398,7 +398,7 @@ def probe_bookmaker_now(bookmaker: dict, sport: str, mode: str = "live") -> dict
     Immediate probe — used by the admin UI PROBE tab.
     Does NOT write to the harvest cache, just returns results.
     """
-    from app.workers.bookmaker_fetcher import fetch_bookmaker
+    from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
     t0 = time.perf_counter()
     try:
         matches = fetch_bookmaker(bookmaker, sport_name=sport, mode=mode, timeout=20)

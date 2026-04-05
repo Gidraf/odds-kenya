@@ -44,7 +44,7 @@ CMD_CELERY="celery -A ${CELERY_APP} worker -B \
   --hostname=all@%h"
 
 # Flower dashboard
-CMD_FLOWER="celery -A ${CELERY_APP} flower --port=5555 --loglevel=info"
+# CMD_FLOWER="celery -A ${CELERY_APP} flower --port=5555 --loglevel=info"
 
 # ── tmux ──────────────────────────────────────────────────────────────────────
 if command -v tmux >/dev/null 2>&1; then
@@ -103,7 +103,7 @@ echo "  --concurrency=8 --loglevel=debug \\"
 echo "  --logfile=${LOG_DIR}/celery.log --hostname=all@%h"
 echo ""
 echo "# Terminal 3 — Flower"
-echo "celery -A ${CELERY_APP} flower --port=5555"
+# echo "celery -A ${CELERY_APP} flower --port=5555"
 echo ""
 echo "# Terminal 4 — Log tail"
 echo "tail -f ${LOG_DIR}/flask.log ${LOG_DIR}/celery.log ${LOG_DIR}/harvest_jobs.log"

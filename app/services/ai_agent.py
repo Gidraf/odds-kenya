@@ -216,7 +216,7 @@ def harvest_bookmaker_sport(
     })
 
     try:
-        from app.workers.bookmaker_fetcher import fetch_bookmaker
+        from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
         matches = fetch_bookmaker(bookmaker, sport_name=sport, mode=mode, timeout=25)
     except Exception as exc:
         logger.error(f"[harvest] {bk_name}/{sport}: {exc}\n{traceback.format_exc()}")
@@ -338,7 +338,7 @@ def probe_bookmaker_now(bookmaker: dict, sport: str, mode: str = "upcoming") -> 
     Returns the result directly (no Redis write) so the admin
     can display it without waiting for the next beat cycle.
     """
-    from app.workers.bookmaker_fetcher import fetch_bookmaker
+    from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
     t0 = time.perf_counter()
     try:
         matches  = fetch_bookmaker(bookmaker, sport_name=sport, mode=mode, timeout=20)

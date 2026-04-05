@@ -784,7 +784,7 @@ def validate_all_sports(bm_id: int):
         "config":      config,
     }
 
-    from app.workers.bookmaker_fetcher import fetch_bookmaker
+    from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
     import time as _time
     results = {}
 
