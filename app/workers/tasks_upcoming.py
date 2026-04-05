@@ -432,7 +432,7 @@ def sp_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
             "count": len(matches), "latency_ms": latency}
 
 
-@celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=30, time_limit=60)
+@celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=600, time_limit=180)
 def sp_harvest_all_upcoming() -> dict:
     sigs = [sp_harvest_sport.s(s) for s in _LOCAL_SPORTS]
     group(sigs).apply_async(queue="harvest")
