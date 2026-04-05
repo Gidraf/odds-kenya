@@ -1,22 +1,20 @@
 """
 app/views/odds_feed/monitor_view.py
 ====================================
-Real-time monitoring dashboard — logs, beat schedule, sport cache, job log.
-
-Register in create_app():
-    from app.views.odds_feed.monitor_view import bp_monitor
-    app.register_blueprint(bp_monitor)
+Real-time monitoring dashboard — separated log levels, flask + celery logs.
 
 Endpoints
 ─────────
-  GET /api/monitor/dashboard        ← Beautiful HTML dashboard (open in browser)
-  GET /api/monitor/stream/logs      ← SSE: real-time celery.log tail
-  GET /api/monitor/stream/jobs      ← SSE: real-time job log tail
-  GET /api/monitor/report           ← JSON: latest health report
-  GET /api/monitor/report/history   ← JSON: last 60 snapshots
-  GET /api/monitor/jobs             ← JSON: last N job entries (filterable)
-  GET /api/monitor/sports           ← JSON: per-sport cache summary
-  GET /api/monitor/beat             ← JSON: beat schedule + next-run countdowns
+  GET /api/monitor/dashboard        ← HTML dashboard
+  GET /api/monitor/stream/logs      ← SSE: celery.log tail
+  GET /api/monitor/stream/flask     ← SSE: flask.log tail
+  GET /api/monitor/stream/tasks     ← SSE: tasks.log tail
+  GET /api/monitor/stream/jobs      ← SSE: job log (Redis)
+  GET /api/monitor/report           ← JSON health report
+  GET /api/monitor/report/history   ← JSON last 60 snapshots
+  GET /api/monitor/jobs             ← JSON last N jobs
+  GET /api/monitor/sports           ← JSON per-sport cache
+  GET /api/monitor/beat             ← JSON beat schedule
 """
 
 from __future__ import annotations
@@ -31,32 +29,25 @@ from flask import Blueprint, Response, request, stream_with_context
 
 bp_monitor = Blueprint("monitor", __name__, url_prefix="/api/monitor")
 
-LOG_DIR       = Path(os.environ.get("LOG_DIR", "logs"))
-CELERY_LOG    = LOG_DIR / "celery.log"
-TASK_LOG      = LOG_DIR / "tasks.log"
-JOB_LOG       = LOG_DIR / "harvest_jobs.log"
+LOG_DIR    = Path(os.environ.get("LOG_DIR", "logs"))
+CELERY_LOG = LOG_DIR / "celery.log"
+FLASK_LOG  = LOG_DIR / "flask.log"
+TASK_LOG   = LOG_DIR / "tasks.log"
+JOB_LOG    = LOG_DIR / "harvest_jobs.log"
 
-# Beat schedule: {task_name: interval_seconds}
 BEAT_SCHEDULE: dict[str, int] = {
-    "tasks.sp.harvest_all_upcoming":      300,
-    "tasks.bt.harvest_all_upcoming":      360,
-    "tasks.od.harvest_all_upcoming":      420,
-    "tasks.b2b.harvest_all_upcoming":     480,
+    "tasks.sp.harvest_all_upcoming":       300,
+    "tasks.bt.harvest_all_upcoming":       360,
+    "tasks.od.harvest_all_upcoming":       420,
+    "tasks.b2b.harvest_all_upcoming":      480,
     "tasks.b2b_page.harvest_all_upcoming": 300,
-    "tasks.sbo.harvest_all_upcoming":     180,
-    "tasks.sp.harvest_all_live":           60,
-    "tasks.sp.poll_all_event_details":      5,
-    "tasks.bt.harvest_all_live":           90,
-    "tasks.od.harvest_all_live":           90,
-    "tasks.b2b.harvest_all_live":         120,
-    "tasks.b2b_page.harvest_all_live":     30,
-    "tasks.sbo.harvest_all_live":          60,
-    "tasks.ops.health_check":              30,
-    "tasks.ops.update_match_results":     300,
-    "tasks.ops.persist_all_sports":       300,
-    "tasks.ops.build_health_report":       60,
-    "tasks.ops.expire_subscriptions":    3600,
-    "tasks.ops.cache_finished_games":    3600,
+    "tasks.sbo.harvest_all_upcoming":      180,
+    "tasks.ops.health_check":               30,
+    "tasks.ops.update_match_results":      300,
+    "tasks.ops.persist_all_sports":        300,
+    "tasks.ops.build_health_report":        60,
+    "tasks.ops.expire_subscriptions":     3600,
+    "tasks.ops.cache_finished_games":     3600,
 }
 
 
@@ -81,7 +72,7 @@ def _redis():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JSON API endpoints
+# JSON API
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bp_monitor.route("/report")
@@ -146,8 +137,8 @@ def get_sports():
     from app.workers.tasks_ops import PERSIST_SPORTS
     summary = []
     for sport in PERSIST_SPORTS:
-        u = _cache_get(f"combined:upcoming:{sport}") or {}
-        l = _cache_get(f"combined:live:{sport}")     or {}
+        u   = _cache_get(f"combined:upcoming:{sport}") or {}
+        l   = _cache_get(f"combined:live:{sport}")     or {}
         u_m = u.get("matches", [])
         l_m = l.get("matches", [])
         summary.append({
@@ -155,10 +146,10 @@ def get_sports():
             "upcoming": len(u_m), "live": len(l_m),
             "arbs": sum(1 for m in u_m + l_m if m.get("has_arb")),
             "evs":  sum(1 for m in u_m + l_m if m.get("has_ev")),
-            "bk_counts_up": u.get("bk_counts", {}),
+            "bk_counts_up":    u.get("bk_counts", {}),
             "harvested_at_up": u.get("harvested_at"),
             "harvested_at_lv": l.get("harvested_at"),
-            "populated": bool(u_m or l_m),
+            "populated":       bool(u_m or l_m),
         })
     populated = sum(1 for s in summary if s["populated"])
     return {"ok": True, "total_sports": len(PERSIST_SPORTS),
@@ -167,7 +158,6 @@ def get_sports():
 
 @bp_monitor.route("/beat")
 def get_beat():
-    """Returns beat schedule with last-run time and next-run countdown."""
     r = _redis()
     last_run_map: dict[str, str] = {}
     if r:
@@ -179,12 +169,10 @@ def get_beat():
             }
         except Exception:
             pass
-
     now_utc = datetime.now(timezone.utc)
     tasks   = []
     for task_name, interval in sorted(BEAT_SCHEDULE.items(), key=lambda x: x[1]):
         last_str = last_run_map.get(task_name)
-        last_dt  = None
         next_in  = None
         if last_str:
             try:
@@ -194,38 +182,31 @@ def get_beat():
             except Exception:
                 pass
         tasks.append({
-            "task":      task_name,
-            "interval":  interval,
-            "last_run":  last_str,
-            "next_in_s": next_in,
-            "overdue":   (next_in is not None and next_in == 0),
+            "task": task_name, "interval": interval,
+            "last_run": last_str, "next_in_s": next_in,
+            "overdue": (next_in is not None and next_in == 0),
         })
-
     return {"ok": True, "tasks": tasks, "ts": _now()}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SSE: real-time log tail
+# SSE helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _tail_file_sse(filepath: Path, event_type: str = "log"):
-    """Generator: tails a file and yields SSE events for new lines."""
+def _tail_file_sse(filepath: Path, src: str):
     filepath.touch(exist_ok=True)
-
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        # Seek to end — don't replay old history
         f.seek(0, 2)
         last_ka = time.monotonic()
-
         while True:
             line = f.readline()
             if line:
                 line = line.rstrip("\n")
                 if line:
-                    yield f"data: {json.dumps({'type': event_type, 'line': line, 'ts': _now()})}\n\n"
+                    yield f"data: {json.dumps({'src':src,'line':line,'ts':_now()})}\n\n"
             else:
                 time.sleep(0.2)
-                if time.monotonic() - last_ka >= 10:
+                if time.monotonic() - last_ka >= 15:
                     yield f": keep-alive {_now()}\n\n"
                     last_ka = time.monotonic()
 
@@ -240,34 +221,40 @@ _SSE_HEADERS = {
 
 @bp_monitor.route("/stream/logs")
 def stream_celery_logs():
-    """SSE: real-time tail of logs/celery.log"""
     @stream_with_context
-    def generate():
-        yield f"data: {json.dumps({'type': 'connected', 'file': str(CELERY_LOG), 'ts': _now()})}\n\n"
-        yield from _tail_file_sse(CELERY_LOG, "log")
-    return Response(generate(), headers=_SSE_HEADERS)
+    def gen():
+        yield f"data: {json.dumps({'src':'celery','type':'connected','ts':_now()})}\n\n"
+        yield from _tail_file_sse(CELERY_LOG, "celery")
+    return Response(gen(), headers=_SSE_HEADERS)
+
+
+@bp_monitor.route("/stream/flask")
+def stream_flask_logs():
+    @stream_with_context
+    def gen():
+        yield f"data: {json.dumps({'src':'flask','type':'connected','ts':_now()})}\n\n"
+        yield from _tail_file_sse(FLASK_LOG, "flask")
+    return Response(gen(), headers=_SSE_HEADERS)
 
 
 @bp_monitor.route("/stream/tasks")
 def stream_task_logs():
-    """SSE: real-time tail of logs/tasks.log"""
     @stream_with_context
-    def generate():
-        yield f"data: {json.dumps({'type': 'connected', 'file': str(TASK_LOG), 'ts': _now()})}\n\n"
-        yield from _tail_file_sse(TASK_LOG, "task")
-    return Response(generate(), headers=_SSE_HEADERS)
+    def gen():
+        yield f"data: {json.dumps({'src':'tasks','type':'connected','ts':_now()})}\n\n"
+        yield from _tail_file_sse(TASK_LOG, "tasks")
+    return Response(gen(), headers=_SSE_HEADERS)
 
 
 @bp_monitor.route("/stream/jobs")
 def stream_jobs():
-    """SSE: pushes new job log entries from Redis in real-time."""
     @stream_with_context
-    def generate():
+    def gen():
         r = _redis()
         if not r:
-            yield f"data: {json.dumps({'error': 'Redis unavailable'})}\n\n"
+            yield f"data: {json.dumps({'error':'Redis unavailable'})}\n\n"
             return
-        yield f"data: {json.dumps({'type': 'connected', 'ts': _now()})}\n\n"
+        yield f"data: {json.dumps({'src':'jobs','type':'connected','ts':_now()})}\n\n"
         try:
             last_len = r.llen("monitor:job_log")
         except Exception:
@@ -280,656 +267,521 @@ def stream_jobs():
                 if cur > last_len:
                     for raw in reversed(r.lrange("monitor:job_log", 0, cur - last_len - 1)):
                         try:
-                            yield f"data: {json.dumps({'type': 'job', **json.loads(raw)})}\n\n"
+                            yield f"data: {json.dumps({'src':'jobs','type':'job',**json.loads(raw)})}\n\n"
                         except Exception:
                             pass
                     last_len = cur
             except Exception:
                 pass
-            if time.monotonic() - last_ka >= 10:
+            if time.monotonic() - last_ka >= 15:
                 yield f": keep-alive {_now()}\n\n"
                 last_ka = time.monotonic()
-    return Response(generate(), headers=_SSE_HEADERS)
+    return Response(gen(), headers=_SSE_HEADERS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HTML Dashboard
 # ─────────────────────────────────────────────────────────────────────────────
 
-@bp_monitor.route("/dashboard")
-def dashboard():
-    html = r"""<!DOCTYPE html>
+DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Odds Kenya — Dev Monitor</title>
+<title>Odds Kenya Monitor</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  :root {
-    --bg:      #0a0f1e;
-    --panel:   #0f172a;
-    --border:  #1e293b;
-    --text:    #e2e8f0;
-    --dim:     #64748b;
-    --green:   #22c55e;
-    --red:     #ef4444;
-    --yellow:  #f59e0b;
-    --blue:    #3b82f6;
-    --purple:  #a855f7;
-    --cyan:    #06b6d4;
-    --orange:  #f97316;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg); color: var(--text);
-    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 13px; overflow: hidden; height: 100vh;
-    display: flex; flex-direction: column;
-  }
+:root{
+  --bg:#080d1a;--panel:#0d1526;--border:#1a2540;--text:#e2e8f0;--dim:#4a5a78;
+  --green:#22c55e;--gbg:#052e16;--red:#ef4444;--rbg:#450a0a;
+  --yellow:#f59e0b;--ybg:#3d2000;--blue:#3b82f6;--bbg:#0c1d3d;
+  --purple:#a855f7;--cyan:#06b6d4;--orange:#f97316;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);
+  font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
+  font-size:12px;overflow:hidden;height:100vh;display:flex;flex-direction:column;}
 
-  /* ── Top bar ─────────────────────────────────────────────────────── */
-  #topbar {
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
-    padding: 10px 16px;
-    display: flex; align-items: center; gap: 16px; flex-shrink: 0;
-  }
-  #topbar h1 { font-size: 15px; color: var(--cyan); letter-spacing: 1px; }
-  .pill {
-    padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: bold;
-  }
-  .pill.green  { background: #052e16; color: var(--green); border: 1px solid var(--green); }
-  .pill.red    { background: #450a0a; color: var(--red);   border: 1px solid var(--red);   }
-  .pill.yellow { background: #422006; color: var(--yellow);border: 1px solid var(--yellow);}
-  #clock       { margin-left: auto; color: var(--dim); font-size: 12px; }
-  .metric      { text-align: center; min-width: 80px; }
-  .metric .val { font-size: 20px; font-weight: bold; }
-  .metric .lbl { font-size: 10px; color: var(--dim); text-transform: uppercase; margin-top: 2px; }
+/* top bar */
+#tb{background:var(--panel);border-bottom:2px solid var(--border);
+  padding:7px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;}
+#tb h1{font-size:13px;color:var(--cyan);letter-spacing:1px;white-space:nowrap;}
+.pill{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:bold;}
+.pill.g{background:var(--gbg);color:var(--green);border:1px solid var(--green);}
+.pill.r{background:var(--rbg);color:var(--red);border:1px solid var(--red);}
+.pill.y{background:var(--ybg);color:var(--yellow);border:1px solid var(--yellow);}
+#clock{margin-left:auto;color:var(--dim);font-size:10px;white-space:nowrap;}
+.met{text-align:center;min-width:56px;}
+.met .v{font-size:17px;font-weight:bold;}
+.met .l{font-size:9px;color:var(--dim);text-transform:uppercase;}
 
-  /* ── Main layout ─────────────────────────────────────────────────── */
-  #main {
-    display: grid;
-    grid-template-columns: 260px 1fr 300px;
-    grid-template-rows: 1fr 220px;
-    gap: 1px; background: var(--border);
-    flex: 1; overflow: hidden;
-  }
-  .panel {
-    background: var(--panel); overflow: hidden;
-    display: flex; flex-direction: column;
-  }
-  .panel-title {
-    padding: 8px 12px; font-size: 11px; font-weight: bold;
-    color: var(--dim); text-transform: uppercase; letter-spacing: 1px;
-    border-bottom: 1px solid var(--border); flex-shrink: 0;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .panel-title .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--green); animation: pulse 2s infinite;
-  }
-  .panel-body { flex: 1; overflow-y: auto; padding: 8px; }
+/* layout */
+#main{display:grid;grid-template-columns:220px 1fr;grid-template-rows:1fr 185px;
+  gap:1px;background:var(--border);flex:1;overflow:hidden;}
+.pn{background:var(--panel);overflow:hidden;display:flex;flex-direction:column;}
+.pt{padding:5px 10px;font-size:10px;font-weight:bold;color:var(--dim);
+  text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid var(--border);
+  flex-shrink:0;display:flex;align-items:center;gap:5px;}
+.pt .dot{width:5px;height:5px;border-radius:50%;animation:pulse 2s infinite;}
+.pb{flex:1;overflow-y:auto;padding:5px;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
 
-  @keyframes pulse {
-    0%, 100% { opacity: 1; } 50% { opacity: 0.3; }
-  }
+/* left column = beat + sports stacked */
+#left{grid-column:1;grid-row:1;display:flex;flex-direction:column;}
+#beat-pn{flex:1;overflow:hidden;display:flex;flex-direction:column;}
+#sport-pn{flex:0 0 200px;border-top:1px solid var(--border);display:flex;flex-direction:column;}
 
-  /* ── Beat schedule ───────────────────────────────────────────────── */
-  .beat-row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 5px 4px; border-radius: 4px; margin-bottom: 2px;
-  }
-  .beat-row:hover { background: var(--border); }
-  .beat-name  { flex: 1; font-size: 11px; color: var(--dim); overflow: hidden;
-                text-overflow: ellipsis; white-space: nowrap; }
-  .beat-name span { color: var(--text); }
-  .beat-bar-wrap { width: 70px; height: 4px; background: var(--border); border-radius: 2px; }
-  .beat-bar  { height: 100%; border-radius: 2px; transition: width 1s linear; }
-  .beat-cntd { font-size: 11px; width: 36px; text-align: right; }
-  .bar-green  { background: var(--green); }
-  .bar-yellow { background: var(--yellow); }
-  .bar-red    { background: var(--red); }
+/* log panel */
+#log-pn{grid-column:2;grid-row:1;}
 
-  /* ── Log panel ───────────────────────────────────────────────────── */
-  #log-panel { grid-column: 2; grid-row: 1; }
-  #log-tabs  {
-    display: flex; gap: 1px; background: var(--border);
-    flex-shrink: 0; border-bottom: 1px solid var(--border);
-  }
-  .tab-btn {
-    padding: 7px 14px; font-size: 11px; cursor: pointer; font-family: inherit;
-    background: var(--panel); color: var(--dim); border: none;
-    border-bottom: 2px solid transparent;
-  }
-  .tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
-  #log-body {
-    flex: 1; overflow-y: auto; padding: 8px 12px;
-    font-size: 12px; line-height: 1.7;
-  }
-  .log-line { display: flex; gap: 8px; }
-  .log-line:hover { background: rgba(255,255,255,0.03); border-radius: 3px; }
-  .log-ts   { color: var(--dim); white-space: nowrap; flex-shrink: 0; }
-  .log-text { flex: 1; word-break: break-all; }
+/* toolbar */
+#ltb{display:flex;gap:3px;align-items:center;flex-wrap:wrap;
+  padding:5px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.sb,.lb,.cb{padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;
+  font-family:inherit;border:1px solid var(--border);background:var(--bg);color:var(--dim);}
+.sb:hover,.lb:hover,.cb:hover{background:var(--border);color:var(--text);}
+.sb.on,.lb.on{color:#fff;}
+.sb.sc.on{background:#0d2e0d;border-color:var(--green);color:var(--green);}
+.sb.sf.on{background:#0d1a2e;border-color:var(--blue);color:var(--blue);}
+.sb.st.on{background:#1a0d2e;border-color:var(--purple);color:var(--purple);}
+.lb.le.on{background:var(--rbg);border-color:var(--red);color:var(--red);}
+.lb.lw.on{background:var(--ybg);border-color:var(--yellow);color:var(--yellow);}
+.lb.li.on{background:var(--bbg);border-color:var(--blue);color:var(--blue);}
+.lb.ld.on{background:#111;border-color:#333;color:#555;}
+#sb-inp{background:var(--border);border:1px solid var(--dim);border-radius:3px;
+  padding:2px 7px;color:var(--text);font-family:inherit;font-size:10px;width:130px;}
+#sb-inp::placeholder{color:var(--dim);}
+.sep{width:1px;height:14px;background:var(--border);}
+.cbadge{font-size:10px;padding:1px 5px;border-radius:8px;background:var(--border);color:var(--dim);}
+.cbadge.e{background:var(--rbg);color:var(--red);}
+.cbadge.w{background:var(--ybg);color:var(--yellow);}
+.sp{flex:1;}
+#cpill{font-size:10px;padding:1px 7px;border-radius:8px;background:var(--border);}
 
-  /* log level colours */
-  .lvl-DEBUG    { color: #475569; }
-  .lvl-INFO     { color: var(--text); }
-  .lvl-WARNING  { color: var(--yellow); }
-  .lvl-ERROR    { color: var(--red); }
-  .lvl-CRITICAL { color: var(--red); font-weight: bold; }
-  .lvl-SUCCESS  { color: var(--green); }
-  .lvl-BEAT     { color: var(--purple); }
-  .lvl-TASK     { color: var(--cyan); }
-  .lvl-STARTUP  { color: var(--orange); }
+/* log body */
+#lb{flex:1;overflow-y:auto;padding:5px 10px;line-height:1.65;}
+.ll{display:flex;gap:6px;padding:0px 0;border-radius:2px;}
+.ll:hover{background:rgba(255,255,255,.03);}
+.ll.hidden{display:none;}
+.lts{color:var(--dim);white-space:nowrap;font-size:10px;flex-shrink:0;}
+.lsrc{font-size:9px;padding:1px 4px;border-radius:3px;flex-shrink:0;align-self:center;font-weight:bold;}
+.lsrc.celery{background:#0d2e0d;color:var(--green);}
+.lsrc.flask {background:#0d1a2e;color:var(--blue);}
+.lsrc.tasks {background:#1a0d2e;color:var(--purple);}
+.ltxt{flex:1;word-break:break-all;}
+.lv-error  {color:var(--red);}
+.lv-warning{color:var(--yellow);}
+.lv-info   {color:var(--text);}
+.lv-debug  {color:#2a3a52;}
+.lv-success{color:var(--green);}
+.lv-startup{color:var(--orange);}
+.lv-task   {color:var(--cyan);}
 
-  /* ── Sports panel ────────────────────────────────────────────────── */
-  .sport-row {
-    display: flex; align-items: center; gap: 6px;
-    padding: 5px 4px; border-radius: 4px; margin-bottom: 2px;
-  }
-  .sport-row:hover { background: var(--border); }
-  .sport-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-  .sport-name { flex: 1; font-size: 12px; }
-  .sport-badge {
-    font-size: 10px; padding: 1px 6px; border-radius: 10px;
-    background: var(--border);
-  }
-  .sport-badge.warm { color: var(--green); }
-  .sport-badge.cold { color: var(--red);   }
+/* beat */
+.br{display:flex;align-items:center;gap:5px;padding:3px;border-radius:3px;margin-bottom:1px;}
+.br:hover{background:var(--border);}
+.bn{flex:1;font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.bn span{color:var(--text);}
+.bw{width:55px;height:3px;background:var(--border);border-radius:2px;}
+.bb{height:100%;border-radius:2px;transition:width 1s linear;}
+.bg2{background:var(--green);}
+.by2{background:var(--yellow);}
+.br2{background:var(--red);}
+.bc{font-size:10px;width:30px;text-align:right;}
 
-  /* ── Jobs panel (bottom) ─────────────────────────────────────────── */
-  #jobs-panel { grid-column: 1 / -1; grid-row: 2; }
-  #jobs-body  {
-    flex: 1; overflow-x: auto; overflow-y: auto;
-  }
-  table  { width: 100%; border-collapse: collapse; }
-  thead th {
-    position: sticky; top: 0; background: var(--panel);
-    padding: 6px 10px; text-align: left; font-size: 10px;
-    text-transform: uppercase; color: var(--dim); white-space: nowrap;
-    border-bottom: 1px solid var(--border);
-  }
-  tbody td { padding: 5px 10px; border-bottom: 1px solid #111827; font-size: 11px; }
-  tbody tr:hover td { background: rgba(255,255,255,0.03); }
-  .status-ok    { color: var(--green); }
-  .status-error { color: var(--red);   }
-  .status-empty { color: var(--yellow);}
+/* sports */
+.sr{display:flex;align-items:center;gap:4px;padding:3px;border-radius:3px;margin-bottom:1px;}
+.sr:hover{background:var(--border);}
+.sdot{width:5px;height:5px;border-radius:50%;flex-shrink:0;}
+.sn{flex:1;font-size:10px;}
+.sbg{font-size:9px;padding:1px 4px;border-radius:6px;background:var(--border);}
+.sbg.warm{color:var(--green);}
+.sbg.cold{color:var(--red);}
 
-  /* ── Scrollbar ───────────────────────────────────────────────────── */
-  ::-webkit-scrollbar { width: 4px; height: 4px; }
-  ::-webkit-scrollbar-track { background: var(--panel); }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-
-  /* ── Controls ────────────────────────────────────────────────────── */
-  #ctrl-bar {
-    display: flex; gap: 8px; align-items: center;
-    padding: 6px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;
-  }
-  #ctrl-bar button {
-    padding: 3px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;
-    font-family: inherit; background: var(--border); color: var(--text); border: none;
-  }
-  #ctrl-bar button:hover { background: #334155; }
-  #ctrl-bar button.active { background: var(--blue); color: #fff; }
-  #search-box {
-    background: var(--border); border: none; border-radius: 4px; padding: 3px 8px;
-    color: var(--text); font-family: inherit; font-size: 11px; width: 160px;
-  }
-  .spacer { flex: 1; }
-  #conn-status { font-size: 11px; }
+/* jobs */
+#jobs-pn{grid-column:1/-1;grid-row:2;}
+.jtb{display:flex;gap:5px;align-items:center;padding:4px 10px;
+  border-bottom:1px solid var(--border);flex-shrink:0;}
+#jf-inp{background:var(--border);border:1px solid var(--dim);border-radius:3px;
+  padding:2px 7px;color:var(--text);font-family:inherit;font-size:10px;width:110px;}
+.jfb{padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;
+  font-family:inherit;border:1px solid var(--border);background:var(--bg);color:var(--dim);}
+.jfb.a{background:var(--bbg);color:var(--blue);border-color:var(--blue);}
+#jc{color:var(--dim);font-size:10px;}
+#jbody{flex:1;overflow:auto;}
+table{width:100%;border-collapse:collapse;}
+thead th{position:sticky;top:0;background:#0d1526;padding:4px 8px;
+  text-align:left;font-size:9px;text-transform:uppercase;color:var(--dim);
+  white-space:nowrap;border-bottom:1px solid var(--border);}
+tbody td{padding:3px 8px;border-bottom:1px solid #111827;font-size:10px;}
+tbody tr:hover td{background:rgba(255,255,255,.03);}
+.ok{color:var(--green);}
+.er{color:var(--red);}
+.em{color:var(--yellow);}
+::-webkit-scrollbar{width:3px;height:3px;}
+::-webkit-scrollbar-track{background:var(--panel);}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 </style>
 </head>
 <body>
 
-<!-- ── Top bar ──────────────────────────────────────────────────────────── -->
-<div id="topbar">
-  <h1>⚡ ODDS KENYA — DEV MONITOR</h1>
-  <span id="health-pill" class="pill yellow">LOADING…</span>
-
-  <div class="metric"><div class="val" id="m-upcoming">—</div><div class="lbl">Upcoming</div></div>
-  <div class="metric"><div class="val" id="m-live">—</div><div class="lbl">Live</div></div>
-  <div class="metric" style="color:var(--yellow)"><div class="val" id="m-arbs">—</div><div class="lbl">Arbs</div></div>
-  <div class="metric" style="color:var(--purple)"><div class="val" id="m-evs">—</div><div class="lbl">EV Bets</div></div>
-  <div class="metric"><div class="val" id="m-sports">—/13</div><div class="lbl">Sports Warm</div></div>
-
+<div id="tb">
+  <h1>⚡ ODDS KENYA MONITOR</h1>
+  <span id="hpill" class="pill y">LOADING</span>
+  <div class="met"><div class="v" id="mup">—</div><div class="l">Upcoming</div></div>
+  <div class="met"><div class="v" id="mlv" style="color:var(--cyan)">—</div><div class="l">Live</div></div>
+  <div class="met"><div class="v" id="marb" style="color:var(--yellow)">—</div><div class="l">Arbs</div></div>
+  <div class="met"><div class="v" id="mev" style="color:var(--purple)">—</div><div class="l">EV</div></div>
+  <div class="met"><div class="v" id="msp">—</div><div class="l">Sports</div></div>
   <span id="clock">—</span>
 </div>
 
-<!-- ── Main layout ──────────────────────────────────────────────────────── -->
 <div id="main">
 
-  <!-- Beat schedule -->
-  <div class="panel" id="beat-panel">
-    <div class="panel-title"><span class="dot"></span>Beat Schedule</div>
-    <div class="panel-body" id="beat-list">
-      <div style="color:var(--dim);padding:8px">Loading…</div>
+  <!-- Left: beat + sports -->
+  <div id="left">
+    <div id="beat-pn" class="pn">
+      <div class="pt"><span class="dot" style="background:var(--green)"></span>Beat Schedule</div>
+      <div class="pb" id="blist"><div style="color:var(--dim);padding:6px">Loading…</div></div>
+    </div>
+    <div id="sport-pn" class="pn">
+      <div class="pt"><span class="dot" style="background:var(--blue)"></span>Sport Cache</div>
+      <div class="pb" id="slist"><div style="color:var(--dim);padding:6px">Loading…</div></div>
     </div>
   </div>
 
-  <!-- Log viewer -->
-  <div class="panel" id="log-panel">
-    <div id="log-tabs">
-      <button class="tab-btn active" onclick="switchTab('celery')">celery.log</button>
-      <button class="tab-btn"        onclick="switchTab('task')">tasks.log</button>
-      <button class="tab-btn"        onclick="switchTab('jobs')">jobs.log</button>
+  <!-- Log panel -->
+  <div class="pn" id="log-pn">
+    <div id="ltb">
+      <span style="color:var(--dim);font-size:9px">SRC</span>
+      <button class="sb sc on" data-src="celery" onclick="toggleSrc(this)">Celery</button>
+      <button class="sb sf on" data-src="flask"  onclick="toggleSrc(this)">Flask</button>
+      <button class="sb st on" data-src="tasks"  onclick="toggleSrc(this)">Tasks</button>
+      <div class="sep"></div>
+      <span style="color:var(--dim);font-size:9px">LVL</span>
+      <button class="lb le on" data-lv="error"   onclick="toggleLvl(this)">ERR</button>
+      <button class="lb lw on" data-lv="warning" onclick="toggleLvl(this)">WARN</button>
+      <button class="lb li on" data-lv="info"    onclick="toggleLvl(this)">INFO</button>
+      <button class="lb ld"    data-lv="debug"   onclick="toggleLvl(this)">DBG</button>
+      <div class="sep"></div>
+      <button class="cb" style="border-color:var(--rbg);color:var(--red)"   onclick="soloLvl('error')">Errors only</button>
+      <button class="cb" style="border-color:var(--ybg);color:var(--yellow)"onclick="soloLvl('warning')">Warnings only</button>
+      <button class="cb" onclick="showAll()">All</button>
+      <div class="sep"></div>
+      <input id="sb-inp" placeholder="Search…" oninput="applyFilters()">
+      <span class="cbadge e" id="cnt-e">0 ERR</span>
+      <span class="cbadge w" id="cnt-w">0 WARN</span>
+      <span class="cbadge"   id="cnt-t">0 lines</span>
+      <div class="sp"></div>
+      <button class="cb" id="btn-pause" onclick="togglePause()">⏸</button>
+      <button class="cb" onclick="clearLog()">🗑</button>
+      <button class="cb" onclick="scrollBot()">⬇</button>
+      <span id="cpill">● —</span>
     </div>
-    <div id="ctrl-bar">
-      <button id="btn-pause"  onclick="togglePause()">⏸ Pause</button>
-      <button id="btn-clear"  onclick="clearLog()">🗑 Clear</button>
-      <button id="btn-bottom" onclick="scrollBottom()">⬇ Bottom</button>
-      <input id="search-box" placeholder="Filter logs…" oninput="filterLogs(this.value)">
-      <span class="spacer"></span>
-      <span id="conn-status" style="color:var(--dim)">●</span>
-      <span id="line-count" style="color:var(--dim);font-size:11px">0 lines</span>
-    </div>
-    <div id="log-body"></div>
+    <div id="lb"></div>
   </div>
 
-  <!-- Sports cache -->
-  <div class="panel" id="sports-panel">
-    <div class="panel-title"><span class="dot" style="background:var(--blue)"></span>Sport Cache</div>
-    <div class="panel-body" id="sports-list">
-      <div style="color:var(--dim);padding:8px">Loading…</div>
+  <!-- Jobs -->
+  <div class="pn" id="jobs-pn">
+    <div class="pt" style="padding:0 10px;">
+      <span class="dot" style="background:var(--orange)"></span>Harvest Jobs
+      <div class="jtb" style="flex:1;border:none;padding:4px 0 4px 10px;">
+        <input id="jf-inp" placeholder="bk / sport…" oninput="filterJobs(this.value)">
+        <button class="jfb a" data-jf="all"   onclick="setJF(this,'all')">All</button>
+        <button class="jfb"   data-jf="ok"    onclick="setJF(this,'ok')">✔ OK</button>
+        <button class="jfb"   data-jf="error" onclick="setJF(this,'error')" style="color:var(--red)">✗ Err</button>
+        <button class="jfb"   data-jf="empty" onclick="setJF(this,'empty')" style="color:var(--yellow)">○ Empty</button>
+        <span class="sp"></span>
+        <span id="jc">0 jobs</span>
+      </div>
     </div>
-  </div>
-
-  <!-- Jobs table -->
-  <div class="panel" id="jobs-panel">
-    <div class="panel-title">
-      <span class="dot" style="background:var(--orange)"></span>
-      Recent Jobs
-      <span style="color:var(--dim);font-size:10px;margin-left:auto" id="jobs-count">0 jobs</span>
-    </div>
-    <div id="jobs-body">
+    <div id="jbody">
       <table>
-        <thead>
-          <tr>
-            <th>Time</th><th>Bookmaker</th><th>Sport</th><th>Mode</th>
-            <th>Count</th><th>Status</th><th>✔ OK</th><th>✗ Fail</th>
-            <th>Latency</th><th>Detail</th>
-          </tr>
-        </thead>
-        <tbody id="jobs-tbody"></tbody>
+        <thead><tr>
+          <th>Time</th><th>Bookmaker</th><th>Sport</th><th>Mode</th>
+          <th>Count</th><th>Status</th><th>✔ Saved</th><th>✗ Failed</th>
+          <th>Latency</th><th>Detail</th>
+        </tr></thead>
+        <tbody id="jtbody"></tbody>
       </table>
     </div>
   </div>
-
-</div><!-- /main -->
+</div>
 
 <script>
-// ── State ──────────────────────────────────────────────────────────────────
-let paused      = false;
-let autoScroll  = true;
-let filterText  = "";
-let activeTab   = "celery";
-let lineCount   = 0;
-const MAX_LINES = 2000;
+// ─── state ────────────────────────────────────────────────────────────
+const aS={celery:true,flask:true,tasks:true};
+const aL={error:true,warning:true,info:true,debug:false};
+let paused=false,autoScroll=true,srchTxt="",jFilter="all",jSearch="";
+let errCnt=0,warnCnt=0,totLines=0;
+const MAX_LINES=3000,MAX_JOBS=60;
+const beatLR={};
+let allJobs=[];
 
-// Stored lines per tab so we can filter without refetching
-const logLines = { celery: [], task: [], jobs: [] };
-const sseConns = {};
+// ─── clock ────────────────────────────────────────────────────────────
+setInterval(()=>{
+  document.getElementById("clock").textContent=
+    new Date().toISOString().replace("T"," ").slice(0,19)+" UTC";
+},1000);
 
-// Beat intervals & last-run state
-const beatIntervals = {};  // task_name → interval_s
-const beatLastRun   = {};  // task_name → last_run timestamp
-
-// ── Clock ──────────────────────────────────────────────────────────────────
-function tick() {
-  document.getElementById("clock").textContent =
-    new Date().toISOString().replace("T"," ").slice(0,19) + " UTC";
+// ─── classify ─────────────────────────────────────────────────────────
+function classify(line){
+  const u=line.toUpperCase();
+  if(/\bCRITICAL\b|\bFATAL\b/.test(u)||/\bERROR\b| ERROR /i.test(line)) return"error";
+  if(/\bWARNING\b| WARN /i.test(line)) return"warning";
+  if(/\bDEBUG\b| DEBUG /i.test(line))  return"debug";
+  if(/succeeded|persisted=\d|ok=true|\[startup\]/i.test(line)) return"success";
+  if(/received task|task.*succeeded|task.*failed/i.test(line)) return"task";
+  return"info";
 }
-setInterval(tick, 1000); tick();
-
-// ── Tab switching ──────────────────────────────────────────────────────────
-function switchTab(tab) {
-  activeTab = tab;
-  document.querySelectorAll(".tab-btn").forEach((b,i) => {
-    b.classList.toggle("active", ["celery","task","jobs"][i] === tab);
-  });
-  renderLog();
-  connectLogStream(tab);
+function lvCls(lv){
+  return{error:"lv-error",warning:"lv-warning",info:"lv-info",debug:"lv-debug",
+         success:"lv-success",startup:"lv-startup",task:"lv-task"}[lv]||"lv-info";
 }
 
-// ── Log rendering ──────────────────────────────────────────────────────────
-function classifyLine(line) {
-  if (line.includes("[startup]") || line.includes("worker ready"))   return "lvl-STARTUP";
-  if (line.includes("[beat]")    || line.includes("Beat"))           return "lvl-BEAT";
-  if (line.includes("task_start")|| line.includes("task_done") ||
-      line.includes("Received"))                                      return "lvl-TASK";
-  if (line.includes("SUCCESS")   || line.includes("✔"))             return "lvl-SUCCESS";
-  if (/\bCRITICAL\b/.test(line))                                     return "lvl-CRITICAL";
-  if (/\bERROR\b/.test(line)     || line.includes("error"))         return "lvl-ERROR";
-  if (/\bWARNING\b/.test(line)   || line.includes("warning"))       return "lvl-WARNING";
-  if (/\bDEBUG\b/.test(line))                                        return "lvl-DEBUG";
-  return "lvl-INFO";
+// ─── log rendering ────────────────────────────────────────────────────
+function visible(el){
+  const srcOk=aS[el.dataset.src]!==false;
+  const lv=el.dataset.lv;
+  const lvKey={success:"info",startup:"info",task:"info"}[lv]||lv;
+  const lvOk=aL[lvKey]!==false;
+  const txtOk=!srchTxt||(el.dataset.txt||"").includes(srchTxt);
+  return srcOk&&lvOk&&txtOk;
 }
 
-function makeLogLine(raw, tab) {
-  // Try to parse JSON (task events)
-  let display = raw;
-  if (tab !== "celery" && raw.trim().startsWith("{")) {
-    try {
-      const obj = JSON.parse(raw);
-      const ev  = obj.event || obj.type || "";
-      const ts  = obj.ts    || "";
-      const task = (obj.task || "").split(".").pop();
-      if (ev === "task_start")
-        display = `[${ts}] 🚀 START  ${task}`;
-      else if (ev === "task_done")
-        display = `[${ts}] ✔ DONE   ${task}  [${obj.state}]`;
-      else if (ev === "task_failure")
-        display = `[${ts}] ✗ FAIL   ${task}  ${obj.error}`;
-      else if (ev === "task_retry")
-        display = `[${ts}] ↺ RETRY  ${task}  ${obj.reason}`;
-      else if (obj.bookmaker) {
-        // job log entry
-        const sc = {"ok":"✔","error":"✗","empty":"○"}[obj.status] || "?";
-        display  = `[${ts}] ${sc} ${obj.bookmaker.toUpperCase()} / ${obj.sport} / ${obj.mode}  `
-                 + `count=${obj.count} ok=${obj.unified_ok} fail=${obj.unified_fail} ${obj.latency_ms}ms`
-                 + (obj.detail ? `  ERR: ${obj.detail}` : "");
-      }
-    } catch(e) {}
-  }
-  return display;
+function addLine(src,raw){
+  if(paused)return;
+  const lv=classify(raw);
+  const tsM=raw.match(/(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})/);
+  const ts=tsM?tsM[1].replace("T"," "):"";
+  const txt=ts?raw.replace(tsM[0],"").replace(/^[\s:,\-\[\]]+/,""):raw;
+
+  const div=document.createElement("div");
+  div.className="ll "+lvCls(lv);
+  div.dataset.src=src; div.dataset.lv=lv; div.dataset.txt=raw.toLowerCase();
+  div.innerHTML=`<span class="lts">${ts}</span>`+
+    `<span class="lsrc ${src}">${src}</span>`+
+    `<span class="ltxt">${esc(txt)}</span>`;
+  if(!visible(div))div.classList.add("hidden");
+
+  const lb=document.getElementById("lb");
+  lb.appendChild(div);
+  while(lb.children.length>MAX_LINES)lb.removeChild(lb.firstChild);
+
+  totLines++;
+  if(lv==="error")errCnt++;
+  if(lv==="warning")warnCnt++;
+  updCounts();
+  if(autoScroll&&!div.classList.contains("hidden"))lb.scrollTop=lb.scrollHeight;
 }
 
-function addLine(line, tab) {
-  if (logLines[tab].length >= MAX_LINES) logLines[tab].shift();
-  logLines[tab].push(line);
-  if (tab === activeTab && !paused) renderLastLine(line);
+function updCounts(){
+  document.getElementById("cnt-e").textContent=errCnt+" ERR";
+  document.getElementById("cnt-w").textContent=warnCnt+" WARN";
+  document.getElementById("cnt-t").textContent=totLines+" lines";
 }
 
-function renderLastLine(raw) {
-  const display = makeLogLine(raw, activeTab);
-  if (filterText && !display.toLowerCase().includes(filterText)) return;
-  const el    = document.getElementById("log-body");
-  const cls   = classifyLine(display);
-  const ts    = display.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)?.[0] || "";
-  const text  = ts ? display.replace(ts, "").trim() : display;
-  const div   = document.createElement("div");
-  div.className = `log-line ${cls}`;
-  div.innerHTML = ts
-    ? `<span class="log-ts">${ts}</span><span class="log-text">${escHtml(text)}</span>`
-    : `<span class="log-text">${escHtml(display)}</span>`;
-  el.appendChild(div);
-
-  // Keep max lines in DOM
-  while (el.children.length > MAX_LINES) el.removeChild(el.firstChild);
-
-  lineCount++;
-  document.getElementById("line-count").textContent = lineCount + " lines";
-  if (autoScroll) el.scrollTop = el.scrollHeight;
+function applyFilters(){
+  srchTxt=(document.getElementById("sb-inp").value||"").toLowerCase();
+  document.querySelectorAll("#lb .ll").forEach(el=>
+    el.classList.toggle("hidden",!visible(el)));
+  if(autoScroll)scrollBot();
 }
 
-function renderLog() {
-  const el = document.getElementById("log-body");
-  el.innerHTML = "";
-  lineCount = 0;
-  const lines = logLines[activeTab];
-  const filt  = filterText;
-  lines.forEach(raw => {
-    const display = makeLogLine(raw, activeTab);
-    if (filt && !display.toLowerCase().includes(filt)) return;
-    const cls  = classifyLine(display);
-    const ts   = display.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)?.[0] || "";
-    const text = ts ? display.replace(ts, "").trim() : display;
-    const div  = document.createElement("div");
-    div.className = `log-line ${cls}`;
-    div.innerHTML = ts
-      ? `<span class="log-ts">${ts}</span><span class="log-text">${escHtml(text)}</span>`
-      : `<span class="log-text">${escHtml(display)}</span>`;
-    el.appendChild(div);
-    lineCount++;
-  });
-  document.getElementById("line-count").textContent = lineCount + " lines";
-  if (autoScroll) el.scrollTop = el.scrollHeight;
+function toggleSrc(btn){
+  aS[btn.dataset.src]=!aS[btn.dataset.src];
+  btn.classList.toggle("on",aS[btn.dataset.src]);
+  applyFilters();
 }
-
-function escHtml(s) {
-  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+function toggleLvl(btn){
+  aL[btn.dataset.lv]=!aL[btn.dataset.lv];
+  btn.classList.toggle("on",aL[btn.dataset.lv]);
+  applyFilters();
 }
-
-// ── Controls ───────────────────────────────────────────────────────────────
-function togglePause() {
-  paused = !paused;
-  document.getElementById("btn-pause").textContent = paused ? "▶ Resume" : "⏸ Pause";
-  document.getElementById("btn-pause").classList.toggle("active", paused);
+function soloLvl(lv){
+  Object.keys(aL).forEach(k=>aL[k]=(k===lv));
+  document.querySelectorAll(".lb").forEach(b=>b.classList.toggle("on",b.dataset.lv===lv));
+  applyFilters();
 }
-function clearLog() {
-  logLines[activeTab] = [];
-  document.getElementById("log-body").innerHTML = "";
-  lineCount = 0;
-  document.getElementById("line-count").textContent = "0 lines";
+function showAll(){
+  Object.keys(aS).forEach(k=>aS[k]=true);
+  Object.keys(aL).forEach(k=>aL[k]=true);
+  document.querySelectorAll(".sb,.lb").forEach(b=>b.classList.add("on"));
+  applyFilters();
 }
-function scrollBottom() {
-  autoScroll = true;
-  const el = document.getElementById("log-body");
-  el.scrollTop = el.scrollHeight;
+function togglePause(){
+  paused=!paused;
+  const b=document.getElementById("btn-pause");
+  b.textContent=paused?"▶":"⏸";
+  b.style.background=paused?"var(--rbg)":"";
 }
-function filterLogs(val) {
-  filterText = val.toLowerCase();
-  renderLog();
+function clearLog(){
+  document.getElementById("lb").innerHTML="";
+  errCnt=warnCnt=totLines=0; updCounts();
 }
-
-// Auto-scroll detection
-document.getElementById("log-body").addEventListener("scroll", function() {
-  const el = this;
-  autoScroll = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+function scrollBot(){
+  autoScroll=true;
+  const lb=document.getElementById("lb");
+  lb.scrollTop=lb.scrollHeight;
+}
+document.getElementById("lb").addEventListener("scroll",function(){
+  autoScroll=this.scrollTop+this.clientHeight>=this.scrollHeight-60;
 });
-
-// ── SSE connections ────────────────────────────────────────────────────────
-const TAB_STREAM = {
-  celery: "/api/monitor/stream/logs",
-  task:   "/api/monitor/stream/tasks",
-  jobs:   "/api/monitor/stream/jobs",
-};
-
-function connectLogStream(tab) {
-  if (sseConns[tab]) return;  // already connected
-
-  const url = TAB_STREAM[tab];
-  const es  = new EventSource(url);
-  sseConns[tab] = es;
-
-  const statusEl = document.getElementById("conn-status");
-
-  es.onopen = () => {
-    statusEl.style.color = "var(--green)";
-    statusEl.textContent = "● LIVE";
-  };
-  es.onerror = () => {
-    statusEl.style.color = "var(--red)";
-    statusEl.textContent = "● DISCONNECTED";
-    delete sseConns[tab];
-    setTimeout(() => connectLogStream(tab), 3000);
-  };
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      if (data.type === "connected") return;
-      const raw = data.line || (data.type === "job"
-        ? JSON.stringify(data) : e.data);
-      addLine(raw, tab);
-
-      // If it's a job event, also update jobs table
-      if (data.type === "job") addJobRow(data);
-    } catch(_) {
-      addLine(e.data, tab);
-    }
-  };
+function esc(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
-// Connect default tab on load
-connectLogStream("celery");
-
-// ── Beat schedule rendering ────────────────────────────────────────────────
-function secondsToHuman(s) {
-  if (s == null) return "—";
-  if (s === 0)   return '<span style="color:var(--red)">NOW</span>';
-  if (s < 60)    return `${s}s`;
-  if (s < 3600)  return `${Math.floor(s/60)}m${s%60}s`;
-  return `${Math.floor(s/3600)}h${Math.floor((s%3600)/60)}m`;
+// ─── SSE ──────────────────────────────────────────────────────────────
+function conn(url,src){
+  const es=new EventSource(url);
+  const cp=document.getElementById("cpill");
+  es.onopen=()=>{cp.style.color="var(--green)";cp.textContent="● LIVE";};
+  es.onerror=()=>{
+    cp.style.color="var(--red)";cp.textContent="● RECONNECTING";
+    es.close();setTimeout(()=>conn(url,src),3000);
+  };
+  es.onmessage=e=>{
+    try{
+      const d=JSON.parse(e.data);
+      if(d.type==="connected")return;
+      if(d.type==="job"){addJobRow(d);return;}
+      if(d.line)addLine(src,d.line);
+    }catch(_){addLine(src,e.data);}
+  };
 }
+conn("/api/monitor/stream/logs",  "celery");
+conn("/api/monitor/stream/flask", "flask");
+conn("/api/monitor/stream/tasks", "tasks");
+conn("/api/monitor/stream/jobs",  "celery");
 
-function renderBeat(tasks) {
-  const list = document.getElementById("beat-list");
-  list.innerHTML = "";
-  tasks.forEach(t => {
-    const interval = t.interval;
-    const nextIn   = t.next_in_s;
-    const pct = nextIn == null ? 100
-      : Math.max(0, Math.min(100, ((interval - nextIn) / interval) * 100));
-    const barClass = pct > 90 ? "bar-red" : pct > 60 ? "bar-yellow" : "bar-green";
-    const shortName = t.task.split(".").slice(-2).join(".");
+// ─── Beat ─────────────────────────────────────────────────────────────
+function fmtS(s){
+  if(s==null)return"—";
+  if(s===0)return'<span style="color:var(--red)">DUE</span>';
+  if(s<60)return s+"s";
+  return Math.floor(s/60)+"m"+(s%60)+"s";
+}
+function renderBeat(tasks){
+  const el=document.getElementById("blist");
+  el.innerHTML="";
+  tasks.forEach(t=>{
+    const iv=t.interval,ni=t.next_in_s;
+    const pct=ni==null?100:Math.max(0,Math.min(100,((iv-ni)/iv)*100));
+    const bc=pct>90?"br2":pct>60?"by2":"bg2";
+    const sh=t.task.split(".").slice(-2).join(".");
+    if(ni!=null)beatLR[t.task]={iv,ts:Date.now()-(iv-ni)*1000};
+    const row=document.createElement("div");
+    row.className="br"; row.title=t.task+"\nInterval:"+iv+"s";
+    row.innerHTML=`<div class="bn"><span>${sh}</span></div>`+
+      `<div class="bw"><div class="bb ${bc}" style="width:${pct}%"></div></div>`+
+      `<div class="bc" data-task="${t.task}" data-iv="${iv}" `+
+      `style="color:${ni===0?"var(--red)":ni<15?"var(--yellow)":"var(--dim)"}">${fmtS(ni)}</div>`;
+    el.appendChild(row);
+  });
+}
+setInterval(()=>{
+  document.querySelectorAll(".bc[data-task]").forEach(el=>{
+    const s=beatLR[el.dataset.task];if(!s)return;
+    const el2=(Date.now()-s.ts)/1000;
+    const ni=Math.max(0,Math.round(s.iv-el2));
+    el.innerHTML=fmtS(ni);
+    el.style.color=ni===0?"var(--red)":ni<15?"var(--yellow)":"var(--dim)";
+    const bar=el.parentElement.querySelector(".bb");
+    if(bar){const p=Math.min(100,(el2/s.iv)*100);
+      bar.style.width=p+"%";
+      bar.className="bb "+(p>90?"br2":p>60?"by2":"bg2");}
+  });
+},1000);
 
-    const row = document.createElement("div");
-    row.className = "beat-row";
-    row.title = t.task + `\nInterval: ${interval}s\nLast run: ${t.last_run || "never"}`;
-    row.innerHTML = `
-      <div class="beat-name"><span>${shortName}</span></div>
-      <div class="beat-bar-wrap">
-        <div class="beat-bar ${barClass}" style="width:${pct}%"></div>
-      </div>
-      <div class="beat-cntd" style="color:${nextIn===0?'var(--red)':nextIn<10?'var(--yellow)':'var(--dim)'}"
-        data-task="${t.task}" data-nextin="${nextIn ?? -1}" data-interval="${interval}">
-        ${secondsToHuman(nextIn)}
-      </div>`;
-    list.appendChild(row);
-
-    beatIntervals[t.task] = interval;
-    if (nextIn != null) beatLastRun[t.task] = Date.now() - (interval - nextIn) * 1000;
+// ─── Sports ───────────────────────────────────────────────────────────
+const EM={soccer:"⚽",basketball:"🏀",tennis:"🎾","ice-hockey":"🏒",
+  rugby:"🏉",handball:"🤾",volleyball:"🏐",cricket:"🏏",
+  "table-tennis":"🏓",esoccer:"🎮",mma:"🥋",boxing:"🥊",darts:"🎯"};
+function renderSports(sports){
+  const el=document.getElementById("slist");
+  el.innerHTML="";
+  const warm=sports.filter(s=>s.populated).length;
+  document.getElementById("msp").textContent=warm+"/"+sports.length;
+  sports.forEach(s=>{
+    const row=document.createElement("div");
+    row.className="sr";
+    row.innerHTML=`<div class="sdot" style="background:${s.populated?"var(--green)":"var(--red)"}"></div>`+
+      `<div class="sn">${EM[s.sport]||"🏆"} ${s.sport}</div>`+
+      `<span class="sbg ${s.populated?"warm":"cold"}">${s.populated?(s.upcoming+"↑"):"cold"}</span>`+
+      (s.arbs>0?`<span style="color:var(--yellow);font-size:9px">${s.arbs}arb</span>`:"");
+    el.appendChild(row);
   });
 }
 
-// Live countdown tick (updates every second without re-fetching)
-setInterval(() => {
-  document.querySelectorAll(".beat-cntd[data-nextin]").forEach(el => {
-    const stored = parseInt(el.dataset.nextin);
-    if (stored < 0) return;  // unknown last run
-    const interval  = parseInt(el.dataset.interval);
-    const taskName  = el.dataset.task;
-    const lastRunMs = beatLastRun[taskName];
-    if (!lastRunMs) return;
-    const elapsedS = (Date.now() - lastRunMs) / 1000;
-    const nextIn   = Math.max(0, Math.round(interval - elapsedS));
-    el.dataset.nextin = nextIn;
-    el.innerHTML = secondsToHuman(nextIn);
-    el.style.color = nextIn === 0 ? "var(--red)" : nextIn < 10 ? "var(--yellow)" : "var(--dim)";
-
-    // Update bar
-    const pct = Math.max(0, Math.min(100, (elapsedS / interval) * 100));
-    const bar = el.parentElement.querySelector(".beat-bar");
-    if (bar) {
-      bar.style.width = pct + "%";
-      bar.className = "beat-bar " + (pct > 90 ? "bar-red" : pct > 60 ? "bar-yellow" : "bar-green");
-    }
+// ─── Jobs ─────────────────────────────────────────────────────────────
+function addJobRow(j,prepend=true){
+  allJobs=prepend?[j,...allJobs].slice(0,MAX_JOBS*2):[...allJobs,j].slice(-MAX_JOBS*2);
+  renderJobs();
+}
+function renderJobs(){
+  const tb=document.getElementById("jtbody");
+  tb.innerHTML="";
+  const txt=jSearch.toLowerCase();
+  let n=0;
+  allJobs.forEach(j=>{
+    if(jFilter!=="all"&&j.status!==jFilter)return;
+    if(txt&&!(j.bookmaker||"").toLowerCase().includes(txt)
+        &&!(j.sport||"").toLowerCase().includes(txt))return;
+    if(n>=MAX_JOBS)return;n++;
+    const sc={ok:"ok",error:"er",empty:"em"}[j.status]||"";
+    const ic={ok:"✔",error:"✗",empty:"○"}[j.status]||"?";
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td style="color:var(--dim)">${(j.ts||"").slice(11,19)}</td>`+
+      `<td style="color:var(--cyan)">${j.bookmaker||""}</td>`+
+      `<td>${j.sport||""}</td><td style="color:var(--dim)">${j.mode||""}</td>`+
+      `<td>${j.count||0}</td><td class="${sc}">${ic} ${j.status||""}</td>`+
+      `<td style="color:var(--green)">${j.unified_ok||0}</td>`+
+      `<td style="color:var(--red)">${j.unified_fail||0}</td>`+
+      `<td style="color:var(--dim)">${j.latency_ms||0}ms</td>`+
+      `<td class="er" style="font-size:9px;max-width:280px;overflow:hidden;`+
+      `text-overflow:ellipsis;white-space:nowrap" title="${esc(j.detail||"")}">`+
+      `${esc((j.detail||"").slice(0,100))}</td>`;
+    tb.appendChild(tr);
   });
-}, 1000);
-
-// ── Sports rendering ───────────────────────────────────────────────────────
-const SPORT_EMOJI = {
-  soccer:"⚽", basketball:"🏀", tennis:"🎾", "ice-hockey":"🏒",
-  rugby:"🏉", handball:"🤾", volleyball:"🏐", cricket:"🏏",
-  "table-tennis":"🏓", esoccer:"🎮", mma:"🥋", boxing:"🥊", darts:"🎯",
-};
-
-function renderSports(sports) {
-  const list = document.getElementById("sports-list");
-  list.innerHTML = "";
-  sports.forEach(s => {
-    const em  = SPORT_EMOJI[s.sport] || "🏆";
-    const row = document.createElement("div");
-    row.className = "sport-row";
-    row.innerHTML = `
-      <div class="sport-dot" style="background:${s.populated?'var(--green)':'var(--red)'}"></div>
-      <div class="sport-name">${em} ${s.sport}</div>
-      <span class="sport-badge ${s.populated?'warm':'cold'}">${s.populated?s.upcoming+'↑ '+s.live+'▶':'cold'}</span>
-      ${s.arbs > 0 ? `<span style="color:var(--yellow);font-size:10px">${s.arbs}arb</span>` : ''}
-    `;
-    list.appendChild(row);
-  });
-  const warm = sports.filter(s=>s.populated).length;
-  document.getElementById("m-sports").textContent = `${warm}/13`;
+  document.getElementById("jc").textContent=n+" jobs";
 }
-
-// ── Jobs table ─────────────────────────────────────────────────────────────
-let jobCount = 0;
-const MAX_JOBS = 50;
-
-function addJobRow(j, prepend = true) {
-  const tbody = document.getElementById("jobs-tbody");
-  const sc    = {"ok":"status-ok","error":"status-error","empty":"status-empty"}[j.status] || "";
-  const icon  = {"ok":"✔","error":"✗","empty":"○"}[j.status] || "?";
-  const tr    = document.createElement("tr");
-  tr.innerHTML = `
-    <td style="color:var(--dim)">${(j.ts||"").slice(11,19)}</td>
-    <td style="color:var(--cyan)">${j.bookmaker||""}</td>
-    <td>${j.sport||""}</td>
-    <td style="color:var(--dim)">${j.mode||""}</td>
-    <td>${j.count||0}</td>
-    <td class="${sc}">${icon} ${j.status||""}</td>
-    <td style="color:var(--green)">${j.unified_ok||0}</td>
-    <td style="color:var(--red)">${j.unified_fail||0}</td>
-    <td style="color:var(--dim)">${j.latency_ms||0}ms</td>
-    <td style="color:var(--red);font-size:10px">${j.detail||""}</td>
-  `;
-  if (prepend && tbody.firstChild) {
-    tbody.insertBefore(tr, tbody.firstChild);
-  } else {
-    tbody.appendChild(tr);
-  }
-  jobCount++;
-  while (tbody.children.length > MAX_JOBS) tbody.removeChild(tbody.lastChild);
-  document.getElementById("jobs-count").textContent = `${jobCount} jobs`;
+function setJF(btn,f){
+  jFilter=f;
+  document.querySelectorAll(".jfb").forEach(b=>b.classList.toggle("a",b.dataset.jf===f));
+  renderJobs();
 }
+function filterJobs(v){jSearch=v;renderJobs();}
 
-// ── Polling: report + beat + sports ───────────────────────────────────────
-async function fetchReport() {
-  try {
-    const r = await fetch("/api/monitor/report");
-    const d = await r.json();
-    if (!d.ok) return;
-
-    // Health pill
-    const pill = document.getElementById("health-pill");
-    const h    = d.overall?.healthy;
-    pill.textContent = h ? "● HEALTHY" : "● ISSUES";
-    pill.className   = "pill " + (h ? "green" : "red");
-
-    // Metrics
-    document.getElementById("m-upcoming").textContent = d.totals?.upcoming_matches ?? "—";
-    document.getElementById("m-live").textContent     = d.totals?.live_matches     ?? "—";
-    document.getElementById("m-arbs").textContent     = d.totals?.arb_opportunities ?? "—";
-    document.getElementById("m-evs").textContent      = d.totals?.ev_opportunities  ?? "—";
-
-    // Sports
-    if (d.sports) renderSports(d.sports);
-
-    // Recent jobs (initial load only)
-    if (jobCount === 0 && d.recent_jobs) {
-      [...d.recent_jobs].reverse().forEach(j => addJobRow(j, false));
-    }
-  } catch(e) { console.warn("report fetch:", e); }
+// ─── Report polling ───────────────────────────────────────────────────
+async function poll(){
+  try{
+    const d=await(await fetch("/api/monitor/report")).json();
+    if(!d.ok)return;
+    const h=d.overall?.healthy;
+    const p=document.getElementById("hpill");
+    p.textContent=h?"● HEALTHY":"● ISSUES";
+    p.className="pill "+(h?"g":"r");
+    document.getElementById("mup").textContent =d.totals?.upcoming_matches??'—';
+    document.getElementById("mlv").textContent =d.totals?.live_matches??'—';
+    document.getElementById("marb").textContent=d.totals?.arb_opportunities??'—';
+    document.getElementById("mev").textContent =d.totals?.ev_opportunities??'—';
+    if(d.sports)renderSports(d.sports);
+    if(allJobs.length===0&&d.recent_jobs?.length)
+      d.recent_jobs.slice().reverse().forEach(j=>addJobRow(j,false));
+  }catch(e){}
 }
-
-async function fetchBeat() {
-  try {
-    const r = await fetch("/api/monitor/beat");
-    const d = await r.json();
-    if (d.ok) renderBeat(d.tasks);
-  } catch(e) {}
+async function pollBeat(){
+  try{
+    const d=await(await fetch("/api/monitor/beat")).json();
+    if(d.ok)renderBeat(d.tasks);
+  }catch(e){}
 }
-
-// Initial + polling
-fetchReport(); fetchBeat();
-setInterval(fetchReport, 15000);
-setInterval(fetchBeat,   30000);
-
-// When a task_done event comes in via the log stream, refresh beat immediately
-// (so the bar resets right away)
-const origAddLine = addLine;
-window._origAddLine = origAddLine;
+poll();pollBeat();
+setInterval(poll,15000);setInterval(pollBeat,30000);
 </script>
 </body>
 </html>"""
-    return Response(html, content_type="text/html")
+
+
+@bp_monitor.route("/dashboard")
+def dashboard():
+    return Response(DASHBOARD_HTML, content_type="text/html; charset=utf-8")
