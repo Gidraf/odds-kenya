@@ -107,8 +107,8 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_customer)
     flask_app.register_blueprint(bp_fetcher)
     flask_app.register_blueprint(bp_interceptor)
-    flask_app.register_blueprint(bp_sp)
-    flask_app.register_blueprint(bp_sp_live)
+    # flask_app.register_blueprint(bp_sp)
+    # flask_app.register_blueprint(bp_sp_live)
     flask_app.register_blueprint(bp_unified_odds)   # GET /api/odds/...
     flask_app.register_blueprint(bp_betika)          # GET /api/bt/...
     flask_app.register_blueprint(bp_od) 

@@ -137,16 +137,16 @@ def setup_periodic_tasks(sender, **kwargs):
     )
 
     # ── Registry ──────────────────────────────────────────────────────────────
-    sender.add_periodic_task(14400.0, harvest_all_registry_upcoming.s(), name="registry-upcoming-4h")
+    # sender.add_periodic_task(14400.0, harvest_all_registry_upcoming.s(), name="registry-upcoming-4h")
     sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),          name="registry-cleanup-daily")
 
     # ── Upcoming harvests (one per bookmaker, staggered) ──────────────────────
-    sender.add_periodic_task(300.0, sp_harvest_all_upcoming.s(),       name="sp-upcoming-5min")
+    # sender.add_periodic_task(300.0, sp_harvest_all_upcoming.s(),       name="sp-upcoming-5min")
     sender.add_periodic_task(360.0, bt_harvest_all_upcoming.s(),       name="bt-upcoming-6min")
     sender.add_periodic_task(420.0, od_harvest_all_upcoming.s(),       name="od-upcoming-7min")
     sender.add_periodic_task(480.0, b2b_harvest_all_upcoming.s(),      name="b2b-upcoming-8min")
-    sender.add_periodic_task(300.0, b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-5min")
-    sender.add_periodic_task(180.0, sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-3min")
+    # sender.add_periodic_task(300.0, b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-5min")
+    # sender.add_periodic_task(180.0, sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-3min")
 
     # ── Ops ───────────────────────────────────────────────────────────────────
     sender.add_periodic_task(300.0,  update_match_results.s(),         name="results-5min")
