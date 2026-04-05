@@ -43,9 +43,8 @@ def persist_merged_sync(
     Best for Celery tasks or background workers.
     """
     try:
-        from app.utils.entity_resolver import EntityResolver
-        from app.extensions import db
-
+        from app.services.entity_resolver import EntityResolver
+        
         resolver = EntityResolver()
         stats = resolver.persist_batch(combined_matches, commit=True)
         logger.info(
@@ -95,8 +94,7 @@ def persist_from_serialized(
 
     This reconstructs just enough structure for the EntityResolver.
     """
-    from app.utils.entity_resolver import EntityResolver
-    from app.extensions import db
+    from app.services.entity_resolver import EntityResolver
     from dataclasses import dataclass, field
 
     # Lightweight stand-in that has the same attributes EntityResolver expects
@@ -111,6 +109,7 @@ def persist_from_serialized(
         betradar_id: str | None = None
         bk_ids: dict = field(default_factory=dict)
         markets: dict = field(default_factory=dict)
+        sport_slug: str = "" # FIX: Added this so the resolver knows what sport it is
 
         def to_dict(self):
             return {
@@ -123,6 +122,7 @@ def persist_from_serialized(
                 "betradar_id": self.betradar_id,
                 "bk_ids": self.bk_ids,
                 "markets": self.markets,
+                "sport_slug": self.sport_slug,
             }
 
     proxies = []
@@ -137,6 +137,7 @@ def persist_from_serialized(
             betradar_id=md.get("betradar_id"),
             bk_ids=md.get("bk_ids", {}),
             markets=md.get("markets", {}),
+            sport_slug=sport_slug, # FIX: Pass the argument down into the proxy
         ))
 
     resolver = EntityResolver()
