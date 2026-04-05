@@ -458,7 +458,7 @@ def persist_combined_batch(self, match_dicts: list[dict],
 
     t0 = time.perf_counter()
     try:
-        from app.services.persist_hook import persist_from_serialized
+        from app.workers.persist_hook import persist_from_serialized
         stats = persist_from_serialized(match_dicts, sport_slug=sport_slug, mode=mode)
         stats.update({"sport": sport_slug, "mode": mode})
         log_job(bookmaker="combined", sport=sport_slug, mode=mode,
