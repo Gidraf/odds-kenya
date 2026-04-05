@@ -58,4 +58,4 @@ def _utcnow():
  
  
 def _utcnow_naive():
-    return datetime.utcnow()
+    return  datetime.now(datetime.timezone.utc)

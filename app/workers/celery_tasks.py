@@ -18,6 +18,7 @@ Queue layout
 
 from __future__ import annotations
 
+from datetime import timezone
 import json
 import os
 
@@ -258,7 +259,7 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
                             "specifier": None, "selection": outcome,
                             "old_price": old_price, "new_price": price,
                             "price_delta": round(price - old_price, 4) if old_price else None,
-                            "recorded_at": datetime.utcnow(),
+                            "recorded_at":  datetime.now(timezone.utc),
                         })
             if history_batch:
                 BookmakerOddsHistory.bulk_append(history_batch)

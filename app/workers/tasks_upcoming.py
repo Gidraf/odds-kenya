@@ -329,7 +329,7 @@ def compute_value_bets(sport_slug: str) -> dict:
 
     matches  = raw.get("matches") or []
     arb_rows = 0; ev_rows = 0
-    now      = datetime.utcnow()
+    now      =  datetime.now(timezone.utc)
 
     try:
         for match in matches:
@@ -393,7 +393,7 @@ def compute_value_bets(sport_slug: str) -> dict:
 def cleanup_old_snapshots(days_keep: int = 7) -> dict:
     from app.extensions import db
     from app.models.odds_model import ArbitrageOpportunity, EVOpportunity
-    cutoff = datetime.utcnow() - timedelta(days=days_keep)
+    cutoff =  datetime.now(timezone.utc) - timedelta(days=days_keep)
     n_a    = ArbitrageOpportunity.query.filter(ArbitrageOpportunity.open_at < cutoff).delete()
     n_e    = EVOpportunity.query.filter(EVOpportunity.open_at < cutoff).delete()
     db.session.commit()
