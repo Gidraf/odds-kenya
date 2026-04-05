@@ -1,5 +1,5 @@
 """
-app/services/persist_hook.py
+app/utils/persist_hook.py
 =============================
 Integration hooks that connect the existing combined_merger SSE streams
 to the PostgreSQL persistence layer.
@@ -43,7 +43,7 @@ def persist_merged_sync(
     Best for Celery tasks or background workers.
     """
     try:
-        from app.services.entity_resolver import EntityResolver
+        from app.utils.entity_resolver import EntityResolver
         
         resolver = EntityResolver()
         stats = resolver.persist_batch(combined_matches, commit=True)
@@ -94,7 +94,7 @@ def persist_from_serialized(
 
     This reconstructs just enough structure for the EntityResolver.
     """
-    from app.services.entity_resolver import EntityResolver
+    from app.utils.entity_resolver import EntityResolver
     from dataclasses import dataclass, field
 
     # Lightweight stand-in that has the same attributes EntityResolver expects
