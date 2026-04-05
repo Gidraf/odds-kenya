@@ -91,6 +91,7 @@ def create_app() -> Flask:
     from app.views.odds_feed.odds_data_view import bp_data
     from app.views.monitor import bp_monitor
     from app.views.monitor.harvest_control import bp_harvest_ctrl
+    from app.views.odds_feed.customer_odds_view import bp_odds_customer
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -111,6 +112,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_unified_odds)   # GET /api/odds/...
     flask_app.register_blueprint(bp_betika)          # GET /api/bt/...
     flask_app.register_blueprint(bp_od) 
+    flask_app.register_blueprint(bp_odds_customer)  # GET /api/od/... (OdiBets odds feed)
     flask_app.register_blueprint(bp_combined) 
     flask_app.register_blueprint(bp_data)
     flask_app.register_blueprint(bp_monitor) 
