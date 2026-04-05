@@ -54,8 +54,8 @@ class LineupType(str, enum.Enum):
     COACH = "COACH"
 
 def _utcnow():
-    return datetime.now(datetime.timezone.utc)
+    return datetime.datetime.now(datetime.timezone.utc)
  
  
 def _utcnow_naive():
-    return  datetime.now(datetime.timezone.utc)
+    return  datetime.datetime.now(datetime.timezone.utc)
