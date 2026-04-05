@@ -478,7 +478,7 @@ def _build_envelope(matches, sport, mode, tier, page, per_page, truncated,
     return env
 
 
-@bp_odds.route("/odds/sports")
+@bp_odds_customer.route("/odds/sports")
 def list_sports():
     from app.models.odds_model import UnifiedMatch
     from sqlalchemy import func
@@ -499,7 +499,7 @@ def list_sports():
     return _signed_response({"ok": True, "sports": sorted(sports.keys()), "counts": sports})
 
 
-@bp_odds.route("/odds/bookmakers")
+@bp_odds_customer.route("/odds/bookmakers")
 def list_bookmakers():
     from app.models.bookmakers_model import Bookmaker
     from app.models.odds_model import BookmakerMatchOdds
@@ -520,7 +520,7 @@ def list_bookmakers():
     return _signed_response({"ok": True, "bookmakers": result, "total": len(result)})
 
 
-@bp_odds.route("/odds/markets")
+@bp_odds_customer.route("/odds/markets")
 def list_markets():
     try:
         from app.models.odds_model import MarketDefinition
@@ -530,7 +530,7 @@ def list_markets():
         return _err(str(exc), 500)
 
 
-@bp_odds.route("/odds/upcoming/<sport_slug>")
+@bp_odds_customer.route("/odds/upcoming/<sport_slug>")
 def get_upcoming(sport_slug: str):
     t0   = time.perf_counter()
     user = _current_user_from_header()
@@ -570,7 +570,7 @@ def get_upcoming(sport_slug: str):
     )
 
 
-@bp_odds.route("/odds/live/<sport_slug>")
+@bp_odds_customer.route("/odds/live/<sport_slug>")
 def get_live(sport_slug: str):
     t0   = time.perf_counter()
     user = _current_user_from_header()
@@ -604,13 +604,13 @@ def get_live(sport_slug: str):
     )
 
 
-@bp_odds.route("/odds/results")
+@bp_odds_customer.route("/odds/results")
 def get_results():
     date_str = request.args.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     return _get_finished_by_date(date_str)
 
 
-@bp_odds.route("/odds/results/<date_str>")
+@bp_odds_customer.route("/odds/results/<date_str>")
 def get_results_by_date(date_str: str):
     return _get_finished_by_date(date_str)
 
@@ -646,7 +646,7 @@ def _get_finished_by_date(date_str: str):
     )
 
 
-@bp_odds.route("/odds/match/<parent_match_id>")
+@bp_odds_customer.route("/odds/match/<parent_match_id>")
 def get_match(parent_match_id: str):
     t0   = time.perf_counter()
     user = _current_user_from_header()
@@ -711,7 +711,7 @@ def get_match(parent_match_id: str):
     }, encrypt_for=user)
 
 
-@bp_odds.route("/odds/search")
+@bp_odds_customer.route("/odds/search")
 def search_matches():
     t0   = time.perf_counter()
     user = _current_user_from_header()
@@ -764,7 +764,7 @@ def search_matches():
     }, encrypt_for=user)
 
 
-@bp_odds.route("/odds/status")
+@bp_odds_customer.route("/odds/status")
 def harvest_status():
     from app.workers.celery_tasks import cache_get
     heartbeat = cache_get("worker_heartbeat") or {}
@@ -794,14 +794,14 @@ def harvest_status():
     })
 
 
-@bp_odds.route("/odds/access")
+@bp_odds_customer.route("/odds/access")
 def get_access_config():
     user = _current_user_from_header()
     if not user or not getattr(user, "is_admin", False): return _err("Admin only", 403)
     return _signed_response({"ok": True, "free_access": FREE_ACCESS, "endpoint_access": _ENDPOINT_ACCESS})
 
 
-@bp_odds.route("/admin/odds/access", methods=["POST"])
+@bp_odds_customer.route("/admin/odds/access", methods=["POST"])
 def set_access_config():
     global FREE_ACCESS
     user = _current_user_from_header()
@@ -834,16 +834,16 @@ def _sse_stream(channel: str):
 _SSE_HEADERS = {"Cache-Control":"no-cache","X-Accel-Buffering":"no","Access-Control-Allow-Origin":"*"}
 
 
-@bp_odds.route("/stream/odds")
+@bp_odds_customer.route("/stream/odds")
 def stream_odds():
     return Response(stream_with_context(_sse_stream(_WS_CHANNEL)), mimetype="text/event-stream", headers=_SSE_HEADERS)
 
 
-@bp_odds.route("/stream/arb")
+@bp_odds_customer.route("/stream/arb")
 def stream_arb():
     return Response(stream_with_context(_sse_stream(_ARB_CHANNEL)), mimetype="text/event-stream", headers=_SSE_HEADERS)
 
 
-@bp_odds.route("/stream/ev")
+@bp_odds_customer.route("/stream/ev")
 def stream_ev():
     return Response(stream_with_context(_sse_stream(_EV_CHANNEL)), mimetype="text/event-stream", headers=_SSE_HEADERS)
