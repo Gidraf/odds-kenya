@@ -1,11 +1,15 @@
 """
 app/workers/tasks_upcoming.py  — PATCHED
 =========================================
-Key change vs previous version:
-  _persist_bk_matches() now calls _resolve_betradar_id() before building
-  the serialized payload.  When BT/OD have no betradar_id it looks up the
-  existing unified_match by home+away+start_time so BT odds attach to the
-  same DB row as SP instead of creating an orphan row.
+Key fix: _persist_bk_matches() now calls _extract_betradar_id() which
+treats bt_parent_id and od_parent_id as the canonical betradar_id.
+
+  SP  betradar_id  = "70322758"
+  BT  bt_parent_id = "70322758"   ← same value, use it as join key
+  OD  od_parent_id = "70322758"   ← same value, use it as join key
+
+All three now produce join_key = "br_70322758" and write to the SAME
+unified_match row.  No fuzzy matching needed.
 """
 
 from __future__ import annotations
@@ -20,12 +24,12 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from app.workers.celery_tasks import (
     celery, cache_set, cache_get, _now_iso, _publish,
-    _upsert_and_chain, _fuzzy_find_match, _normalise_sport_name,
+    _upsert_and_chain, _extract_betradar_id, _normalise_sport_name,
+    _get_or_create_bookmaker,
 )
 
 logger = get_task_logger(__name__)
 
-# ── Sport lists ───────────────────────────────────────────────────────────────
 _LOCAL_SPORTS = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
@@ -57,7 +61,6 @@ _BK_NAMES = {
     "sbo": "SBO",
 }
 
-# Sport slug → canonical DB name (used to normalise before persisting)
 _SPORT_SLUG_TO_DB: dict[str, str] = {
     "soccer":       "Soccer",
     "football":     "Soccer",
@@ -88,97 +91,28 @@ def _emit(source: str, sport: str, count: int, latency: int) -> None:
     })
 
 
-def _ensure_bookmaker(bk_slug: str) -> int | None:
-    """Get or create a bookmaker row. Returns bookmaker.id or None."""
-    canonical_name = _BK_NAMES.get(bk_slug, bk_slug.upper())
-    try:
-        from app.models.bookmakers_model import Bookmaker
-        from app.extensions import db
-        bm = Bookmaker.query.filter(
-            Bookmaker.name.ilike(f"%{canonical_name}%")
-        ).first()
-        if bm:
-            return bm.id
-        bm = Bookmaker(
-            name=canonical_name,
-            domain=f"{bk_slug}.co.ke",
-            is_active=True,
-        )
-        db.session.add(bm)
-        db.session.commit()
-        logger.info("[ensure_bookmaker] created: %s (id=%d)", canonical_name, bm.id)
-        return bm.id
-    except Exception as exc:
-        logger.warning("[ensure_bookmaker] %s: %s", bk_slug, exc)
-        return None
-
-
-def _resolve_betradar_id(
-    m: dict,
-    bk_slug: str,
-) -> tuple[str | None, str | None]:
-    """
-    Return (betradar_id, bk_ext_id) for a single match dict.
-
-    For SP the betradar_id is usually set directly.
-    For BT/OD it is None, so we fall back to a fuzzy DB lookup by
-    home+away+start_time.  If the match isn't in the DB yet (SP hasn't
-    harvested it) we return None so the caller creates a new row under
-    the bk-specific ID — it will be merged when SP harvests later.
-    """
-    # 1. Try explicit betradar_id first
-    betradar_id = str(
-        m.get("betradar_id") or m.get("betradarId") or m.get("sr_id") or ""
-    ).strip()
-    if betradar_id and betradar_id not in ("0", "None"):
-        pass  # valid, keep it
-    else:
-        betradar_id = None
-
-    # 2. BK-specific external ID
-    bk_ext_id = str(
-        m.get("sp_game_id") or
-        m.get("bt_match_id") or m.get("bt_parent_id") or
-        m.get("od_match_id") or m.get("od_parent_id") or
-        m.get("match_id") or ""
-    ).strip() or None
-
-    # 3. If no betradar_id, try fuzzy lookup to find the canonical match
-    if not betradar_id:
-        home  = str(m.get("home_team") or m.get("home_team_name") or "").strip()
-        away  = str(m.get("away_team") or m.get("away_team_name") or "").strip()
-        start = m.get("start_time") or ""
-        found = _fuzzy_find_match(home, away, start)
-        if found:
-            betradar_id = found
-            logger.debug(
-                "[resolve_betradar] fuzzy matched %s vs %s → %s",
-                home, away, found,
-            )
-
-    return betradar_id, bk_ext_id
-
-
 def _persist_bk_matches(
     matches:    list[dict],
     bk_slug:    str,
     sport_slug: str,
 ) -> None:
     """
-    Persist individual-bookmaker matches to PostgreSQL.
+    Persist individual-bookmaker matches to PostgreSQL via Celery task.
 
-    Called by sp/bt/od harvest tasks after writing to Redis.
-    Works independently of the combined stream so each bookmaker's
-    data lands in the DB on every harvest cycle.
+    KEY FIX: uses _extract_betradar_id() which reads bt_parent_id / od_parent_id
+    as the betradar_id for BT and OD respectively.  This ensures all three
+    bookmakers share the same join_key ("br_70322758") and write to the same
+    unified_match row.
 
-    For BT/OD where betradar_id is None, _resolve_betradar_id() does a
-    fuzzy home+away+start_time lookup to find the existing SP row so odds
-    are added to the same unified_match instead of creating a duplicate.
+      SP  → betradar_id  = "70322758"  → join_key = "br_70322758"
+      BT  → bt_parent_id = "70322758"  → join_key = "br_70322758"  ✓
+      OD  → od_parent_id = "70322758"  → join_key = "br_70322758"  ✓
     """
     if not matches:
         return
 
-    bk_id = _ensure_bookmaker(bk_slug)
+    # Ensure bookmaker row exists before dispatching task
+    bk_id = _get_or_create_bookmaker(_BK_NAMES.get(bk_slug, bk_slug.upper()))
     if not bk_id:
         logger.warning(
             "[persist_bk] could not resolve bookmaker %s — skipping DB persist",
@@ -186,20 +120,26 @@ def _persist_bk_matches(
         )
         return
 
-    # Canonical sport name for the DB (Soccer not soccer)
     canonical_sport = _SPORT_SLUG_TO_DB.get(sport_slug, sport_slug)
 
     serialized: list[dict] = []
     for m in matches:
-        betradar_id, bk_ext_id = _resolve_betradar_id(m, bk_slug)
+        # ── Resolve betradar_id (the canonical cross-bookmaker ID) ────────────
+        betradar_id = _extract_betradar_id(m)
 
-        # Build join_key: prefer betradar, then bk-specific
+        # BK-specific fallback ID (used when betradar_id is genuinely absent)
+        bk_ext_id = str(
+            m.get("bt_match_id") or m.get("od_match_id") or
+            m.get("sp_game_id")  or m.get("match_id") or ""
+        ).strip() or None
+
+        # Build join_key — prefer betradar_id so all bks share the same key
         if betradar_id:
             join_key = f"br_{betradar_id}"
         elif bk_ext_id:
             join_key = f"{bk_slug}_{bk_ext_id}"
         else:
-            continue  # nothing to key on — skip
+            continue  # nothing to key on
 
         markets = m.get("markets") or {}
         if not markets:
@@ -207,20 +147,15 @@ def _persist_bk_matches(
 
         serialized.append({
             "join_key":    join_key,
-            "home_team":   m.get("home_team")        or m.get("home_team_name") or "",
-            "away_team":   m.get("away_team")         or m.get("away_team_name") or "",
-            "competition": m.get("competition")       or m.get("competition_name") or "",
-            "start_time":  m.get("start_time")        or "",
+            "home_team":   m.get("home_team")    or m.get("home_team_name") or "",
+            "away_team":   m.get("away_team")     or m.get("away_team_name") or "",
+            "competition": m.get("competition")   or m.get("competition_name") or "",
+            "start_time":  m.get("start_time")    or "",
             "is_live":     False,
             "betradar_id": betradar_id,
             "sport":       canonical_sport,
             "bk_ids":      {bk_slug: bk_ext_id or join_key},
             "markets":     {bk_slug: markets},
-            # Pass through raw BT/OD IDs so _upsert_unified_match can use them
-            "bt_match_id":  m.get("bt_match_id")  or "",
-            "bt_parent_id": m.get("bt_parent_id") or "",
-            "od_match_id":  m.get("od_match_id")  or "",
-            "od_parent_id": m.get("od_parent_id") or "",
         })
 
     if not serialized:
@@ -306,7 +241,7 @@ def merge_and_broadcast(sport_slug: str) -> dict:
             continue
         seen_bk.append(slug)
         for match in cached["matches"]:
-            br_id = str(match.get("betradar_id") or "")
+            br_id = _extract_betradar_id(match)
             key   = br_id or f"{match.get('home_team','')}|{match.get('away_team','')}"
             if not key:
                 continue
@@ -359,7 +294,6 @@ def merge_and_broadcast(sport_slug: str) -> dict:
 
 @celery.task(name="harvest.value_bets", soft_time_limit=60, time_limit=90)
 def compute_value_bets(sport_slug: str) -> dict:
-    import os
     from app.extensions import db
     from app.models.odds_model import (
         ArbitrageOpportunity, EVOpportunity, OpportunityStatus,
@@ -390,7 +324,7 @@ def compute_value_bets(sport_slug: str) -> dict:
                         if profit_pct >= 0.5:
                             legs = [{
                                 "selection": sel, "bookmaker": leg_details[sel][0],
-                                "price": leg_details[sel][1],
+                                "price":     leg_details[sel][1],
                                 "stake_pct": round(
                                     (1.0 / leg_details[sel][1]) / arb_sum * 100, 2
                                 ),
