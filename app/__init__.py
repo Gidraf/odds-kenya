@@ -82,8 +82,8 @@ def create_app() -> Flask:
     from app.views.customer_auth                      import bp_customer
     from app.views.subscriptions                      import bp_customer_subscriptions
     from app.views.webhook                            import bp_interceptor
-    from app.views.odds_feed.sportpesa_view           import bp_sp
-    from app.views.odds_feed.sp_live_view             import bp_sp_live
+    # from app.views.odds_feed.sportpesa_view           import bp_sp
+    # from app.views.odds_feed.sp_live_view             import bp_sp_live
     from app.views.odds_feed.odds_view                import bp_odds as bp_unified_odds
     from app.views.odds_feed.betika_view              import bp_betika
     from app.views.odds_feed.odibets_view             import bp as bp_od
