@@ -39,7 +39,6 @@ Endpoints
 from __future__ import annotations
 
 import time
-import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -47,8 +46,6 @@ from flask import Blueprint, Response, request, stream_with_context
 
 from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
 from app.utils.decorators_ import log_event
-
-logger = logging.getLogger(__name__)
 
 bp_odds = Blueprint("odds", __name__, url_prefix="/api")
 
@@ -61,7 +58,7 @@ _ENDPOINT_ACCESS: dict[str, str] = {
     "list_markets": "free", "harvest_status": "free",
 }
 _TIER_ORDER    = {"free": 0, "basic": 1, "pro": 2, "premium": 3}
-FREE_MATCH_LIMIT = 999999  # Bumped limit to ensure it never restricts globally
+FREE_MATCH_LIMIT = 1000
 _WS_CHANNEL    = "odds:updates"
 _ARB_CHANNEL   = "arb:updates"
 _EV_CHANNEL    = "ev:updates"
@@ -112,33 +109,27 @@ def _load_db_matches(
     now = datetime.now(timezone.utc)
 
     q = UnifiedMatch.query
-    
-    # ── Sport filter (Linking Football & Soccer interchangeably) ─────────────
-    if sport_slug and sport_slug.lower() not in ("all", "any", ""):
-        s_slug = sport_slug.lower()
-        if s_slug in ("soccer", "football"):
-            q = q.filter(or_(
-                UnifiedMatch.sport_name.ilike("%soccer%"),
-                UnifiedMatch.sport_name.ilike("%football%")
-            ))
-        else:
-            q = q.filter(UnifiedMatch.sport_name.ilike(f"%{s_slug}%"))
+    if sport_slug and sport_slug.lower() not in ("all", ""):
+        q = q.filter(UnifiedMatch.sport_name.ilike(f"%{sport_slug}%"))
 
-    # ── Mode filter (Case insensitive to prevent missed matches) ─────────────
+    # ── Mode filter ───────────────────────────────────────────────────────────
+    # Freshly persisted rows have NULL status (update_match_results hasn't run
+    # yet).  Treat NULL as "upcoming" — only exclude explicitly terminal states.
     if mode == "upcoming":
         q = q.filter(
             or_(
-                func.upper(UnifiedMatch.status).notin_(["FINISHED", "CANCELLED", "POSTPONED", "ENDED", "CLOSED"]),
+                UnifiedMatch.status.notin_(["FINISHED", "CANCELLED", "POSTPONED"]),
                 UnifiedMatch.status.is_(None),
             )
         )
     elif mode == "live":
-        q = q.filter(func.upper(UnifiedMatch.status).in_(["IN_PLAY", "LIVE", "INPLAY"]))
+        q = q.filter(UnifiedMatch.status.in_(["IN_PLAY", "live", "INPLAY"]))
     elif mode == "finished":
-        q = q.filter(func.upper(UnifiedMatch.status).in_(["FINISHED", "ENDED", "CLOSED"]))
+        q = q.filter(UnifiedMatch.status == "FINISHED")
+    # mode == "all" → no status filter
 
     if status_filter and status_filter.upper() not in ("ALL", ""):
-        q = q.filter(func.upper(UnifiedMatch.status) == status_filter.upper())
+        q = q.filter(UnifiedMatch.status == status_filter.upper())
 
     if comp_filter:
         q = q.filter(UnifiedMatch.competition_name.ilike(f"%{comp_filter}%"))
@@ -299,7 +290,7 @@ def _load_db_matches(
             "sport":           um.sport_name       or sport_slug,
             "start_time":      um.start_time.isoformat() if um.start_time else None,
             "status":          getattr(um, "status", "PRE_MATCH") or "PRE_MATCH",
-            "is_live":         (str(getattr(um, "status", "") or "")).upper() in ("IN_PLAY", "LIVE", "INPLAY"),
+            "is_live":         (getattr(um, "status", "") or "") in ("IN_PLAY", "live"),
             "bk_count":        len(bookmakers),
             "bookie_count":    len(bookmakers),
             "bookmaker_count": len(bookmakers),
@@ -461,7 +452,10 @@ def _sort_matches(matches: list[dict], sort: str) -> list[dict]:
 
 
 def _apply_tier_limits(matches, user):
-    # Overriding entirely: Never truncate the matches list based on tiers
+    if FREE_ACCESS: return matches, False
+    limits = (user.limits if user else None) or {"max_matches": FREE_MATCH_LIMIT}
+    max_m  = limits.get("max_matches") or FREE_MATCH_LIMIT
+    if max_m and len(matches) > max_m: return matches[:max_m], True
     return matches, False
 
 
@@ -542,7 +536,7 @@ def get_upcoming(sport_slug: str):
     user = _current_user_from_header()
     tier = getattr(user, "tier", "free") if user else "free"
     page     = max(1,   int(request.args.get("page",     1)))
-    per_page = min(1000, int(request.args.get("per_page", 20))) # Allow higher per_page bounds
+    per_page = min(100, int(request.args.get("per_page", 20)))
     sort     = request.args.get("sort",    "start_time")
     comp_f   = (request.args.get("comp",   "") or "").strip()
     team_f   = (request.args.get("team",   "") or "").strip()
@@ -559,8 +553,7 @@ def get_upcoming(sport_slug: str):
             has_arb=has_arb, sort=sort,
             date_str=date_f, from_dt=from_dt, to_dt=to_dt,
         )
-    except Exception as e:
-        logger.error(f"Error loading DB matches for {sport_slug}: {e}", exc_info=True)
+    except Exception:
         raw     = _read_cache_sources("upcoming", sport_slug)
         matches = [_normalise_cache_match(m) for m in _deduplicate(raw)]
         matches = _apply_filters(matches, request.args)
@@ -568,7 +561,6 @@ def get_upcoming(sport_slug: str):
         total   = len(matches)
         pages   = max(1, (total + per_page - 1) // per_page)
         matches = matches[(page-1)*per_page: page*per_page]
-        
     matches, truncated = _apply_tier_limits(matches, user)
     latency = int((time.perf_counter() - t0) * 1000)
     return _signed_response(
@@ -584,7 +576,7 @@ def get_live(sport_slug: str):
     user = _current_user_from_header()
     tier = getattr(user, "tier", "free") if user else "free"
     page     = max(1,   int(request.args.get("page",     1)))
-    per_page = min(1000, int(request.args.get("per_page", 20)))
+    per_page = min(100, int(request.args.get("per_page", 20)))
     sort     = request.args.get("sort", "start_time")
     comp_f   = (request.args.get("comp", "") or "").strip()
     team_f   = (request.args.get("team", "") or "").strip()
@@ -595,8 +587,7 @@ def get_live(sport_slug: str):
             page=page, per_page=per_page,
             comp_filter=comp_f, team_filter=team_f, sort=sort,
         )
-    except Exception as e:
-        logger.error(f"Error loading Live DB matches for {sport_slug}: {e}", exc_info=True)
+    except Exception:
         raw     = _read_cache_sources("live", sport_slug)
         matches = [_normalise_cache_match(m) for m in _deduplicate(raw)]
         matches = _apply_filters(matches, request.args)
@@ -604,7 +595,6 @@ def get_live(sport_slug: str):
         total   = len(matches)
         pages   = max(1, (total + per_page - 1) // per_page)
         matches = matches[(page-1)*per_page: page*per_page]
-        
     matches, truncated = _apply_tier_limits(matches, user)
     latency = int((time.perf_counter() - t0) * 1000)
     return _signed_response(
@@ -630,7 +620,7 @@ def _get_finished_by_date(date_str: str):
     user = _current_user_from_header()
     tier = getattr(user, "tier", "free") if user else "free"
     page     = max(1,   int(request.args.get("page",     1)))
-    per_page = min(1000, int(request.args.get("per_page", 20)))
+    per_page = min(100, int(request.args.get("per_page", 20)))
     sport    = request.args.get("sport", "")
     log_event("finished_games_view", {"date": date_str})
     try:
@@ -640,15 +630,13 @@ def _get_finished_by_date(date_str: str):
             comp_filter=(request.args.get("competition") or ""),
             team_filter=(request.args.get("team") or ""),
         )
-    except Exception as e:
-        logger.error(f"Error loading results for date {date_str}: {e}", exc_info=True)
+    except Exception:
         from app.workers.celery_tasks import cache_get
         cached  = cache_get(f"results:finished:{date_str}")
         matches = [_normalise_cache_match(m) for m in (cached or [])]
         total   = len(matches)
         pages   = max(1, (total + per_page - 1) // per_page)
         matches = matches[(page-1)*per_page: page*per_page]
-        
     matches, truncated = _apply_tier_limits(matches, user)
     latency = int((time.perf_counter() - t0) * 1000)
     return _signed_response(
@@ -731,7 +719,7 @@ def search_matches():
     q_str    = (request.args.get("q") or "").strip()
     mode     = request.args.get("mode", "upcoming")
     page     = max(1,   int(request.args.get("page",     1)))
-    per_page = min(1000, int(request.args.get("per_page", 20)))
+    per_page = min(100, int(request.args.get("per_page", 20)))
     sport    = (request.args.get("sport") or "").strip()
     if not q_str: return _err("Provide query param 'q'", 400)
     from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
@@ -744,8 +732,8 @@ def search_matches():
         UnifiedMatch.parent_match_id.ilike(f"%{q_str}%"),
     ))
     if sport: qs = qs.filter(UnifiedMatch.sport_name.ilike(f"%{sport}%"))
-    if mode == "live":       qs = qs.filter(sqlfunc.upper(UnifiedMatch.status).in_(["IN_PLAY","LIVE"]))
-    elif mode == "finished": qs = qs.filter(sqlfunc.upper(UnifiedMatch.status) == "FINISHED")
+    if mode == "live":     qs = qs.filter(UnifiedMatch.status.in_(["IN_PLAY","live"]))
+    elif mode == "finished": qs = qs.filter(UnifiedMatch.status == "FINISHED")
     # upcoming/all — no extra filter needed
     total   = qs.count()
     um_list = qs.order_by(UnifiedMatch.start_time).offset((page-1)*per_page).limit(per_page).all()

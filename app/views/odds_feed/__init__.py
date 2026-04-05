@@ -687,7 +687,7 @@ from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _sig
 from app.utils.decorators_ import log_event, require_auth, require_tier
 from app.utils.fetcher_utils import TIER_LIMITS, _is_upcoming
 
-bp_odds = Blueprint("odds", __name__, url_prefix="/api/")
+bp_odds = Blueprint("odds", __name__, url_prefix="/api/feed/")
 
 FREE_MATCH_LIMIT = 100
 
