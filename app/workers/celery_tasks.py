@@ -1,14 +1,21 @@
 """
 app/workers/celery_app.py  — PATCHED
 =====================================
-Key changes:
-  1. _normalise_sport_name()   — Football → Soccer on every write
-  2. _fuzzy_find_match()       — finds existing unified_match by home+away+time
-                                 so BT/OD odds attach to SP's row
-  3. _upsert_and_chain()       — FIX: creates the Bookmaker row if missing so
-                                 bookmaker_match_odds is ALWAYS written even on
-                                 a fresh DB where the bookmakers table is empty
-  4. _upsert_unified_match()   — uses _fuzzy_find_match() as fallback
+Key insight from the data:
+  - SP:  betradar_id = "70322758"
+  - BT:  bt_parent_id = "70322758"   ← this IS the betradar_id
+  - OD:  od_parent_id = "70322758"   ← this IS the betradar_id
+
+So _to_upsert_shape() now treats bt_parent_id and od_parent_id as the
+canonical betradar_id.  This means all three bookmakers write to the SAME
+unified_match row (parent_match_id="70322758") and all appear in one result.
+
+No fuzzy matching or sibling merges needed — they all share the same ID.
+
+Other changes:
+  _normalise_sport_name()    — Football → Soccer on every write
+  _get_or_create_bookmaker() — creates Bookmaker row if missing so
+                               bookmaker_match_odds is always written
 """
 
 from __future__ import annotations
@@ -61,7 +68,6 @@ TASK_ROUTES: dict[str, dict] = {
     "tasks.ops.build_health_report":    {"queue": "default"},
 }
 
-# Bookmaker name → slug (for auto-creation)
 _BK_NAME_TO_SLUG: dict[str, str] = {
     "sportpesa": "sp",
     "betika":    "bt",
@@ -203,9 +209,9 @@ def _normalise_sport_name(raw: str) -> str:
 
 def _get_or_create_bookmaker(bk_name: str) -> int | None:
     """
-    Find the Bookmaker row by name. Creates it if missing.
-    This ensures _upsert_unified_match always has a valid bk_id
-    so bookmaker_match_odds rows are ALWAYS written.
+    Find the Bookmaker row by name.  Creates it if missing so that
+    _upsert_unified_match always has a valid bk_id and bookmaker_match_odds
+    rows are ALWAYS written even on a fresh DB.
     """
     import logging
     _log = logging.getLogger(__name__)
@@ -217,7 +223,6 @@ def _get_or_create_bookmaker(bk_name: str) -> int | None:
         if bm:
             return bm.id
 
-        # Not found — create it
         slug   = _BK_NAME_TO_SLUG.get(bk_name.lower(), bk_name.lower()[:4])
         domain = f"{slug}.co.ke"
         bm = Bookmaker(name=bk_name, domain=domain, is_active=True)
@@ -227,50 +232,35 @@ def _get_or_create_bookmaker(bk_name: str) -> int | None:
         return bm.id
     except Exception as exc:
         import logging
-        logging.getLogger(__name__).warning("[bookmaker] create failed for %s: %s", bk_name, exc)
-        return None
-
-
-# ── Fuzzy match lookup ────────────────────────────────────────────────────────
-
-def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
-    """
-    Find an existing unified_match by home+away+start_time (±90 min window).
-    Returns parent_match_id if found, else None.
-    Used when BT/OD don't have a betradar_id.
-    """
-    if not home or not away:
-        return None
-    try:
-        from app.models.odds_model import UnifiedMatch
-        from sqlalchemy import func
-
-        start_dt: datetime | None = None
-        if start_time_raw:
-            if isinstance(start_time_raw, datetime):
-                start_dt = start_time_raw
-            elif isinstance(start_time_raw, str):
-                start_dt = datetime.fromisoformat(start_time_raw.replace("Z", "+00:00"))
-            elif isinstance(start_time_raw, (int, float)):
-                start_dt = datetime.utcfromtimestamp(float(start_time_raw))
-
-        q = UnifiedMatch.query.filter(
-            func.lower(UnifiedMatch.home_team_name) == home.lower().strip(),
-            func.lower(UnifiedMatch.away_team_name) == away.lower().strip(),
+        logging.getLogger(__name__).warning(
+            "[bookmaker] create failed for %s: %s", bk_name, exc
         )
-        if start_dt:
-            window = timedelta(minutes=90)
-            q = q.filter(
-                UnifiedMatch.start_time >= start_dt - window,
-                UnifiedMatch.start_time <= start_dt + window,
-            )
-        um = q.first()
-        return um.parent_match_id if um else None
-
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).debug("[fuzzy_find] %s vs %s: %s", home, away, exc)
         return None
+
+
+# ── Betradar ID extraction ────────────────────────────────────────────────────
+
+def _extract_betradar_id(m: dict) -> str:
+    """
+    Extract the canonical betradar ID from a match dict regardless of which
+    bookmaker produced it.
+
+    SP  → m["betradar_id"]   = "70322758"
+    BT  → m["bt_parent_id"]  = "70322758"  (Betika stores betradar_id here)
+    OD  → m["od_parent_id"]  = "70322758"  (OdiBets stores betradar_id here)
+
+    All three return the same value so all write to the same unified_match row.
+    """
+    raw = (
+        m.get("betradar_id")   or   # SP: explicit betradar_id
+        m.get("betradarId")    or   # alternate key spelling
+        m.get("sr_id")         or   # SportRadar ID (some harvesters)
+        m.get("bt_parent_id")  or   # BT: parent_match_id IS the betradar_id
+        m.get("od_parent_id")  or   # OD: parent_match_id IS the betradar_id
+        ""
+    )
+    val = str(raw).strip()
+    return "" if val in ("0", "None", "null") else val
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,18 +269,13 @@ def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
     """
     Write odds to DB and chain EV/arb computation.
 
-    FIX: now calls _get_or_create_bookmaker() instead of silently skipping
-    when the bookmaker row doesn't exist yet (fresh DB scenario).
-    Previously bk_id could be None which caused the `if bookmaker_id:` block
-    in _upsert_unified_match to be skipped entirely, leaving the unified_match
-    row with no attached bookmaker_match_odds entry.
+    Uses _get_or_create_bookmaker() so odds are ALWAYS written even when
+    the bookmakers table is empty (fresh DB).
     """
     from app.workers.tasks_ops import compute_ev_arb
     from celery import chain as cchain
     try:
-        # ── Ensure bookmaker row exists ───────────────────────────────────────
         bk_id = _get_or_create_bookmaker(bk_name)
-
         for m in matches:
             mid = _upsert_unified_match(_to_upsert_shape(m), bk_id, bk_name)
             if mid:
@@ -301,25 +286,27 @@ def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
 
 
 def _to_upsert_shape(m: dict) -> dict:
+    """
+    Normalise a harvested match dict into the canonical shape for
+    _upsert_unified_match.
+
+    KEY FIX: betradar_id is now extracted via _extract_betradar_id() which
+    checks bt_parent_id and od_parent_id as fallbacks.  This means BT and OD
+    matches resolve to the same parent_match_id as SP ("70322758") so all three
+    bookmakers write to ONE unified_match row instead of three separate rows.
+    """
+    betradar_id = _extract_betradar_id(m)
     return {
-        "match_id":     (
-            m.get("betradar_id") or m.get("b2b_match_id") or
-            m.get("sp_game_id")  or m.get("od_match_id")  or
-            m.get("bt_match_id") or ""
-        ),
-        "betradar_id":   m.get("betradar_id") or "",
-        "home_team":     m.get("home_team", ""),
-        "away_team":     m.get("away_team", ""),
-        "sport":         m.get("sport", ""),
-        "competition":   m.get("competition", ""),
-        "start_time":    m.get("start_time"),
-        "markets":       m.get("markets") or m.get("best_odds") or {},
-        "bookmakers":    m.get("bookmakers") or {},
-        # Pass through BT/OD-specific IDs for fuzzy matching
-        "bt_match_id":   m.get("bt_match_id")  or "",
-        "bt_parent_id":  m.get("bt_parent_id") or "",
-        "od_match_id":   m.get("od_match_id")  or "",
-        "od_parent_id":  m.get("od_parent_id") or "",
+        # match_id becomes the parent_match_id in unified_matches
+        "match_id":    betradar_id or m.get("bt_match_id") or m.get("od_match_id") or "",
+        "betradar_id": betradar_id,
+        "home_team":   m.get("home_team", ""),
+        "away_team":   m.get("away_team", ""),
+        "sport":       m.get("sport", ""),
+        "competition": m.get("competition", ""),
+        "start_time":  m.get("start_time"),
+        "markets":     m.get("markets") or m.get("best_odds") or {},
+        "bookmakers":  m.get("bookmakers") or {},
     }
 
 
@@ -333,39 +320,18 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
         )
 
-        # ── Resolve parent_match_id ───────────────────────────────────────────
-        betradar_id    = str(match_data.get("betradar_id") or "").strip()
-        home           = str(match_data.get("home_team")   or "").strip()
-        away           = str(match_data.get("away_team")   or "").strip()
-        start_time_raw = match_data.get("start_time")
-        bt_match_id    = str(match_data.get("bt_match_id")  or "").strip()
-        bt_parent_id   = str(match_data.get("bt_parent_id") or "").strip()
-        od_match_id    = str(match_data.get("od_match_id")  or "").strip()
-        od_parent_id   = str(match_data.get("od_parent_id") or "").strip()
-        legacy_id      = str(match_data.get("match_id")     or "").strip()
-
-        if betradar_id and betradar_id not in ("0", "None"):
-            parent_id = betradar_id
-        else:
-            # Try fuzzy match before falling back to bk-specific ID
-            parent_id = _fuzzy_find_match(home, away, start_time_raw)
-            if not parent_id:
-                parent_id = (
-                    bt_parent_id or bt_match_id or
-                    od_parent_id or od_match_id or
-                    legacy_id    or ""
-                )
-
+        parent_id = str(match_data.get("match_id") or "").strip()
         if not parent_id:
-            _logger.debug("[upsert] no parent_id for %s vs %s", home, away)
+            home = str(match_data.get("home_team") or "")
+            away = str(match_data.get("away_team") or "")
+            _logger.debug("[upsert] no parent_id for %s vs %s — skipping", home, away)
             return None
 
-        # ── Normalise sport ───────────────────────────────────────────────────
         sport = _normalise_sport_name(str(match_data.get("sport") or ""))
         comp  = str(match_data.get("competition") or "")
 
-        # ── Parse start_time ──────────────────────────────────────────────────
-        start_time = None
+        start_time     = None
+        start_time_raw = match_data.get("start_time")
         if start_time_raw:
             try:
                 if isinstance(start_time_raw, str):
@@ -377,7 +343,9 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
             except Exception:
                 pass
 
-        # ── Find or create UnifiedMatch ───────────────────────────────────────
+        home = str(match_data.get("home_team") or "").strip()
+        away = str(match_data.get("away_team") or "").strip()
+
         um = UnifiedMatch.query.filter_by(
             parent_match_id=parent_id
         ).with_for_update().first()
@@ -393,6 +361,10 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
             )
             db.session.add(um)
             db.session.flush()
+            _logger.debug(
+                "[upsert] created match %s: %s vs %s (%s)",
+                parent_id, home, away, bookmaker_name,
+            )
         else:
             if home  and home  != um.home_team_name: um.home_team_name   = home
             if away  and away  != um.away_team_name: um.away_team_name   = away
@@ -400,7 +372,6 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
             if comp  and not um.competition_name:     um.competition_name = comp
             if start_time and not um.start_time:      um.start_time       = start_time
 
-        # ── Upsert BookmakerMatchOdds ─────────────────────────────────────────
         if bookmaker_id:
             bmo = BookmakerMatchOdds.query.filter_by(
                 match_id=um.id, bookmaker_id=bookmaker_id
@@ -448,7 +419,9 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
         else:
             _logger.warning(
                 "[upsert] bookmaker_id is None for %s — odds NOT written for %s vs %s",
-                bookmaker_name, home, away,
+                bookmaker_name,
+                match_data.get("home_team", "?"),
+                match_data.get("away_team", "?"),
             )
 
         db.session.commit()
