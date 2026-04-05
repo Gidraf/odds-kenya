@@ -65,6 +65,19 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _stamp(obj) -> None:
+    """
+    Explicitly set created_at and updated_at on any model instance.
+    Bypasses model-level defaults that use `datetime` as a module
+    (e.g. `default=datetime.now`) which fail with AttributeError.
+    """
+    now = _utcnow_naive()
+    if hasattr(obj, "created_at") and obj.created_at is None:
+        obj.created_at = now
+    if hasattr(obj, "updated_at") and obj.updated_at is None:
+        obj.updated_at = now
+
+
 class EntityResolver:
     """
     Stateful resolver — create one per harvest batch, discard after commit.
@@ -135,8 +148,7 @@ class EntityResolver:
                 )
                 # Set created_at explicitly if the column exists to bypass
                 # any model-level default that uses the wrong datetime import
-                if hasattr(sport, "created_at") and sport.created_at is None:
-                    sport.created_at = _utcnow_naive()
+                _stamp(sport)
                 db.session.add(sport)
                 db.session.flush()
 
@@ -182,8 +194,7 @@ class EntityResolver:
                     betradar_id=betradar_id,
                     is_active=True,
                 )
-                if hasattr(comp, "created_at") and comp.created_at is None:
-                    comp.created_at = _utcnow_naive()
+                _stamp(comp)
                 db.session.add(comp)
                 db.session.flush()
 
@@ -224,8 +235,7 @@ class EntityResolver:
                     betradar_id=betradar_id,
                     is_active=True,
                 )
-                if hasattr(team, "created_at") and team.created_at is None:
-                    team.created_at = _utcnow_naive()
+                _stamp(team)
                 db.session.add(team)
                 db.session.flush()
 
