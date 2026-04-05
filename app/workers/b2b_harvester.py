@@ -228,7 +228,7 @@ def fetch_b2b_sport(
     Returns:
         List of normalised match dicts (same shape as sp/od/bt harvesters).
     """
-    from app.workers.bookmaker_fetcher import fetch_all_bookmakers
+    from app.views.odds_feed.bookmaker_fetcher import fetch_all_bookmakers
 
     bms = bookmakers if bookmakers is not None else _get_active_b2b_bookmakers()
     if not bms:
@@ -276,7 +276,7 @@ def fetch_b2b_single(
     Fetch a single B2B bookmaker.
     Returns per-match normalised list (not merged across bookmakers).
     """
-    from app.workers.bookmaker_fetcher import fetch_bookmaker
+    from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
 
     sport_name  = _b2b_sport_name(sport_slug)
     raw_matches = fetch_bookmaker(bookmaker, sport_name=sport_name,
@@ -320,7 +320,7 @@ def fetch_b2b_full_markets(
     Fetch the full market book for a single B2B match via GetGameZip.
     Returns canonical best_odds dict.
     """
-    from app.workers.bookmaker_fetcher import fetch_betb2b_markets
+    from app.views.odds_feed.bookmaker_fetcher import fetch_betb2b_markets
 
     bk_name  = str(bookmaker.get("name") or "b2b")
     config   = bookmaker.get("config") or {}
