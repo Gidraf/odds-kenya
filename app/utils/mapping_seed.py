@@ -529,3 +529,271 @@ def seed_all_markets(sport_filter: list[str] | None = None) -> dict[str, int]:
 
     db.session.commit()
     return {"created": created, "skipped": skipped}
+
+# ---------------------------------------------------------------------------
+# BOOKMAKER SEED DATA
+# ---------------------------------------------------------------------------
+
+BOOKMAKERS_DATA: list[dict] = [
+    # ── Local Kenyan bookmakers (direct harvesters) ───────────────────────────
+    {
+        "name":               "SportPesa",
+        "slug":               "sp",
+        "domain":             "ke.sportpesa.com",
+        "brand_color":        "#008000",
+        "currency":           "KES",
+        "min_bet_amount":     49,
+        "max_bet_amount":     None,
+        "tax_percent":        7.5,
+        "mpesa_paybill":      "880100",
+        "mpesa_paybill_label":"SportPesa Deposit",
+        "airtel_paybill":     "880100",
+        "airtel_paybill_label":"SportPesa Airtel",
+        "vendor_slug":        "sp",
+        "betb2b_partner":     None,
+        "betb2b_gr":          None,
+        "betb2b_endpoint":    None,
+        "is_active":          True,
+    },
+    {
+        "name":               "Betika",
+        "slug":               "bt",
+        "domain":             "betika.com",
+        "brand_color":        "#E31E2D",
+        "currency":           "KES",
+        "min_bet_amount":     1,
+        "max_bet_amount":     None,
+        "tax_percent":        7.5,
+        "mpesa_paybill":      "29071922",
+        "mpesa_paybill_label":"Betika Deposit",
+        "airtel_paybill":     "29071922",
+        "airtel_paybill_label":"Betika Airtel",
+        "vendor_slug":        "bt",
+        "betb2b_partner":     None,
+        "betb2b_gr":          None,
+        "betb2b_endpoint":    None,
+        "is_active":          True,
+    },
+    {
+        "name":               "OdiBets",
+        "slug":               "od",
+        "domain":             "odibets.com",
+        "brand_color":        "#FF6600",
+        "currency":           "KES",
+        "min_bet_amount":     1,
+        "max_bet_amount":     None,
+        "tax_percent":        7.5,
+        "mpesa_paybill":      "558844",
+        "mpesa_paybill_label":"OdiBets Deposit",
+        "airtel_paybill":     "558844",
+        "airtel_paybill_label":"OdiBets Airtel",
+        "vendor_slug":        "od",
+        "betb2b_partner":     None,
+        "betb2b_gr":          None,
+        "betb2b_endpoint":    None,
+        "is_active":          True,
+    },
+    # ── B2B / International bookmakers ────────────────────────────────────────
+    {
+        "name":               "1xBet",
+        "slug":               "1xbet",
+        "domain":             "1xbet.co.ke",
+        "brand_color":        "#1F8AEB",
+        "currency":           "KES",
+        "min_bet_amount":     10,
+        "max_bet_amount":     None,
+        "tax_percent":        20,
+        "mpesa_paybill":      "290435",
+        "mpesa_paybill_label":"1xBet Deposit",
+        "airtel_paybill":     "290435",
+        "airtel_paybill_label":"1xBet Airtel",
+        "mpesa_sms":          "20019",
+        "airtel_sms":         None,
+        "vendor_slug":        "betb2b",
+        "betb2b_partner":     61,
+        "betb2b_gr":          656,
+        "betb2b_endpoint":    "LiveFeed",
+        "is_active":          True,
+    },
+    {
+        "name":               "22Bet",
+        "slug":               "22bet",
+        "domain":             "22bet.co.ke",
+        "brand_color":        "#0B2133",
+        "currency":           "KES",
+        "min_bet_amount":     10,
+        "max_bet_amount":     None,
+        "tax_percent":        20,
+        "mpesa_paybill":      "290557",
+        "mpesa_paybill_label":"22Bet Deposit",
+        "airtel_paybill":     "290557",
+        "airtel_paybill_label":"22Bet Airtel",
+        "mpesa_sms":          "22228",
+        "airtel_sms":         None,
+        "vendor_slug":        "betb2b",
+        "betb2b_partner":     2,
+        "betb2b_gr":          656,
+        "betb2b_endpoint":    "LiveFeed",
+        "is_active":          True,
+    },
+    {
+        "name":               "Betwinner",
+        "slug":               "betwinner",
+        "domain":             "betwinner.co.ke",
+        "brand_color":        "#FF6600",
+        "currency":           "KES",
+        "min_bet_amount":     10,
+        "max_bet_amount":     None,
+        "tax_percent":        20,
+        "mpesa_paybill":      None,
+        "mpesa_paybill_label":None,
+        "airtel_paybill":     None,
+        "airtel_paybill_label":None,
+        "mpesa_sms":          None,
+        "airtel_sms":         None,
+        "vendor_slug":        "betb2b",
+        "betb2b_partner":     3,
+        "betb2b_gr":          656,
+        "betb2b_endpoint":    "LiveFeed",
+        "is_active":          True,
+    },
+    {
+        "name":               "Melbet",
+        "slug":               "melbet",
+        "domain":             "melbet.co.ke",
+        "brand_color":        "#FF0000",
+        "currency":           "KES",
+        "min_bet_amount":     10,
+        "max_bet_amount":     None,
+        "tax_percent":        20,
+        "mpesa_paybill":      None,
+        "mpesa_paybill_label":None,
+        "airtel_paybill":     None,
+        "airtel_paybill_label":None,
+        "mpesa_sms":          None,
+        "airtel_sms":         None,
+        "vendor_slug":        "betb2b",
+        "betb2b_partner":     4,
+        "betb2b_gr":          656,
+        "betb2b_endpoint":    "LiveFeed",
+        "is_active":          True,
+    },
+    {
+        "name":               "Megapari",
+        "slug":               "megapari",
+        "domain":             "megapari.com",
+        "brand_color":        "#7B2FBE",
+        "currency":           "KES",
+        "min_bet_amount":     10,
+        "max_bet_amount":     None,
+        "tax_percent":        20,
+        "mpesa_paybill":      None,
+        "mpesa_paybill_label":None,
+        "airtel_paybill":     None,
+        "airtel_paybill_label":None,
+        "mpesa_sms":          None,
+        "airtel_sms":         None,
+        "vendor_slug":        "betb2b",
+        "betb2b_partner":     6,
+        "betb2b_gr":          656,
+        "betb2b_endpoint":    "LiveFeed",
+        "is_active":          True,
+    },
+    {
+        "name":               "Helabet",
+        "slug":               "helabet",
+        "domain":             "helabetke.com",
+        "brand_color":        "#9C27B0",
+        "currency":           "KES",
+        "min_bet_amount":     10,
+        "max_bet_amount":     None,
+        "tax_percent":        20,
+        "mpesa_paybill":      "290700",
+        "mpesa_paybill_label":"Helabet Deposit",
+        "airtel_paybill":     "290700",
+        "airtel_paybill_label":"Helabet Airtel",
+        "mpesa_sms":          "29070",
+        "airtel_sms":         None,
+        "vendor_slug":        "betb2b",
+        "betb2b_partner":     237,
+        "betb2b_gr":          None,
+        "betb2b_endpoint":    "LineFeed",
+        "is_active":          True,
+    },
+    {
+        "name":               "Paripesa",
+        "slug":               "paripesa",
+        "domain":             "paripesa.cool",
+        "brand_color":        "#FF6B35",
+        "currency":           "KES",
+        "min_bet_amount":     10,
+        "max_bet_amount":     None,
+        "tax_percent":        20,
+        "mpesa_paybill":      None,
+        "mpesa_paybill_label":None,
+        "airtel_paybill":     None,
+        "airtel_paybill_label":None,
+        "mpesa_sms":          None,
+        "airtel_sms":         None,
+        "vendor_slug":        "betb2b",
+        "betb2b_partner":     188,
+        "betb2b_gr":          764,
+        "betb2b_endpoint":    "LiveFeed",
+        "is_active":          True,
+    },
+]
+
+
+def seed_bookmakers() -> dict[str, int]:
+    """
+    Idempotent bookmaker seed.
+    Matches on `name` — updates existing rows, creates missing ones.
+    Returns {"created": N, "updated": N, "skipped": N}.
+    """
+    from app.extensions import db
+    from app.models.bookmakers_model import Bookmaker
+
+    created = updated = skipped = 0
+
+    for data in BOOKMAKERS_DATA:
+        bm = Bookmaker.query.filter(
+            db.func.lower(Bookmaker.name) == data["name"].lower()
+        ).first()
+
+        if bm:
+            # Update any fields that may have changed
+            changed = False
+            for field in (
+                "slug", "domain", "brand_color", "currency",
+                "min_bet_amount", "max_bet_amount", "tax_percent",
+                "mpesa_paybill", "mpesa_paybill_label",
+                "airtel_paybill", "airtel_paybill_label",
+                "vendor_slug", "betb2b_partner", "betb2b_gr",
+                "betb2b_endpoint", "is_active",
+            ):
+                val = data.get(field)
+                if val is not None and getattr(bm, field, None) != val:
+                    setattr(bm, field, val)
+                    changed = True
+            if changed:
+                updated += 1
+            else:
+                skipped += 1
+        else:
+            bm = Bookmaker(**{
+                k: v for k, v in data.items()
+                if hasattr(Bookmaker, k)
+            })
+            db.session.add(bm)
+            created += 1
+
+    db.session.commit()
+    print(f"[seed_bookmakers] created={created} updated={updated} skipped={skipped}")
+    return {"created": created, "updated": updated, "skipped": skipped}
+
+
+def seed_all(sport_filter: list[str] | None = None) -> dict:
+    """Run all seeds in order: bookmakers → markets."""
+    bk_stats  = seed_bookmakers()
+    mkt_stats = seed_all_markets(sport_filter=sport_filter)
+    return {"bookmakers": bk_stats, "markets": mkt_stats}

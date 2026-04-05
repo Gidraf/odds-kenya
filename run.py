@@ -35,6 +35,18 @@ def run_harvest():
     from app.services.agents_tasks import harvest_data
     harvest_data()
 
+@flask_app.cli.command("seed-bookmakers")
+def seed_bookmakers_cmd():
+    from app.utils.mapping_seed import seed_bookmakers
+    result = seed_bookmakers()
+    print(f"Done: {result}")
+
+@flask_app.cli.command("seed-all")
+def seed_all_cmd():
+    from app.utils.mapping_seed import seed_all
+    result = seed_all()
+    print(f"Done: {result}")
+
 
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
