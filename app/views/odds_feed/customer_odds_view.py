@@ -1,15 +1,19 @@
 """
 app/views/odds_feed/odds_routes.py  — PATCHED
 =============================================
-Changes vs original:
-  1. _SPORT_ALIASES + _normalise_sport_slug()
-       football ↔ soccer (and all other sports) unified at both read and write
-  2. _sport_filter()
-       OR-based DB filter so "Football" and "Soccer" rows both appear under /soccer
-  3. _read_cache_sources()
-       ThreadPoolExecutor — all prefixes read concurrently, both slug variants tried
-  4. Every result row + envelope
-       sport field always returned as canonical lowercase slug (soccer not Football)
+Changes vs previous version:
+  1. _SPORT_ALIASES + _normalise_sport_slug()  — football ↔ soccer aliasing
+  2. _sport_filter()          — OR-based DB filter for sport aliases
+  3. _read_cache_sources()    — concurrent ThreadPoolExecutor cache reads
+  4. _load_db_matches()       — SIBLING MERGE: after loading primary match rows,
+                                also finds any OTHER unified_match rows for the
+                                same real-world event (same home+away+start_time)
+                                and merges their bookmaker_match_odds in.
+                                This means if SP created row "70322758" and BT
+                                accidentally created a duplicate row "bt_12345"
+                                for the same match, the API response combines
+                                both bookmakers into a single result row.
+  5. Every result row         — sport field always returns canonical slug
 """
 
 from __future__ import annotations
@@ -46,11 +50,7 @@ _BK_SLUG: dict[str, str] = {
     "sbo": "sbo", "b2b": "b2b",
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sport aliasing helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-# All DB values that should be treated as the same sport
+# ── Sport aliasing ────────────────────────────────────────────────────────────
 _SPORT_ALIASES: dict[str, list[str]] = {
     "soccer":       ["Soccer", "Football", "soccer", "football"],
     "football":     ["Soccer", "Football", "soccer", "football"],
@@ -68,65 +68,34 @@ _SPORT_ALIASES: dict[str, list[str]] = {
     "esoccer":      ["eSoccer", "esoccer", "eFootball", "efootball"],
 }
 
-# What the API always returns outward (canonical)
 _CANONICAL_SLUG: dict[str, str] = {
-    "Football":     "soccer",
-    "football":     "soccer",
-    "Soccer":       "soccer",
-    "soccer":       "soccer",
-    "Ice Hockey":   "ice-hockey",
-    "ice hockey":   "ice-hockey",
-    "ice-hockey":   "ice-hockey",
-    "Table Tennis": "table-tennis",
-    "table tennis": "table-tennis",
-    "table-tennis": "table-tennis",
-    "Basketball":   "basketball",
-    "tennis":       "tennis",
-    "Tennis":       "tennis",
-    "Cricket":      "cricket",
-    "cricket":      "cricket",
-    "Volleyball":   "volleyball",
-    "volleyball":   "volleyball",
-    "Rugby":        "rugby",
-    "rugby":        "rugby",
-    "Handball":     "handball",
-    "handball":     "handball",
-    "MMA":          "mma",
-    "mma":          "mma",
-    "Boxing":       "boxing",
-    "boxing":       "boxing",
-    "Darts":        "darts",
-    "darts":        "darts",
-    "eSoccer":      "esoccer",
-    "eFootball":    "esoccer",
+    "Football": "soccer", "football": "soccer",
+    "Soccer":   "soccer", "soccer":   "soccer",
+    "Ice Hockey": "ice-hockey", "ice hockey": "ice-hockey", "ice-hockey": "ice-hockey",
+    "Table Tennis": "table-tennis", "table tennis": "table-tennis", "table-tennis": "table-tennis",
+    "Basketball": "basketball", "Tennis": "tennis",
+    "Cricket": "cricket", "Volleyball": "volleyball",
+    "Rugby": "rugby", "Handball": "handball",
+    "MMA": "mma", "Boxing": "boxing", "Darts": "darts",
+    "eSoccer": "esoccer", "eFootball": "esoccer",
 }
 
 
 def _normalise_sport_slug(raw: str) -> str:
-    """Convert any stored sport name or slug to the canonical API slug."""
     if not raw:
         return raw
     return _CANONICAL_SLUG.get(raw, raw.lower().replace(" ", "-"))
 
 
 def _sport_filter(q, sport_slug: str):
-    """
-    Apply an OR filter that matches all known DB values for the requested sport.
-    /soccer and /football both match rows with sport_name in
-    ('Soccer', 'Football', 'soccer', 'football').
-    """
     from sqlalchemy import or_
     from app.models.odds_model import UnifiedMatch
-
     if not sport_slug or sport_slug.lower() in ("all", ""):
         return q
-
     canonical = _normalise_sport_slug(sport_slug)
     aliases   = _SPORT_ALIASES.get(canonical, [sport_slug])
     return q.filter(or_(*[UnifiedMatch.sport_name == a for a in aliases]))
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _bk_slug(name: str) -> str:
     return _BK_SLUG.get(name.lower(), name.lower()[:4])
@@ -143,10 +112,6 @@ def _user_has_access(user, endpoint_name: str) -> bool:
 
 
 def _flatten_db_markets(raw_markets: dict) -> dict:
-    """
-    Strips the specifier level ("null" key) from the DB JSON.
-    {"1x2": {"null": {"1": {"price":2.5}}}}  →  {"1x2": {"1": {"price":2.5}}}
-    """
     flat = {}
     for mkt_slug, spec_dict in (raw_markets or {}).items():
         flat[mkt_slug] = {}
@@ -179,20 +144,16 @@ def _load_db_matches(
         UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity,
     )
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
-    from sqlalchemy import or_
+    from sqlalchemy import or_, and_, func
 
     q = UnifiedMatch.query
-
-    # ── Sport filter: handles football ↔ soccer aliasing ─────────────────────
     q = _sport_filter(q, sport_slug)
 
     if mode == "upcoming":
-        q = q.filter(
-            or_(
-                UnifiedMatch.status.notin_(["FINISHED", "CANCELLED", "POSTPONED"]),
-                UnifiedMatch.status.is_(None),
-            )
-        )
+        q = q.filter(or_(
+            UnifiedMatch.status.notin_(["FINISHED", "CANCELLED", "POSTPONED"]),
+            UnifiedMatch.status.is_(None),
+        ))
     elif mode == "live":
         q = q.filter(UnifiedMatch.status.in_(["IN_PLAY", "live", "INPLAY"]))
     elif mode == "finished":
@@ -200,7 +161,6 @@ def _load_db_matches(
 
     if status_filter and status_filter.upper() not in ("ALL", ""):
         q = q.filter(UnifiedMatch.status == status_filter.upper())
-
     if comp_filter:
         q = q.filter(UnifiedMatch.competition_name.ilike(f"%{comp_filter}%"))
     if team_filter:
@@ -211,24 +171,18 @@ def _load_db_matches(
     if date_str:
         try:
             day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            q   = q.filter(
-                UnifiedMatch.start_time >= day,
-                UnifiedMatch.start_time <  day + timedelta(days=1),
-            )
+            q = q.filter(UnifiedMatch.start_time >= day,
+                         UnifiedMatch.start_time <  day + timedelta(days=1))
         except ValueError:
             pass
     if from_dt:
         try:
-            q = q.filter(
-                UnifiedMatch.start_time >= datetime.fromisoformat(from_dt.replace("Z", "+00:00"))
-            )
+            q = q.filter(UnifiedMatch.start_time >= datetime.fromisoformat(from_dt.replace("Z", "+00:00")))
         except Exception:
             pass
     if to_dt:
         try:
-            q = q.filter(
-                UnifiedMatch.start_time <= datetime.fromisoformat(to_dt.replace("Z", "+00:00"))
-            )
+            q = q.filter(UnifiedMatch.start_time <= datetime.fromisoformat(to_dt.replace("Z", "+00:00")))
         except Exception:
             pass
 
@@ -247,14 +201,77 @@ def _load_db_matches(
 
     match_ids = [um.id for um in um_list]
 
+    # ── Primary bookmaker odds ────────────────────────────────────────────────
     bmo_rows = BookmakerMatchOdds.query.filter(
         BookmakerMatchOdds.match_id.in_(match_ids)
     ).all()
 
-    bk_ids  = {bmo.bookmaker_id for bmo in bmo_rows}
+    # ── SIBLING MERGE ─────────────────────────────────────────────────────────
+    # Find any OTHER unified_match rows that represent the same real-world event
+    # (same home+away+start_time within ±90 min) but have a different row id.
+    # This happens when SP creates a row with betradar_id and BT/OD created a
+    # separate row with their own IDs before the fuzzy-match ran.
+    # We pull their bookmaker_match_odds and attach them to the primary row so
+    # all bookmakers appear in the same response object.
+    try:
+        sibling_conditions = []
+        for um in um_list:
+            if not um.home_team_name or not um.away_team_name:
+                continue
+            conds = [
+                func.lower(UnifiedMatch.home_team_name) == um.home_team_name.lower().strip(),
+                func.lower(UnifiedMatch.away_team_name) == um.away_team_name.lower().strip(),
+                UnifiedMatch.id.notin_(match_ids),  # exclude the primary rows
+            ]
+            if um.start_time:
+                window = timedelta(minutes=90)
+                conds += [
+                    UnifiedMatch.start_time >= um.start_time - window,
+                    UnifiedMatch.start_time <= um.start_time + window,
+                ]
+            sibling_conditions.append(and_(*conds))
+
+        sibling_map: dict[int, int] = {}  # sibling_id → primary_id
+        if sibling_conditions:
+            # Build a fast lookup: (lower_home, lower_away) → primary_um_id
+            team_to_primary: dict[tuple, int] = {
+                (um.home_team_name.lower().strip(),
+                 um.away_team_name.lower().strip()): um.id
+                for um in um_list
+                if um.home_team_name and um.away_team_name
+            }
+            from sqlalchemy import or_ as _or
+            siblings = UnifiedMatch.query.filter(_or(*sibling_conditions)).all()
+            for sib in siblings:
+                key = (sib.home_team_name.lower().strip(),
+                       sib.away_team_name.lower().strip())
+                if key in team_to_primary:
+                    sibling_map[sib.id] = team_to_primary[key]
+
+        if sibling_map:
+            extra_bmo = BookmakerMatchOdds.query.filter(
+                BookmakerMatchOdds.match_id.in_(list(sibling_map.keys()))
+            ).all()
+            # Re-map sibling BMOs onto primary match IDs
+            bmo_rows = list(bmo_rows)  # make mutable
+            for bmo in extra_bmo:
+                # Patch the match_id to point at the primary row
+                # (we don't mutate the DB object — we wrap it)
+                bmo_rows.append(_SiblingBMO(bmo, sibling_map[bmo.match_id]))
+
+            # Also extend bk_ids for link lookups
+            sibling_link_rows = BookmakerMatchLink.query.filter(
+                BookmakerMatchLink.match_id.in_(list(sibling_map.keys()))
+            ).all()
+    except Exception:
+        sibling_map = {}
+        sibling_link_rows = []
+
+    # ── Bookmaker objects ─────────────────────────────────────────────────────
+    all_bk_ids = {bmo.bookmaker_id for bmo in bmo_rows}
     bk_objs = (
-        {b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(bk_ids)).all()}
-        if bk_ids else {}
+        {b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(all_bk_ids)).all()}
+        if all_bk_ids else {}
     )
 
     link_rows = BookmakerMatchLink.query.filter(
@@ -263,24 +280,30 @@ def _load_db_matches(
     links_by_match: dict[int, dict] = {}
     for lnk in link_rows:
         links_by_match.setdefault(lnk.match_id, {})[lnk.bookmaker_id] = lnk.to_dict()
+    # Also add sibling links (mapped to primary match_id)
+    if sibling_map:
+        for lnk in sibling_link_rows:
+            primary_id = sibling_map.get(lnk.match_id)
+            if primary_id:
+                links_by_match.setdefault(primary_id, {})[lnk.bookmaker_id] = lnk.to_dict()
 
     arb_set: set[int] = set()
     try:
         arb_set = {
             r.match_id
             for r in ArbitrageOpportunity.query
-            .filter(
-                ArbitrageOpportunity.match_id.in_(match_ids),
-                ArbitrageOpportunity.status == "OPEN",
-            )
+            .filter(ArbitrageOpportunity.match_id.in_(match_ids),
+                    ArbitrageOpportunity.status == "OPEN")
             .with_entities(ArbitrageOpportunity.match_id).all()
         }
     except Exception:
         pass
 
+    # Group BMOs by effective match_id (primary)
     bmo_by_match: dict[int, list] = {}
     for bmo in bmo_rows:
-        bmo_by_match.setdefault(bmo.match_id, []).append(bmo)
+        eff_id = getattr(bmo, "_primary_match_id", bmo.match_id)
+        bmo_by_match.setdefault(eff_id, []).append(bmo)
 
     result: list[dict] = []
     for um in um_list:
@@ -295,15 +318,25 @@ def _load_db_matches(
             slug    = _bk_slug(bk_name)
             label   = bk_obj.name if bk_obj else slug.upper()
             mkt_data = _flatten_db_markets(bmo.markets_json or {})
-            bookmakers[slug] = {
-                "bookmaker_id": bmo.bookmaker_id,
-                "bookmaker":    label,
-                "slug":         slug,
-                "markets":      mkt_data,
-                "market_count": len(mkt_data),
-                "link":         links_by_match.get(um.id, {}).get(bmo.bookmaker_id),
-            }
-            markets_by_bk[slug] = mkt_data
+            if not mkt_data:
+                continue
+            # Merge if this bookmaker already has data (sibling + primary)
+            if slug in bookmakers:
+                existing = bookmakers[slug]["markets"]
+                existing.update(mkt_data)
+                bookmakers[slug]["markets"]      = existing
+                bookmakers[slug]["market_count"] = len(existing)
+                markets_by_bk[slug]              = existing
+            else:
+                bookmakers[slug] = {
+                    "bookmaker_id": bmo.bookmaker_id,
+                    "bookmaker":    label,
+                    "slug":         slug,
+                    "markets":      mkt_data,
+                    "market_count": len(mkt_data),
+                    "link":         links_by_match.get(um.id, {}).get(bmo.bookmaker_id),
+                }
+                markets_by_bk[slug] = mkt_data
 
         best: dict[str, dict] = {}
         for sl, bk_mkts in markets_by_bk.items():
@@ -404,11 +437,21 @@ def _load_db_matches(
     return result, total, pages
 
 
+class _SiblingBMO:
+    """
+    Thin wrapper around a BookmakerMatchOdds row that overrides match_id
+    to point at the primary unified_match instead of the sibling row.
+    Lets the main loop treat sibling BMOs exactly like primary ones.
+    """
+    def __init__(self, bmo, primary_match_id: int):
+        self._bmo                = bmo
+        self._primary_match_id   = primary_match_id
+
+    def __getattr__(self, name):
+        return getattr(self._bmo, name)
+
+
 def _read_cache_sources(mode: str, sport_slug: str) -> list[dict]:
-    """
-    Reads all cache prefixes CONCURRENTLY.
-    Tries both the raw slug and the canonical alias (football→soccer).
-    """
     from app.workers.celery_tasks import cache_get, cache_keys
 
     canonical    = _normalise_sport_slug(sport_slug)
@@ -450,7 +493,6 @@ def _read_cache_sources(mode: str, sport_slug: str) -> list[dict]:
                     raw.extend(fut.result())
                 except Exception:
                     pass
-
     return raw
 
 
@@ -584,12 +626,9 @@ def _sort_matches(matches: list[dict], sort: str) -> list[dict]:
         except Exception:
             return datetime.max.replace(tzinfo=timezone.utc)
 
-    if sort == "arb":
-        return sorted(matches, key=lambda m: -(m.get("best_arb_pct") or 0))
-    if sort == "market_count":
-        return sorted(matches, key=lambda m: -(m.get("market_count") or 0))
-    if sort == "bk_count":
-        return sorted(matches, key=lambda m: -(m.get("bk_count") or 0))
+    if sort == "arb":          return sorted(matches, key=lambda m: -(m.get("best_arb_pct") or 0))
+    if sort == "market_count": return sorted(matches, key=lambda m: -(m.get("market_count") or 0))
+    if sort == "bk_count":     return sorted(matches, key=lambda m: -(m.get("bk_count") or 0))
     return sorted(matches, key=_dt)
 
 
@@ -626,9 +665,7 @@ def _build_envelope(matches, sport, mode, tier, page, per_page, truncated,
     return env
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Route handlers
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @bp_odds_customer.route("/odds/sports")
 def list_sports():
@@ -812,11 +849,37 @@ def get_match(parent_match_id: str):
         BookmakerOddsHistory,
     )
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
+    from sqlalchemy import func, or_, and_
+
     um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
     if not um:
         return _err("Match not found", 404)
     log_event("match_view", {"match_id": parent_match_id, "tier": tier})
+
     bmos   = BookmakerMatchOdds.query.filter_by(match_id=um.id).all()
+
+    # Sibling merge for single-match endpoint too
+    try:
+        sibling_conds = []
+        if um.home_team_name and um.away_team_name:
+            conds = [
+                func.lower(UnifiedMatch.home_team_name) == um.home_team_name.lower().strip(),
+                func.lower(UnifiedMatch.away_team_name) == um.away_team_name.lower().strip(),
+                UnifiedMatch.id != um.id,
+            ]
+            if um.start_time:
+                w = timedelta(minutes=90)
+                conds += [
+                    UnifiedMatch.start_time >= um.start_time - w,
+                    UnifiedMatch.start_time <= um.start_time + w,
+                ]
+            siblings = UnifiedMatch.query.filter(and_(*conds)).all()
+            for sib in siblings:
+                extra = BookmakerMatchOdds.query.filter_by(match_id=sib.id).all()
+                bmos = list(bmos) + [_SiblingBMO(b, um.id) for b in extra]
+    except Exception:
+        pass
+
     bk_ids = {bmo.bookmaker_id for bmo in bmos}
     bk_map = (
         {b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(bk_ids)).all()}
@@ -832,13 +895,17 @@ def get_match(parent_match_id: str):
         bk_obj = bk_map.get(bmo.bookmaker_id)
         sl     = _bk_slug((bk_obj.name if bk_obj else str(bmo.bookmaker_id)).lower())
         mkts   = _flatten_db_markets(bmo.markets_json or {})
-        bookmakers[sl] = {
-            "bookmaker_id": bmo.bookmaker_id,
-            "bookmaker":    bk_obj.name if bk_obj else sl.upper(),
-            "slug": sl, "markets": mkts, "market_count": len(mkts),
-            "link": links.get(bmo.bookmaker_id),
-        }
-        markets_by_bk[sl] = mkts
+        if not mkts:
+            continue
+        if sl in bookmakers:
+            bookmakers[sl]["markets"].update(mkts)
+            markets_by_bk[sl].update(mkts)
+        else:
+            bookmakers[sl]    = {"bookmaker_id": bmo.bookmaker_id,
+                                  "bookmaker": bk_obj.name if bk_obj else sl.upper(),
+                                  "slug": sl, "markets": mkts, "market_count": len(mkts),
+                                  "link": links.get(bmo.bookmaker_id)}
+            markets_by_bk[sl] = mkts
 
     best: dict[str, dict] = {}
     for sl, bk_mkts in markets_by_bk.items():
@@ -848,8 +915,7 @@ def get_match(parent_match_id: str):
                 try:
                     fv = (
                         float(odd_data.get("price") or odd_data.get("odd") or 0)
-                        if isinstance(odd_data, dict)
-                        else float(odd_data)
+                        if isinstance(odd_data, dict) else float(odd_data)
                     )
                 except Exception:
                     continue
@@ -861,10 +927,7 @@ def get_match(parent_match_id: str):
         .order_by(BookmakerOddsHistory.recorded_at.desc()).limit(50).all()
     )
     history_rows = [{
-        "bookmaker": (
-            bk_map[h.bookmaker_id].name if h.bookmaker_id in bk_map
-            else str(h.bookmaker_id)
-        ),
+        "bookmaker": bk_map[h.bookmaker_id].name if h.bookmaker_id in bk_map else str(h.bookmaker_id),
         "market": h.market, "selection": h.selection,
         "old_price": h.old_price, "new_price": h.new_price,
         "price_delta": h.price_delta,
@@ -930,10 +993,7 @@ def search_matches():
     elif mode == "finished":
         qs = qs.filter(UnifiedMatch.status == "FINISHED")
     total   = qs.count()
-    um_list = (
-        qs.order_by(UnifiedMatch.start_time)
-        .offset((page - 1) * per_page).limit(per_page).all()
-    )
+    um_list = qs.order_by(UnifiedMatch.start_time).offset((page - 1) * per_page).limit(per_page).all()
     match_ids = [um.id for um in um_list]
     bk_counts = dict(
         db.session.query(
@@ -985,11 +1045,9 @@ def harvest_status():
         )
         bk_names = {b.id: b.name for b in Bookmaker.query.all()}
         coverage = [
-            {
-                "bookmaker":    bk_names.get(bk_id, str(bk_id)),
-                "match_count":  cnt,
-                "coverage_pct": round(cnt / total_db * 100, 1) if total_db else 0,
-            }
+            {"bookmaker": bk_names.get(bk_id, str(bk_id)),
+             "match_count": cnt,
+             "coverage_pct": round(cnt / total_db * 100, 1) if total_db else 0}
             for bk_id, cnt in bk_cov.items()
         ]
     except Exception:
@@ -1054,8 +1112,8 @@ def _sse_stream(channel: str):
 
 
 _SSE_HEADERS = {
-    "Cache-Control":        "no-cache",
-    "X-Accel-Buffering":    "no",
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
     "Access-Control-Allow-Origin": "*",
 }
 
