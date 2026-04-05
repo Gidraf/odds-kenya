@@ -36,13 +36,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from app.workers.sp_mapper        import normalize_sp_market
 from app.workers.canonical_mapper import normalize_outcome
 
 # =============================================================================
-# CONSTANTS
+# CONSTANTS & HTTP SESSION
 # =============================================================================
+
+# Create a reusable session to prevent opening a new TCP connection on every request
+SP_SESSION = requests.Session()
+_retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+SP_SESSION.mount('https://', HTTPAdapter(max_retries=_retries, pool_connections=10, pool_maxsize=10))
 
 _BASE = "https://www.ke.sportpesa.com"
 
@@ -231,7 +238,7 @@ _SPORT_MARKET_IDS: dict[str, str] = {
     # American Football / NFL
     "15": "382,51,52,45,353,352",
 
-    # Baseball — FIX: was entirely missing
+    # Baseball
     "3": "382,51,52,45,353,352",
 }
 
@@ -250,8 +257,9 @@ def _get(
 ) -> tuple[Any, dict]:
     url = f"{_BASE}{path}"
     try:
-        r = requests.get(url, headers=_HEADERS, params=params,
-                         timeout=timeout, allow_redirects=True)
+        # Use SP_SESSION to reuse the TCP connection (massively speeds up fetching)
+        r = SP_SESSION.get(url, headers=_HEADERS, params=params,
+                           timeout=timeout, allow_redirects=True)
         if r.status_code == 304:
             return None, {}
         if not r.ok:

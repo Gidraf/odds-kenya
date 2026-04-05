@@ -22,6 +22,7 @@ from datetime import datetime, timezone, timedelta
 
 from celery import group
 from celery.utils.log import get_task_logger
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.workers.celery_tasks import (
     celery, cache_set, cache_get, _now_iso, _publish,
@@ -412,11 +413,20 @@ def cleanup_old_snapshots(days_keep: int = 7) -> dict:
 )
 def sp_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     t0 = time.perf_counter()
+    matches = []
     try:
-        from app.workers.sp_harvester import fetch_upcoming
-        matches = fetch_upcoming(sport_slug, fetch_full_markets=True, max_matches=max_matches)
+        from app.workers.sp_harvester import fetch_upcoming_stream
+        # Read from stream to allow partial saves during a timeout
+        for match in fetch_upcoming_stream(sport_slug, fetch_full_markets=True, max_matches=max_matches, sleep_between=0.1):
+            matches.append(match)
+    except SoftTimeLimitExceeded:
+        logger.warning("[sp:upcoming] Soft timeout hit for %s! Saving the %d matches collected so far.", sport_slug, len(matches))
     except Exception as exc:
         raise self.retry(exc=exc)
+        
+    if not matches:
+        return {"ok": False, "reason": "No matches fetched"}
+
     latency = int((time.perf_counter() - t0) * 1000)
     cache_set(f"sp:upcoming:{sport_slug}", {
         "source": "sportpesa", "sport": sport_slug, "mode": "upcoming",
@@ -428,11 +438,10 @@ def sp_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     _persist_bk_matches(matches, "sp", sport_slug)
     _emit("sportpesa", sport_slug, len(matches), latency)
     logger.info("[sp:upcoming] %s → %d matches %dms", sport_slug, len(matches), latency)
-    return {"ok": True, "source": "sportpesa", "sport": sport_slug,
-            "count": len(matches), "latency_ms": latency}
+    return {"ok": True, "source": "sportpesa", "sport": sport_slug, "count": len(matches), "latency_ms": latency}
 
 
-@celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=600, time_limit=300)
+@celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=600, time_limit=630)
 def sp_harvest_all_upcoming() -> dict:
     sigs = [sp_harvest_sport.s(s) for s in _LOCAL_SPORTS]
     group(sigs).apply_async(queue="harvest")
@@ -450,11 +459,18 @@ def sp_harvest_all_upcoming() -> dict:
 )
 def bt_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     t0 = time.perf_counter()
+    matches = []
     try:
         from app.workers.bt_harvester import fetch_upcoming_matches
         matches = fetch_upcoming_matches(sport_slug, max_pages=8, fetch_full=False)
+    except SoftTimeLimitExceeded:
+        logger.warning("[bt:upcoming] Soft timeout hit for %s! Saving partial matches.", sport_slug)
     except Exception as exc:
         raise self.retry(exc=exc)
+        
+    if not matches:
+        return {"ok": False, "reason": "No matches fetched"}
+
     latency = int((time.perf_counter() - t0) * 1000)
     cache_set(f"bt:upcoming:{sport_slug}", {
         "source": "betika", "sport": sport_slug, "mode": "upcoming",
@@ -466,11 +482,10 @@ def bt_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     _persist_bk_matches(matches, "bt", sport_slug)
     _emit("betika", sport_slug, len(matches), latency)
     logger.info("[bt:upcoming] %s → %d matches %dms", sport_slug, len(matches), latency)
-    return {"ok": True, "source": "betika", "sport": sport_slug,
-            "count": len(matches), "latency_ms": latency}
+    return {"ok": True, "source": "betika", "sport": sport_slug, "count": len(matches), "latency_ms": latency}
 
 
-@celery.task(name="tasks.bt.harvest_all_upcoming", soft_time_limit=30, time_limit=60)
+@celery.task(name="tasks.bt.harvest_all_upcoming", soft_time_limit=60, time_limit=90)
 def bt_harvest_all_upcoming() -> dict:
     sigs = [bt_harvest_sport.s(s) for s in _LOCAL_SPORTS]
     group(sigs).apply_async(queue="harvest")
@@ -488,11 +503,18 @@ def bt_harvest_all_upcoming() -> dict:
 )
 def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     t0 = time.perf_counter()
+    matches = []
     try:
         from app.workers.od_harvester import fetch_upcoming_matches
         matches = fetch_upcoming_matches(sport_slug=sport_slug)
+    except SoftTimeLimitExceeded:
+        logger.warning("[od:upcoming] Soft timeout hit for %s! Saving partial matches.", sport_slug)
     except Exception as exc:
         raise self.retry(exc=exc)
+        
+    if not matches:
+        return {"ok": False, "reason": "No matches fetched"}
+
     latency = int((time.perf_counter() - t0) * 1000)
     cache_set(f"od:upcoming:{sport_slug}", {
         "source": "odibets", "sport": sport_slug, "mode": "upcoming",
@@ -504,11 +526,10 @@ def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     _persist_bk_matches(matches, "od", sport_slug)
     _emit("odibets", sport_slug, len(matches), latency)
     logger.info("[od:upcoming] %s → %d matches %dms", sport_slug, len(matches), latency)
-    return {"ok": True, "source": "odibets", "sport": sport_slug,
-            "count": len(matches), "latency_ms": latency}
+    return {"ok": True, "source": "odibets", "sport": sport_slug, "count": len(matches), "latency_ms": latency}
 
 
-@celery.task(name="tasks.od.harvest_all_upcoming", soft_time_limit=30, time_limit=60)
+@celery.task(name="tasks.od.harvest_all_upcoming", soft_time_limit=60, time_limit=90)
 def od_harvest_all_upcoming() -> dict:
     sigs = [od_harvest_sport.s(s) for s in _LOCAL_SPORTS]
     group(sigs).apply_async(queue="harvest")
