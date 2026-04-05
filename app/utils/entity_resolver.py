@@ -1,45 +1,55 @@
 """
 app/services/entity_resolver.py
 ================================
-Bridges harvested match dicts → PostgreSQL canonical entities.
+Bridges the in-memory CombinedMatch merger → PostgreSQL canonical entities.
 
-KEY FIXES IN THIS VERSION
-─────────────────────────
-1. datetime.utcnow() bug — the Sports model uses datetime.utcnow as a column
-   default but imports `datetime` as the module (not the class). This caused
-   every persist to fail. Fixed by bypassing get_or_create and inserting with
-   an explicit datetime.now(timezone.utc).
+Responsibilities
+────────────────
+  1. Resolve or create canonical Sport / Competition / Team from harvested names.
+  2. Map each bookmaker's external IDs to our canonical IDs.
+  3. Persist UnifiedMatch with proper FK links (not just denormalized strings).
+  4. Store per-bookmaker match links and odds.
+  5. Trigger arb/EV detection and persist opportunities to DB.
+  6. Cache resolved entities in Redis for fast repeated lookups.
 
-2. BT / OD matching — uses bt_parent_id / od_match_id as parent_match_id so
-   matches are deduped correctly against existing SportPesa rows that share the
-   same betradar parent ID.
+SportPesa names are treated as canonical (primary). When a BT/OD name differs,
+we still create the entity using the SP name if available, and store the BT/OD
+name as an alias in BookmakerEntityMap.
 
-3. B2B fuzzy matching — since B2B bookmakers don't share IDs with SP/BT/OD,
-   matches are linked by: home_team + away_team + start_time window (±5 min) +
-   competition (optional). Falls back to creating a new UnifiedMatch if no
-   existing row is close enough.
+Usage
+─────
+    from app.services.entity_resolver import EntityResolver
+
+    resolver = EntityResolver()
+
+    # After combined_merger produces CombinedMatch list:
+    for cm in combined_matches:
+        resolver.persist_combined_match(cm)
+    db.session.commit()
+
+    # Or bulk:
+    resolver.persist_batch(combined_matches)
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any
 
 from app.extensions import db
 
 logger = logging.getLogger(__name__)
 
-# Bookmaker slug → DB bookmaker name
+# Bookmaker slug → DB bookmaker name (for Bookmaker.query lookups)
 BK_SLUG_TO_NAME = {
-    "sp":  "SportPesa",
-    "bt":  "Betika",
-    "od":  "OdiBets",
-    "b2b": "B2B",
-    "sbo": "SBO",
+    "sp": "SportPesa",
+    "bt": "Betika",
+    "od": "OdiBets",
 }
 
+# Sport slug → canonical sport name
 SPORT_SLUG_MAP = {
     "soccer": "Soccer", "football": "Soccer", "esoccer": "eSoccer",
     "efootball": "eSoccer", "basketball": "Basketball", "tennis": "Tennis",
@@ -50,44 +60,19 @@ SPORT_SLUG_MAP = {
     "baseball": "Baseball",
 }
 
-# B2B bookmaker slugs — use fuzzy matching, not ID matching
-_B2B_SLUGS = {"b2b", "sbo", "1xbet", "22bet", "helabet", "paripesa",
-               "melbet", "betwinner", "megapari"}
-
-
-def _now() -> datetime:
-    """UTC-aware now. Replaces deprecated datetime.utcnow()."""
-    return datetime.now(timezone.utc)
-
-
-def _utcnow_naive() -> datetime:
-    """UTC naive datetime (for DB columns that expect naive datetime)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _stamp(obj) -> None:
-    """
-    Explicitly set created_at and updated_at on any model instance.
-    Bypasses model-level defaults that use `datetime` as a module
-    (e.g. `default=datetime.now`) which fail with AttributeError.
-    """
-    now = _utcnow_naive()
-    if hasattr(obj, "created_at") and obj.created_at is None:
-        obj.created_at = now
-    if hasattr(obj, "updated_at") and obj.updated_at is None:
-        obj.updated_at = now
-
 
 class EntityResolver:
     """
-    Stateful resolver — create one per harvest batch, discard after commit.
+    Stateful resolver that caches lookups within a session.
+    Create one per harvest cycle, discard after commit.
     """
 
     def __init__(self):
-        self._sport_cache:     dict[str, int]        = {}
-        self._comp_cache:      dict[str, int]         = {}
-        self._team_cache:      dict[str, int]         = {}
-        self._bookmaker_cache: dict[str, int | None]  = {}
+        # In-memory caches to avoid repeated DB hits within a single batch
+        self._sport_cache: dict[str, int] = {}           # slug → sport.id
+        self._comp_cache: dict[str, int] = {}             # "sport_id|comp_name" → comp.id
+        self._team_cache: dict[str, int] = {}             # "sport_id|team_name" → team.id
+        self._bookmaker_cache: dict[str, int | None] = {} # bk_slug → bookmaker.id
 
     # ─────────────────────────────────────────────────────────────────────
     # BOOKMAKER RESOLUTION
@@ -99,12 +84,14 @@ class EntityResolver:
         try:
             from app.models.bookmakers_model import Bookmaker
             name = BK_SLUG_TO_NAME.get(bk_slug)
-            if not name:
-                self._bookmaker_cache[bk_slug] = None
-                return None
-            bm = Bookmaker.query.filter(
-                db.func.lower(Bookmaker.name) == name.lower()
-            ).first()
+            if name:
+                bm = Bookmaker.query.filter(
+                    db.func.lower(Bookmaker.name) == name.lower()
+                ).first()
+            else:
+                # FIX: Fallback for slugs not in BK_SLUG_TO_NAME (e.g., 'b2b', '1xbet')
+                bm = Bookmaker.query.filter_by(slug=bk_slug).first()
+                
             bk_id = bm.id if bm else None
             self._bookmaker_cache[bk_slug] = bk_id
             return bk_id
@@ -113,55 +100,26 @@ class EntityResolver:
             return None
 
     # ─────────────────────────────────────────────────────────────────────
-    # SPORT RESOLUTION  (bypasses get_or_create to avoid datetime bug)
+    # SPORT RESOLUTION
     # ─────────────────────────────────────────────────────────────────────
 
     def resolve_sport(self, sport_slug: str) -> int | None:
+        """Get or create canonical Sport from slug. Returns sport.id."""
         slug_lower = (sport_slug or "").lower().strip()
         if not slug_lower:
             return None
+
         if slug_lower in self._sport_cache:
             return self._sport_cache[slug_lower]
 
-        try:
-            from app.models.competions_model import Sport
+        from app.models.competions_model import Sport
 
-            canonical_name = SPORT_SLUG_MAP.get(
-                slug_lower, sport_slug.replace("-", " ").title()
-            )
-            canonical_slug = re.sub(r"[^a-z0-9]+", "-", slug_lower).strip("-")
+        canonical_name = SPORT_SLUG_MAP.get(slug_lower, sport_slug.replace("-", " ").title())
+        canonical_slug = re.sub(r"[^a-z0-9]+", "-", slug_lower).strip("-")
 
-            # Try to find existing sport
-            sport = Sport.query.filter(
-                db.or_(
-                    Sport.slug == canonical_slug,
-                    db.func.lower(Sport.name) == canonical_name.lower(),
-                )
-            ).first()
-
-            if not sport:
-                # Create with explicit datetime to avoid model default bug
-                sport = Sport(
-                    name=canonical_name,
-                    slug=canonical_slug,
-                    is_active=True,
-                )
-                # Set created_at explicitly if the column exists to bypass
-                # any model-level default that uses the wrong datetime import
-                _stamp(sport)
-                db.session.add(sport)
-                db.session.flush()
-
-            self._sport_cache[slug_lower] = sport.id
-            return sport.id
-
-        except Exception as exc:
-            logger.warning("[resolve_sport] %s: %s", slug_lower, exc)
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
-            return None
+        sport = Sport.get_or_create(name=canonical_name, slug=canonical_slug)
+        self._sport_cache[slug_lower] = sport.id
+        return sport.id
 
     # ─────────────────────────────────────────────────────────────────────
     # COMPETITION RESOLUTION
@@ -169,40 +127,30 @@ class EntityResolver:
 
     def resolve_competition(self, comp_name: str, sport_id: int,
                             betradar_id: str | None = None) -> int | None:
+        """Get or create canonical Competition. Returns competition.id."""
         if not comp_name or not sport_id:
             return None
+
         cache_key = f"{sport_id}|{comp_name.lower().strip()}"
         if cache_key in self._comp_cache:
             return self._comp_cache[cache_key]
-        try:
-            from app.models.competions_model import Competition
-            if betradar_id:
-                existing = Competition.query.filter_by(betradar_id=betradar_id).first()
-                if existing:
-                    self._comp_cache[cache_key] = existing.id
-                    return existing.id
 
-            comp = Competition.query.filter(
-                Competition.sport_id == sport_id,
-                db.func.lower(Competition.name) == comp_name.strip().lower(),
-            ).first()
+        from app.models.competions_model import Competition
 
-            if not comp:
-                comp = Competition(
-                    name=comp_name.strip(),
-                    sport_id=sport_id,
-                    betradar_id=betradar_id,
-                    is_active=True,
-                )
-                _stamp(comp)
-                db.session.add(comp)
-                db.session.flush()
+        # Try betradar_id first (most reliable)
+        if betradar_id:
+            existing = Competition.query.filter_by(betradar_id=betradar_id).first()
+            if existing:
+                self._comp_cache[cache_key] = existing.id
+                return existing.id
 
-            self._comp_cache[cache_key] = comp.id
-            return comp.id
-        except Exception as exc:
-            logger.warning("[resolve_competition] %s: %s", comp_name, exc)
-            return None
+        comp = Competition.get_or_create(
+            name=comp_name.strip(),
+            sport_id=sport_id,
+            betradar_id=betradar_id,
+        )
+        self._comp_cache[cache_key] = comp.id
+        return comp.id
 
     # ─────────────────────────────────────────────────────────────────────
     # TEAM RESOLUTION
@@ -210,128 +158,99 @@ class EntityResolver:
 
     def resolve_team(self, team_name: str, sport_id: int,
                      betradar_id: str | None = None) -> int | None:
+        """Get or create canonical Team. Returns team.id."""
         if not team_name or not sport_id:
             return None
+
         cache_key = f"{sport_id}|{team_name.lower().strip()}"
         if cache_key in self._team_cache:
             return self._team_cache[cache_key]
+
+        from app.models.competions_model import Team
+
+        if betradar_id:
+            existing = Team.query.filter_by(betradar_id=betradar_id).first()
+            if existing:
+                self._team_cache[cache_key] = existing.id
+                return existing.id
+
+        team = Team.get_or_create(
+            name=team_name.strip(),
+            sport_id=sport_id,
+            betradar_id=betradar_id,
+        )
+        self._team_cache[cache_key] = team.id
+        return team.id
+
+    # ─────────────────────────────────────────────────────────────────────
+    # BOOKMAKER ENTITY MAPPING
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _map_bookmaker_entity(
+        self,
+        bk_slug: str,
+        entity_type: str,
+        canonical_id: int,
+        external_id: str,
+        external_name: str | None = None,
+        betradar_id: str | None = None,
+    ) -> None:
+        """Record that bookmaker X calls our entity Y by external_id Z."""
+        bk_id = self._get_bookmaker_id(bk_slug)
+        if not bk_id or not canonical_id or not external_id:
+            return
         try:
-            from app.models.competions_model import Team
-            if betradar_id:
-                existing = Team.query.filter_by(betradar_id=betradar_id).first()
-                if existing:
-                    self._team_cache[cache_key] = existing.id
-                    return existing.id
-
-            team = Team.query.filter(
-                Team.sport_id == sport_id,
-                db.func.lower(Team.name) == team_name.strip().lower(),
-            ).first()
-
-            if not team:
-                team = Team(
-                    name=team_name.strip(),
-                    sport_id=sport_id,
-                    betradar_id=betradar_id,
-                    is_active=True,
-                )
-                _stamp(team)
-                db.session.add(team)
-                db.session.flush()
-
-            self._team_cache[cache_key] = team.id
-            return team.id
+            from app.models.bookmakers_model import BookmakerEntityMap
+            BookmakerEntityMap.upsert(
+                bookmaker_id=bk_id,
+                entity_type=entity_type,
+                canonical_id=canonical_id,
+                external_id=external_id,
+                external_name=external_name,
+                betradar_id=betradar_id,
+            )
         except Exception as exc:
-            logger.warning("[resolve_team] %s: %s", team_name, exc)
-            return None
+            logger.debug("entity map error: %s", exc)
 
-    # ─────────────────────────────────────────────────────────────────────
-    # BOOKMAKER ENTITY / MATCH LINK HELPERS
-    # ─────────────────────────────────────────────────────────────────────
-
-    def _map_bookmaker_match(self, bk_slug: str, match_id: int,
-                             external_match_id: str,
-                             betradar_id: str | None = None) -> None:
+    def _map_bookmaker_match(
+        self,
+        bk_slug: str,
+        match_id: int,
+        external_match_id: str,
+        betradar_id: str | None = None,
+    ) -> None:
+        """Record that bookmaker X calls our match Y by external_match_id Z."""
         bk_id = self._get_bookmaker_id(bk_slug)
         if not bk_id or not match_id or not external_match_id:
             return
         try:
             from app.models.bookmakers_model import BookmakerMatchLink
             BookmakerMatchLink.upsert(
-                match_id=match_id, bookmaker_id=bk_id,
-                external_match_id=external_match_id, betradar_id=betradar_id,
+                match_id=match_id,
+                bookmaker_id=bk_id,
+                external_match_id=external_match_id,
+                betradar_id=betradar_id,
             )
         except Exception as exc:
             logger.debug("match link error: %s", exc)
 
     # ─────────────────────────────────────────────────────────────────────
-    # UNIFIED MATCH LOOKUP STRATEGIES
-    # ─────────────────────────────────────────────────────────────────────
-
-    def _find_by_parent_id(self, parent_id: str):
-        """Exact match on parent_match_id — used for SP/BT/OD."""
-        from app.models.odds_model import UnifiedMatch
-        return UnifiedMatch.query.filter_by(
-            parent_match_id=parent_id
-        ).with_for_update().first()
-
-    def _find_by_fuzzy(self, home: str, away: str,
-                       start_time: datetime | None,
-                       comp: str = "") -> Any | None:
-        """
-        Fuzzy match for B2B bookmakers that don't share IDs with SP/BT/OD.
-
-        Matches on:
-          1. home_team ILIKE + away_team ILIKE  (normalised: lower, strip)
-          2. start_time within ±5 minutes  (if available)
-          3. competition ILIKE  (optional bonus, not required)
-
-        Returns the best match or None.
-        """
-        from app.models.odds_model import UnifiedMatch
-
-        if not home or not away:
-            return None
-
-        home_l = home.strip().lower()
-        away_l = away.strip().lower()
-
-        q = UnifiedMatch.query.filter(
-            db.func.lower(UnifiedMatch.home_team_name) == home_l,
-            db.func.lower(UnifiedMatch.away_team_name) == away_l,
-        )
-
-        if start_time:
-            # ±5 minute window to handle timezone/rounding differences
-            window = timedelta(minutes=5)
-            st = start_time.replace(tzinfo=None) if start_time.tzinfo else start_time
-            q = q.filter(
-                UnifiedMatch.start_time >= st - window,
-                UnifiedMatch.start_time <= st + window,
-            )
-
-        candidates = q.all()
-        if not candidates:
-            return None
-
-        if len(candidates) == 1:
-            return candidates[0]
-
-        # Multiple candidates — prefer same competition
-        if comp:
-            comp_l = comp.strip().lower()
-            for c in candidates:
-                if c.competition_name and comp_l in c.competition_name.lower():
-                    return c
-
-        # Fall back to most recently created
-        return max(candidates, key=lambda x: x.id)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # CORE PERSIST
+    # UNIFIED MATCH PERSISTENCE
     # ─────────────────────────────────────────────────────────────────────
 
     def persist_combined_match(self, cm) -> int | None:
+        """
+        Take a CombinedMatch (from combined_merger) and persist everything to DB.
+
+        Returns the UnifiedMatch.id or None on failure.
+
+        Steps:
+          1. Resolve Sport → Competition → home Team / away Team
+          2. Upsert UnifiedMatch with FKs
+          3. Store bookmaker match links (bk_ids)
+          4. Store per-bookmaker odds
+          5. Detect and store arb / EV opportunities
+        """
         from app.models.odds_model import (
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
             OpportunityDetector, ArbitrageOpportunity, EVOpportunity,
@@ -339,180 +258,173 @@ class EntityResolver:
         )
 
         try:
-            # ── 1. Resolve Sport ──────────────────────────────────────────
-            sport_slug = self._infer_sport_slug(cm)
-            sport_id   = self.resolve_sport(sport_slug) if sport_slug else None
+            # FIX: Create a savepoint for this specific match to isolate failures
+            with db.session.begin_nested():
+                # ── 1. Resolve entities ────────────────────────────────────────
+                sport_slug = self._infer_sport_slug(cm)
+                sport_id   = self.resolve_sport(sport_slug) if sport_slug else None
 
-            comp_id      = None
-            home_team_id = None
-            away_team_id = None
-
-            if sport_id:
-                if cm.competition:
+                comp_id = None
+                if sport_id and cm.competition:
                     comp_id = self.resolve_competition(cm.competition, sport_id)
-                if cm.home_team:
-                    home_team_id = self.resolve_team(cm.home_team, sport_id)
-                if cm.away_team:
-                    away_team_id = self.resolve_team(cm.away_team, sport_id)
 
-            # ── 2. Determine which bookmaker slugs are in this match ───────
-            bk_slugs  = list((cm.bk_ids or {}).keys())
-            is_b2b    = any(s in _B2B_SLUGS for s in bk_slugs)
-            is_bt     = "bt" in bk_slugs
-            is_od     = "od" in bk_slugs
+                home_team_id = None
+                away_team_id = None
+                if sport_id:
+                    if cm.home_team:
+                        home_team_id = self.resolve_team(cm.home_team, sport_id)
+                    if cm.away_team:
+                        away_team_id = self.resolve_team(cm.away_team, sport_id)
 
-            start_time = self._parse_start_time(cm.start_time)
+                # ── 2. Upsert UnifiedMatch ─────────────────────────────────────
+                parent_id = cm.betradar_id or cm.join_key
+                if not parent_id:
+                    return None
 
-            # ── 3. Find or create UnifiedMatch ────────────────────────────
-            #
-            #  SP / BT / OD → exact parent_match_id lookup
-            #    • SP: betradar_id or join_key
-            #    • BT: bt_parent_id stored in bk_ids["bt"]
-            #    • OD: od_match_id stored in bk_ids["od"]
-            #  B2B / SBO → fuzzy lookup then create if no match found
-            #
-            um = None
-            parent_id = cm.betradar_id or cm.join_key
-            if not parent_id:
-                return None
-
-            if is_b2b:
-                # Try fuzzy first, so B2B odds attach to the existing SP row
-                um = self._find_by_fuzzy(
-                    cm.home_team, cm.away_team, start_time, cm.competition or ""
-                )
-                if um is None:
-                    # No SP/BT row exists yet — create a new one with b2b key
-                    um = self._find_by_parent_id(parent_id)
-
-            else:
-                # SP / BT / OD — exact match
-                um = self._find_by_parent_id(parent_id)
-
-            if not um:
-                um = UnifiedMatch(
-                    parent_match_id=parent_id,
-                    home_team_name=cm.home_team,
-                    away_team_name=cm.away_team,
-                    sport_name=sport_slug or "",
-                    competition_name=cm.competition or "",
-                    start_time=start_time,
-                    competition_id=comp_id,
-                    home_team_id=home_team_id,
-                    away_team_id=away_team_id,
-                )
-                db.session.add(um)
-                db.session.flush()
-            else:
-                # Fill in any missing fields
-                if cm.home_team and not um.home_team_name:
-                    um.home_team_name = cm.home_team
-                if cm.away_team and not um.away_team_name:
-                    um.away_team_name = cm.away_team
-                if cm.competition and not um.competition_name:
-                    um.competition_name = cm.competition
-                if start_time and not um.start_time:
-                    um.start_time = start_time
-                if comp_id and not um.competition_id:
-                    um.competition_id = comp_id
-                if home_team_id and not um.home_team_id:
-                    um.home_team_id = home_team_id
-                if away_team_id and not um.away_team_id:
-                    um.away_team_id = away_team_id
-                if sport_slug and not um.sport_name:
-                    um.sport_name = sport_slug
-
-            # ── 4. Bookmaker match links ───────────────────────────────────
-            for bk_slug, ext_id in (cm.bk_ids or {}).items():
-                if ext_id:
-                    self._map_bookmaker_match(bk_slug, um.id, ext_id, cm.betradar_id)
-
-            # ── 5. Per-bookmaker odds ──────────────────────────────────────
-            for bk_slug, bk_markets in (cm.markets or {}).items():
-                bk_id = self._get_bookmaker_id(bk_slug)
-                if not bk_id:
-                    logger.debug("[entity_resolver] no bk_id for slug=%s", bk_slug)
-                    continue
-
-                bmo = BookmakerMatchOdds.query.filter_by(
-                    match_id=um.id, bookmaker_id=bk_id
+                um = UnifiedMatch.query.filter_by(
+                    parent_match_id=parent_id
                 ).with_for_update().first()
-                if not bmo:
-                    bmo = BookmakerMatchOdds(match_id=um.id, bookmaker_id=bk_id)
-                    db.session.add(bmo)
+
+                start_time = self._parse_start_time(cm.start_time)
+
+                if not um:
+                    um = UnifiedMatch(
+                        parent_match_id=parent_id,
+                        home_team_name=cm.home_team,
+                        away_team_name=cm.away_team,
+                        sport_name=sport_slug or "",
+                        competition_name=cm.competition or "",
+                        start_time=start_time,
+                        competition_id=comp_id,
+                        home_team_id=home_team_id,
+                        away_team_id=away_team_id,
+                    )
+                    db.session.add(um)
                     db.session.flush()
+                else:
+                    # Update denorms if better data available
+                    if cm.home_team and not um.home_team_name:
+                        um.home_team_name = cm.home_team
+                    if cm.away_team and not um.away_team_name:
+                        um.away_team_name = cm.away_team
+                    if cm.competition and not um.competition_name:
+                        um.competition_name = cm.competition
+                    if start_time and not um.start_time:
+                        um.start_time = start_time
+                    # Set FKs if not yet set
+                    if comp_id and not um.competition_id:
+                        um.competition_id = comp_id
+                    if home_team_id and not um.home_team_id:
+                        um.home_team_id = home_team_id
+                    if away_team_id and not um.away_team_id:
+                        um.away_team_id = away_team_id
+                    if sport_slug and not um.sport_name:
+                        um.sport_name = sport_slug
 
-                history_batch: list[dict] = []
-                for mkt_slug, outcomes in bk_markets.items():
-                    for outcome, odd in (outcomes or {}).items():
-                        try:
-                            price = float(odd)
-                        except (TypeError, ValueError):
-                            continue
-                        if price <= 1.0:
-                            continue
-
-                        price_changed, old_price = bmo.upsert_selection(
-                            market=mkt_slug, specifier=None,
-                            selection=outcome, price=price,
+                # ── 3. Bookmaker match links ───────────────────────────────────
+                for bk_slug, ext_id in (cm.bk_ids or {}).items():
+                    if ext_id:
+                        self._map_bookmaker_match(
+                            bk_slug, um.id, ext_id, cm.betradar_id
                         )
-                        um.upsert_bookmaker_price(
-                            market=mkt_slug, specifier=None,
-                            selection=outcome, price=price,
-                            bookmaker_id=bk_id,
-                        )
-                        if price_changed:
-                            history_batch.append({
-                                "bmo_id":       bmo.id,
-                                "bookmaker_id": bk_id,
-                                "match_id":     um.id,
-                                "market":       mkt_slug,
-                                "specifier":    None,
-                                "selection":    outcome,
-                                "old_price":    old_price,
-                                "new_price":    price,
-                                "price_delta":  round(price - old_price, 4) if old_price else None,
-                                "recorded_at":  _utcnow_naive(),
-                            })
 
-                if history_batch:
-                    BookmakerOddsHistory.bulk_append(history_batch)
+                # ── 4. Per-bookmaker odds ──────────────────────────────────────
+                for bk_slug, bk_markets in (cm.markets or {}).items():
+                    bk_id = self._get_bookmaker_id(bk_slug)
+                    if not bk_id:
+                        continue
 
-            # ── 6. Arb / EV detection ──────────────────────────────────────
-            try:
-                detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
-                ArbitrageOpportunity.query.filter_by(
-                    match_id=um.id, status=OpportunityStatus.OPEN
-                ).update({"status": OpportunityStatus.CLOSED,
-                          "closed_at": _utcnow_naive()})
-                for arb_kw in detector.find_arbs(um):
-                    db.session.add(ArbitrageOpportunity(**arb_kw))
-                EVOpportunity.query.filter_by(
-                    match_id=um.id, status=OpportunityStatus.OPEN
-                ).update({"status": OpportunityStatus.CLOSED,
-                          "closed_at": _utcnow_naive()})
-                for ev_kw in detector.find_ev(um):
-                    db.session.add(EVOpportunity(**ev_kw))
-            except Exception as exc:
-                logger.warning("opportunity detection error: %s", exc)
+                    bmo = BookmakerMatchOdds.query.filter_by(
+                        match_id=um.id, bookmaker_id=bk_id
+                    ).with_for_update().first()
+                    
+                    if not bmo:
+                        bmo = BookmakerMatchOdds(match_id=um.id, bookmaker_id=bk_id)
+                        db.session.add(bmo)
+                        db.session.flush()
 
-            return um.id
+                    history_batch: list[dict] = []
+                    for mkt_slug, outcomes in bk_markets.items():
+                        for outcome, odd in outcomes.items():
+                            try:
+                                price = float(odd)
+                            except (TypeError, ValueError):
+                                continue
+                            if price <= 1.0:
+                                continue
+
+                            price_changed, old_price = bmo.upsert_selection(
+                                market=mkt_slug, specifier=None,
+                                selection=outcome, price=price,
+                            )
+                            um.upsert_bookmaker_price(
+                                market=mkt_slug, specifier=None,
+                                selection=outcome, price=price,
+                                bookmaker_id=bk_id,
+                            )
+                            if price_changed:
+                                history_batch.append({
+                                    "bmo_id": bmo.id,
+                                    "bookmaker_id": bk_id,
+                                    "match_id": um.id,
+                                    "market": mkt_slug,
+                                    "specifier": None,
+                                    "selection": outcome,
+                                    "old_price": old_price,
+                                    "new_price": price,
+                                    "price_delta": round(price - old_price, 4) if old_price else None,
+                                    "recorded_at": datetime.utcnow(),
+                                })
+
+                    if history_batch:
+                        BookmakerOddsHistory.bulk_append(history_batch)
+
+                # ── 5. Detect arb / EV opportunities ──────────────────────────
+                try:
+                    detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
+
+                    # Close stale open arbs for this match first
+                    ArbitrageOpportunity.query.filter_by(
+                        match_id=um.id, status=OpportunityStatus.OPEN
+                    ).update({"status": OpportunityStatus.CLOSED,
+                              "closed_at": datetime.utcnow()})
+
+                    for arb_kw in detector.find_arbs(um):
+                        db.session.add(ArbitrageOpportunity(**arb_kw))
+
+                    EVOpportunity.query.filter_by(
+                        match_id=um.id, status=OpportunityStatus.OPEN
+                    ).update({"status": OpportunityStatus.CLOSED,
+                              "closed_at": datetime.utcnow()})
+
+                    for ev_kw in detector.find_ev(um):
+                        db.session.add(EVOpportunity(**ev_kw))
+                except Exception as exc:
+                    logger.warning("opportunity detection error: %s", exc)
+
+                return um.id
 
         except Exception as exc:
             logger.error("persist_combined_match error: %s", exc)
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
+            # FIX: Clear caches to prevent reusing IDs that were just rolled back in the main session
+            self._comp_cache.clear()
+            self._team_cache.clear()
+            self._sport_cache.clear()
+            self._bookmaker_cache.clear()
             return None
 
     # ─────────────────────────────────────────────────────────────────────
-    # BATCH PERSIST
+    # BATCH PERSISTENCE
     # ─────────────────────────────────────────────────────────────────────
 
     def persist_batch(self, combined_matches: list, commit: bool = True) -> dict:
+        """
+        Persist a list of CombinedMatch objects to PostgreSQL.
+        Returns summary stats.
+        """
         persisted = 0
         failed    = 0
+
         for cm in combined_matches:
             try:
                 mid = self.persist_combined_match(cm)
@@ -523,10 +435,8 @@ class EntityResolver:
             except Exception as exc:
                 logger.error("batch persist error: %s", exc)
                 failed += 1
-                try:
-                    db.session.rollback()
-                except Exception:
-                    pass
+                # db.session.rollback() is no longer needed here for individual items 
+                # because `db.session.begin_nested()` handles individual rollbacks cleanly.
 
         if commit:
             try:
@@ -544,11 +454,14 @@ class EntityResolver:
 
     @staticmethod
     def _infer_sport_slug(cm) -> str | None:
-        # Try explicit sport field first
-        sport = getattr(cm, "sport", None) or getattr(cm, "sport_slug", None)
-        if sport:
-            return str(sport).lower().strip()
-        # Fall back to "soccer" — TODO: carry sport_slug through the pipeline
+        """
+        Try to extract a sport slug from the CombinedMatch.
+        The merger doesn't always carry sport info, so we fall back to
+        competition name heuristics.
+        """
+        # Check if markets have sport-specific slugs
+        # For now, default to soccer if unknown
+        # TODO: The combined stream should carry sport_slug
         return "soccer"
 
     @staticmethod
@@ -557,12 +470,164 @@ class EntityResolver:
             return None
         try:
             if isinstance(raw, datetime):
-                return raw.replace(tzinfo=None) if raw.tzinfo else raw
+                return raw
             if isinstance(raw, str):
-                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                return dt.replace(tzinfo=None)
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
             if isinstance(raw, (int, float)):
                 return datetime.utcfromtimestamp(float(raw))
         except Exception:
             pass
         return None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# QUERY SERVICE  (read path — used by API endpoints)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class MatchQueryService:
+    """
+    High-level query methods for API endpoints.
+    All return dicts ready for JSON serialization.
+    Uses Redis cache where indicated.
+    """
+
+    @staticmethod
+    def get_match_detail(match_id: int) -> dict | None:
+        """Full match detail with odds, events, stats, lineups."""
+        from app.models.odds_model import UnifiedMatch
+        from app.models.match import (
+            MatchEvent, MatchStats, MatchLineup
+        )
+        from app.models.bookmakers_model import (
+             BookmakerMatchLink
+        )
+
+        um = UnifiedMatch.query.get(match_id)
+        if not um:
+            return None
+
+        d = um.to_dict(include_bookmaker_odds=True)
+
+        # Add events
+        events = MatchEvent.query.filter_by(match_id=match_id).order_by(
+            MatchEvent.minute, MatchEvent.id
+        ).all()
+        d["events"] = [e.to_dict() for e in events]
+
+        # Add stats
+        stats = MatchStats.query.filter_by(match_id=match_id).all()
+        d["stats"] = {s.team_side: s.to_dict() for s in stats}
+
+        # Add lineups
+        lineups = MatchLineup.query.filter_by(match_id=match_id).order_by(
+            MatchLineup.team_side, MatchLineup.lineup_type, MatchLineup.jersey_number
+        ).all()
+        d["lineups"] = {
+            "home": [l.to_dict() for l in lineups if l.team_side == "home"],
+            "away": [l.to_dict() for l in lineups if l.team_side == "away"],
+        }
+
+        # Add bookmaker links
+        links = BookmakerMatchLink.query.filter_by(match_id=match_id).all()
+        d["bookmaker_links"] = [l.to_dict() for l in links]
+
+        return d
+
+    @staticmethod
+    def get_team_form(team_id: int, limit: int = 10) -> list[dict]:
+        """Last N matches for a team with results."""
+        from app.models.odds_model import UnifiedMatch, MatchStatus
+
+        matches = UnifiedMatch.query.filter(
+            db.or_(
+                UnifiedMatch.home_team_id == team_id,
+                UnifiedMatch.away_team_id == team_id,
+            ),
+            UnifiedMatch.status == MatchStatus.FINISHED,
+        ).order_by(UnifiedMatch.start_time.desc()).limit(limit).all()
+
+        results = []
+        for m in matches:
+            is_home = m.home_team_id == team_id
+            if m.score_home is not None and m.score_away is not None:
+                if is_home:
+                    if m.score_home > m.score_away: outcome = "W"
+                    elif m.score_home == m.score_away: outcome = "D"
+                    else: outcome = "L"
+                    goals_for, goals_against = m.score_home, m.score_away
+                else:
+                    if m.score_away > m.score_home: outcome = "W"
+                    elif m.score_away == m.score_home: outcome = "D"
+                    else: outcome = "L"
+                    goals_for, goals_against = m.score_away, m.score_home
+            else:
+                outcome = None
+                goals_for = goals_against = None
+
+            results.append({
+                "match_id":      m.id,
+                "home_team":     m.home_team_name,
+                "away_team":     m.away_team_name,
+                "competition":   m.competition_name,
+                "start_time":    m.start_time.isoformat() if m.start_time else None,
+                "score_home":    m.score_home,
+                "score_away":    m.score_away,
+                "is_home":       is_home,
+                "outcome":       outcome,
+                "goals_for":     goals_for,
+                "goals_against": goals_against,
+            })
+
+        return results
+
+    @staticmethod
+    def get_h2h(team_a_id: int, team_b_id: int, limit: int = 10) -> list[dict]:
+        """Head-to-head history between two teams."""
+        from app.models.odds_model import UnifiedMatch, MatchStatus
+
+        matches = UnifiedMatch.query.filter(
+            UnifiedMatch.status == MatchStatus.FINISHED,
+            db.or_(
+                db.and_(
+                    UnifiedMatch.home_team_id == team_a_id,
+                    UnifiedMatch.away_team_id == team_b_id,
+                ),
+                db.and_(
+                    UnifiedMatch.home_team_id == team_b_id,
+                    UnifiedMatch.away_team_id == team_a_id,
+                ),
+            ),
+        ).order_by(UnifiedMatch.start_time.desc()).limit(limit).all()
+
+        return [m.to_dict() for m in matches]
+
+    @staticmethod
+    def get_competition_matches(
+        competition_id: int,
+        status: str | None = None,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict:
+        """Matches for a competition with pagination."""
+        from app.models.odds_model import UnifiedMatch, MatchStatus
+
+        q = UnifiedMatch.query.filter_by(competition_id=competition_id)
+
+        if status:
+            try:
+                q = q.filter(UnifiedMatch.status == MatchStatus(status))
+            except ValueError:
+                pass
+
+        total = q.count()
+        matches = q.order_by(UnifiedMatch.start_time.desc()).offset(
+            (page - 1) * per_page
+        ).limit(per_page).all()
+
+        return {
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": max(1, (total + per_page - 1) // per_page),
+            "matches": [m.to_dict() for m in matches],
+        }
