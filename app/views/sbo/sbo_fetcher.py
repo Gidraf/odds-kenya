@@ -62,6 +62,7 @@ Classes
 
 from __future__ import annotations
 
+from datetime import timezone
 import re
 import time
 import traceback
@@ -528,7 +529,7 @@ class SportpesaFetcher:
         seen_ids: set[str] = set()
 
         for day_offset in range(days):
-            base_dt  = datetime.datetime.utcnow() + datetime.timedelta(hours=3)  # EAT
+            base_dt  =  datetime.now(timezone.utc) + datetime.timedelta(hours=3)  # EAT
             day_start = base_dt + datetime.timedelta(days=day_offset)
             day_end   = day_start + datetime.timedelta(days=1)
             ts_start  = int(day_start.replace(hour=0, minute=0, second=0).timestamp())

@@ -96,7 +96,7 @@ def _utcnow() -> datetime:
 
 def _utcnow_naive() -> datetime:
     """Some DB drivers prefer naive UTC; use consistently."""
-    return datetime.utcnow()
+    return  datetime.now(timezone.utc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
