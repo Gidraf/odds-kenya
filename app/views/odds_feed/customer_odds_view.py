@@ -34,6 +34,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Generator
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint, Response, request, stream_with_context
 
@@ -104,7 +105,7 @@ _SSE_HEADERS = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(ZoneInfo("Africa/Nairobi"))
 
 
 def _effective_status(db_status: str | None, start_time: datetime | None) -> str:
