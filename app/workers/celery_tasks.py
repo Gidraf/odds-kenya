@@ -29,20 +29,34 @@ from app.extensions import celery as celery_service, init_celery
 LIVE_ENABLED: bool = False
 
 TASK_ROUTES: dict[str, dict] = {
+    # ── Registry ──────────────────────────────────────────────────────────────
     "harvest.bookmaker_sport":             {"queue": "harvest"},
     "harvest.all_upcoming":                {"queue": "harvest"},
     "harvest.merge_broadcast":             {"queue": "harvest"},
     "harvest.value_bets":                  {"queue": "ev_arb"},
     "harvest.cleanup":                     {"queue": "harvest"},
+ 
+    # ── SportPesa (source of truth) ───────────────────────────────────────────
     "tasks.sp.harvest_sport":              {"queue": "harvest"},
     "tasks.sp.harvest_all_upcoming":       {"queue": "harvest"},
     "tasks.sp.harvest_all_live":           {"queue": "live"},
+    # New cross-BK and analytics tasks
+    "tasks.sp.cross_bk_enrich":           {"queue": "harvest"},   # BT+OD by betradar_id
+    "tasks.sp.enrich_analytics":          {"queue": "harvest"},   # Sportradar stats
+    "tasks.sp.get_match_analytics":       {"queue": "harvest"},   # on-demand analytics
+ 
+    # ── Betika (manual trigger only — NOT scheduled) ───────────────────────────
     "tasks.bt.harvest_sport":              {"queue": "harvest"},
-    "tasks.bt.harvest_all_upcoming":       {"queue": "harvest"},
+    "tasks.bt.enrich_sport":              {"queue": "harvest"},
+    "tasks.bt.harvest_all_upcoming":       {"queue": "harvest"},   # manual only
     "tasks.bt.harvest_all_live":           {"queue": "live"},
+ 
+    # ── OdiBets (manual trigger only — NOT scheduled) ─────────────────────────
     "tasks.od.harvest_sport":              {"queue": "harvest"},
-    "tasks.od.harvest_all_upcoming":       {"queue": "harvest"},
+    "tasks.od.harvest_all_upcoming":       {"queue": "harvest"},   # manual only
     "tasks.od.harvest_all_live":           {"queue": "live"},
+ 
+    # ── B2B / SBO (scheduled) ─────────────────────────────────────────────────
     "tasks.b2b.harvest_sport":             {"queue": "harvest"},
     "tasks.b2b.harvest_all_upcoming":      {"queue": "harvest"},
     "tasks.b2b.harvest_all_live":          {"queue": "live"},
@@ -53,6 +67,8 @@ TASK_ROUTES: dict[str, dict] = {
     "tasks.sbo.harvest_all_upcoming":      {"queue": "harvest"},
     "tasks.sbo.harvest_all_live":          {"queue": "live"},
     "tasks.sp.poll_all_event_details":     {"queue": "live"},
+ 
+    # ── Ops ───────────────────────────────────────────────────────────────────
     "tasks.ops.compute_ev_arb":            {"queue": "ev_arb"},
     "tasks.ops.update_match_results":      {"queue": "results"},
     "tasks.ops.dispatch_notifications":    {"queue": "notify"},
@@ -68,7 +84,6 @@ TASK_ROUTES: dict[str, dict] = {
     "tasks.align.sport":                   {"queue": "default"},
     "tasks.align.all":                     {"queue": "results"},
 }
-
 _BK_NAME_TO_SLUG: dict[str, str] = {
     "sportpesa": "sp",
     "betika":    "bt",

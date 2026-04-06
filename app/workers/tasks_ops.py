@@ -2,17 +2,18 @@
 app/workers/tasks_ops.py
 ========================
 Operational tasks: EV/arb, results, notifications, health, subscriptions,
-immediate startup harvesting (upcoming only), minute health reports, job logging.
+persist pipeline, minute health reports, job logging.
 
 LIVE_ENABLED = False
-  • Beat schedule has NO live tasks.
-  • Startup dispatches INDIVIDUAL per-sport tasks directly, not umbrella
-    tasks, so a timeout in one sport never silently kills the others.
-  • Set LIVE_ENABLED = True here AND in celery_app.py when upcoming is stable.
+  • No live tasks in beat schedule.
+  • Startup dispatches SP per-sport tasks only.
+    BT and OD are handled automatically by sp_cross_bk_enrich which SP
+    dispatches 10 s after each harvest completes — no separate BT/OD
+    startup tasks needed.
 
 Market Alignment Service
   • align_all_sports runs every 15 min (beat) and is also triggered
-    automatically 60s after each bookmaker harvest completes.
+    automatically 30–60 s after each sp_cross_bk_enrich completes.
 """
 
 from __future__ import annotations
@@ -50,26 +51,25 @@ PERSIST_SPORTS: list[str] = [
     "table-tennis", "esoccer", "mma", "boxing", "darts",
 ]
 
-# Must match harvesters that write {slug}:upcoming:{sport} to Redis
 _BK_SLUGS: list[str] = ["sp", "bt", "od", "b2b", "sbo"]
 
 # Sports dispatched per bookmaker at startup
-_SP_OD_BT_SPORTS = [
+_SP_SPORTS = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
 ]
-_B2B_SPORTS = [
+# B2B / SBO run independently, still scheduled
+_B2B_SPORTS_STARTUP = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
     "darts", "handball",
 ]
-_SBO_SPORTS = [
+_SBO_SPORTS_STARTUP = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "boxing",
     "handball", "mma", "table-tennis",
 ]
 
-# ── Structured job logger ─────────────────────────────────────────────────────
 LOG_DIR = Path(os.environ.get("LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -102,12 +102,14 @@ def log_job(bookmaker: str, sport: str, mode: str, count: int, status: str,
 
 
 # =============================================================================
-# STARTUP HARVEST  (upcoming only while LIVE_ENABLED = False)
+# STARTUP HARVEST
+# SP only — BT and OD are handled via sp_cross_bk_enrich (auto-dispatched
+# 10 s after each SP harvest).
 # =============================================================================
 
 @worker_ready.connect
 def on_worker_ready(sender, **kwargs):
-    logger.info("[startup] Worker ready — dispatching upcoming harvests")
+    logger.info("[startup] Worker ready — dispatching SP harvests (BT/OD via cross-BK enrich)")
     try:
         _dispatch_startup_harvests()
     except Exception as exc:
@@ -116,54 +118,29 @@ def on_worker_ready(sender, **kwargs):
 
 def _dispatch_startup_harvests() -> None:
     """
-    Fan-out individual per-sport harvest tasks on worker boot.
+    Dispatch individual SP per-sport harvest tasks on worker boot.
 
-    KEY CHANGE from previous version:
-    We now dispatch INDIVIDUAL sport tasks directly instead of umbrella
-    harvest_all_upcoming tasks.  This means a timeout in one sport's
-    umbrella task can never silently prevent other sports from being
-    dispatched.
+    SP → dispatches sp_cross_bk_enrich (BT+OD by betradar_id, 10 s countdown)
+        → dispatches sp_enrich_analytics (SR stats, 60 s countdown)
 
-    SP/BT/OD are long-running (soft 3600s each) — they are staggered
-    with larger countdowns to avoid hammering the same APIs simultaneously.
-    B2B/SBO are fast and can start sooner.
+    B2B and SBO still run independently (different data sources, no betradar_id link).
+    BT and OD are NOT dispatched here — they are covered by sp_cross_bk_enrich.
     """
     dispatched = 0
 
-    # ── SportPesa — individual sport tasks, staggered 30s apart ──────────────
+    # ── SportPesa — individual sport tasks, staggered ─────────────────────────
     from app.workers.tasks_upcoming import SP_MAX_MATCHES
-    for i, sport in enumerate(_SP_OD_BT_SPORTS):
+    for i, sport in enumerate(_SP_SPORTS):
         celery.send_task(
             "tasks.sp.harvest_sport",
             args=[sport, SP_MAX_MATCHES],
             queue="harvest",
-            countdown=5 + i * 5,    # 5s, 10s, 15s … 40s
+            countdown=5 + i * 5,   # 5, 10, 15 … 40 s
         )
         dispatched += 1
 
-    # ── Betika — individual sport tasks, offset from SP ──────────────────────
-    from app.workers.tasks_upcoming import BT_MAX_MATCHES
-    for i, sport in enumerate(_SP_OD_BT_SPORTS):
-        celery.send_task(
-            "tasks.bt.harvest_sport",
-            args=[sport, BT_MAX_MATCHES],
-            queue="harvest",
-            countdown=50 + i * 5,   # 50s, 55s, 60s … 85s
-        )
-        dispatched += 1
-
-    # ── OdiBets — individual sport tasks, offset from BT ─────────────────────
-    for i, sport in enumerate(_SP_OD_BT_SPORTS):
-        celery.send_task(
-            "tasks.od.harvest_sport",
-            args=[sport],
-            queue="harvest",
-            countdown=100 + i * 5,  # 100s, 105s … 135s
-        )
-        dispatched += 1
-
-    # ── B2B / SBO — faster APIs, can run sooner ───────────────────────────────
-    for i, sport in enumerate(_B2B_SPORTS):
+    # ── B2B — fast API, can start sooner ─────────────────────────────────────
+    for i, sport in enumerate(_B2B_SPORTS_STARTUP):
         celery.send_task(
             "tasks.b2b.harvest_sport",
             args=[sport],
@@ -172,7 +149,8 @@ def _dispatch_startup_harvests() -> None:
         )
         dispatched += 1
 
-    for i, sport in enumerate(_SBO_SPORTS):
+    # ── SBO — fast API ────────────────────────────────────────────────────────
+    for i, sport in enumerate(_SBO_SPORTS_STARTUP):
         celery.send_task(
             "tasks.sbo.harvest_sport",
             args=[sport, 90],
@@ -185,48 +163,51 @@ def _dispatch_startup_harvests() -> None:
     celery.send_task("tasks.ops.health_check",        queue="default",  countdown=1)
     celery.send_task("tasks.ops.build_health_report", queue="default",  countdown=30)
 
-    # Initial alignment — 180s gives the fast bookmakers (b2b/sbo) time to finish
+    # Initial alignment — 180 s lets b2b/sbo finish before we align
     celery.send_task("tasks.align.all", queue="results", countdown=180)
 
     logger.info(
-        "[startup] %d individual sport tasks dispatched + alignment queued (live DISABLED)",
-        dispatched,
+        "[startup] %d tasks dispatched (SP=%d, B2B=%d, SBO=%d). "
+        "BT+OD handled via sp_cross_bk_enrich auto-dispatch.",
+        dispatched, len(_SP_SPORTS), len(_B2B_SPORTS_STARTUP), len(_SBO_SPORTS_STARTUP),
     )
 
 
 # =============================================================================
-# BEAT SCHEDULE  (upcoming only)
+# BEAT SCHEDULE
+# BT and OD are NOT in the beat — they run via sp_cross_bk_enrich every
+# time SP completes (every ~1 h per sport).
 # =============================================================================
 
 @celery.on_after_configure.connect
 def setup_periodic_tasks(sender, **kwargs):
     from app.workers.tasks_upcoming import (
         harvest_all_registry_upcoming, cleanup_old_snapshots,
-        sp_harvest_all_upcoming, bt_harvest_all_upcoming,
-        od_harvest_all_upcoming, b2b_harvest_all_upcoming,
+        sp_harvest_all_upcoming,
+        b2b_harvest_all_upcoming,
         b2b_page_harvest_all_upcoming, sbo_harvest_all_upcoming,
     )
     from app.workers.tasks_market_align import align_all_sports
 
     # ── Registry ──────────────────────────────────────────────────────────────
-    sender.add_periodic_task(
-        14400.0, harvest_all_registry_upcoming.s(),
-        name="registry-upcoming-4h",
-    )
-    sender.add_periodic_task(
-        86400.0, cleanup_old_snapshots.s(),
-        name="registry-cleanup-daily",
-    )
+    sender.add_periodic_task(14400.0, harvest_all_registry_upcoming.s(),
+                             name="registry-upcoming-4h")
+    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),
+                             name="registry-cleanup-daily")
 
-    # ── SP / BT / OD  (long-running — 1 hour interval) ────────────────────────
-    sender.add_periodic_task(3600.0, sp_harvest_all_upcoming.s(), name="sp-upcoming-1h")
-    sender.add_periodic_task(3600.0, bt_harvest_all_upcoming.s(), name="bt-upcoming-1h")
-    sender.add_periodic_task(3600.0, od_harvest_all_upcoming.s(), name="od-upcoming-1h")
+    # ── SP (drives BT+OD via sp_cross_bk_enrich) ─────────────────────────────
+    sender.add_periodic_task(3600.0, sp_harvest_all_upcoming.s(),
+                             name="sp-upcoming-1h")
+    # bt_harvest_all_upcoming and od_harvest_all_upcoming are intentionally
+    # NOT scheduled — BT/OD enrichment runs automatically via sp_cross_bk_enrich.
 
     # ── B2B / SBO / page ──────────────────────────────────────────────────────
-    sender.add_periodic_task( 480.0, b2b_harvest_all_upcoming.s(),      name="b2b-upcoming-8min")
-    sender.add_periodic_task( 300.0, b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-5min")
-    sender.add_periodic_task( 180.0, sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-3min")
+    sender.add_periodic_task( 480.0, b2b_harvest_all_upcoming.s(),
+                             name="b2b-upcoming-8min")
+    sender.add_periodic_task( 300.0, b2b_page_harvest_all_upcoming.s(),
+                             name="b2b-page-upcoming-5min")
+    sender.add_periodic_task( 180.0, sbo_harvest_all_upcoming.s(),
+                             name="sbo-upcoming-3min")
 
     # ── Market Alignment ──────────────────────────────────────────────────────
     sender.add_periodic_task(900.0, align_all_sports.s(), name="market-align-15min")
@@ -239,14 +220,9 @@ def setup_periodic_tasks(sender, **kwargs):
     sender.add_periodic_task( 300.0, persist_all_sports.s(),     name="persist-upcoming-5min")
     sender.add_periodic_task(  60.0, build_health_report.s(),    name="health-report-1min")
 
-    # ── Live tasks (re-enable when LIVE_ENABLED = True) ───────────────────────
-    # from app.workers.tasks_live import (...)
-    # sender.add_periodic_task(60.0, sp_harvest_all_live.s(), name="sp-live-60s")
-    # ...
-
     logger.info(
-        "[beat] Beat schedule registered — UPCOMING ONLY (live disabled), "
-        "market alignment every 15 min"
+        "[beat] Schedule registered — SP drives BT+OD via cross-BK enrich. "
+        "BT/OD all_upcoming NOT scheduled. Live disabled."
     )
 
 
@@ -282,41 +258,22 @@ def compute_ev_arb(self, match_id: int) -> dict:
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
 
-        # ── Normalise markets_json before passing to OpportunityDetector ──────
-        # markets_json is stored as {mkt: {selection: float}} by upsert_bookmaker_price.
-        # OpportunityDetector calls .get("odds") / .get("price") on each selection
-        # value — it expects a dict, not a bare float.
-        #
-        # Two bad shapes we defend against:
-        #   1. market value is a bare float:  {"1x2": 1.85}
-        #   2. selection value is a bare float: {"1x2": {"home": 1.85}}  ← THIS is the crash
-        #
-        # We normalise both to {"1x2": {"home": {"odds": 1.85, "odd": 1.85, "price": 1.85}}}
-        # so detector.find_arbs / find_ev can call .get() safely regardless of key name.
-
-        raw = um.markets_json if isinstance(um.markets_json, dict) else {}
+        raw   = um.markets_json if isinstance(um.markets_json, dict) else {}
         clean: dict = {}
-
         for mkt, selections in raw.items():
-            # Shape 1: bare float at market level
             if isinstance(selections, (int, float)):
                 price = float(selections)
                 clean[mkt] = {"value": {"odds": price, "odd": price, "price": price}}
                 continue
-
             if not isinstance(selections, dict):
-                continue  # unexpected type — skip
-
+                continue
             clean_sels: dict = {}
             for sel, val in selections.items():
                 if isinstance(val, (int, float)):
-                    # Shape 2: bare float at selection level — wrap for detector
                     price = float(val)
                     clean_sels[sel] = {"odds": price, "odd": price, "price": price}
                 elif isinstance(val, dict):
                     clean_sels[sel] = val
-                # else: skip unexpected type
-
             if clean_sels:
                 clean[mkt] = clean_sels
 
@@ -325,12 +282,10 @@ def compute_ev_arb(self, match_id: int) -> dict:
 
         original_markets = um.markets_json
         um.markets_json  = clean
-
         detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
         arbs     = detector.find_arbs(um)
         evs      = detector.find_ev(um)
-
-        um.markets_json = original_markets  # restore — don't persist the temp copy
+        um.markets_json = original_markets
 
         for kwargs in arbs:
             db.session.add(ArbitrageOpportunity(**kwargs))
@@ -340,9 +295,9 @@ def compute_ev_arb(self, match_id: int) -> dict:
 
         if arbs:
             _publish(ARB_CHANNEL, {
-                "event":   "arb_updated", "match_id": match_id,
-                "match":   f"{um.home_team_name} v {um.away_team_name}",
-                "sport":   um.sport_name, "arbs": len(arbs), "ts": _now_iso(),
+                "event": "arb_updated", "match_id": match_id,
+                "match": f"{um.home_team_name} v {um.away_team_name}",
+                "sport": um.sport_name, "arbs": len(arbs), "ts": _now_iso(),
             })
         if evs:
             _publish(EV_CHANNEL, {
@@ -359,7 +314,8 @@ def compute_ev_arb(self, match_id: int) -> dict:
         except Exception:
             pass
         raise self.retry(exc=exc)
-    
+
+
 # =============================================================================
 # MATCH RESULTS
 # =============================================================================
@@ -370,10 +326,8 @@ def update_match_results() -> dict:
     try:
         from app.extensions import db
         from app.models.odds_model import UnifiedMatch
-
         now     = datetime.now(timezone.utc)
         updated = 0
-
         for um in UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >= now - timedelta(hours=3),
@@ -382,7 +336,6 @@ def update_match_results() -> dict:
             if um.status == "PRE_MATCH":
                 um.status = "IN_PLAY"
                 updated  += 1
-
         for um in UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now - timedelta(hours=2, minutes=30),
             UnifiedMatch.status == "IN_PLAY",
@@ -390,20 +343,15 @@ def update_match_results() -> dict:
             um.status = "FINISHED"
             updated  += 1
             _settle_bankroll_bets(um.id)
-            date_str = (
-                um.start_time.strftime("%Y-%m-%d") if um.start_time
-                else now.strftime("%Y-%m-%d")
-            )
+            date_str = (um.start_time.strftime("%Y-%m-%d")
+                        if um.start_time else now.strftime("%Y-%m-%d"))
             ck     = f"results:finished:{date_str}"
             cached = cache_get(ck) or []
             cached.append(um.to_dict())
             cache_set(ck, cached, ttl=30 * 86400)
-
         if updated:
             db.session.commit()
-            _publish(WS_CHANNEL, {
-                "event": "results_updated", "updated": updated, "ts": _now_iso(),
-            })
+            _publish(WS_CHANNEL, {"event": "results_updated", "updated": updated, "ts": _now_iso()})
         return {"updated": updated}
     except Exception as exc:
         logger.error("[results] %s", exc)
@@ -432,8 +380,7 @@ def cache_finished_games() -> dict:
         cached = 0
         for day_offset in range(0, 30):
             day_start = (now - timedelta(days=day_offset)).replace(
-                hour=0, minute=0, second=0, microsecond=0,
-            )
+                hour=0, minute=0, second=0, microsecond=0)
             day_end  = day_start + timedelta(days=1)
             date_str = day_start.strftime("%Y-%m-%d")
             ck       = f"results:finished:{date_str}"
@@ -473,16 +420,14 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
             return {"ok": False}
         match_label = f"{um.home_team_name} v {um.away_team_name}"
         arbs = ArbitrageOpportunity.query.filter_by(match_id=match_id, status="OPEN").all()
-        evs  = EVOpportunity.query.filter_by(match_id=match_id,  status="OPEN").all()
+        evs  = EVOpportunity.query.filter_by(match_id=match_id, status="OPEN").all()
         if not arbs and not evs:
             return {"ok": True, "sent": 0}
-
         prefs = NotificationPref.query.join(Customer).filter(
             Customer.is_active == True  # noqa
         ).all()
         sent = 0
         for pref in prefs:
-            user = pref.user
             if not pref.email_enabled:
                 continue
             qa = [a for a in arbs if (a.profit_pct or 0) >= (pref.arb_min_profit or 0)]
@@ -491,12 +436,12 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
                 continue
             try:
                 NotificationService.send_alert(
-                    user=user, match_label=match_label,
+                    user=pref.user, match_label=match_label,
                     arbs=qa, evs=qe, event_type=event_type,
                 )
                 sent += 1
             except Exception as e:
-                logger.warning("[notify] user %s: %s", user.id, e)
+                logger.warning("[notify] user %s: %s", pref.user.id, e)
         return {"ok": True, "sent": sent}
     except Exception as exc:
         raise self.retry(exc=exc)
@@ -544,9 +489,7 @@ def expire_subscriptions() -> dict:
 @celery.task(name="tasks.ops.health_check", soft_time_limit=10, time_limit=15)
 def health_check() -> dict:
     ts = _now_iso()
-    cache_set("worker_heartbeat", {
-        "alive": True, "checked_at": ts, "pid": os.getpid(),
-    }, ttl=120)
+    cache_set("worker_heartbeat", {"alive": True, "checked_at": ts, "pid": os.getpid()}, ttl=120)
     return {"ok": True, "ts": ts}
 
 
@@ -565,10 +508,8 @@ def send_async_email(self, subject, recipients, body, body_type="plain",
         app = create_app()
         with app.app_context():
             mail = Mail(app)
-            msg  = Message(
-                subject=subject, recipients=recipients,
-                sender=os.environ.get("ADMIN_EMAIL"),
-            )
+            msg  = Message(subject=subject, recipients=recipients,
+                           sender=os.environ.get("ADMIN_EMAIL"))
             if body_type == "html":
                 msg.html = body
             else:
@@ -577,11 +518,9 @@ def send_async_email(self, subject, recipients, body, body_type="plain",
                 content = att.get("content")
                 if content:
                     try:
-                        msg.attach(
-                            att.get("filename", "file"),
-                            att.get("mimetype", "application/octet-stream"),
-                            base64.b64decode(content),
-                        )
+                        msg.attach(att.get("filename", "file"),
+                                   att.get("mimetype", "application/octet-stream"),
+                                   base64.b64decode(content))
                     except Exception as e:
                         logger.warning("[email] attachment: %s", e)
             mail.send(msg)
@@ -593,11 +532,7 @@ def send_async_email(self, subject, recipients, body, body_type="plain",
 def send_message(msg: str, whatsapp_number: str):
     if not message_url:
         return {"error": "WA_BOT not configured"}
-    r = requests.post(
-        message_url,
-        json={"message": msg, "number": whatsapp_number},
-        timeout=15,
-    )
+    r = requests.post(message_url, json={"message": msg, "number": whatsapp_number}, timeout=15)
     return r.text
 
 
@@ -616,49 +551,33 @@ def persist_combined_batch(
 ) -> dict:
     if not match_dicts:
         return {"persisted": 0, "failed": 0, "sport": sport_slug, "mode": mode}
-
     t0 = time.perf_counter()
     try:
         from app.workers.persist_hook import persist_from_serialized
         stats = persist_from_serialized(match_dicts, sport_slug=sport_slug, mode=mode)
         stats.update({"sport": sport_slug, "mode": mode})
-        log_job(
-            bookmaker="combined", sport=sport_slug, mode=mode,
-            count=len(match_dicts), status="ok",
-            unified_ok=stats.get("persisted", 0),
-            unified_fail=stats.get("failed", 0),
-            latency_ms=int((time.perf_counter() - t0) * 1000),
-        )
+        log_job(bookmaker="combined", sport=sport_slug, mode=mode,
+                count=len(match_dicts), status="ok",
+                unified_ok=stats.get("persisted", 0), unified_fail=stats.get("failed", 0),
+                latency_ms=int((time.perf_counter() - t0) * 1000))
         return stats
     except Exception as exc:
-        log_job(
-            bookmaker="combined", sport=sport_slug, mode=mode,
-            count=len(match_dicts), status="error",
-            detail=str(exc)[:200],
-            latency_ms=int((time.perf_counter() - t0) * 1000),
-        )
+        log_job(bookmaker="combined", sport=sport_slug, mode=mode,
+                count=len(match_dicts), status="error", detail=str(exc)[:200],
+                latency_ms=int((time.perf_counter() - t0) * 1000))
         raise self.retry(exc=exc)
 
 
 @celery.task(name="tasks.ops.persist_all_sports",
              soft_time_limit=600, time_limit=900, acks_late=True)
 def persist_all_sports() -> dict:
-    """
-    Beat task — every 5 minutes.
-
-    Reads per-bookmaker cache keys ({bk}:upcoming:{sport}) — the keys that
-    each harvester writes to immediately after fetching.  The old version
-    read combined:upcoming:{sport} which is only written by alignment (AFTER
-    persist), causing this task to dispatch zero jobs every cycle.
-    """
+    """Beat task — every 5 min. Reads per-bookmaker cache and re-dispatches persist."""
     dispatched = 0
     skipped    = 0
     summary: dict[str, dict] = {}
-
     modes = [("upcoming", 10)]
     if LIVE_ENABLED:
         modes.append(("live", 2))
-
     for sport in PERSIST_SPORTS:
         summary[sport] = {}
         for bk_slug in _BK_SLUGS:
@@ -673,22 +592,12 @@ def persist_all_sports() -> dict:
                     continue
                 persist_combined_batch.apply_async(
                     args=[match_dicts, sport, mode],
-                    queue="results",
-                    countdown=countdown,
+                    queue="results", countdown=countdown,
                 )
                 summary[sport][f"{bk_slug}:{mode}"] = len(match_dicts)
                 dispatched += 1
-
-    logger.info(
-        "[persist_all_sports] dispatched=%d skipped=%d live_enabled=%s",
-        dispatched, skipped, LIVE_ENABLED,
-    )
-    return {
-        "dispatched":   dispatched,
-        "skipped":      skipped,
-        "summary":      summary,
-        "live_enabled": LIVE_ENABLED,
-    }
+    logger.info("[persist_all_sports] dispatched=%d skipped=%d", dispatched, skipped)
+    return {"dispatched": dispatched, "skipped": skipped, "summary": summary}
 
 
 # =============================================================================
@@ -735,7 +644,6 @@ def build_health_report() -> dict:
                 u_matches.extend(bk_m)
                 if not harvested_at:
                     harvested_at = bk_cache.get("harvested_at")
-
         u_arbs    = sum(1 for m in u_matches if m.get("has_arb"))
         u_evs     = sum(1 for m in u_matches if m.get("has_ev"))
         populated = bool(u_matches)
@@ -744,9 +652,7 @@ def build_health_report() -> dict:
         total_upcoming += len(u_matches)
         total_arbs     += u_arbs
         total_evs      += u_evs
-
         align_stats = cache_get(f"align:stats:{sport}") or {}
-
         sports_report.append({
             "sport":           sport,
             "upcoming_count":  len(u_matches),
@@ -778,7 +684,7 @@ def build_health_report() -> dict:
     def _chk(name: str, passed: bool, detail: str = "") -> None:
         checks.append({"name": name, "passed": passed, "detail": detail})
 
-    _chk("Worker heartbeat",  worker_alive,       f"age={hb_age}s")
+    _chk("Worker heartbeat",  worker_alive,    f"age={hb_age}s")
     _chk("Redis reachable",   redis_ok)
     _chk("Sports cache warm", not cold_sports,
          f"{len(PERSIST_SPORTS) - len(cold_sports)}/{len(PERSIST_SPORTS)} warm"
@@ -787,10 +693,9 @@ def build_health_report() -> dict:
     _chk("Arb opportunities", total_arbs >= 0,    f"{total_arbs}")
     _chk("EV opportunities",  total_evs  >= 0,    f"{total_evs}")
 
-    any_align_stats = cache_get("align:stats:soccer") or {}
-    align_ts_raw    = any_align_stats.get("ts")
-    align_recent    = False
-    align_age_s: int | None = None
+    any_align = cache_get("align:stats:soccer") or {}
+    align_ts_raw = any_align.get("ts")
+    align_recent = align_age_s = False
     if align_ts_raw:
         try:
             align_dt    = datetime.fromisoformat(align_ts_raw.replace("Z", "+00:00"))
@@ -808,56 +713,32 @@ def build_health_report() -> dict:
         "generated_at": now,
         "latency_ms":   int((time.perf_counter() - t0) * 1000),
         "live_enabled": LIVE_ENABLED,
-        "overall": {
-            "passed":       passed,
-            "failed":       failed,
-            "total_checks": len(checks),
-            "healthy":      failed == 0,
-        },
-        "worker": {
-            "alive":           worker_alive,
-            "heartbeat_at":    hb.get("checked_at"),
-            "heartbeat_age_s": hb_age,
-            "pid":             hb.get("pid"),
-        },
-        "redis":  {"ok": redis_ok},
-        "alignment": {
-            "last_run":    align_ts_raw,
-            "age_seconds": align_age_s,
-            "is_recent":   align_recent,
-        },
-        "totals": {
-            "upcoming_matches":  total_upcoming,
-            "live_matches":      0,
-            "arb_opportunities": total_arbs,
-            "ev_opportunities":  total_evs,
-            "cold_sports":       cold_sports,
-        },
+        "overall":  {"passed": passed, "failed": failed,
+                     "total_checks": len(checks), "healthy": failed == 0},
+        "worker":   {"alive": worker_alive, "heartbeat_at": hb.get("checked_at"),
+                     "heartbeat_age_s": hb_age, "pid": hb.get("pid")},
+        "redis":    {"ok": redis_ok},
+        "alignment": {"last_run": align_ts_raw, "age_seconds": align_age_s,
+                      "is_recent": align_recent},
+        "totals":   {"upcoming_matches": total_upcoming, "live_matches": 0,
+                     "arb_opportunities": total_arbs, "ev_opportunities": total_evs,
+                     "cold_sports": cold_sports},
         "sports":      sports_report,
         "checks":      checks,
         "recent_jobs": recent_jobs,
     }
 
     cache_set("monitor:report", report, ttl=180)
-
     try:
         from app.workers.celery_tasks import _redis
         _redis().lpush("monitor:report_history", json.dumps({
-            "ts":       now,
-            "healthy":  failed == 0,
-            "passed":   passed,
-            "failed":   failed,
-            "upcoming": total_upcoming,
-            "live":     0,
-            "arbs":     total_arbs,
-            "evs":      total_evs,
+            "ts": now, "healthy": failed == 0, "passed": passed, "failed": failed,
+            "upcoming": total_upcoming, "live": 0, "arbs": total_arbs, "evs": total_evs,
         }, default=str))
         _redis().ltrim("monitor:report_history", 0, 59)
     except Exception:
         pass
 
-    logger.info(
-        "[health_report] healthy=%s passed=%d failed=%d upcoming=%d align_recent=%s",
-        failed == 0, passed, failed, total_upcoming, align_recent,
-    )
+    logger.info("[health_report] healthy=%s passed=%d failed=%d upcoming=%d",
+                failed == 0, passed, failed, total_upcoming)
     return report
