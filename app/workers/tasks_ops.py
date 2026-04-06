@@ -359,7 +359,7 @@ def compute_ev_arb(self, match_id: int) -> dict:
         except Exception:
             pass
         raise self.retry(exc=exc)
-        
+    
 # =============================================================================
 # MATCH RESULTS
 # =============================================================================
