@@ -282,18 +282,43 @@ def compute_ev_arb(self, match_id: int) -> dict:
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
 
-        # Sanitise markets_json — bare floats crash the detector with
-        # "'float' object has no attribute 'get'"
+        # ── Normalise markets_json before passing to OpportunityDetector ──────
+        # markets_json is stored as {mkt: {selection: float}} by upsert_bookmaker_price.
+        # OpportunityDetector calls .get("odds") / .get("price") on each selection
+        # value — it expects a dict, not a bare float.
+        #
+        # Two bad shapes we defend against:
+        #   1. market value is a bare float:  {"1x2": 1.85}
+        #   2. selection value is a bare float: {"1x2": {"home": 1.85}}  ← THIS is the crash
+        #
+        # We normalise both to {"1x2": {"home": {"odds": 1.85, "odd": 1.85, "price": 1.85}}}
+        # so detector.find_arbs / find_ev can call .get() safely regardless of key name.
+
         raw = um.markets_json if isinstance(um.markets_json, dict) else {}
         clean: dict = {}
+
         for mkt, selections in raw.items():
-            if isinstance(selections, dict):
-                clean[mkt] = {
-                    sel: val for sel, val in selections.items()
-                    if isinstance(val, (int, float, dict))
-                }
-            elif isinstance(selections, (int, float)):
-                clean[mkt] = {"value": float(selections)}
+            # Shape 1: bare float at market level
+            if isinstance(selections, (int, float)):
+                price = float(selections)
+                clean[mkt] = {"value": {"odds": price, "odd": price, "price": price}}
+                continue
+
+            if not isinstance(selections, dict):
+                continue  # unexpected type — skip
+
+            clean_sels: dict = {}
+            for sel, val in selections.items():
+                if isinstance(val, (int, float)):
+                    # Shape 2: bare float at selection level — wrap for detector
+                    price = float(val)
+                    clean_sels[sel] = {"odds": price, "odd": price, "price": price}
+                elif isinstance(val, dict):
+                    clean_sels[sel] = val
+                # else: skip unexpected type
+
+            if clean_sels:
+                clean[mkt] = clean_sels
 
         if not clean:
             return {"ok": False, "reason": "markets_json empty after sanitise"}
@@ -305,7 +330,7 @@ def compute_ev_arb(self, match_id: int) -> dict:
         arbs     = detector.find_arbs(um)
         evs      = detector.find_ev(um)
 
-        um.markets_json = original_markets
+        um.markets_json = original_markets  # restore — don't persist the temp copy
 
         for kwargs in arbs:
             db.session.add(ArbitrageOpportunity(**kwargs))
@@ -334,8 +359,7 @@ def compute_ev_arb(self, match_id: int) -> dict:
         except Exception:
             pass
         raise self.retry(exc=exc)
-
-
+    
 # =============================================================================
 # MATCH RESULTS
 # =============================================================================
