@@ -987,7 +987,13 @@ class OpportunityDetector:
                 # Collect best price per selection
                 legs = []
                 for sel_name, sel_data in selections.items():
-                    best_p = sel_data.get("best_price")
+                    if isinstance(sel_data, (int, float)):
+                        best_p = float(sel_data) if float(sel_data) > 1.0 else None
+                    elif isinstance(sel_data, dict):
+                        best_p = (sel_data.get("best_price") or sel_data.get("odds")
+                                or sel_data.get("odd")       or sel_data.get("price"))
+                    else:
+                        best_p = None
                     best_bk = sel_data.get("best_bookmaker_id")
                     if not best_p or best_p <= 1.0:
                         continue
