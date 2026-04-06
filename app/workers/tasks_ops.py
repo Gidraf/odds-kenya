@@ -369,13 +369,15 @@ def compute_ev_arb(self, match_id: int) -> dict:
         return {"ok": True, "match_id": match_id, "arbs": len(arbs), "evs": len(evs)}
  
     except Exception as exc:
-        logger.error("[ev_arb] match %d: %s", match_id, exc)
+        logger.error("[ev_arb] match %d: %s", match_id, exc, exc_info=True) # Added exc_info
         try:
             from app.extensions import db
             db.session.rollback()
         except Exception:
             pass
         raise self.retry(exc=exc)
+
+
 # =============================================================================
 # MATCH RESULTS
 # =============================================================================
