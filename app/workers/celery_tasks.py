@@ -65,7 +65,8 @@ TASK_ROUTES: dict[str, dict] = {
     "tasks.ops.persist_combined_batch":    {"queue": "results"},
     "tasks.ops.persist_all_sports":        {"queue": "results"},
     "tasks.ops.build_health_report":       {"queue": "default"},
-    "tasks.align.sport":                   {"queue": "default"}
+    "tasks.align.sport":                   {"queue": "default"},
+    "tasks.align.all":                     {"queue": "results"},
 }
 
 _BK_NAME_TO_SLUG: dict[str, str] = {
@@ -103,7 +104,7 @@ def make_celery(app=None):
             "app.workers.tasks_ops",
             "app.workers.tasks_upcoming",
             "app.workers.tasks_live",
-             "app.workers.tasks_market_align",
+            "app.workers.tasks_market_align",   # ← was "tasks.align.sport" (wrong)
         ],
     )
     return celery_service
@@ -303,9 +304,6 @@ def _fuzzy_find_match(
     ONLY called when _extract_betradar_id() returns empty — i.e. when a
     bookmaker match has no ID field at all.  This lets BT/OD odds attach
     to the existing SP row for the same real-world event.
-
-    Performance: indexed on home_team_name + away_team_name; start_time
-    window keeps the result set tiny.
     """
     if not home or not away:
         return None
@@ -383,15 +381,20 @@ def _to_upsert_shape(m: dict) -> dict:
     Normalise a raw harvested match dict into the shape expected by
     _upsert_unified_match.
 
-    Resolution chain for match_id (parent_match_id in DB):
-      1. betradar_id via _extract_betradar_id (handles bt_parent_id, od_parent_id)
-      2. bt_match_id  (Betika's own game ID — creates a BT-specific row)
-      3. od_match_id  (OdiBets' own game ID — creates an OD-specific row)
-      4. "" → skipped in _upsert_unified_match
+    FIX (Bug 2): Extended fallback chain for match_id to cover all bookmaker
+    ID field names (bt_match_id, od_match_id, generic match_id, event_id).
+    Without this BT/OD/SBO matches had no parent_id and were silently dropped.
     """
     betradar_id = _extract_betradar_id(m)
     return {
-        "match_id":    betradar_id or m.get("bt_match_id") or m.get("od_match_id") or "",
+        "match_id": (
+            betradar_id
+            or m.get("bt_match_id")   # Betika own game ID
+            or m.get("od_match_id")   # OdiBets own game ID
+            or m.get("match_id")      # generic fallback used by BT, OD, SBO
+            or m.get("event_id")      # SBO / b2b_page fallback
+            or ""
+        ),
         "betradar_id": betradar_id,
         "home_team":   m.get("home_team",   ""),
         "away_team":   m.get("away_team",   ""),
@@ -410,6 +413,10 @@ def _upsert_unified_match(
 ) -> int | None:
     """
     Upsert a unified_match row and write BookmakerMatchOdds + history.
+
+    FIX (Bug 1 guard): markets values that are bare floats (flat format) are
+    normalised to {"value": price} before iteration so the inner loop never
+    calls .get() on a float.
 
     Returns unified_match.id on success, None on failure.
     """
@@ -480,6 +487,14 @@ def _upsert_unified_match(
 
         history_batch: list[dict] = []
         for mkt_key, outcomes in (match_data.get("markets") or {}).items():
+
+            # ── FIX (Bug 1): normalise flat float markets so .get() never
+            # called on a float.  e.g. {"1x2": 1.85} → {"1x2": {"value": 1.85}}
+            if isinstance(outcomes, (int, float)):
+                outcomes = {"value": float(outcomes)}
+            if not isinstance(outcomes, dict):
+                continue
+
             for outcome, odds_data in outcomes.items():
                 try:
                     if isinstance(odds_data, (int, float)):
