@@ -186,7 +186,7 @@ def setup_periodic_tasks(sender, **kwargs):
 # WS publish
 # =============================================================================
 
-@celery.task(name="tasks.ops.publish_ws_event", soft_time_limit=5, time_limit=10)
+@celery.task(name="tasks.ops.publish_ws_event", soft_time_limit=60, time_limit=180)
 def publish_ws_event(channel: str, data: dict) -> bool:
     try:
         _publish(channel, data)
@@ -201,7 +201,7 @@ def publish_ws_event(channel: str, data: dict) -> bool:
 # =============================================================================
 
 @celery.task(name="tasks.ops.compute_ev_arb", bind=True,
-             max_retries=1, soft_time_limit=20, time_limit=30, acks_late=True)
+             max_retries=1, soft_time_limit=210, time_limit=300, acks_late=True)
 def compute_ev_arb(self, match_id: int) -> dict:
     try:
         from app.models.odds_model import (
@@ -245,7 +245,7 @@ def compute_ev_arb(self, match_id: int) -> dict:
 # =============================================================================
 
 @celery.task(name="tasks.ops.update_match_results",
-             soft_time_limit=120, time_limit=150)
+             soft_time_limit=1200, time_limit=1500)
 def update_match_results() -> dict:
     try:
         from app.extensions import db
@@ -297,7 +297,7 @@ def _settle_bankroll_bets(match_id: int) -> None:
 # =============================================================================
 
 @celery.task(name="tasks.ops.cache_finished_games",
-             soft_time_limit=120, time_limit=150)
+             soft_time_limit=1200, time_limit=1500)
 def cache_finished_games() -> dict:
     try:
         from app.models.odds_model import UnifiedMatch
@@ -329,7 +329,7 @@ def cache_finished_games() -> dict:
 # =============================================================================
 
 @celery.task(name="tasks.ops.dispatch_notifications", bind=True,
-             max_retries=2, soft_time_limit=30, time_limit=45, acks_late=True)
+             max_retries=2, soft_time_limit=300, time_limit=450, acks_late=True)
 def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
     try:
         from app.models.odds_model import (UnifiedMatch, ArbitrageOpportunity, EVOpportunity)
@@ -370,7 +370,7 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
 # =============================================================================
 
 @celery.task(name="tasks.ops.expire_subscriptions",
-             soft_time_limit=30, time_limit=45)
+             soft_time_limit=300, time_limit=450)
 def expire_subscriptions() -> dict:
     try:
         from app.extensions import db
@@ -412,8 +412,8 @@ def health_check() -> dict:
 # =============================================================================
 
 @celery.task(name="tasks.ops.send_async_email", bind=True,
-             max_retries=3, default_retry_delay=30,
-             soft_time_limit=60, time_limit=90)
+             max_retries=3, default_retry_delay=300,
+             soft_time_limit=600, time_limit=900)
 def send_async_email(self, subject, recipients, body, body_type="plain",
                      attachments=None, username=None, password=None):
     try:
@@ -440,7 +440,7 @@ def send_async_email(self, subject, recipients, body, body_type="plain",
         raise self.retry(exc=exc)
 
 
-@celery.task(name="tasks.ops.send_message", soft_time_limit=30, time_limit=45)
+@celery.task(name="tasks.ops.send_message", soft_time_limit=300, time_limit=450)
 def send_message(msg: str, whatsapp_number: str):
     if not message_url: return {"error": "WA_BOT not configured"}
     r = requests.post(message_url, json={"message": msg, "number": whatsapp_number}, timeout=15)
@@ -452,8 +452,8 @@ def send_message(msg: str, whatsapp_number: str):
 # =============================================================================
 
 @celery.task(name="tasks.ops.persist_combined_batch", bind=True,
-             max_retries=3, default_retry_delay=30,
-             soft_time_limit=90, time_limit=120, acks_late=True)
+             max_retries=3, default_retry_delay=300,
+             soft_time_limit=900, time_limit=1200, acks_late=True)
 def persist_combined_batch(self, match_dicts: list[dict],
                             sport_slug: str = "soccer",
                             mode: str = "upcoming") -> dict:
@@ -480,7 +480,7 @@ def persist_combined_batch(self, match_dicts: list[dict],
 
 
 @celery.task(name="tasks.ops.persist_all_sports",
-             soft_time_limit=60, time_limit=90, acks_late=True)
+             soft_time_limit=600, time_limit=900, acks_late=True)
 def persist_all_sports() -> dict:
     """
     Beat task — every 5 minutes.
@@ -527,7 +527,7 @@ def persist_all_sports() -> dict:
 # =============================================================================
 
 @celery.task(name="tasks.ops.build_health_report",
-             soft_time_limit=30, time_limit=45, acks_late=True)
+             soft_time_limit=300, time_limit=450, acks_late=True)
 def build_health_report() -> dict:
     t0  = time.perf_counter()
     now = _now_iso()
