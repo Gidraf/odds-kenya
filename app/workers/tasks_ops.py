@@ -6,17 +6,13 @@ immediate startup harvesting (upcoming only), minute health reports, job logging
 
 LIVE_ENABLED = False
   • Beat schedule has NO live tasks.
-  • Startup only dispatches upcoming harvests.
+  • Startup dispatches INDIVIDUAL per-sport tasks directly, not umbrella
+    tasks, so a timeout in one sport never silently kills the others.
   • Set LIVE_ENABLED = True here AND in celery_app.py when upcoming is stable.
 
 Market Alignment Service
   • align_all_sports runs every 15 min (beat) and is also triggered
     automatically 60s after each bookmaker harvest completes.
-  • Merges all BookmakerMatchOdds rows for each match into a single
-    best-price unified_match.markets_json, then re-runs arb detection.
-
-Celery entry point:
-  celery -A app.workers.celery_tasks worker -B ...
 """
 
 from __future__ import annotations
@@ -39,7 +35,6 @@ from app.workers.celery_tasks import (
 
 logger = get_task_logger(__name__)
 
-# ── Feature flag — must match celery_app.py ───────────────────────────────────
 LIVE_ENABLED: bool = False
 
 WS_CHANNEL  = "odds:updates"
@@ -55,8 +50,24 @@ PERSIST_SPORTS: list[str] = [
     "table-tennis", "esoccer", "mma", "boxing", "darts",
 ]
 
-# All bookmaker cache key prefixes — must match what each harvester writes
+# Must match harvesters that write {slug}:upcoming:{sport} to Redis
 _BK_SLUGS: list[str] = ["sp", "bt", "od", "b2b", "sbo"]
+
+# Sports dispatched per bookmaker at startup
+_SP_OD_BT_SPORTS = [
+    "soccer", "basketball", "tennis", "ice-hockey",
+    "volleyball", "cricket", "rugby", "table-tennis",
+]
+_B2B_SPORTS = [
+    "soccer", "basketball", "tennis", "ice-hockey",
+    "volleyball", "cricket", "rugby", "table-tennis",
+    "darts", "handball",
+]
+_SBO_SPORTS = [
+    "soccer", "basketball", "tennis", "ice-hockey",
+    "volleyball", "cricket", "rugby", "boxing",
+    "handball", "mma", "table-tennis",
+]
 
 # ── Structured job logger ─────────────────────────────────────────────────────
 LOG_DIR = Path(os.environ.get("LOG_DIR", "logs"))
@@ -105,30 +116,82 @@ def on_worker_ready(sender, **kwargs):
 
 def _dispatch_startup_harvests() -> None:
     """
-    Fan-out upcoming harvest tasks immediately on worker boot.
-    Staggered countdowns so external APIs aren't hit simultaneously.
+    Fan-out individual per-sport harvest tasks on worker boot.
+
+    KEY CHANGE from previous version:
+    We now dispatch INDIVIDUAL sport tasks directly instead of umbrella
+    harvest_all_upcoming tasks.  This means a timeout in one sport's
+    umbrella task can never silently prevent other sports from being
+    dispatched.
+
+    SP/BT/OD are long-running (soft 3600s each) — they are staggered
+    with larger countdowns to avoid hammering the same APIs simultaneously.
+    B2B/SBO are fast and can start sooner.
     """
-    upcoming_tasks = [
-        # (task_name, countdown_seconds)
-        ("tasks.sp.harvest_all_upcoming",       2),
-        ("tasks.bt.harvest_all_upcoming",       5),
-        ("tasks.od.harvest_all_upcoming",       8),
-        ("tasks.b2b.harvest_all_upcoming",      11),
-        ("tasks.b2b_page.harvest_all_upcoming", 13),
-        ("tasks.sbo.harvest_all_upcoming",      15),
-    ]
-    for task_name, cd in upcoming_tasks:
-        celery.send_task(task_name, queue="harvest", countdown=cd)
-        logger.debug("[startup] dispatched %s (countdown=%ds)", task_name, cd)
+    dispatched = 0
 
+    # ── SportPesa — individual sport tasks, staggered 30s apart ──────────────
+    from app.workers.tasks_upcoming import SP_MAX_MATCHES
+    for i, sport in enumerate(_SP_OD_BT_SPORTS):
+        celery.send_task(
+            "tasks.sp.harvest_sport",
+            args=[sport, SP_MAX_MATCHES],
+            queue="harvest",
+            countdown=5 + i * 5,    # 5s, 10s, 15s … 40s
+        )
+        dispatched += 1
+
+    # ── Betika — individual sport tasks, offset from SP ──────────────────────
+    from app.workers.tasks_upcoming import BT_MAX_MATCHES
+    for i, sport in enumerate(_SP_OD_BT_SPORTS):
+        celery.send_task(
+            "tasks.bt.harvest_sport",
+            args=[sport, BT_MAX_MATCHES],
+            queue="harvest",
+            countdown=50 + i * 5,   # 50s, 55s, 60s … 85s
+        )
+        dispatched += 1
+
+    # ── OdiBets — individual sport tasks, offset from BT ─────────────────────
+    for i, sport in enumerate(_SP_OD_BT_SPORTS):
+        celery.send_task(
+            "tasks.od.harvest_sport",
+            args=[sport],
+            queue="harvest",
+            countdown=100 + i * 5,  # 100s, 105s … 135s
+        )
+        dispatched += 1
+
+    # ── B2B / SBO — faster APIs, can run sooner ───────────────────────────────
+    for i, sport in enumerate(_B2B_SPORTS):
+        celery.send_task(
+            "tasks.b2b.harvest_sport",
+            args=[sport],
+            queue="harvest",
+            countdown=10 + i * 3,
+        )
+        dispatched += 1
+
+    for i, sport in enumerate(_SBO_SPORTS):
+        celery.send_task(
+            "tasks.sbo.harvest_sport",
+            args=[sport, 90],
+            queue="harvest",
+            countdown=15 + i * 3,
+        )
+        dispatched += 1
+
+    # ── Ops ───────────────────────────────────────────────────────────────────
     celery.send_task("tasks.ops.health_check",        queue="default",  countdown=1)
-    celery.send_task("tasks.ops.build_health_report", queue="default",  countdown=25)
+    celery.send_task("tasks.ops.build_health_report", queue="default",  countdown=30)
 
-    # Initial alignment pass — 120s gives fast bookmakers time to finish
-    celery.send_task("tasks.align.all", queue="results", countdown=120)
+    # Initial alignment — 180s gives the fast bookmakers (b2b/sbo) time to finish
+    celery.send_task("tasks.align.all", queue="results", countdown=180)
 
-    logger.info("[startup] %d upcoming tasks dispatched + alignment queued (live DISABLED)",
-                len(upcoming_tasks))
+    logger.info(
+        "[startup] %d individual sport tasks dispatched + alignment queued (live DISABLED)",
+        dispatched,
+    )
 
 
 # =============================================================================
@@ -156,83 +219,30 @@ def setup_periodic_tasks(sender, **kwargs):
     )
 
     # ── SP / BT / OD  (long-running — 1 hour interval) ────────────────────────
-    sender.add_periodic_task(
-        3600.0, sp_harvest_all_upcoming.s(),
-        name="sp-upcoming-1h",
-    )
-    sender.add_periodic_task(
-        3600.0, bt_harvest_all_upcoming.s(),
-        name="bt-upcoming-1h",
-    )
-    sender.add_periodic_task(
-        3600.0, od_harvest_all_upcoming.s(),
-        name="od-upcoming-1h",
-    )
+    sender.add_periodic_task(3600.0, sp_harvest_all_upcoming.s(), name="sp-upcoming-1h")
+    sender.add_periodic_task(3600.0, bt_harvest_all_upcoming.s(), name="bt-upcoming-1h")
+    sender.add_periodic_task(3600.0, od_harvest_all_upcoming.s(), name="od-upcoming-1h")
 
-    # ── B2B / SBO / page fan-out  (faster) ────────────────────────────────────
-    sender.add_periodic_task(
-        480.0, b2b_harvest_all_upcoming.s(),
-        name="b2b-upcoming-8min",
-    )
-    sender.add_periodic_task(
-        300.0, b2b_page_harvest_all_upcoming.s(),
-        name="b2b-page-upcoming-5min",
-    )
-    sender.add_periodic_task(
-        180.0, sbo_harvest_all_upcoming.s(),
-        name="sbo-upcoming-3min",
-    )
+    # ── B2B / SBO / page ──────────────────────────────────────────────────────
+    sender.add_periodic_task( 480.0, b2b_harvest_all_upcoming.s(),      name="b2b-upcoming-8min")
+    sender.add_periodic_task( 300.0, b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-5min")
+    sender.add_periodic_task( 180.0, sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-3min")
 
-    # ── Market Alignment  (15 min safety net + auto-triggered after harvests) ──
-    sender.add_periodic_task(
-        900.0, align_all_sports.s(),
-        name="market-align-15min",
-    )
+    # ── Market Alignment ──────────────────────────────────────────────────────
+    sender.add_periodic_task(900.0, align_all_sports.s(), name="market-align-15min")
 
     # ── Ops ───────────────────────────────────────────────────────────────────
-    sender.add_periodic_task(
-        300.0, update_match_results.s(),
-        name="results-5min",
-    )
-    sender.add_periodic_task(
-        3600.0, cache_finished_games.s(),
-        name="cache-finished-hourly",
-    )
-    sender.add_periodic_task(
-        30.0, health_check.s(),
-        name="health-30s",
-    )
-    sender.add_periodic_task(
-        3600.0, expire_subscriptions.s(),
-        name="expire-subs-hourly",
-    )
-
-    # ── DB persist (upcoming only) ─────────────────────────────────────────────
-    sender.add_periodic_task(
-        300.0, persist_all_sports.s(),
-        name="persist-upcoming-5min",
-    )
-
-    # ── Monitor ───────────────────────────────────────────────────────────────
-    sender.add_periodic_task(
-        60.0, build_health_report.s(),
-        name="health-report-1min",
-    )
+    sender.add_periodic_task( 300.0, update_match_results.s(),   name="results-5min")
+    sender.add_periodic_task(3600.0, cache_finished_games.s(),   name="cache-finished-hourly")
+    sender.add_periodic_task(  30.0, health_check.s(),           name="health-30s")
+    sender.add_periodic_task(3600.0, expire_subscriptions.s(),   name="expire-subs-hourly")
+    sender.add_periodic_task( 300.0, persist_all_sports.s(),     name="persist-upcoming-5min")
+    sender.add_periodic_task(  60.0, build_health_report.s(),    name="health-report-1min")
 
     # ── Live tasks (re-enable when LIVE_ENABLED = True) ───────────────────────
-    # from app.workers.tasks_live import (
-    #     sp_harvest_all_live, bt_harvest_all_live,
-    #     od_harvest_all_live, b2b_harvest_all_live,
-    #     b2b_page_harvest_all_live, sbo_harvest_all_live,
-    #     sp_poll_all_event_details,
-    # )
-    # sender.add_periodic_task( 60.0, sp_harvest_all_live.s(),       name="sp-live-60s")
-    # sender.add_periodic_task(  5.0, sp_poll_all_event_details.s(), name="sp-details-5s")
-    # sender.add_periodic_task( 90.0, bt_harvest_all_live.s(),       name="bt-live-90s")
-    # sender.add_periodic_task( 90.0, od_harvest_all_live.s(),       name="od-live-90s")
-    # sender.add_periodic_task(120.0, b2b_harvest_all_live.s(),      name="b2b-live-2min")
-    # sender.add_periodic_task( 30.0, b2b_page_harvest_all_live.s(), name="b2b-page-live-30s")
-    # sender.add_periodic_task( 60.0, sbo_harvest_all_live.s(),      name="sbo-live-60s")
+    # from app.workers.tasks_live import (...)
+    # sender.add_periodic_task(60.0, sp_harvest_all_live.s(), name="sp-live-60s")
+    # ...
 
     logger.info(
         "[beat] Beat schedule registered — UPCOMING ONLY (live disabled), "
@@ -272,10 +282,8 @@ def compute_ev_arb(self, match_id: int) -> dict:
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
 
-        # ── Sanitise markets_json before passing to detector ─────────────────
-        # Any market stored as a bare float (e.g. {"1x2": 1.85} instead of
-        # {"1x2": {"home": 1.85}}) will crash the detector with:
-        #   "'float' object has no attribute 'get'"
+        # Sanitise markets_json — bare floats crash the detector with
+        # "'float' object has no attribute 'get'"
         raw = um.markets_json if isinstance(um.markets_json, dict) else {}
         clean: dict = {}
         for mkt, selections in raw.items():
@@ -285,14 +293,11 @@ def compute_ev_arb(self, match_id: int) -> dict:
                     if isinstance(val, (int, float, dict))
                 }
             elif isinstance(selections, (int, float)):
-                # Flat float → wrap so detector can read it
                 clean[mkt] = {"value": float(selections)}
-            # else: unexpected type, skip entirely
 
         if not clean:
             return {"ok": False, "reason": "markets_json empty after sanitise"}
 
-        # Swap in cleaned copy temporarily; restore after detection
         original_markets = um.markets_json
         um.markets_json  = clean
 
@@ -300,7 +305,7 @@ def compute_ev_arb(self, match_id: int) -> dict:
         arbs     = detector.find_arbs(um)
         evs      = detector.find_ev(um)
 
-        um.markets_json = original_markets  # don't persist the temp copy
+        um.markets_json = original_markets
 
         for kwargs in arbs:
             db.session.add(ArbitrageOpportunity(**kwargs))
@@ -345,7 +350,6 @@ def update_match_results() -> dict:
         now     = datetime.now(timezone.utc)
         updated = 0
 
-        # PRE_MATCH → IN_PLAY
         for um in UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >= now - timedelta(hours=3),
@@ -355,7 +359,6 @@ def update_match_results() -> dict:
                 um.status = "IN_PLAY"
                 updated  += 1
 
-        # IN_PLAY → FINISHED
         for um in UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now - timedelta(hours=2, minutes=30),
             UnifiedMatch.status == "IN_PLAY",
@@ -445,12 +448,8 @@ def dispatch_notifications(self, match_id: int, event_type: str) -> dict:
         if not um:
             return {"ok": False}
         match_label = f"{um.home_team_name} v {um.away_team_name}"
-        arbs = ArbitrageOpportunity.query.filter_by(
-            match_id=match_id, status="OPEN",
-        ).all()
-        evs = EVOpportunity.query.filter_by(
-            match_id=match_id, status="OPEN",
-        ).all()
+        arbs = ArbitrageOpportunity.query.filter_by(match_id=match_id, status="OPEN").all()
+        evs  = EVOpportunity.query.filter_by(match_id=match_id,  status="OPEN").all()
         if not arbs and not evs:
             return {"ok": True, "sent": 0}
 
@@ -623,12 +622,10 @@ def persist_all_sports() -> dict:
     """
     Beat task — every 5 minutes.
 
-    FIX (Bug 3): was reading combined:upcoming:{sport} which is only written
-    by tasks_market_align AFTER persist — so this task always found empty
-    cache and dispatched zero persist jobs for BT/OD/SBO/B2B.
-
-    Now reads per-bookmaker cache keys ({bk}:upcoming:{sport}) which every
-    harvester writes to immediately after fetching.
+    Reads per-bookmaker cache keys ({bk}:upcoming:{sport}) — the keys that
+    each harvester writes to immediately after fetching.  The old version
+    read combined:upcoming:{sport} which is only written by alignment (AFTER
+    persist), causing this task to dispatch zero jobs every cycle.
     """
     dispatched = 0
     skipped    = 0
@@ -642,7 +639,6 @@ def persist_all_sports() -> dict:
         summary[sport] = {}
         for bk_slug in _BK_SLUGS:
             for mode, countdown in modes:
-                # Read from per-bookmaker cache, not combined:upcoming:{sport}
                 cached = cache_get(f"{bk_slug}:{mode}:{sport}")
                 if not cached or not cached.get("matches"):
                     skipped += 1
@@ -699,13 +695,11 @@ def build_health_report() -> dict:
     except Exception:
         pass
 
-    # ── Per-sport stats ────────────────────────────────────────────────────────
     sports_report: list[dict] = []
     total_upcoming = total_arbs = total_evs = 0
     cold_sports: list[str] = []
 
     for sport in PERSIST_SPORTS:
-        # Aggregate match counts across all bookmakers for this sport
         u_matches: list[dict] = []
         bk_counts: dict[str, int] = {}
         harvested_at = None
@@ -755,7 +749,6 @@ def build_health_report() -> dict:
     except Exception:
         pass
 
-    # ── Health checks ─────────────────────────────────────────────────────────
     checks: list[dict] = []
 
     def _chk(name: str, passed: bool, detail: str = "") -> None:
