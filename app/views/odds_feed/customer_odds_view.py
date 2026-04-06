@@ -849,110 +849,86 @@ def stream_upcoming(sport_slug: str):
 @bp_odds_customer.route("/odds/match/<parent_match_id>/markets")
 def get_match_full_markets(parent_match_id: str):
     """
-    Fetch ALL markets for a match by calling each bookmaker's detail API
-    on-demand. Returns richer data than the stored snapshot.
+    Returns ALL stored markets for every bookmaker on a match,
+    plus attempts a live full-market fetch from BT (which has a detail API).
 
-    Slow (~500ms–2s) but always fresh and complete.
+    SP and OD markets come from stored BookmakerMatchOdds rows —
+    their harvesters write full markets on every cycle.
+    BT stored data is grid-only (6 markets); live fetch adds the rest.
     """
     t0   = time.perf_counter()
     user = _current_user_from_header()
 
     from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
     if not um:
         return _err("Match not found", 404)
 
-    # Load stored bookmaker links to know which external IDs to use
-    links = BookmakerMatchLink.query.filter_by(match_id=um.id).all()
-    bk_map = {b.id: b for b in Bookmaker.query.all()}
-
-    # Stored markets as baseline — always returned even if live fetch fails
+    # ── Load ALL BookmakerMatchOdds rows for this match ───────────────────────
+    # This is the source of truth — all bookmakers that have ever written
+    # odds for this match will have a row here, even without a link row.
     bmo_rows = BookmakerMatchOdds.query.filter_by(match_id=um.id).all()
+    all_bk_ids = {bmo.bookmaker_id for bmo in bmo_rows}
+    bk_map = (
+        {b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(all_bk_ids)).all()}
+        if all_bk_ids else {}
+    )
+
+    # Build stored markets per bookmaker slug
     stored_markets: dict[str, dict] = {}
+    bmo_by_slug:    dict[str, object] = {}
     for bmo in bmo_rows:
         bk_obj = bk_map.get(bmo.bookmaker_id)
-        slug   = _bk_slug((bk_obj.name if bk_obj else "").lower())
+        if not bk_obj:
+            continue
+        slug = _bk_slug(bk_obj.name.lower())
         stored_markets[slug] = _flatten_db_markets(bmo.markets_json or {})
+        bmo_by_slug[slug]    = bmo
 
-    # Fetch fresh full markets from each bookmaker in parallel
-    fresh_markets: dict[str, dict] = {}
-    errors: dict[str, str] = {}
+    # ── Load bookmaker links — needed only for external IDs (live fetch) ──────
+    links = BookmakerMatchLink.query.filter_by(match_id=um.id).all()
+    link_by_bk: dict[str, object] = {}
+    all_bk_map = {b.id: b for b in Bookmaker.query.all()}
+    for lnk in links:
+        bk_obj = all_bk_map.get(lnk.bookmaker_id)
+        if bk_obj:
+            link_by_bk[_bk_slug(bk_obj.name.lower())] = lnk
 
-    def _fetch_bt(link):
+    # ── Live full-market fetch (BT only — has a detail API per parent_match_id)
+    # SP and OD already store full markets on every harvest cycle, so stored
+    # data is sufficient for them. BT grid-only harvest stores 6 markets;
+    # the detail API returns all 20-30.
+    fresh_bt: dict[str, float] = {}
+    fetch_errors: dict[str, str] = {}
+
+    bt_link = link_by_bk.get("bt")
+    bt_external_id = None
+    if bt_link:
+        bt_external_id = bt_link.external_match_id or bt_link.betradar_id
+    # Fallback: use parent_match_id itself (BT parent_match_id == betradar_id)
+    if not bt_external_id:
+        bt_external_id = parent_match_id
+
+    if bt_external_id:
         try:
             from app.workers.bt_harvester import get_full_markets
-            pid = link.external_match_id or link.betradar_id
-            if not pid:
-                return "bt", {}
-            bt_sport_id = 14  # default soccer; resolver could look this up
-            return "bt", get_full_markets(pid, bt_sport_id)
+            # Determine BT sport ID from stored bmo if available
+            bt_sport_id = 14  # soccer default
+            fresh_bt = get_full_markets(bt_external_id, bt_sport_id)
         except Exception as exc:
-            return "bt", {"_error": str(exc)}
+            fetch_errors["bt"] = str(exc)
 
-    def _fetch_od(link):
-        try:
-            from app.workers.od_harvester import fetch_event_detail
-            eid = link.external_match_id
-            if not eid:
-                return "od", {}
-            mkts, _ = fetch_event_detail(eid)
-            return "od", mkts
-        except Exception as exc:
-            return "od", {"_error": str(exc)}
+    # Merge BT: fresh full markets override stored grid markets
+    combined: dict[str, dict] = dict(stored_markets)  # copy all stored first
+    if fresh_bt:
+        combined["bt"] = {**(stored_markets.get("bt") or {}), **fresh_bt}
 
-    def _fetch_sp(link):
-        try:
-            from app.workers.sp_harvester import fetch_event_markets
-            eid = link.external_match_id
-            if not eid:
-                return "sp", {}
-            return "sp", fetch_event_markets(eid)
-        except Exception as exc:
-            return "sp", {"_error": str(exc)}
-
-    fetchers = {
-        "bt": _fetch_bt,
-        "od": _fetch_od,
-        "sp": _fetch_sp,
-    }
-
-    link_by_bk: dict[str, object] = {}
-    for lnk in links:
-        bk_obj = bk_map.get(lnk.bookmaker_id)
-        if bk_obj:
-            slug = _bk_slug(bk_obj.name.lower())
-            link_by_bk[slug] = lnk
-
-    futures = {}
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        for slug, fn in fetchers.items():
-            if slug in link_by_bk:
-                futures[pool.submit(fn, link_by_bk[slug])] = slug
-
-        for fut in as_completed(futures):
-            try:
-                bk_slug, mkts = fut.result()
-                if mkts and not mkts.get("_error"):
-                    fresh_markets[bk_slug] = mkts
-                elif mkts.get("_error"):
-                    errors[bk_slug] = mkts["_error"]
-            except Exception as exc:
-                errors[futures[fut]] = str(exc)
-
-    # Merge: fresh overrides stored, stored fills gaps
-    combined: dict[str, dict] = {}
-    for slug in set(list(stored_markets.keys()) + list(fresh_markets.keys())):
-        base  = stored_markets.get(slug, {})
-        fresh = fresh_markets.get(slug, {})
-        combined[slug] = {**base, **fresh}  # fresh wins
-
-    # Build best odds across all bookmakers per market
+    # ── Build best odds across all bookmakers ─────────────────────────────────
     best: dict[str, dict] = {}
     for sl, mkts in combined.items():
-        for mkt, outcomes in mkts.items():
+        for mkt, outcomes in (mkts or {}).items():
             best.setdefault(mkt, {})
             for out, odd_data in (outcomes or {}).items():
                 try:
@@ -965,8 +941,22 @@ def get_match_full_markets(parent_match_id: str):
                 if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
                     best[mkt][out] = {"odd": fv, "bk": sl}
 
-    # Market summary per bookmaker
-    bk_market_counts = {sl: len(mkts) for sl, mkts in combined.items()}
+    # Arb detection across bookmakers
+    arb_markets: list[dict] = []
+    if len(combined) >= 2:
+        for mkt, outcomes in best.items():
+            if len(outcomes) < 2:
+                continue
+            arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
+            if arb_sum < 1.0:
+                profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
+                legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]}
+                        for o, v in outcomes.items()]
+                arb_markets.append({
+                    "market": mkt, "profit_pct": profit_pct,
+                    "arb_sum": round(arb_sum, 6), "legs": legs,
+                })
+        arb_markets.sort(key=lambda x: -x["profit_pct"])
 
     db_status  = getattr(um, "status", None)
     status_out = _effective_status(db_status, um.start_time)
@@ -982,23 +972,26 @@ def get_match_full_markets(parent_match_id: str):
         "start_time":      um.start_time.isoformat() if um.start_time else None,
         "status":          status_out,
         "is_live":         status_out == "IN_PLAY",
-        # All markets per bookmaker
-        "markets_by_bk":        combined,
-        # Best price for each outcome across all bookmakers
-        "best":                 best,
-        # Summary counts
-        "market_count":         len(best),
-        "market_slugs":         sorted(best.keys()),
-        "bk_market_counts":     bk_market_counts,
+        # All markets keyed by bookmaker slug
+        "markets_by_bk":      combined,
+        # Best price per outcome across all bookmakers
+        "best":               best,
+        # Arb opportunities found across bookmakers
+        "arb_markets":        arb_markets,
+        "has_arb":            bool(arb_markets),
+        # Summary
+        "market_count":       len(best),
+        "market_slugs":       sorted(best.keys()),
+        "bk_market_counts":   {sl: len(mkts) for sl, mkts in combined.items()},
+        "bookmakers":         sorted(combined.keys()),
         # Data provenance
-        "bookmakers_fetched":   list(fresh_markets.keys()),
-        "bookmakers_stored":    list(stored_markets.keys()),
-        "fetch_errors":         errors,
-        "data_source":          "live_fetch+stored",
-        "latency_ms":           int((time.perf_counter() - t0) * 1000),
-        "server_time":          _now_utc().isoformat(),
+        "bt_live_fetched":    bool(fresh_bt),
+        "bt_external_id":     bt_external_id,
+        "stored_bookmakers":  sorted(stored_markets.keys()),
+        "fetch_errors":       fetch_errors,
+        "latency_ms":         int((time.perf_counter() - t0) * 1000),
+        "server_time":        _now_utc().isoformat(),
     }, encrypt_for=user)
-
 @bp_odds_customer.route("/odds/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
     """
