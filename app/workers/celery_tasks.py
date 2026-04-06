@@ -65,7 +65,7 @@ TASK_ROUTES: dict[str, dict] = {
     "tasks.ops.persist_combined_batch":    {"queue": "results"},
     "tasks.ops.persist_all_sports":        {"queue": "results"},
     "tasks.ops.build_health_report":       {"queue": "default"},
-    "tasks.align.sport":{"queue": "default"}
+    "tasks.align.sport":                   {"queue": "default"}
 }
 
 _BK_NAME_TO_SLUG: dict[str, str] = {
@@ -103,6 +103,7 @@ def make_celery(app=None):
             "app.workers.tasks_ops",
             "app.workers.tasks_upcoming",
             "app.workers.tasks_live",
+             "app.workers.tasks_market_align",
         ],
     )
     return celery_service
