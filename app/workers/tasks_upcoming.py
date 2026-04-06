@@ -2,13 +2,18 @@
 app/workers/tasks_upcoming.py
 ==============================
 Harvest targets:
-  SP  — fetch until 15,000 matches total (full markets, 30-day lookahead)
-  BT  — fetch until 15,000 matches total (parallel full-market enrichment)
+  SP  — fetch until SP_MAX_MATCHES total (full markets, 30-day lookahead)
+  BT  — two-phase: grid fetch + immediate persist, then enrich in background
   OD  — fetch entire current calendar month day-by-day
 
-After each harvest completes, _schedule_alignment(sport_slug) is called
-with a 60-second countdown so the persist pipeline finishes writing BMO
-rows before the alignment job reads and merges them.
+BT two-phase strategy:
+  Phase 1 (bt_harvest_sport): fetch grid → persist immediately.
+    Always completes. Ensures BT data reaches DB even if enrichment times out.
+  Phase 2 (bt_enrich_sport):  enrich with full markets → re-persist.
+    Separate task with its own 3600s limit.
+
+After each harvest, _schedule_alignment(sport_slug) is called (60s countdown)
+so the persist pipeline finishes before alignment reads and merges BMO rows.
 
 Market resolution priority:
   1. betradar_id / bt_parent_id / od_parent_id (explicit ID)
@@ -60,8 +65,12 @@ MAX_PAGES      = 6
 WS_CHANNEL     = "odds:updates"
 ARB_CHANNEL    = "arb:updates"
 EV_CHANNEL     = "ev:updates"
-SP_MAX_MATCHES = 15_000
-BT_MAX_MATCHES = 15_000
+
+# Reduced from 15,000.  Fetching 15k matches with full markets per sport
+# easily exceeds the 3600s soft limit under real network conditions.
+# Raise gradually once timing is confirmed stable on your infrastructure.
+SP_MAX_MATCHES = 3_000
+BT_MAX_MATCHES = 3_000   # grid fetch only; enrichment runs as bt_enrich_sport
 
 _BK_NAMES: dict[str, str] = {
     "sp":  "SportPesa",
@@ -128,11 +137,6 @@ def _schedule_alignment(sport_slug: str, countdown: int = 60) -> None:
 
 
 def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
-    """
-    Find an existing unified_match by home + away + start_time (±90 min).
-    Returns parent_match_id if found, else None.
-    Only called when no explicit betradar ID is available.
-    """
     if not home or not away:
         return None
     try:
@@ -171,15 +175,6 @@ def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
 
 
 def _resolve_match_id(m: dict, bk_slug: str) -> tuple[str | None, str | None]:
-    """
-    Return (betradar_id, bk_ext_id) for a single raw match dict.
-
-    Resolution order:
-      1. _extract_betradar_id() — checks betradar_id, betradarId, sr_id,
-                                   bt_parent_id, od_parent_id
-      2. Fuzzy DB lookup by home + away + start_time — only when step 1 fails
-      3. bk_ext_id — bookmaker's own match ID (fallback join key)
-    """
     betradar_id = _extract_betradar_id(m)
 
     if not betradar_id:
@@ -213,14 +208,8 @@ def _persist_bk_matches(
 ) -> None:
     """
     Serialise raw harvested matches and dispatch Celery persist task(s).
-    Splits large batches into chunks of 500 to avoid oversized messages
-    and DB transaction timeouts.
-
-    FIX (Bug 1): markets are stored FLAT as {mkt_key: {outcome: price}} —
-    NOT wrapped under the bookmaker slug.  The previous shape
-    {"markets": {bk_slug: markets}} caused _upsert_unified_match to see
-    mkt_key=bk_slug → outcome=market_name → odds_data=dict, which resolves
-    to price=0 and silently drops every BT/OD/SBO selection.
+    Markets stored FLAT as {mkt_key: {outcome: price}} — not wrapped under
+    the bookmaker slug.
     """
     if not matches:
         return
@@ -236,7 +225,7 @@ def _persist_bk_matches(
 
     br_id_count = sum(1 for m in matches if _extract_betradar_id(m))
     logger.info(
-        "[persist_bk] %s/%s: %d matches total, %d with betradar_id, %d need fuzzy",
+        "[persist_bk] %s/%s: %d matches, %d with betradar_id, %d need fuzzy",
         bk_slug, sport_slug, len(matches), br_id_count, len(matches) - br_id_count,
     )
 
@@ -271,24 +260,18 @@ def _persist_bk_matches(
             "betradar_id":    betradar_id,
             "sport":          canonical_sport,
             "bk_ids":         {bk_slug: bk_ext_id or join_key},
-            # FIX: store markets FLAT, not wrapped under bk_slug.
-            # Wrong:  "markets": {bk_slug: markets}
-            # Correct: "markets": markets  (i.e. {mkt_key: {outcome: price}})
-            "markets":        markets,
-            "bookmaker_slug": bk_slug,   # kept for traceability / debugging
+            "markets":        markets,        # FLAT — not wrapped under bk_slug
+            "bookmaker_slug": bk_slug,
         })
 
     if not serialized:
-        logger.debug(
-            "[persist_bk] %s/%s: no serializable matches", bk_slug, sport_slug,
-        )
+        logger.debug("[persist_bk] %s/%s: no serializable matches", bk_slug, sport_slug)
         return
 
-    # Chunk into 500s to avoid oversized Celery messages / DB timeouts
-    chunk_size  = 500
-    chunks      = [serialized[i: i + chunk_size]
-                   for i in range(0, len(serialized), chunk_size)]
-    dispatched  = 0
+    chunk_size = 500
+    chunks     = [serialized[i: i + chunk_size]
+                  for i in range(0, len(serialized), chunk_size)]
+    dispatched = 0
     for chunk in chunks:
         try:
             celery.send_task(
@@ -300,8 +283,7 @@ def _persist_bk_matches(
             dispatched += len(chunk)
         except Exception as exc:
             logger.warning(
-                "[persist_bk] dispatch failed chunk for %s/%s: %s",
-                bk_slug, sport_slug, exc,
+                "[persist_bk] dispatch failed for %s/%s: %s", bk_slug, sport_slug, exc,
             )
 
     logger.info(
@@ -311,7 +293,6 @@ def _persist_bk_matches(
 
 
 def _persist_b2b_matches(matches: list[dict], sport_slug: str) -> None:
-    """Fan out one _persist_bk_matches call per sub-bookmaker in a B2B batch."""
     if not matches:
         return
 
@@ -373,7 +354,7 @@ def harvest_bookmaker_sport(self, bookmaker_slug: str, sport_slug: str) -> dict:
             "count": len(matches), "latency_ms": latency_ms}
 
 
-@celery.task(name="harvest.all_upcoming", soft_time_limit=30, time_limit=60)
+@celery.task(name="harvest.all_upcoming", soft_time_limit=60, time_limit=120)
 def harvest_all_registry_upcoming() -> dict:
     from app.workers.harvest_registry import ENABLED_BOOKMAKERS
     sigs = [
@@ -559,7 +540,7 @@ def cleanup_old_snapshots(days_keep: int = 7) -> dict:
 
 
 # =============================================================================
-# SPORTPESA UPCOMING  (up to 15,000 matches, full markets, 30-day lookahead)
+# SPORTPESA UPCOMING
 # =============================================================================
 
 @celery.task(
@@ -585,16 +566,20 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
             sleep_between=0.1,
         ):
             matches.append(match)
-            if len(matches) % 1000 == 0:
-                logger.info(
-                    "[sp:upcoming] %s → %d/%d collected",
-                    sport_slug, len(matches), max_matches,
-                )
+            if len(matches) % 500 == 0:
+                logger.info("[sp:upcoming] %s → %d/%d collected",
+                            sport_slug, len(matches), max_matches)
     except SoftTimeLimitExceeded:
         logger.warning("[sp:upcoming] Soft timeout %s — saving %d partial",
                        sport_slug, len(matches))
     except Exception as exc:
-        raise self.retry(exc=exc)
+        if matches:
+            logger.warning(
+                "[sp:upcoming] %s error after %d matches: %s — saving partial",
+                sport_slug, len(matches), exc,
+            )
+        else:
+            raise self.retry(exc=exc)
 
     if not matches:
         return {"ok": False, "reason": "No matches fetched"}
@@ -622,8 +607,12 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
     }
 
 
-@celery.task(name="tasks.sp.harvest_all_upcoming",
-             soft_time_limit=120, time_limit=150)
+@celery.task(
+    name="tasks.sp.harvest_all_upcoming",
+    # Raised from 120/150 — dispatching 8 group messages can be slow under
+    # broker load. This task ONLY dispatches; it never fetches match data.
+    soft_time_limit=300, time_limit=600,
+)
 def sp_harvest_all_upcoming() -> dict:
     sigs = [sp_harvest_sport.s(s, SP_MAX_MATCHES) for s in _LOCAL_SPORTS]
     group(sigs).apply_async(queue="harvest")
@@ -632,22 +621,20 @@ def sp_harvest_all_upcoming() -> dict:
 
 
 # =============================================================================
-# BETIKA UPCOMING  (up to 15,000 matches, parallel full-market enrichment)
+# BETIKA UPCOMING  — two-phase: grid first, enrich second
 # =============================================================================
 
 @celery.task(
     name="tasks.bt.harvest_sport", bind=True,
     max_retries=2, default_retry_delay=20,
-    soft_time_limit=3600, time_limit=3660, acks_late=True,
+    # Grid fetch for 3k matches at 50/page = ~60 pages, fast API. 600s is generous.
+    soft_time_limit=600, time_limit=660, acks_late=True,
 )
 def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -> dict:
     t0      = time.perf_counter()
     matches = []
     try:
-        from app.workers.bt_harvester import (
-            fetch_upcoming_matches,
-            enrich_matches_with_full_markets,
-        )
+        from app.workers.bt_harvester import fetch_upcoming_matches
 
         max_pages = (max_matches // 50) + 10
 
@@ -659,58 +646,124 @@ def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -
         matches = fetch_upcoming_matches(
             sport_slug,
             max_pages=max_pages,
-            fetch_full=False,
+            fetch_full=False,   # grid only — enrichment is Phase 2
         )
         if len(matches) > max_matches:
             matches = matches[:max_matches]
 
-        if not matches:
-            return {"ok": False, "reason": "No matches fetched"}
-
-        logger.info(
-            "[bt:upcoming] %s → %d matches, starting full-market enrichment (12 workers)",
-            sport_slug, len(matches),
-        )
-
-        matches = enrich_matches_with_full_markets(matches, max_workers=12)
-
-        avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
-        logger.info("[bt:upcoming] %s → enrichment done, avg %d markets/match",
-                    sport_slug, avg_markets)
-
     except SoftTimeLimitExceeded:
-        logger.warning("[bt:upcoming] Soft timeout %s — saving %d partial",
+        logger.warning("[bt:upcoming] Soft timeout on grid %s — saving %d partial",
                        sport_slug, len(matches))
     except Exception as exc:
-        raise self.retry(exc=exc)
+        if matches:
+            logger.warning(
+                "[bt:upcoming] %s grid error after %d matches: %s — saving partial",
+                sport_slug, len(matches), exc,
+            )
+        else:
+            raise self.retry(exc=exc)
 
     if not matches:
         return {"ok": False, "reason": "No matches fetched"}
 
-    latency     = int((time.perf_counter() - t0) * 1000)
-    avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
+    latency = int((time.perf_counter() - t0) * 1000)
 
+    # ── Phase 1: persist grid data immediately ──────────────────────────────
     cache_set(f"bt:upcoming:{sport_slug}", {
         "source": "betika", "sport": sport_slug, "mode": "upcoming",
         "match_count": len(matches), "harvested_at": _now_iso(),
-        "latency_ms": latency, "matches": matches, "avg_markets": avg_markets,
+        "latency_ms": latency, "matches": matches, "enriched": False,
     }, ttl=3600)
 
     _upsert_and_chain(matches, "Betika")
     _persist_bk_matches(matches, "bt", sport_slug)
     _emit("betika", sport_slug, len(matches), latency)
-    _schedule_alignment(sport_slug, countdown=60)
 
-    logger.info("[bt:upcoming] %s → %d matches %dms (avg %d markets/match)",
-                sport_slug, len(matches), latency, avg_markets)
+    logger.info(
+        "[bt:upcoming] %s → %d grid matches saved in %dms — scheduling enrichment",
+        sport_slug, len(matches), latency,
+    )
+
+    # ── Phase 2: enrich in a separate task (120s countdown lets Phase 1 land)
+    bt_enrich_sport.apply_async(
+        args=[sport_slug, matches],
+        queue="harvest",
+        countdown=120,
+    )
+
     return {
         "ok": True, "source": "betika", "sport": sport_slug,
-        "count": len(matches), "avg_markets": avg_markets, "latency_ms": latency,
+        "count": len(matches), "latency_ms": latency, "enriched": False,
     }
 
 
-@celery.task(name="tasks.bt.harvest_all_upcoming",
-             soft_time_limit=120, time_limit=150)
+@celery.task(
+    name="tasks.bt.enrich_sport", bind=True,
+    max_retries=1, default_retry_delay=300,
+    soft_time_limit=3600, time_limit=3660, acks_late=True,
+)
+def bt_enrich_sport(self, sport_slug: str, matches: list[dict]) -> dict:
+    """
+    Phase 2: enrich previously saved grid matches with full market data.
+    Runs as its own task so a timeout here does NOT prevent grid data
+    from being saved.
+    """
+    if not matches:
+        return {"ok": True, "enriched": 0}
+
+    t0 = time.perf_counter()
+    enriched = matches   # fallback: return grid data unchanged on error
+    try:
+        from app.workers.bt_harvester import enrich_matches_with_full_markets
+
+        logger.info("[bt:enrich] %s → enriching %d matches (12 workers)",
+                    sport_slug, len(matches))
+        enriched = enrich_matches_with_full_markets(matches, max_workers=12)
+
+        avg_markets = int(
+            sum(m.get("market_count", 0) for m in enriched) / max(len(enriched), 1)
+        )
+        logger.info("[bt:enrich] %s → done, avg %d markets/match", sport_slug, avg_markets)
+
+    except SoftTimeLimitExceeded:
+        logger.warning(
+            "[bt:enrich] Soft timeout %s — grid data already persisted, enrichment skipped",
+            sport_slug,
+        )
+        return {"ok": True, "enriched": 0, "reason": "timeout"}
+    except Exception as exc:
+        logger.error("[bt:enrich] %s: %s", sport_slug, exc)
+        return {"ok": False, "reason": str(exc)}
+
+    latency     = int((time.perf_counter() - t0) * 1000)
+    avg_markets = int(sum(m.get("market_count", 0) for m in enriched) / max(len(enriched), 1))
+
+    # Update cache with enriched data
+    cache_set(f"bt:upcoming:{sport_slug}", {
+        "source": "betika", "sport": sport_slug, "mode": "upcoming",
+        "match_count": len(enriched), "harvested_at": _now_iso(),
+        "latency_ms": latency, "matches": enriched,
+        "avg_markets": avg_markets, "enriched": True,
+    }, ttl=3600)
+
+    # Re-persist to overwrite grid-only odds with enriched market odds
+    _upsert_and_chain(enriched, "Betika")
+    _persist_bk_matches(enriched, "bt", sport_slug)
+    _emit("betika", sport_slug, len(enriched), latency)
+    _schedule_alignment(sport_slug, countdown=60)
+
+    logger.info("[bt:enrich] %s → %d matches re-persisted in %dms",
+                sport_slug, len(enriched), latency)
+    return {
+        "ok": True, "source": "betika", "sport": sport_slug,
+        "count": len(enriched), "avg_markets": avg_markets, "latency_ms": latency,
+    }
+
+
+@celery.task(
+    name="tasks.bt.harvest_all_upcoming",
+    soft_time_limit=300, time_limit=600,
+)
 def bt_harvest_all_upcoming() -> dict:
     sigs = [bt_harvest_sport.s(s, BT_MAX_MATCHES) for s in _LOCAL_SPORTS]
     group(sigs).apply_async(queue="harvest")
@@ -719,7 +772,7 @@ def bt_harvest_all_upcoming() -> dict:
 
 
 # =============================================================================
-# ODIBETS UPCOMING  (full current calendar month, deduplicated)
+# ODIBETS UPCOMING
 # =============================================================================
 
 @celery.task(
@@ -789,7 +842,7 @@ def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     latency     = int((time.perf_counter() - t0) * 1000)
     avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
 
-    logger.info("[od:upcoming] %s → %d matches for full month, avg %d markets/match, %dms",
+    logger.info("[od:upcoming] %s → %d matches, avg %d markets/match, %dms",
                 sport_slug, len(matches), avg_markets, latency)
 
     cache_set(f"od:upcoming:{sport_slug}", {
@@ -811,7 +864,7 @@ def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
 
 
 @celery.task(name="tasks.od.harvest_all_upcoming",
-             soft_time_limit=120, time_limit=150)
+             soft_time_limit=300, time_limit=600)
 def od_harvest_all_upcoming() -> dict:
     sigs = [od_harvest_sport.s(s) for s in _LOCAL_SPORTS]
     group(sigs).apply_async(queue="harvest")
@@ -854,7 +907,7 @@ def b2b_harvest_sport(self, sport_slug: str) -> dict:
 
 
 @celery.task(name="tasks.b2b.harvest_all_upcoming",
-             soft_time_limit=30, time_limit=60)
+             soft_time_limit=300, time_limit=600)
 def b2b_harvest_all_upcoming() -> dict:
     sigs = [b2b_harvest_sport.s(s) for s in _B2B_HARVEST_SPORTS]
     group(sigs).apply_async(queue="harvest")
@@ -910,7 +963,7 @@ def b2b_page_harvest_page(self, bookmaker: dict, sport: str, page: int) -> dict:
 
 
 @celery.task(name="tasks.b2b_page.harvest_all_upcoming",
-             soft_time_limit=30, time_limit=60)
+             soft_time_limit=60, time_limit=120)
 def b2b_page_harvest_all_upcoming() -> dict:
     from app.workers.celery_tasks import _redis
     raw        = _redis().get("cache:bookmakers:active")
@@ -986,7 +1039,7 @@ def sbo_harvest_sport(self, sport_slug: str, max_matches: int = 90) -> dict:
 
 
 @celery.task(name="tasks.sbo.harvest_all_upcoming",
-             soft_time_limit=30, time_limit=60)
+             soft_time_limit=60, time_limit=120)
 def sbo_harvest_all_upcoming() -> dict:
     sigs = [sbo_harvest_sport.s(s, 90) for s in _SBO_SPORTS]
     group(sigs).apply_async(queue="harvest")
