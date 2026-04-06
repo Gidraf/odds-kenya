@@ -103,7 +103,7 @@ def make_celery(app=None):
             "app.workers.tasks_ops",
             "app.workers.tasks_upcoming",
             "app.workers.tasks_live",
-            "tasks.align.sport",
+             "app.workers.tasks_market_align",
         ],
     )
     return celery_service
