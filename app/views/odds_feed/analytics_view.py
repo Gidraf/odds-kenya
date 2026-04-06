@@ -122,7 +122,7 @@ def _resolve_match(betradar_id: str) -> tuple[object | None, str]:
 
 def _match_stub(um) -> dict:
     """Compact match identifier block included in every analytics response."""
-    from app.views.odds_feed.odds_routes import _normalise_sport_slug, _effective_status
+    from app.views.odds_feed.customer_odds_view import _normalise_sport_slug, _effective_status
     return {
         "match_id":        um.id,
         "parent_match_id": um.parent_match_id,
@@ -510,7 +510,7 @@ def batch_analytics():
         home = away = competition = sport = start_time = None
         try:
             from app.models.odds_model import UnifiedMatch
-            from app.views.odds_feed.odds_routes import _normalise_sport_slug, _effective_status
+            from app.views.odds_feed.customer_odds_view import _normalise_sport_slug, _effective_status
             um = UnifiedMatch.query.filter_by(parent_match_id=br_id).first()
             if um:
                 home        = um.home_team_name
