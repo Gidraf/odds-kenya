@@ -4,9 +4,10 @@
 # --------------------
 # Gracefully stops all dev services:
 #   • tmux session 'oddspedia'
-#   • Celery workers + beat
+#   • Celery workers + beat  (includes market alignment tasks)
 #   • Flask dev server
-#   • Flower
+#   • Flower (if running)
+#   • Gunicorn (if running instead of flask run)
 # =============================================================================
 
 GREEN="\033[92m"; YELLOW="\033[93m"; CYAN="\033[96m"; RED="\033[91m"; RESET="\033[0m"
@@ -30,15 +31,17 @@ if command -v tmux >/dev/null 2>&1; then
 fi
 
 # ── 2. Celery workers ─────────────────────────────────────────────────────────
+# This stops harvest, alignment, persist, and all other Celery tasks.
 CELERY_PIDS=$(pgrep -f "celery.*worker" 2>/dev/null)
 if [ -n "$CELERY_PIDS" ]; then
-  info "Sending SIGTERM to Celery workers…"
+  info "Sending SIGTERM to Celery workers (allows in-flight tasks to finish)…"
   echo "$CELERY_PIDS" | xargs kill -TERM 2>/dev/null
-  sleep 3
-  # Force-kill anything still alive
+  sleep 4
+
+  # Give long-running harvest tasks a little more time
   CELERY_STILL=$(pgrep -f "celery.*worker" 2>/dev/null)
   if [ -n "$CELERY_STILL" ]; then
-    warn "Workers still alive — sending SIGKILL"
+    warn "Workers still alive after 4s — sending SIGKILL"
     echo "$CELERY_STILL" | xargs kill -9 2>/dev/null
   fi
   ok "Celery workers stopped"
@@ -80,21 +83,20 @@ if [ -n "$GUNICORN_PIDS" ]; then
   ok "Gunicorn stopped"
 fi
 
-# ── 7. Clean up beat schedule file ───────────────────────────────────────────
+# ── 7. Clean up Celery schedule / pid files ───────────────────────────────────
 for f in celerybeat-schedule celerybeat.pid /tmp/celerybeat-schedule-inline; do
   [ -f "$f" ] && rm -f "$f" && ok "Removed $f"
 done
 
-# ── 8. Verify nothing is still running ───────────────────────────────────────
+# ── 8. Verify ─────────────────────────────────────────────────────────────────
 echo ""
-info "Verifying…"
+info "Verifying all processes stopped…"
 
-REMAINING=$(pgrep -f "celery|flask run|flower" 2>/dev/null)
+REMAINING=$(pgrep -f "celery|flask run|flower|gunicorn" 2>/dev/null)
 if [ -n "$REMAINING" ]; then
   fail "Some processes still running:"
-  echo "$REMAINING" | while read pid; do
-    ps -p "$pid" -o pid,cmd --no-headers 2>/dev/null | \
-      sed "s/^/      /"
+  echo "$REMAINING" | while read -r pid; do
+    ps -p "$pid" -o pid,cmd --no-headers 2>/dev/null | sed "s/^/      /"
   done
   echo ""
   echo -e "  Force-kill all with:  ${YELLOW}kill -9 $REMAINING${RESET}"
@@ -103,5 +105,12 @@ else
 fi
 
 echo ""
-echo -e "${GREEN}Done.${RESET}  Restart with:  ${CYAN}./scripts/dev_start.sh${RESET}"
+echo -e "${GREEN}Done.${RESET}"
+echo ""
+echo -e "  Restart with:  ${CYAN}./scripts/dev_start.sh${RESET}"
+echo ""
+echo -e "  Log files are preserved in:  ${CYAN}logs/${RESET}"
+echo "    logs/flask.log"
+echo "    logs/celery.log"
+echo "    logs/harvest_jobs.log"
 echo ""
