@@ -3,38 +3,62 @@ app/workers/od_harvester.py
 ============================
 OdiBets upcoming + live harvester.
 
-API response shapes (confirmed 2026-03-30)
+Confirmed API response shapes (2026-04-06)
 ──────────────────────────────────────────
-Upcoming  markets[i]:
-  {
-    "sub_type_id": "1",
-    "odd_type":    "1X2",
-    "lines": [                          ← outcomes nested under lines[]
-      {
-        "specifiers": "",
-        "outcomes": [
-          { "outcome_key": "1", "odd_value": "1.15", "active": 1, ... }
-        ]
+Upcoming  GET /odi/sportsbook?resource=sportevents&...
+  markets[i]:
+    {
+      "sub_type_id": "1",
+      "odd_type":    "1X2",
+      "lines": [
+        {
+          "specifiers": "",
+          "outcomes": [
+            { "outcome_key": "1", "odd_value": "1.15", "active": 1, ... }
+          ]
+        }
+      ]
+    }
+
+Event detail  GET /sportsbook/v1?resource=sportevent&id={betradar_id}
+  Response envelope:
+    {
+      "status_code": 200,
+      "data": {
+        "info": { "parent_match_id": "...", "home_team": "...", ... },
+        "markets_list": [...],
+        "markets": [
+          {
+            "sub_type_id": "1",
+            "status": "1",
+            "specifiers": "",
+            "outcomes": [
+              { "outcome_key": "1", "odd_value": "3.05", "active": "1", ... }
+            ]
+          },
+          ...
+        ],
+        "meta": { "id": "...", ... }
       }
-    ]
-  }
+    }
 
-Live  markets[i]:
-  {
-    "sub_type_id": "1",
-    "odd_type":    "1X2",
-    "status": 1,
-    "outcomes": [                       ← outcomes directly on market
-      { "outcome_key": "1", "odd_value": "3.20", "active": 1, "specifiers": "", ... }
-    ]
-  }
+  IMPORTANT differences from upcoming:
+    • outcomes[] are directly on the market (no lines[] wrapper)
+    • specifiers live on the MARKET, not the outcome (outcome specifiers can differ
+      for Asian/Euro handicap — e.g. outcome 1 has hcp=0.5 but outcome 2 has hcp=-0.5)
+    • markets have their own "status" field ("0" = inactive, skip)
+    • team info is under data.info, not at the top level
 
-Key differences vs old assumptions
-────────────────────────────────────
-• Upcoming wraps outcomes in lines[] — old code looked for mkt["odds"] / mkt["outcomes"] directly
-• outcome_key for Double Chance is "1 or X" / "1 or 2" / "X or 2" — normalised to "1X" / "12" / "X2"
-• game_id is the match id field (upcoming); id / match_id (live)
-• sport_id is a string slug on upcoming ("soccer"), int on live (1)
+Live  GET /sportsbook/v1?resource=live&...
+  markets[i]:
+    {
+      "sub_type_id": "1",
+      "status": 1,
+      "outcomes": [ ... ]    ← same shape as event detail
+    }
+
+Key: the `id` parameter in the event detail endpoint accepts the Sportradar/betradar
+     match ID (same value stored as betradar_id on SP harvested matches).
 """
 
 from __future__ import annotations
@@ -83,7 +107,6 @@ OD_SPORT_IDS: dict[str, int] = {
 
 OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
 
-# OdiBets string sport_id values seen in API responses
 _OD_STRING_SPORT_MAP: dict[str, str] = {
     "soccer":            "soccer",
     "football":          "soccer",
@@ -123,7 +146,6 @@ def od_sport_to_slug(sport_id: int) -> str:
 
 
 def _resolve_sport(raw_sport: Any, fallback_od_id: int) -> tuple[int, str]:
-    """Resolve raw sport value (int id OR string slug) to (od_sport_id, sport_slug)."""
     if raw_sport is None:
         return fallback_od_id, od_sport_to_slug(fallback_od_id)
     try:
@@ -169,7 +191,6 @@ HEADERS: dict[str, str] = {
     "sec-fetch-site":     "cross-site",
 }
 
-# ── Redis key patterns ────────────────────────────────────────────────────────
 _LIVE_DATA_KEY   = "od:live:{sport_id}:data"
 _LIVE_HASH_KEY   = "od:live:{sport_id}:hash"
 _LIVE_CHAN_KEY   = "od:live:{sport_id}:updates"
@@ -199,24 +220,21 @@ def _get(url: str, params: dict | None = None, timeout: float = 10.0) -> dict | 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESPONSE UNWRAPPING
+# RESPONSE UNWRAPPING (upcoming list)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int) -> list[dict]:
     """
-    Unwrap the confirmed shape:
+    Unwrap upcoming list response:
       { "data": { "leagues": [ { "competition_name": "...", "matches": [...] } ] } }
     """
     if isinstance(data, list):
         return data
     if not isinstance(data, dict):
         return []
-
     inner = data.get("data")
-
     if isinstance(inner, list):
         return inner
-
     if isinstance(inner, dict):
         leagues: list[dict] = inner.get("leagues") or []
         raw_events: list[dict] = []
@@ -237,7 +255,6 @@ def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int) -> list
             if isinstance(inner.get(key), list) and inner[key]:
                 return inner[key]
         return []
-
     for key in ("events", "matches", "results", "sport_events", "sportevents"):
         if isinstance(data.get(key), list) and data[key]:
             return data[key]
@@ -245,7 +262,6 @@ def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int) -> list
 
 
 def _unwrap_live_response(data: dict | list) -> list[dict]:
-    """Unwrap live endpoint response into a flat list of match dicts."""
     if isinstance(data, list):
         return data
     if not isinstance(data, dict):
@@ -268,15 +284,13 @@ def _unwrap_live_response(data: dict | list) -> list[dict]:
 # OUTCOME KEY NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-# OdiBets Double Chance sends verbose keys like "1 or X" — normalise to canonical
 _DC_KEY_MAP: dict[str, str] = {
-    "1 or x":  "1X",  "1 or X":  "1X",
-    "x or 2":  "X2",  "X or 2":  "X2",
-    "1 or 2":  "12",
-    "1x":      "1X",  "x2":      "X2",
-    "1X":      "1X",  "X2":      "X2",  "12": "12",
+    "1 or x": "1X", "1 or X": "1X",
+    "x or 2": "X2", "X or 2": "X2",
+    "1 or 2": "12",
+    "1x":     "1X", "x2":     "X2",
+    "1X":     "1X", "X2":     "X2", "12": "12",
 }
-
 _BTTS_KEY_MAP: dict[str, str] = {
     "yes": "yes", "no": "no",
     "gg":  "yes", "ng": "no",
@@ -286,7 +300,6 @@ _BTTS_KEY_MAP: dict[str, str] = {
 
 
 def _normalise_outcome_key(slug: str, raw_key: str, outcome_name: str = "") -> str:
-    """Map OdiBets raw outcome_key to canonical form."""
     rk   = str(raw_key).strip()
     rk_l = rk.lower()
 
@@ -308,12 +321,21 @@ def _normalise_outcome_key(slug: str, raw_key: str, outcome_name: str = "") -> s
     if rk == "x":
         return "X"
 
+    # Handicap outcome keys like "1 (0:1)", "X (1:0)", "2 (-0.5)", "1 (+0.5)"
+    # Strip the specifier part in parentheses and return the bare selection
+    if "(" in rk and rk.endswith(")"):
+        base = rk[:rk.index("(")].strip()
+        if base in ("1", "X", "2"):
+            return base
+        if base.lower() in ("over", "under"):
+            return base.lower()
+
     can = normalize_outcome(slug, rk, outcome_name)
     return can if can else rk
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MARKET NORMALISATION
+# MARKET PARSING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_specifiers(spec_str: str) -> dict[str, str]:
@@ -335,19 +357,37 @@ def _extract_line(spec_str: str) -> str:
 
 def _flat_outcomes_from_market(mkt: dict) -> list[tuple[dict, str]]:
     """
-    Yield (outcome_dict, specifier_str) pairs handling both shapes:
+    Yield (outcome_dict, specifier_str) pairs.
 
-    Shape A — live:     market.outcomes[]
-    Shape B — upcoming: market.lines[].outcomes[]
+    Specifier priority:
+      1. Market-level "specifiers" field  — used for event detail + live endpoints.
+         This is the CORRECT grouping key for handicap/total markets because
+         outcomes within the same market share the same line (the market-level spec).
+         Example: Asian HC market with specifiers="hcp=0.5" has outcomes
+         "1 (+0.5)" and "2 (-0.5)" — both belong to the 0.5 line.
+
+      2. Line-level "specifiers"          — used for the upcoming list endpoint
+         (outcomes are nested under lines[]).
+
+      3. Outcome-level "specifiers"       — fallback only.
+
+    Shapes handled:
+      A  outcomes[] directly on market  (event detail + live)
+      B  lines[].outcomes[]            (upcoming list)
+      C  odds[] legacy                 (fallback)
     """
     results: list[tuple[dict, str]] = []
 
-    # Shape A — outcomes directly on market (live endpoint)
+    # Prefer the market-level specifier as the grouping key
+    market_spec = str(mkt.get("specifiers") or "").strip()
+
+    # Shape A — outcomes directly on market (event detail / live)
     direct = mkt.get("outcomes")
     if isinstance(direct, list) and direct:
         for o in direct:
             if isinstance(o, dict):
-                spec = str(o.get("specifiers") or "").strip()
+                # Use market-level spec first; fall back to outcome-level
+                spec = market_spec or str(o.get("specifiers") or "").strip()
                 results.append((o, spec))
         return results
 
@@ -364,12 +404,14 @@ def _flat_outcomes_from_market(mkt: dict) -> list[tuple[dict, str]]:
                     results.append((o, spec))
         return results
 
-    # Legacy fallback — "odds" list
+    # Shape C — legacy "odds" list
     odds = mkt.get("odds")
     if isinstance(odds, list):
         for o in odds:
             if isinstance(o, dict):
-                spec = str(o.get("special_bet_value") or o.get("specifiers") or "").strip()
+                spec = market_spec or str(
+                    o.get("special_bet_value") or o.get("specifiers") or ""
+                ).strip()
                 results.append((o, spec))
 
     return results
@@ -382,8 +424,10 @@ def _parse_market_group(
     od_sport_id: int,
 ) -> dict[str, dict[str, float]]:
     """
-    Parse one market dict → {canonical_slug: {outcome: odd}}.
-    Handles both upcoming (lines[]) and live (outcomes[]) shapes.
+    Parse one OD market dict → {canonical_slug: {outcome: odd}}.
+
+    Multi-line markets (e.g. O/U 2.5, O/U 3.5 as separate market entries)
+    each produce their own slug via the specifier line value.
     """
     flat = _flat_outcomes_from_market(mkt)
     if not flat:
@@ -391,7 +435,7 @@ def _parse_market_group(
 
     sid = str(sub_type_id).strip()
 
-    # Group by specifier so O/U 2.5 and O/U 3.5 become separate canonical slugs
+    # Group by specifier so each line becomes its own canonical slug
     by_spec: dict[str, list[tuple[dict, str]]] = {}
     for outcome, spec in flat:
         by_spec.setdefault(spec, []).append((outcome, spec))
@@ -403,7 +447,6 @@ def _parse_market_group(
 
         outcomes: dict[str, float] = {}
         for o, _ in group:
-            # Skip suspended / inactive
             active = o.get("active")
             status = o.get("status")
             if active is not None and str(active) in ("0", "false"):
@@ -434,11 +477,20 @@ def _parse_all_markets(
     markets_raw: list[dict],
     od_sport_id: int,
 ) -> dict[str, dict[str, float]]:
-    """Parse a full markets list into canonical form."""
+    """
+    Parse a full markets list into canonical {slug: {outcome: float}} form.
+    Skips markets where the market-level status field is "0" (inactive).
+    """
     merged: dict[str, dict[str, float]] = {}
     for mkt in markets_raw:
         if not isinstance(mkt, dict):
             continue
+
+        # Skip inactive markets — event detail endpoint marks these with status="0"
+        mkt_status = mkt.get("status")
+        if mkt_status is not None and str(mkt_status) == "0":
+            continue
+
         sub_type_id = mkt.get("sub_type_id") or mkt.get("type_id") or 0
         mkt_name    = str(mkt.get("odd_type") or mkt.get("name") or mkt.get("type_name") or "")
         parsed      = _parse_market_group(sub_type_id, mkt_name, mkt, od_sport_id)
@@ -455,9 +507,7 @@ def _parse_all_markets(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict | None:
-    """Convert one raw OdiBets match dict into canonical form."""
     try:
-        # game_id = upcoming; id / match_id = live/detail
         match_id = str(
             raw.get("game_id")  or raw.get("id") or
             raw.get("match_id") or raw.get("event_id") or ""
@@ -475,22 +525,13 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
             raw.get("category_name") or raw.get("category") or
             raw.get("country_name")  or raw.get("country") or ""
         )
-
         raw_sport = raw.get("sport_id") or raw.get("sport") or raw.get("s_binomen")
         od_sport_id_, sport_slug = _resolve_sport(raw_sport, od_sport_id)
-
-        start_time = str(raw.get("start_time") or raw.get("event_date") or raw.get("date") or "")
-
-        current_score = str(
-            raw.get("current_score") or raw.get("score") or raw.get("result") or ""
-        )
-        match_time = str(
-            raw.get("match_time") or raw.get("game_time") or raw.get("periodic_time") or ""
-        )
-        event_status = str(
-            raw.get("event_status") or raw.get("status_desc") or raw.get("status") or ""
-        )
-        bet_status = str(raw.get("bet_status") or raw.get("b_status") or "")
+        start_time   = str(raw.get("start_time") or raw.get("event_date") or raw.get("date") or "")
+        current_score = str(raw.get("current_score") or raw.get("score") or raw.get("result") or "")
+        match_time   = str(raw.get("match_time") or raw.get("game_time") or raw.get("periodic_time") or "")
+        event_status = str(raw.get("event_status") or raw.get("status_desc") or raw.get("status") or "")
+        bet_status   = str(raw.get("bet_status") or raw.get("b_status") or "")
 
         score_parts = (
             current_score.split(":") if ":" in current_score
@@ -567,15 +608,9 @@ def fetch_upcoming_matches(
     max_matches:        int | None = None,
     **kwargs,
 ) -> list[dict]:
-    """
-    Fetch upcoming matches. Defaults day to today — OdiBets returns empty
-    leagues[] without a day param.
-    """
     od_sport_id = slug_to_od_sport_id(sport_slug)
-
     if not day:
         day = _date.today().isoformat()
-
     params: dict[str, Any] = {
         "resource":    "sportevents",
         "platform":    "mobile",
@@ -586,17 +621,14 @@ def fetch_upcoming_matches(
     }
     if competition_id:
         params["competition_id"] = competition_id
-
     data = _get(SBOOK_ODI, params=params)
     if not data:
         logger.warning("OD upcoming %s %s: no response", sport_slug, day)
         return []
-
     raw_events = _unwrap_upcoming_response(data, od_sport_id)
     if not raw_events:
         logger.warning("OD upcoming %s %s: 0 events after unwrap", sport_slug, day)
         return []
-
     matches: list[dict] = []
     for raw in raw_events:
         if not isinstance(raw, dict):
@@ -604,7 +636,6 @@ def fetch_upcoming_matches(
         m = _normalise_match(raw, od_sport_id, is_live=False)
         if m:
             matches.append(m)
-
     logger.info("OD upcoming %s %s: %d matches", sport_slug, day, len(matches))
     return matches
 
@@ -632,10 +663,6 @@ def fetch_upcoming_all_sports(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
-    """
-    Fetch live matches. Live endpoint returns outcomes[] directly on each
-    market (no lines[] wrapper).
-    """
     params: dict[str, Any] = {
         "resource":    "live",
         "sportsbook":  "sportsbook",
@@ -645,13 +672,10 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     }
     if sport_slug:
         params["sport_id"] = slug_to_od_sport_id(sport_slug)
-
     data = _get(SBOOK_V1, params=params)
     if not data:
         return []
-
     raw_events = _unwrap_live_response(data)
-
     matches: list[dict] = []
     for raw in raw_events:
         if not isinstance(raw, dict):
@@ -663,19 +687,62 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
         m = _normalise_match(raw, raw_sport_id, is_live=True)
         if m:
             matches.append(m)
-
     logger.info("OD live: %d matches (sport=%s)", len(matches), sport_slug or "all")
     return matches
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MATCH DETAIL
+# EVENT DETAIL  (used by sp_cross_bk_enrich)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_event_detail(
     event_id:    str | int,
     od_sport_id: int = 1,
 ) -> tuple[dict[str, dict[str, float]], dict]:
+    """
+    Fetch full markets for one OD event using its Sportradar/betradar ID.
+
+    Endpoint:
+      GET https://api.odi.site/sportsbook/v1
+          ?resource=sportevent&id={betradar_id}&...
+
+    The `id` parameter accepts the Sportradar match ID (same value as SP's
+    betradar_id field). OD returns the match with 100+ markets.
+
+    Confirmed response shape (2026-04-06):
+      {
+        "status_code": 200,
+        "data": {
+          "info": {
+            "parent_match_id": "61624524",
+            "home_team": "Girona FC",
+            "away_team": "Villarreal CF",
+            "start_time": "2026-04-06 22:00:00",
+            "sport_id": "1",
+            "s_binomen": "soccer",
+            ...
+          },
+          "markets_list": [...],
+          "markets": [
+            {
+              "sub_type_id": "1",
+              "status": "1",
+              "specifiers": "",
+              "outcomes": [
+                { "outcome_key": "1", "odd_value": "3.05", "active": "1", ... }
+              ]
+            },
+            ...
+          ],
+          "meta": { "id": "...", ... }
+        }
+      }
+
+    Returns:
+      (markets_dict, meta_dict)
+      markets_dict: {canonical_slug: {outcome_key: float}}
+      meta_dict:    match info fields from data.info
+    """
     params = {
         "resource":    "sportevent",
         "id":          str(event_id),
@@ -686,34 +753,58 @@ def fetch_event_detail(
         "ua":          HEADERS["user-agent"],
     }
     data = _get(SBOOK_V1, params=params)
-    if not data:
+    if not data or not isinstance(data, dict):
         return {}, {}
 
-    if isinstance(data, dict):
-        inner     = data.get("data") or data
-        raw_event = (inner.get("event") if isinstance(inner, dict) else None) or inner
-        if not isinstance(raw_event, dict):
-            raw_event = data
+    # ── Unwrap confirmed response envelope ────────────────────────────────────
+    # data = { "status_code": 200, "data": { "info": {...}, "markets": [...] } }
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        # Fallback: try the top level itself
+        inner = data
 
-        markets_raw = raw_event.get("markets") or raw_event.get("odds") or []
-        meta = {
-            "home_team":     raw_event.get("home_team", ""),
-            "away_team":     raw_event.get("away_team", ""),
-            "competition":   raw_event.get("competition_name") or raw_event.get("competition", ""),
-            "category":      raw_event.get("category_name") or raw_event.get("category", ""),
-            "start_time":    raw_event.get("start_time", ""),
-            "current_score": raw_event.get("current_score", ""),
-            "match_time":    raw_event.get("match_time", ""),
-            "event_status":  raw_event.get("event_status", ""),
-            "bet_status":    raw_event.get("bet_status", ""),
-        }
-    elif isinstance(data, list):
-        markets_raw = data
-        meta = {}
-    else:
-        return {}, {}
+    # ── Extract match info ────────────────────────────────────────────────────
+    # Team names and other metadata live under inner["info"]
+    info = inner.get("info") or {}
+    if not isinstance(info, dict):
+        info = {}
 
-    markets = _parse_all_markets(markets_raw, od_sport_id)
+    meta: dict = {
+        "parent_match_id": str(info.get("parent_match_id") or ""),
+        "home_team":       str(info.get("home_team")       or ""),
+        "away_team":       str(info.get("away_team")       or ""),
+        "competition":     str(info.get("competition_name") or info.get("competition") or ""),
+        "category":        str(info.get("category_name")   or info.get("country_name") or ""),
+        "start_time":      str(info.get("start_time")      or ""),
+        "current_score":   str(info.get("result")          or ""),
+        "match_time":      str(info.get("periodic_time")   or ""),
+        "event_status":    str(info.get("status_desc")     or ""),
+        "bet_status":      str(info.get("b_status")        or ""),
+        "sport_id":        str(info.get("sport_id")        or ""),
+        "s_binomen":       str(info.get("s_binomen")       or ""),
+        "game_id":         str(info.get("game_id")         or ""),
+    }
+
+    # ── Resolve sport ─────────────────────────────────────────────────────────
+    raw_sport = info.get("s_binomen") or info.get("sport_id")
+    od_sport_id_, _ = _resolve_sport(raw_sport, od_sport_id)
+
+    # ── Extract and parse markets ─────────────────────────────────────────────
+    # Markets live at inner["markets"] — each has outcomes[] directly (no lines[])
+    markets_raw = inner.get("markets") or []
+    if not isinstance(markets_raw, list):
+        markets_raw = []
+
+    if not markets_raw:
+        logger.debug("OD fetch_event_detail: no markets in response for id=%s", event_id)
+        return {}, meta
+
+    markets = _parse_all_markets(markets_raw, od_sport_id_)
+
+    logger.debug(
+        "OD fetch_event_detail: id=%s → %d raw markets → %d canonical slugs",
+        event_id, len(markets_raw), len(markets),
+    )
     return markets, meta
 
 
@@ -767,36 +858,25 @@ class OdiBetsLivePoller:
         by_sport: dict[int, list[dict]] = {}
         for m in matches:
             by_sport.setdefault(m["od_sport_id"], []).append(m)
-
         for od_sport_id, sport_matches in by_sport.items():
             new_hash = _payload_hash(sport_matches)
             if new_hash == self._prev_hashes.get(od_sport_id, ""):
                 continue
             self._prev_hashes[od_sport_id] = new_hash
             sport_slug = od_sport_to_slug(od_sport_id)
-
             self.redis.set(
                 _LIVE_DATA_KEY.format(sport_id=od_sport_id),
-                json.dumps(sport_matches, ensure_ascii=False),
-                ex=60,
+                json.dumps(sport_matches, ensure_ascii=False), ex=60,
             )
-
             events = self._build_delta_events(sport_matches, od_sport_id)
             if events:
                 channel = _LIVE_CHAN_KEY.format(sport_id=od_sport_id)
                 payload = json.dumps({
-                    "type":       "batch_update",
-                    "sport_id":   od_sport_id,
-                    "sport_slug": sport_slug,
-                    "events":     events,
-                    "total":      len(sport_matches),
-                    "ts":         time.time(),
+                    "type": "batch_update", "sport_id": od_sport_id,
+                    "sport_slug": sport_slug, "events": events,
+                    "total": len(sport_matches), "ts": time.time(),
                 }, ensure_ascii=False)
                 self.redis.publish(channel, payload)
-                logger.debug(
-                    "OD live delta: sport=%s matches=%d events=%d",
-                    sport_slug, len(sport_matches), len(events),
-                )
 
     def _build_delta_events(self, matches: list[dict], od_sport_id: int) -> list[dict]:
         events: list[dict] = []
@@ -826,7 +906,6 @@ class OdiBetsLivePoller:
         return events
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
 _live_poller: OdiBetsLivePoller | None = None
 
 
@@ -904,7 +983,6 @@ def fetch_upcoming(
     max_matches:        int | None = None,
     **kwargs,
 ) -> list[dict]:
-    """Celery-task-compatible alias for fetch_upcoming_matches."""
     return fetch_upcoming_matches(sport_slug, **kwargs)
 
 
@@ -913,5 +991,4 @@ def fetch_live(
     fetch_full_markets: bool       = False,
     **kwargs,
 ) -> list[dict]:
-    """Celery-task-compatible alias for fetch_live_matches."""
     return fetch_live_matches(sport_slug)

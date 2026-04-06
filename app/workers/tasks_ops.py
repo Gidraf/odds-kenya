@@ -244,6 +244,77 @@ def publish_ws_event(channel: str, data: dict) -> bool:
 # EV / ARBITRAGE
 # =============================================================================
 
+def _extract_best_price(val) -> float | None:
+    """
+    Recursively extract the best (highest valid) price from any value shape.
+ 
+    Handles:
+      1.85                              → bare float
+      {"odds": 1.85}                    → standard odds dict
+      {"sp": 1.85, "bt": 1.90}         → bookmaker_slug → price map
+      {"sp": {"odds": 1.85}, ...}      → bookmaker_slug → odds_dict map
+      {"None": {"home": 1.85, ...}}    → specifier → outcomes map
+    """
+    if isinstance(val, (int, float)):
+        fv = float(val)
+        return fv if fv > 1.0 else None
+ 
+    if not isinstance(val, dict):
+        return None
+ 
+    # Try well-known scalar price keys first (cheapest path)
+    for key in ("odds", "odd", "price", "value"):
+        inner = val.get(key)
+        if isinstance(inner, (int, float)):
+            fv = float(inner)
+            if fv > 1.0:
+                return fv
+ 
+    # Recurse into every value and take the maximum valid price
+    best: float | None = None
+    for v in val.values():
+        p = _extract_best_price(v)
+        if p is not None and (best is None or p > best):
+            best = p
+    return best
+ 
+ 
+def _sanitise_markets(raw: dict) -> dict:
+    """
+    Normalise markets_json to the flat shape OpportunityDetector expects:
+      {market_slug: {selection: {"odds": float, "odd": float, "price": float}}}
+ 
+    Any market/selection that yields no valid price (> 1.0) is dropped.
+    """
+    clean: dict = {}
+    for mkt, selections in raw.items():
+ 
+        # Bare float at market level — single-outcome market, wrap it
+        if isinstance(selections, (int, float)):
+            fv = float(selections)
+            if fv > 1.0:
+                clean[mkt] = {"value": {"odds": fv, "odd": fv, "price": fv}}
+            continue
+ 
+        if not isinstance(selections, dict):
+            continue
+ 
+        clean_sels: dict = {}
+        for sel, val in selections.items():
+            price = _extract_best_price(val)
+            if price is not None and price > 1.0:
+                clean_sels[sel] = {"odds": price, "odd": price, "price": price}
+ 
+        if clean_sels:
+            clean[mkt] = clean_sels
+ 
+    return clean
+ 
+ 
+# ── replacement task ──────────────────────────────────────────────────────────
+ 
+# In tasks_ops.py, replace the entire compute_ev_arb function with this:
+ 
 @celery.task(name="tasks.ops.compute_ev_arb", bind=True,
              max_retries=1, soft_time_limit=210, time_limit=300, acks_late=True)
 def compute_ev_arb(self, match_id: int) -> dict:
@@ -253,59 +324,50 @@ def compute_ev_arb(self, match_id: int) -> dict:
             ArbitrageOpportunity, EVOpportunity,
         )
         from app.extensions import db
-
+ 
         um = UnifiedMatch.query.get(match_id)
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
-
-        raw   = um.markets_json if isinstance(um.markets_json, dict) else {}
-        clean: dict = {}
-        for mkt, selections in raw.items():
-            if isinstance(selections, (int, float)):
-                price = float(selections)
-                clean[mkt] = {"value": {"odds": price, "odd": price, "price": price}}
-                continue
-            if not isinstance(selections, dict):
-                continue
-            clean_sels: dict = {}
-            for sel, val in selections.items():
-                if isinstance(val, (int, float)):
-                    price = float(val)
-                    clean_sels[sel] = {"odds": price, "odd": price, "price": price}
-                elif isinstance(val, dict):
-                    clean_sels[sel] = val
-            if clean_sels:
-                clean[mkt] = clean_sels
-
+ 
+        raw = um.markets_json if isinstance(um.markets_json, dict) else {}
+        clean = _sanitise_markets(raw)
+ 
         if not clean:
             return {"ok": False, "reason": "markets_json empty after sanitise"}
-
+ 
+        # Temporarily swap in the normalised dict so OpportunityDetector
+        # never encounters a bare float via .get()
         original_markets = um.markets_json
         um.markets_json  = clean
-        detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
-        arbs     = detector.find_arbs(um)
-        evs      = detector.find_ev(um)
-        um.markets_json = original_markets
-
+ 
+        try:
+            detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
+            arbs     = detector.find_arbs(um)
+            evs      = detector.find_ev(um)
+        finally:
+            # Always restore — even if the detector raises
+            um.markets_json = original_markets
+ 
         for kwargs in arbs:
             db.session.add(ArbitrageOpportunity(**kwargs))
         for kwargs in evs:
             db.session.add(EVOpportunity(**kwargs))
         db.session.commit()
-
+ 
         if arbs:
             _publish(ARB_CHANNEL, {
-                "event": "arb_updated", "match_id": match_id,
-                "match": f"{um.home_team_name} v {um.away_team_name}",
-                "sport": um.sport_name, "arbs": len(arbs), "ts": _now_iso(),
+                "event":   "arb_updated", "match_id": match_id,
+                "match":   f"{um.home_team_name} v {um.away_team_name}",
+                "sport":   um.sport_name, "arbs": len(arbs), "ts": _now_iso(),
             })
         if evs:
             _publish(EV_CHANNEL, {
                 "event": "ev_updated", "match_id": match_id,
                 "evs": len(evs), "ts": _now_iso(),
             })
+ 
         return {"ok": True, "match_id": match_id, "arbs": len(arbs), "evs": len(evs)}
-
+ 
     except Exception as exc:
         logger.error("[ev_arb] match %d: %s", match_id, exc)
         try:
@@ -314,8 +376,6 @@ def compute_ev_arb(self, match_id: int) -> dict:
         except Exception:
             pass
         raise self.retry(exc=exc)
-
-
 # =============================================================================
 # MATCH RESULTS
 # =============================================================================
