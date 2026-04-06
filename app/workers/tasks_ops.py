@@ -268,7 +268,6 @@ def publish_ws_event(channel: str, data: dict) -> bool:
 # =============================================================================
 # EV / ARBITRAGE
 # =============================================================================
-
 @celery.task(name="tasks.ops.compute_ev_arb", bind=True,
              max_retries=1, soft_time_limit=210, time_limit=300, acks_late=True)
 def compute_ev_arb(self, match_id: int) -> dict:
@@ -283,9 +282,35 @@ def compute_ev_arb(self, match_id: int) -> dict:
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
 
+        # ── Guard: sanitise markets_json before passing to detector ──────────
+        # Any market whose value is a bare float (not a dict of selections)
+        # will cause "'float' object has no attribute 'get'" inside the detector.
+        raw = um.markets_json if isinstance(um.markets_json, dict) else {}
+        clean: dict = {}
+        for mkt, selections in raw.items():
+            if isinstance(selections, dict):
+                # Also drop any selection that isn't a numeric odds value or dict
+                clean[mkt] = {
+                    sel: val for sel, val in selections.items()
+                    if isinstance(val, (int, float, dict))
+                }
+            elif isinstance(selections, (int, float)):
+                # Flat odds stored at market level — wrap so detector can read it
+                clean[mkt] = {"value": selections}
+            # else: skip entirely (unexpected type)
+
+        if not clean:
+            return {"ok": False, "reason": "markets_json empty after sanitise"}
+
+        # Temporarily swap in the cleaned copy so the detector sees safe data
+        original_markets = um.markets_json
+        um.markets_json  = clean
+
         detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
         arbs     = detector.find_arbs(um)
         evs      = detector.find_ev(um)
+
+        um.markets_json = original_markets   # restore — don't persist the temp copy
 
         for kwargs in arbs:
             db.session.add(ArbitrageOpportunity(**kwargs))
@@ -314,7 +339,6 @@ def compute_ev_arb(self, match_id: int) -> dict:
         except Exception:
             pass
         raise self.retry(exc=exc)
-
 
 # =============================================================================
 # MATCH RESULTS
