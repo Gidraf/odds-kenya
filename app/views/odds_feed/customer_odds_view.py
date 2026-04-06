@@ -2,22 +2,29 @@
 app/views/odds_feed/odds_routes.py
 ===================================
 Smart status logic:
-  - upcoming  → start_time > now (not yet started, not finished/cancelled)
-  - live      → start_time <= now AND start_time > now - 2h30m (in-play window)
+  - upcoming  → start_time > now
+  - live      → start_time <= now AND start_time > now - 2h30m
   - finished  → start_time <= now - 2h30m OR status == FINISHED
 
-Status is determined at query time using start_time so the UI always
-reflects reality even when the worker hasn't updated the DB status field.
+Analytics integration:
+  - Match analytics cached under sr:analytics:{betradar_id} by sp_enrich_analytics
+  - Included inline on GET /api/odds/match/<id> and GET /api/odds/match/<id>/markets
+  - Dedicated endpoint: GET /api/odds/match/<id>/analytics
+  - On-demand refresh:  POST /api/odds/match/<id>/analytics/refresh
+  - List endpoints accept ?analytics=1 to include summaries per match
 
 Streaming endpoints:
-  GET /api/odds/stream/upcoming/<sport>   → SSE stream (all upcoming)
-  GET /api/odds/stream/live/<sport>       → SSE stream (all live)
+  GET /api/odds/stream/upcoming/<sport>
+  GET /api/odds/stream/live/<sport>
 
-Paginated JSON (backwards compatible):
+Paginated JSON:
   GET /api/odds/upcoming/<sport>
   GET /api/odds/live/<sport>
   GET /api/odds/results[/<date>]
   GET /api/odds/match/<parent_match_id>
+  GET /api/odds/match/<parent_match_id>/markets
+  GET /api/odds/match/<parent_match_id>/analytics
+  POST /api/odds/match/<parent_match_id>/analytics/refresh
 """
 
 from __future__ import annotations
@@ -42,25 +49,20 @@ _ENDPOINT_ACCESS: dict[str, str] = {
     "get_match": "free", "search_matches": "free",
     "list_sports": "free", "list_bookmakers": "free",
     "list_markets": "free", "harvest_status": "free",
+    "get_match_analytics": "free",
 }
-_TIER_ORDER      = {"free": 0, "basic": 1, "pro": 2, "premium": 3}
 FREE_MATCH_LIMIT = 1000
 _WS_CHANNEL      = "odds:updates"
 _ARB_CHANNEL     = "arb:updates"
 _EV_CHANNEL      = "ev:updates"
 _CACHE_PREFIXES  = ["sbo", "sp", "bt", "od", "b2b"]
 _STREAM_BATCH    = 20
-
-# A match is considered "live" for up to 2h30m after kick-off.
-# After that it's treated as finished even if the DB status hasn't been updated.
-_LIVE_WINDOW = timedelta(hours=2, minutes=30)
+_LIVE_WINDOW     = timedelta(hours=2, minutes=30)
 
 _BK_SLUG: dict[str, str] = {
     "sportpesa": "sp", "betika": "bt", "odibets": "od",
-    "sp": "sp", "bt": "bt", "od": "od",
-    "sbo": "sbo", "b2b": "b2b",
+    "sp": "sp", "bt": "bt", "od": "od", "sbo": "sbo", "b2b": "b2b",
 }
-
 _SPORT_ALIASES: dict[str, list[str]] = {
     "soccer":       ["Soccer", "Football"],
     "football":     ["Soccer", "Football"],
@@ -77,20 +79,17 @@ _SPORT_ALIASES: dict[str, list[str]] = {
     "darts":        ["Darts"],
     "esoccer":      ["eSoccer"],
 }
-
 _CANONICAL_SLUG: dict[str, str] = {
     "Football": "soccer",      "football": "soccer",
     "Soccer":   "soccer",      "soccer":   "soccer",
-    "Ice Hockey":  "ice-hockey", "ice hockey": "ice-hockey", "ice-hockey": "ice-hockey",
-    "Table Tennis":"table-tennis","table tennis":"table-tennis","table-tennis":"table-tennis",
+    "Ice Hockey":   "ice-hockey", "ice hockey":   "ice-hockey", "ice-hockey": "ice-hockey",
+    "Table Tennis": "table-tennis","table tennis": "table-tennis","table-tennis":"table-tennis",
     "Basketball": "basketball", "Tennis": "tennis",
-    "Cricket":  "cricket",     "Volleyball": "volleyball",
-    "Rugby":    "rugby",       "Handball": "handball",
-    "MMA":      "mma",         "Boxing": "boxing",
-    "Darts":    "darts",       "eSoccer": "esoccer",
-    "eFootball":"esoccer",
+    "Cricket": "cricket",    "Volleyball": "volleyball",
+    "Rugby":   "rugby",      "Handball": "handball",
+    "MMA":     "mma",        "Boxing": "boxing",
+    "Darts":   "darts",      "eSoccer": "esoccer", "eFootball": "esoccer",
 }
-
 _SSE_HEADERS = {
     "Content-Type":               "text/event-stream",
     "Cache-Control":              "no-cache",
@@ -109,58 +108,240 @@ def _now_utc() -> datetime:
 
 
 def _effective_status(db_status: str | None, start_time: datetime | None) -> str:
-    """
-    Derive the real status from start_time and the current clock,
-    overriding stale DB status values.
-
-    Rules:
-      • start_time is None         → use DB status or PRE_MATCH
-      • start_time > now           → PRE_MATCH (not started yet)
-      • start_time <= now
-          and start_time > now - _LIVE_WINDOW  → IN_PLAY  (within live window)
-      • start_time <= now - _LIVE_WINDOW       → FINISHED (past live window)
-      • DB status is CANCELLED/POSTPONED       → always honour those
-    """
-    # Always honour cancellations / postponements from the DB
     if db_status in ("CANCELLED", "POSTPONED"):
         return db_status
-
-    # If DB already says FINISHED and there's no start_time, trust it
     if db_status == "FINISHED" and start_time is None:
         return "FINISHED"
-
     if start_time is None:
         return db_status or "PRE_MATCH"
-
-    # Ensure tz-aware comparison
     st = start_time
     if st.tzinfo is None:
         st = st.replace(tzinfo=timezone.utc)
-
     now = _now_utc()
-
     if st > now:
-        # Match hasn't started yet
         return "PRE_MATCH"
-
     if now - st <= _LIVE_WINDOW:
-        # Within the live window
         return "IN_PLAY"
-
-    # Past the live window
     return "FINISHED"
 
 
-def _is_live(db_status: str | None, start_time: datetime | None) -> bool:
+def _is_live(db_status, start_time) -> bool:
     return _effective_status(db_status, start_time) == "IN_PLAY"
 
 
-def _is_upcoming(db_status: str | None, start_time: datetime | None) -> bool:
+def _is_upcoming(db_status, start_time) -> bool:
     return _effective_status(db_status, start_time) == "PRE_MATCH"
 
 
-def _is_finished(db_status: str | None, start_time: datetime | None) -> bool:
+def _is_finished(db_status, start_time) -> bool:
     return _effective_status(db_status, start_time) in ("FINISHED", "CANCELLED", "POSTPONED")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ANALYTICS HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_analytics(betradar_id: str | None, trigger_if_missing: bool = True) -> dict:
+    """
+    Read SR analytics bundle from cache for a given betradar_id.
+    If not cached and trigger_if_missing=True, dispatches a background fetch.
+    Returns {} if betradar_id is falsy.
+    """
+    if not betradar_id:
+        return {}
+    from app.workers.celery_tasks import cache_get, celery
+    bundle = cache_get(f"sr:analytics:{betradar_id}") or {}
+    if trigger_if_missing and not bundle.get("available"):
+        try:
+            celery.send_task(
+                "tasks.sp.get_match_analytics",
+                args=[betradar_id, False],
+                queue="harvest",
+                countdown=0,
+            )
+        except Exception:
+            pass
+    return bundle
+
+
+def _build_analytics_summary(analytics: dict) -> dict:
+    """
+    Extract a compact summary from a full SR analytics bundle.
+    Used in list endpoints (upcoming, live) when ?analytics=1.
+    """
+    if not analytics or not analytics.get("available"):
+        return {"available": False}
+
+    match      = analytics.get("match") or {}
+    teams      = match.get("teams") or {}
+    home_t     = teams.get("home") or {}
+    away_t     = teams.get("away") or {}
+    tournament = match.get("tournament") or {}
+    season     = match.get("season") or {}
+    stadium    = match.get("stadium") or {}
+    coverage   = match.get("statscoverage") or {}
+    home_next  = analytics.get("home_next") or {}
+    away_next  = analytics.get("away_next") or {}
+
+    # Tennis prize money, surface, etc.
+    tennis_info: dict = {}
+    t_info = tournament.get("tennisinfo") or {}
+    if t_info:
+        prize = t_info.get("prize") or {}
+        tennis_info = {
+            "surface":       (match.get("ground") or {}).get("name"),
+            "tournament_level": tournament.get("tournamentlevelname"),
+            "prize_amount":  prize.get("amount"),
+            "prize_currency": prize.get("currency"),
+            "gender":        t_info.get("gender"),
+            "event_type":    t_info.get("type"),
+        }
+
+    # Active coverage flags only
+    active_coverage = [k for k, v in coverage.items() if v is True]
+
+    return {
+        "available":           True,
+        "sr_match_id":         analytics.get("sr_match_id"),
+        "tournament":          tournament.get("name"),
+        "tournament_level":    tournament.get("tournamentlevelname"),
+        "season":              season.get("name"),
+        "season_year":         season.get("year"),
+        "stadium":             stadium.get("name"),
+        "stadium_city":        stadium.get("city"),
+        "stadium_country":     stadium.get("country"),
+        "coverage_flags":      active_coverage,
+        "home_uid":            home_t.get("uid"),
+        "away_uid":            away_t.get("uid"),
+        "home_next_count":     len(home_next.get("matches") or []),
+        "away_next_count":     len(away_next.get("matches") or []),
+        "tennis":              tennis_info if tennis_info else None,
+    }
+
+
+def _build_analytics_full(analytics: dict) -> dict:
+    """
+    Build the full analytics response body — used by the dedicated analytics endpoint
+    and by the single-match detail endpoint.
+    """
+    if not analytics or not analytics.get("available"):
+        return {"available": False}
+
+    match      = analytics.get("match") or {}
+    home_next  = analytics.get("home_next") or {}
+    away_next  = analytics.get("away_next") or {}
+    sf         = analytics.get("season_fixtures") or {}
+    teams      = match.get("teams") or {}
+    tournament = match.get("tournament") or {}
+    season     = match.get("season") or {}
+    stadium    = match.get("stadium") or {}
+    coverage   = match.get("statscoverage") or {}
+    t_info     = tournament.get("tennisinfo") or {}
+
+    def _fmt_match(m: dict) -> dict:
+        """Compact representation of a fixture from SR."""
+        home = (m.get("teams") or {}).get("home") or {}
+        away = (m.get("teams") or {}).get("away") or {}
+        t    = m.get("time") or {}
+        rn   = m.get("roundname") or {}
+        g    = m.get("ground") or {}
+        res  = m.get("result") or {}
+        return {
+            "sr_match_id": m.get("_id"),
+            "home":        home.get("name"),
+            "away":        away.get("name"),
+            "date":        t.get("date"),
+            "time":        t.get("time"),
+            "tz":          t.get("tz"),
+            "uts":         t.get("uts"),
+            "round":       rn.get("name"),
+            "surface":     g.get("name"),
+            "result": {
+                "home":   res.get("home"),
+                "away":   res.get("away"),
+                "winner": res.get("winner"),
+            } if any(v is not None for v in [res.get("home"), res.get("away")]) else None,
+            "status":      m.get("status"),
+            "canceled":    m.get("canceled"),
+            "postponed":   m.get("postponed"),
+            "walkover":    m.get("walkover"),
+            "retired":     m.get("retired"),
+            "bestof":      m.get("bestof"),
+        }
+
+    def _fmt_team(t: dict) -> dict:
+        cc = t.get("cc") or {}
+        return {
+            "uid":     t.get("uid"),
+            "name":    t.get("name"),
+            "abbr":    t.get("abbr"),
+            "country": cc.get("name"),
+            "cc_a2":   cc.get("a2"),
+        }
+
+    # Prize / surface for tennis
+    prize_info: dict | None = None
+    if t_info:
+        prize = t_info.get("prize") or {}
+        prize_info = {
+            "amount":   prize.get("amount"),
+            "currency": prize.get("currency"),
+        }
+
+    return {
+        "available":       True,
+        "sr_match_id":     analytics.get("sr_match_id"),
+        # Tournament / season
+        "tournament": {
+            "name":   tournament.get("name"),
+            "level":  tournament.get("tournamentlevelname"),
+            "gender": t_info.get("gender"),
+            "type":   t_info.get("type"),
+            "prize":  prize_info,
+            "surface": (tournament.get("ground") or {}).get("name"),
+            "start":  t_info.get("start"),
+            "end":    t_info.get("end"),
+            "qualification": t_info.get("qualification"),
+            "city":   t_info.get("city"),
+            "country": t_info.get("country"),
+        },
+        "season": {
+            "id":    season.get("_id"),
+            "name":  season.get("name"),
+            "year":  season.get("year"),
+            "start": (season.get("start") or {}).get("date"),
+            "end":   (season.get("end") or {}).get("date"),
+        },
+        "venue": {
+            "name":    stadium.get("name"),
+            "city":    stadium.get("city"),
+            "country": stadium.get("country"),
+            "capacity": stadium.get("capacity"),
+        },
+        # Surface (tennis, etc.)
+        "surface": (match.get("ground") or {}).get("name"),
+        # Teams
+        "home_team": _fmt_team(teams.get("home") or {}),
+        "away_team": _fmt_team(teams.get("away") or {}),
+        # Coverage flags
+        "coverage": {k: v for k, v in coverage.items() if isinstance(v, bool)},
+        # Home team upcoming fixtures
+        "home_next": {
+            "team":    _fmt_team(home_next.get("team") or {}),
+            "matches": [_fmt_match(m) for m in (home_next.get("matches") or [])],
+        },
+        # Away team upcoming fixtures
+        "away_next": {
+            "team":    _fmt_team(away_next.get("team") or {}),
+            "matches": [_fmt_match(m) for m in (away_next.get("matches") or [])],
+        },
+        # Season fixtures / draw
+        "season_fixtures": {
+            "total":   len(sf.get("matches") or []),
+            "matches": [_fmt_match(m) for m in (sf.get("matches") or [])],
+            "cups":    list((sf.get("cups") or {}).keys()),
+        } if sf else None,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -186,53 +367,29 @@ def _sport_filter(q, sport_slug: str):
 
 
 def _mode_time_filter(q, mode: str):
-    """
-    Apply start_time-based filter for upcoming / live / finished.
-    This is the source of truth — the DB status column is secondary.
-
-    upcoming  → start_time > now  (not started yet)
-                OR start_time IS NULL and DB status not FINISHED/CANCELLED
-    live      → start_time <= now AND start_time > now - _LIVE_WINDOW
-    finished  → start_time <= now - _LIVE_WINDOW
-                OR status IN (FINISHED, CANCELLED, POSTPONED)
-    """
     from app.models.odds_model import UnifiedMatch
     from sqlalchemy import or_, and_
-
-    now       = _now_utc()
+    now         = _now_utc()
     live_cutoff = now - _LIVE_WINDOW
-
     if mode == "upcoming":
-        # Matches that haven't kicked off yet
-        # Also include rows with no start_time that are not explicitly finished
-        return q.filter(
-            or_(
-                UnifiedMatch.start_time > now,
-                and_(
-                    UnifiedMatch.start_time.is_(None),
-                    UnifiedMatch.status.notin_(["FINISHED", "CANCELLED", "POSTPONED"]),
-                ),
-            )
-        )
-
+        return q.filter(or_(
+            UnifiedMatch.start_time > now,
+            and_(
+                UnifiedMatch.start_time.is_(None),
+                UnifiedMatch.status.notin_(["FINISHED", "CANCELLED", "POSTPONED"]),
+            ),
+        ))
     elif mode == "live":
-        # Kicked off but within the live window
         return q.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >  live_cutoff,
-            # Don't show cancelled/postponed matches as live
             UnifiedMatch.status.notin_(["CANCELLED", "POSTPONED"]),
         )
-
     elif mode == "finished":
-        # Past the live window OR explicitly marked finished/cancelled
-        return q.filter(
-            or_(
-                UnifiedMatch.start_time <= live_cutoff,
-                UnifiedMatch.status.in_(["FINISHED", "CANCELLED", "POSTPONED"]),
-            )
-        )
-
+        return q.filter(or_(
+            UnifiedMatch.start_time <= live_cutoff,
+            UnifiedMatch.status.in_(["FINISHED", "CANCELLED", "POSTPONED"]),
+        ))
     return q
 
 
@@ -269,7 +426,14 @@ def _keepalive() -> str:
 # SHARED MATCH BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_match_dict(um, bmos, bk_objs, links_by_match, arb_set, sport_slug) -> dict:
+def _build_match_dict(
+    um, bmos, bk_objs, links_by_match, arb_set, sport_slug,
+    analytics_map: dict[str, dict] | None = None,
+) -> dict:
+    """
+    Build the canonical match dict for API responses.
+    analytics_map: optional {betradar_id: analytics_bundle} for batch enrichment.
+    """
     bookmakers:    dict[str, dict] = {}
     markets_by_bk: dict[str, dict] = {}
 
@@ -340,12 +504,9 @@ def _build_match_dict(um, bmos, bk_objs, links_by_match, arb_set, sport_slug) ->
                 })
         arb_markets.sort(key=lambda x: -x["profit_pct"])
 
-    # Derive status from start_time — overrides stale DB values
-    db_status  = getattr(um, "status", None)
-    status_out = _effective_status(db_status, um.start_time)
-    live_flag  = status_out == "IN_PLAY"
-
-    # Minutes elapsed since kick-off (useful for clients)
+    db_status       = getattr(um, "status", None)
+    status_out      = _effective_status(db_status, um.start_time)
+    live_flag       = status_out == "IN_PLAY"
     minutes_elapsed: int | None = None
     if um.start_time and live_flag:
         st = um.start_time
@@ -356,40 +517,50 @@ def _build_match_dict(um, bmos, bk_objs, links_by_match, arb_set, sport_slug) ->
     has_arb_flag     = bool(arb_markets) or um.id in arb_set
     all_market_slugs = sorted(best.keys())
     sport_out        = _normalise_sport_slug(um.sport_name or sport_slug)
+    br_id            = um.parent_match_id or ""
+
+    # ── Analytics summary (from pre-fetched map or skip for batch perf) ───────
+    analytics_summary: dict = {"available": False}
+    if analytics_map is not None and br_id:
+        bundle = analytics_map.get(br_id) or {}
+        if bundle:
+            analytics_summary = _build_analytics_summary(bundle)
 
     return {
-        "match_id":        um.id,
-        "parent_match_id": um.parent_match_id,
-        "betradar_id":     um.parent_match_id,
-        "join_key":        f"br_{um.parent_match_id}" if um.parent_match_id else f"db_{um.id}",
-        "home_team":       um.home_team_name   or "",
-        "away_team":       um.away_team_name   or "",
-        "competition":     um.competition_name or "",
-        "sport":           sport_out,
-        "start_time":      um.start_time.isoformat() if um.start_time else None,
-        # status is time-derived, not from DB column
-        "status":          status_out,
-        "is_live":         live_flag,
-        "minutes_elapsed": minutes_elapsed,
-        "bk_count":        len(bookmakers),
-        "bookie_count":    len(bookmakers),
-        "bookmaker_count": len(bookmakers),
-        "market_count":    len(all_market_slugs),
-        "market_slugs":    all_market_slugs,
-        "bookmakers":      bookmakers,
-        "markets_by_bk":   markets_by_bk,
-        "markets":         markets_by_bk,
-        "best":            best,
-        "best_odds":       best_odds,
-        "aggregated":      _flatten_db_markets(um.markets_json or {}),
-        "has_arb":         has_arb_flag,
-        "arb_markets":     arb_markets,
-        "arbs":            arb_markets,
-        "best_arb_pct":    arb_markets[0]["profit_pct"] if arb_markets else 0.0,
+        "match_id":         um.id,
+        "parent_match_id":  br_id,
+        "betradar_id":      br_id,
+        "join_key":         f"br_{br_id}" if br_id else f"db_{um.id}",
+        "home_team":        um.home_team_name   or "",
+        "away_team":        um.away_team_name   or "",
+        "competition":      um.competition_name or "",
+        "sport":            sport_out,
+        "start_time":       um.start_time.isoformat() if um.start_time else None,
+        "status":           status_out,
+        "is_live":          live_flag,
+        "minutes_elapsed":  minutes_elapsed,
+        "bk_count":         len(bookmakers),
+        "bookie_count":     len(bookmakers),
+        "bookmaker_count":  len(bookmakers),
+        "market_count":     len(all_market_slugs),
+        "market_slugs":     all_market_slugs,
+        "bookmakers":       bookmakers,
+        "markets_by_bk":    markets_by_bk,
+        "markets":          markets_by_bk,
+        "best":             best,
+        "best_odds":        best_odds,
+        "aggregated":       _flatten_db_markets(um.markets_json or {}),
+        "has_arb":          has_arb_flag,
+        "arb_markets":      arb_markets,
+        "arbs":             arb_markets,
+        "best_arb_pct":     arb_markets[0]["profit_pct"] if arb_markets else 0.0,
         "has_ev":   False, "evs":   [],
         "has_sharp":False, "sharp": [], "best_ev_pct": 0.0,
         "bk_ids": {sl: str(d["bookmaker_id"]) for sl, d in bookmakers.items()},
-        "source": "postgresql",
+        # Analytics — summary only in list views; full detail on single-match endpoint
+        "has_analytics":    analytics_summary.get("available", False),
+        "analytics":        analytics_summary,
+        "source":           "postgresql",
     }
 
 
@@ -401,14 +572,9 @@ def _build_base_query(sport_slug, mode, comp_filter, team_filter,
                       date_str, from_dt, to_dt, sort):
     from app.models.odds_model import UnifiedMatch
     from sqlalchemy import or_
-
     q = UnifiedMatch.query
     q = _sport_filter(q, sport_slug)
-
-    # Primary filter: time-based — overrides stale DB status
     q = _mode_time_filter(q, mode)
-
-    # Secondary filters
     if comp_filter:
         q = q.filter(UnifiedMatch.competition_name.ilike(f"%{comp_filter}%"))
     if team_filter:
@@ -439,7 +605,6 @@ def _build_base_query(sport_slug, mode, comp_filter, team_filter,
             )
         except Exception:
             pass
-
     sort_col = {
         "start_time":  UnifiedMatch.start_time,
         "home_team":   UnifiedMatch.home_team_name,
@@ -451,18 +616,11 @@ def _build_base_query(sport_slug, mode, comp_filter, team_filter,
 def _fetch_batch_data(match_ids: list[int]):
     from app.models.odds_model import BookmakerMatchOdds, ArbitrageOpportunity
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
-
-    bmo_rows = BookmakerMatchOdds.query.filter(
-        BookmakerMatchOdds.match_id.in_(match_ids)
-    ).all()
+    bmo_rows  = BookmakerMatchOdds.query.filter(BookmakerMatchOdds.match_id.in_(match_ids)).all()
     all_bk_ids = {bmo.bookmaker_id for bmo in bmo_rows}
-    bk_objs = (
-        {b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(all_bk_ids)).all()}
-        if all_bk_ids else {}
-    )
-    link_rows = BookmakerMatchLink.query.filter(
-        BookmakerMatchLink.match_id.in_(match_ids)
-    ).all()
+    bk_objs   = ({b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(all_bk_ids)).all()}
+                  if all_bk_ids else {})
+    link_rows = BookmakerMatchLink.query.filter(BookmakerMatchLink.match_id.in_(match_ids)).all()
     links_by_match: dict[int, dict] = {}
     for lnk in link_rows:
         links_by_match.setdefault(lnk.match_id, {})[lnk.bookmaker_id] = lnk.to_dict()
@@ -480,6 +638,23 @@ def _fetch_batch_data(match_ids: list[int]):
     return bmo_rows, bk_objs, links_by_match, arb_set
 
 
+def _fetch_analytics_map(um_list: list, include: bool) -> dict[str, dict]:
+    """
+    Batch-read analytics from Redis for a list of UnifiedMatch rows.
+    Only called when ?analytics=1 to avoid unnecessary cache reads.
+    """
+    if not include:
+        return {}
+    from app.workers.celery_tasks import cache_get
+    result: dict[str, dict] = {}
+    br_ids = [um.parent_match_id for um in um_list if um.parent_match_id]
+    for br_id in br_ids:
+        bundle = cache_get(f"sr:analytics:{br_id}")
+        if bundle:
+            result[br_id] = bundle
+    return result
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SSE STREAM GENERATOR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -495,9 +670,9 @@ def _stream_matches(
     from_dt:     str  = "",
     to_dt:       str  = "",
     batch_size:  int  = _STREAM_BATCH,
+    include_analytics: bool = False,
 ) -> Generator[str, None, None]:
     t0 = time.perf_counter()
-
     try:
         q     = _build_base_query(sport_slug, mode, comp_filter, team_filter,
                                   date_str, from_dt, to_dt, sort)
@@ -515,6 +690,7 @@ def _stream_matches(
         "total_batches": total_batches,
         "now":           _now_utc().isoformat(),
         "live_window_minutes": int(_LIVE_WINDOW.total_seconds() / 60),
+        "analytics_included": include_analytics,
     })
 
     if total == 0:
@@ -531,6 +707,7 @@ def _stream_matches(
 
             match_ids = [um.id for um in um_list]
             bmo_rows, bk_objs, links_by_match, arb_set = _fetch_batch_data(match_ids)
+            analytics_map = _fetch_analytics_map(um_list, include_analytics)
 
             bmo_by_match: dict[int, list] = {}
             for bmo in bmo_rows:
@@ -541,6 +718,7 @@ def _stream_matches(
                 d = _build_match_dict(
                     um, bmo_by_match.get(um.id, []),
                     bk_objs, links_by_match, arb_set, sport_slug,
+                    analytics_map=analytics_map,
                 )
                 if has_arb and not d["has_arb"]:
                     continue
@@ -548,12 +726,9 @@ def _stream_matches(
 
             batch_num  += 1
             total_sent += len(batch_matches)
-
             yield _sse("batch", {
-                "matches": batch_matches,
-                "batch":   batch_num,
-                "of":      total_batches,
-                "offset":  offset,
+                "matches": batch_matches, "batch": batch_num,
+                "of": total_batches, "offset": offset,
             })
             yield _keepalive()
             offset += batch_size
@@ -575,24 +750,30 @@ def _stream_matches(
 
 def _load_db_matches(sport_slug, mode="upcoming", page=1, per_page=20,
                      comp_filter="", team_filter="", has_arb=False,
-                     sort="start_time", date_str="", from_dt="", to_dt=""):
+                     sort="start_time", date_str="", from_dt="", to_dt="",
+                     include_analytics=False):
     q     = _build_base_query(sport_slug, mode, comp_filter, team_filter,
                               date_str, from_dt, to_dt, sort)
-    total = q.count()
+    total   = q.count()
     um_list = q.offset((page - 1) * per_page).limit(per_page).all()
     if not um_list:
         return [], total, max(1, (total + per_page - 1) // per_page)
 
     match_ids = [um.id for um in um_list]
     bmo_rows, bk_objs, links_by_match, arb_set = _fetch_batch_data(match_ids)
+    analytics_map = _fetch_analytics_map(um_list, include_analytics)
+
     bmo_by_match: dict[int, list] = {}
     for bmo in bmo_rows:
         bmo_by_match.setdefault(bmo.match_id, []).append(bmo)
 
     result = []
     for um in um_list:
-        d = _build_match_dict(um, bmo_by_match.get(um.id, []),
-                              bk_objs, links_by_match, arb_set, sport_slug)
+        d = _build_match_dict(
+            um, bmo_by_match.get(um.id, []),
+            bk_objs, links_by_match, arb_set, sport_slug,
+            analytics_map=analytics_map,
+        )
         if has_arb and not d["has_arb"]:
             total -= 1
             continue
@@ -660,14 +841,8 @@ def _deduplicate(matches):
 
 
 def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
-    """
-    Normalise a Redis-cached match dict and apply time-based status logic.
-    Returns None if the match doesn't belong in the requested mode.
-    """
     home = str(m.get("home_team") or m.get("home_team_name") or "")
     away = str(m.get("away_team") or m.get("away_team_name") or "")
-
-    # Parse start_time for status derivation
     start_dt: datetime | None = None
     raw_st = m.get("start_time")
     if raw_st:
@@ -675,16 +850,13 @@ def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
             start_dt = datetime.fromisoformat(str(raw_st).replace("Z", "+00:00"))
         except Exception:
             pass
-
     db_status  = m.get("status") or "PRE_MATCH"
     status_out = _effective_status(db_status, start_dt)
-
-    # Filter by mode
-    if mode == "upcoming"  and status_out != "PRE_MATCH":
+    if mode == "upcoming" and status_out != "PRE_MATCH":
         return None
-    if mode == "live"      and status_out != "IN_PLAY":
+    if mode == "live"     and status_out != "IN_PLAY":
         return None
-    if mode == "finished"  and status_out not in ("FINISHED", "CANCELLED", "POSTPONED"):
+    if mode == "finished" and status_out not in ("FINISHED", "CANCELLED", "POSTPONED"):
         return None
 
     live_flag = status_out == "IN_PLAY"
@@ -722,12 +894,13 @@ def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
 
     slugs     = sorted(best.keys())
     sport_out = _normalise_sport_slug(str(m.get("sport") or ""))
+    br_id     = str(m.get("betradar_id") or m.get("parent_match_id") or "")
 
     return {
         "match_id":        None,
-        "parent_match_id": m.get("betradar_id") or m.get("parent_match_id") or "",
-        "betradar_id":     m.get("betradar_id") or "",
-        "join_key": (f"br_{m['betradar_id']}" if m.get("betradar_id")
+        "parent_match_id": br_id,
+        "betradar_id":     br_id,
+        "join_key": (f"br_{br_id}" if br_id
                      else f"fuzzy_{home.lower()[:8]}_{away.lower()[:8]}"),
         "home_team":        home,
         "away_team":        away,
@@ -755,6 +928,7 @@ def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
         "has_arb": False, "arb_markets": [], "arbs": [], "best_arb_pct": 0.0,
         "has_ev":  False, "evs": [], "has_sharp": False, "sharp": [], "best_ev_pct": 0.0,
         "bk_ids": {sl: sl for sl in markets_by_bk},
+        "has_analytics": False, "analytics": {"available": False},
         "source": "cache",
     }
 
@@ -789,7 +963,7 @@ def _apply_tier_limits(matches, user):
 
 def _build_envelope(matches, sport, mode, tier, page, per_page,
                     truncated, latency_ms, total=None, pages=None, extra=None):
-    arb_count = sum(1 for m in matches if m.get("has_arb"))
+    arb_count  = sum(1 for m in matches if m.get("has_arb"))
     live_count = sum(1 for m in matches if m.get("is_live"))
     bk_names: set[str] = set()
     for m in matches:
@@ -818,197 +992,48 @@ def _build_envelope(matches, sport, mode, tier, page, per_page,
 
 @bp_odds_customer.route("/odds/stream/upcoming/<sport_slug>")
 def stream_upcoming(sport_slug: str):
-    """
-    SSE stream — only matches that have NOT yet kicked off.
-    Automatically excludes anything whose start_time <= now.
-    """
-    comp_f  = (request.args.get("comp",   "") or "").strip()
-    team_f  = (request.args.get("team",   "") or "").strip()
-    sort    = request.args.get("sort",    "start_time")
-    has_arb = request.args.get("has_arb", "") in ("1", "true")
-    date_f  = request.args.get("date",    "")
-    from_dt = request.args.get("from_dt", "")
-    to_dt   = request.args.get("to_dt",   "")
-    batch   = min(50, max(5, int(request.args.get("batch", _STREAM_BATCH))))
+    comp_f     = (request.args.get("comp",      "") or "").strip()
+    team_f     = (request.args.get("team",      "") or "").strip()
+    sort       = request.args.get("sort",       "start_time")
+    has_arb    = request.args.get("has_arb",    "") in ("1", "true")
+    date_f     = request.args.get("date",       "")
+    from_dt    = request.args.get("from_dt",    "")
+    to_dt      = request.args.get("to_dt",      "")
+    batch      = min(50, max(5, int(request.args.get("batch", _STREAM_BATCH))))
+    analytics  = request.args.get("analytics",  "") in ("1", "true")
     log_event("odds_stream_upcoming", {"sport": sport_slug})
 
     def _gen():
         try:
-            yield from _stream_matches(sport_slug, mode="upcoming",
-                                       comp_filter=comp_f, team_filter=team_f,
-                                       has_arb=has_arb, sort=sort,
-                                       date_str=date_f, from_dt=from_dt, to_dt=to_dt,
-                                       batch_size=batch)
+            yield from _stream_matches(
+                sport_slug, mode="upcoming",
+                comp_filter=comp_f, team_filter=team_f,
+                has_arb=has_arb, sort=sort,
+                date_str=date_f, from_dt=from_dt, to_dt=to_dt,
+                batch_size=batch, include_analytics=analytics,
+            )
         except Exception:
             yield from _stream_from_cache("upcoming", sport_slug, batch)
 
     return Response(stream_with_context(_gen()), headers=_SSE_HEADERS)
 
 
-
-@bp_odds_customer.route("/odds/match/<parent_match_id>/markets")
-def get_match_full_markets(parent_match_id: str):
-    """
-    Returns ALL stored markets for every bookmaker on a match,
-    plus attempts a live full-market fetch from BT (which has a detail API).
-
-    SP and OD markets come from stored BookmakerMatchOdds rows —
-    their harvesters write full markets on every cycle.
-    BT stored data is grid-only (6 markets); live fetch adds the rest.
-    """
-    t0   = time.perf_counter()
-    user = _current_user_from_header()
-
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
-    from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
-
-    um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
-    if not um:
-        return _err("Match not found", 404)
-
-    # ── Load ALL BookmakerMatchOdds rows for this match ───────────────────────
-    # This is the source of truth — all bookmakers that have ever written
-    # odds for this match will have a row here, even without a link row.
-    bmo_rows = BookmakerMatchOdds.query.filter_by(match_id=um.id).all()
-    all_bk_ids = {bmo.bookmaker_id for bmo in bmo_rows}
-    bk_map = (
-        {b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(all_bk_ids)).all()}
-        if all_bk_ids else {}
-    )
-
-    # Build stored markets per bookmaker slug
-    stored_markets: dict[str, dict] = {}
-    bmo_by_slug:    dict[str, object] = {}
-    for bmo in bmo_rows:
-        bk_obj = bk_map.get(bmo.bookmaker_id)
-        if not bk_obj:
-            continue
-        slug = _bk_slug(bk_obj.name.lower())
-        stored_markets[slug] = _flatten_db_markets(bmo.markets_json or {})
-        bmo_by_slug[slug]    = bmo
-
-    # ── Load bookmaker links — needed only for external IDs (live fetch) ──────
-    links = BookmakerMatchLink.query.filter_by(match_id=um.id).all()
-    link_by_bk: dict[str, object] = {}
-    all_bk_map = {b.id: b for b in Bookmaker.query.all()}
-    for lnk in links:
-        bk_obj = all_bk_map.get(lnk.bookmaker_id)
-        if bk_obj:
-            link_by_bk[_bk_slug(bk_obj.name.lower())] = lnk
-
-    # ── Live full-market fetch (BT only — has a detail API per parent_match_id)
-    # SP and OD already store full markets on every harvest cycle, so stored
-    # data is sufficient for them. BT grid-only harvest stores 6 markets;
-    # the detail API returns all 20-30.
-    fresh_bt: dict[str, float] = {}
-    fetch_errors: dict[str, str] = {}
-
-    bt_link = link_by_bk.get("bt")
-    bt_external_id = None
-    if bt_link:
-        bt_external_id = bt_link.external_match_id or bt_link.betradar_id
-    # Fallback: use parent_match_id itself (BT parent_match_id == betradar_id)
-    if not bt_external_id:
-        bt_external_id = parent_match_id
-
-    if bt_external_id:
-        try:
-            from app.workers.bt_harvester import get_full_markets
-            # Determine BT sport ID from stored bmo if available
-            bt_sport_id = 14  # soccer default
-            fresh_bt = get_full_markets(bt_external_id, bt_sport_id)
-        except Exception as exc:
-            fetch_errors["bt"] = str(exc)
-
-    # Merge BT: fresh full markets override stored grid markets
-    combined: dict[str, dict] = dict(stored_markets)  # copy all stored first
-    if fresh_bt:
-        combined["bt"] = {**(stored_markets.get("bt") or {}), **fresh_bt}
-
-    # ── Build best odds across all bookmakers ─────────────────────────────────
-    best: dict[str, dict] = {}
-    for sl, mkts in combined.items():
-        for mkt, outcomes in (mkts or {}).items():
-            best.setdefault(mkt, {})
-            for out, odd_data in (outcomes or {}).items():
-                try:
-                    fv = (
-                        float(odd_data.get("price") or odd_data.get("odd") or 0)
-                        if isinstance(odd_data, dict) else float(odd_data)
-                    )
-                except Exception:
-                    continue
-                if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
-                    best[mkt][out] = {"odd": fv, "bk": sl}
-
-    # Arb detection across bookmakers
-    arb_markets: list[dict] = []
-    if len(combined) >= 2:
-        for mkt, outcomes in best.items():
-            if len(outcomes) < 2:
-                continue
-            arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
-            if arb_sum < 1.0:
-                profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
-                legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]}
-                        for o, v in outcomes.items()]
-                arb_markets.append({
-                    "market": mkt, "profit_pct": profit_pct,
-                    "arb_sum": round(arb_sum, 6), "legs": legs,
-                })
-        arb_markets.sort(key=lambda x: -x["profit_pct"])
-
-    db_status  = getattr(um, "status", None)
-    status_out = _effective_status(db_status, um.start_time)
-
-    return _signed_response({
-        "ok":              True,
-        "match_id":        um.id,
-        "parent_match_id": um.parent_match_id,
-        "home_team":       um.home_team_name,
-        "away_team":       um.away_team_name,
-        "competition":     um.competition_name,
-        "sport":           _normalise_sport_slug(um.sport_name or ""),
-        "start_time":      um.start_time.isoformat() if um.start_time else None,
-        "status":          status_out,
-        "is_live":         status_out == "IN_PLAY",
-        # All markets keyed by bookmaker slug
-        "markets_by_bk":      combined,
-        # Best price per outcome across all bookmakers
-        "best":               best,
-        # Arb opportunities found across bookmakers
-        "arb_markets":        arb_markets,
-        "has_arb":            bool(arb_markets),
-        # Summary
-        "market_count":       len(best),
-        "market_slugs":       sorted(best.keys()),
-        "bk_market_counts":   {sl: len(mkts) for sl, mkts in combined.items()},
-        "bookmakers":         sorted(combined.keys()),
-        # Data provenance
-        "bt_live_fetched":    bool(fresh_bt),
-        "bt_external_id":     bt_external_id,
-        "stored_bookmakers":  sorted(stored_markets.keys()),
-        "fetch_errors":       fetch_errors,
-        "latency_ms":         int((time.perf_counter() - t0) * 1000),
-        "server_time":        _now_utc().isoformat(),
-    }, encrypt_for=user)
 @bp_odds_customer.route("/odds/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
-    """
-    SSE stream — matches that have started and are within the live window.
-    Kick-off <= now < kick-off + 2h30m.
-    """
-    comp_f = (request.args.get("comp", "") or "").strip()
-    team_f = (request.args.get("team", "") or "").strip()
-    sort   = request.args.get("sort", "start_time")
-    batch  = min(50, max(5, int(request.args.get("batch", _STREAM_BATCH))))
+    comp_f    = (request.args.get("comp", "") or "").strip()
+    team_f    = (request.args.get("team", "") or "").strip()
+    sort      = request.args.get("sort",  "start_time")
+    batch     = min(50, max(5, int(request.args.get("batch", _STREAM_BATCH))))
+    analytics = request.args.get("analytics", "") in ("1", "true")
     log_event("odds_stream_live", {"sport": sport_slug})
 
     def _gen():
         try:
-            yield from _stream_matches(sport_slug, mode="live",
-                                       comp_filter=comp_f, team_filter=team_f,
-                                       sort=sort, batch_size=batch)
+            yield from _stream_matches(
+                sport_slug, mode="live",
+                comp_filter=comp_f, team_filter=team_f,
+                sort=sort, batch_size=batch, include_analytics=analytics,
+            )
         except Exception:
             yield from _stream_from_cache("live", sport_slug, batch)
 
@@ -1046,20 +1071,23 @@ def get_upcoming(sport_slug: str):
     tier     = getattr(user, "tier", "free") if user else "free"
     page     = max(1,   int(request.args.get("page",     1)))
     per_page = min(100, int(request.args.get("per_page", 20)))
-    sort     = request.args.get("sort",    "start_time")
-    comp_f   = (request.args.get("comp",   "") or "").strip()
-    team_f   = (request.args.get("team",   "") or "").strip()
-    has_arb  = request.args.get("has_arb", "") in ("1", "true")
-    date_f   = request.args.get("date",    "")
-    from_dt  = request.args.get("from_dt", "")
-    to_dt    = request.args.get("to_dt",   "")
+    sort     = request.args.get("sort",      "start_time")
+    comp_f   = (request.args.get("comp",     "") or "").strip()
+    team_f   = (request.args.get("team",     "") or "").strip()
+    has_arb  = request.args.get("has_arb",   "") in ("1", "true")
+    date_f   = request.args.get("date",      "")
+    from_dt  = request.args.get("from_dt",   "")
+    to_dt    = request.args.get("to_dt",     "")
+    analytics = request.args.get("analytics","") in ("1", "true")
     log_event("odds_upcoming", {"sport": sport_slug, "tier": tier})
 
     try:
         matches, total, pages = _load_db_matches(
             sport_slug, mode="upcoming", page=page, per_page=per_page,
             comp_filter=comp_f, team_filter=team_f, has_arb=has_arb,
-            sort=sort, date_str=date_f, from_dt=from_dt, to_dt=to_dt)
+            sort=sort, date_str=date_f, from_dt=from_dt, to_dt=to_dt,
+            include_analytics=analytics,
+        )
     except Exception:
         raw = _read_cache_sources("upcoming", sport_slug)
         matches = [x for m in _deduplicate(raw)
@@ -1072,7 +1100,8 @@ def get_upcoming(sport_slug: str):
     latency = int((time.perf_counter() - t0) * 1000)
     return _signed_response(
         _build_envelope(matches, sport_slug, "upcoming", tier,
-                        page, per_page, truncated, latency, total=total, pages=pages),
+                        page, per_page, truncated, latency,
+                        total=total, pages=pages),
         encrypt_for=user)
 
 
@@ -1083,15 +1112,18 @@ def get_live(sport_slug: str):
     tier     = getattr(user, "tier", "free") if user else "free"
     page     = max(1,   int(request.args.get("page",     1)))
     per_page = min(100, int(request.args.get("per_page", 20)))
-    sort     = request.args.get("sort", "start_time")
-    comp_f   = (request.args.get("comp", "") or "").strip()
-    team_f   = (request.args.get("team", "") or "").strip()
+    sort     = request.args.get("sort",      "start_time")
+    comp_f   = (request.args.get("comp",     "") or "").strip()
+    team_f   = (request.args.get("team",     "") or "").strip()
+    analytics = request.args.get("analytics","") in ("1", "true")
     log_event("odds_live", {"sport": sport_slug, "tier": tier})
 
     try:
         matches, total, pages = _load_db_matches(
             sport_slug, mode="live", page=page, per_page=per_page,
-            comp_filter=comp_f, team_filter=team_f, sort=sort)
+            comp_filter=comp_f, team_filter=team_f, sort=sort,
+            include_analytics=analytics,
+        )
     except Exception:
         raw = _read_cache_sources("live", sport_slug)
         matches = [x for m in _deduplicate(raw)
@@ -1127,7 +1159,6 @@ def _get_finished_by_date(date_str):
     per_page = min(100, int(request.args.get("per_page", 20)))
     sport    = request.args.get("sport", "")
     log_event("finished_games_view", {"date": date_str})
-
     try:
         matches, total, pages = _load_db_matches(
             sport or "all", mode="finished", page=page, per_page=per_page,
@@ -1142,7 +1173,6 @@ def _get_finished_by_date(date_str):
         total = len(matches)
         pages = max(1, (total + per_page - 1) // per_page)
         matches = matches[(page-1)*per_page: page*per_page]
-
     matches, truncated = _apply_tier_limits(matches, user)
     latency = int((time.perf_counter() - t0) * 1000)
     return _signed_response(
@@ -1152,7 +1182,7 @@ def _get_finished_by_date(date_str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SINGLE MATCH DETAIL
+# SINGLE MATCH DETAIL  (includes analytics)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_odds_customer.route("/odds/match/<parent_match_id>")
@@ -1161,8 +1191,10 @@ def get_match(parent_match_id: str):
     user = _current_user_from_header()
     tier = getattr(user, "tier", "free") if user else "free"
 
-    from app.models.odds_model import (UnifiedMatch, BookmakerMatchOdds,
-        ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory)
+    from app.models.odds_model import (
+        UnifiedMatch, BookmakerMatchOdds,
+        ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory,
+    )
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
     from sqlalchemy import and_, func
 
@@ -1173,7 +1205,7 @@ def get_match(parent_match_id: str):
 
     bmos = list(BookmakerMatchOdds.query.filter_by(match_id=um.id).all())
 
-    # Sibling merge — acceptable on single-row requests
+    # Sibling merge for cross-bookmaker rows
     try:
         if um.home_team_name and um.away_team_name:
             conds = [
@@ -1227,10 +1259,9 @@ def get_match(parent_match_id: str):
                 if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
                     best[mkt][out] = {"odd": fv, "bk": sl}
 
-    # Time-derived status
-    db_status  = getattr(um, "status", None)
-    status_out = _effective_status(db_status, um.start_time)
-    live_flag  = status_out == "IN_PLAY"
+    db_status      = getattr(um, "status", None)
+    status_out     = _effective_status(db_status, um.start_time)
+    live_flag      = status_out == "IN_PLAY"
     minutes_elapsed: int | None = None
     if um.start_time and live_flag:
         st = um.start_time if um.start_time.tzinfo else um.start_time.replace(tzinfo=timezone.utc)
@@ -1239,9 +1270,9 @@ def get_match(parent_match_id: str):
     history = (BookmakerOddsHistory.query.filter_by(match_id=um.id)
                .order_by(BookmakerOddsHistory.recorded_at.desc()).limit(50).all())
     history_rows = [{
-        "bookmaker": bk_map[h.bookmaker_id].name if h.bookmaker_id in bk_map else str(h.bookmaker_id),
-        "market": h.market, "selection": h.selection,
-        "old_price": h.old_price, "new_price": h.new_price, "price_delta": h.price_delta,
+        "bookmaker":   bk_map[h.bookmaker_id].name if h.bookmaker_id in bk_map else str(h.bookmaker_id),
+        "market":      h.market, "selection": h.selection,
+        "old_price":   h.old_price, "new_price": h.new_price, "price_delta": h.price_delta,
         "recorded_at": h.recorded_at.isoformat() if h.recorded_at else None,
     } for h in history]
     try:
@@ -1252,33 +1283,256 @@ def get_match(parent_match_id: str):
     except Exception:
         arb_list = ev_list = []
 
+    # ── Analytics ─────────────────────────────────────────────────────────────
+    br_id    = um.parent_match_id or ""
+    analytics_bundle  = _get_analytics(br_id, trigger_if_missing=True)
+    analytics_full    = _build_analytics_full(analytics_bundle)
+    analytics_summary = _build_analytics_summary(analytics_bundle)
+
     return _signed_response({
-        "ok": True, "match_id": um.id, "parent_match_id": um.parent_match_id,
-        "betradar_id": um.parent_match_id, "home_team": um.home_team_name,
-        "away_team": um.away_team_name, "competition": um.competition_name,
-        "sport": _normalise_sport_slug(um.sport_name or ""),
-        "start_time": um.start_time.isoformat() if um.start_time else None,
-        "status": status_out, "is_live": live_flag, "minutes_elapsed": minutes_elapsed,
-        "bookmakers": bookmakers, "markets_by_bk": markets_by_bk, "markets": markets_by_bk,
-        "best": best, "aggregated": _flatten_db_markets(um.markets_json or {}),
-        "odds_history": history_rows, "arbs": arb_list, "evs": ev_list,
+        "ok": True,
+        "match_id":        um.id,
+        "parent_match_id": br_id,
+        "betradar_id":     br_id,
+        "home_team":       um.home_team_name,
+        "away_team":       um.away_team_name,
+        "competition":     um.competition_name,
+        "sport":           _normalise_sport_slug(um.sport_name or ""),
+        "start_time":      um.start_time.isoformat() if um.start_time else None,
+        "status":          status_out,
+        "is_live":         live_flag,
+        "minutes_elapsed": minutes_elapsed,
+        "bookmakers":      bookmakers,
+        "markets_by_bk":   markets_by_bk,
+        "markets":         markets_by_bk,
+        "best":            best,
+        "aggregated":      _flatten_db_markets(um.markets_json or {}),
+        "odds_history":    history_rows,
+        "arbs":            arb_list,
+        "evs":             ev_list,
         "bk_ids": {sl: str(d["bookmaker_id"]) for sl, d in bookmakers.items()},
-        "latency_ms": int((time.perf_counter() - t0) * 1000),
-        "server_time": _now_utc().isoformat(), "source": "postgresql",
+        # Analytics — summary + full data in one payload for the detail view
+        "has_analytics":   analytics_full.get("available", False),
+        "analytics":       analytics_full,
+        "analytics_summary": analytics_summary,
+        "latency_ms":      int((time.perf_counter() - t0) * 1000),
+        "server_time":     _now_utc().isoformat(),
+        "source":          "postgresql",
     }, encrypt_for=user)
 
 
-class _SiblingBMO:
-    def __init__(self, bmo, primary_match_id):
-        self._bmo = bmo
-        self._primary_match_id = primary_match_id
+# ══════════════════════════════════════════════════════════════════════════════
+# FULL MARKETS ENDPOINT  (includes analytics)
+# ══════════════════════════════════════════════════════════════════════════════
 
-    def __getattr__(self, name):
-        return getattr(self._bmo, name)
+@bp_odds_customer.route("/odds/match/<parent_match_id>/markets")
+def get_match_full_markets(parent_match_id: str):
+    """
+    Returns ALL stored markets for every bookmaker + live BT fetch.
+    Also returns analytics summary.
+    """
+    t0   = time.perf_counter()
+    user = _current_user_from_header()
+
+    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
+
+    um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
+    if not um:
+        return _err("Match not found", 404)
+
+    bmo_rows  = BookmakerMatchOdds.query.filter_by(match_id=um.id).all()
+    all_bk_ids = {bmo.bookmaker_id for bmo in bmo_rows}
+    bk_map    = ({b.id: b for b in Bookmaker.query.filter(Bookmaker.id.in_(all_bk_ids)).all()}
+                  if all_bk_ids else {})
+
+    stored_markets: dict[str, dict] = {}
+    for bmo in bmo_rows:
+        bk_obj = bk_map.get(bmo.bookmaker_id)
+        if not bk_obj:
+            continue
+        slug = _bk_slug(bk_obj.name.lower())
+        stored_markets[slug] = _flatten_db_markets(bmo.markets_json or {})
+
+    links = BookmakerMatchLink.query.filter_by(match_id=um.id).all()
+    all_bk_map = {b.id: b for b in Bookmaker.query.all()}
+    link_by_bk: dict[str, object] = {}
+    for lnk in links:
+        bk_obj = all_bk_map.get(lnk.bookmaker_id)
+        if bk_obj:
+            link_by_bk[_bk_slug(bk_obj.name.lower())] = lnk
+
+    # ── Live BT full-market fetch (BT parent_match_id == betradar_id) ─────────
+    fresh_bt: dict = {}
+    fetch_errors: dict[str, str] = {}
+    bt_external_id = parent_match_id  # betradar_id IS the BT parent_match_id
+    try:
+        from app.workers.bt_harvester import get_full_markets
+        fresh_bt = get_full_markets(bt_external_id, bt_sport_id=14)
+    except Exception as exc:
+        fetch_errors["bt"] = str(exc)
+
+    combined: dict[str, dict] = dict(stored_markets)
+    if fresh_bt:
+        combined["bt"] = {**(stored_markets.get("bt") or {}), **fresh_bt}
+
+    best: dict[str, dict] = {}
+    for sl, mkts in combined.items():
+        for mkt, outcomes in (mkts or {}).items():
+            best.setdefault(mkt, {})
+            for out, odd_data in (outcomes or {}).items():
+                try:
+                    fv = (float(odd_data.get("price") or odd_data.get("odd") or 0)
+                          if isinstance(odd_data, dict) else float(odd_data))
+                except Exception:
+                    continue
+                if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
+                    best[mkt][out] = {"odd": fv, "bk": sl}
+
+    arb_markets: list[dict] = []
+    if len(combined) >= 2:
+        for mkt, outcomes in best.items():
+            if len(outcomes) < 2:
+                continue
+            arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
+            if arb_sum < 1.0:
+                profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
+                legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]}
+                        for o, v in outcomes.items()]
+                arb_markets.append({
+                    "market": mkt, "profit_pct": profit_pct,
+                    "arb_sum": round(arb_sum, 6), "legs": legs,
+                })
+        arb_markets.sort(key=lambda x: -x["profit_pct"])
+
+    db_status  = getattr(um, "status", None)
+    status_out = _effective_status(db_status, um.start_time)
+
+    # ── Analytics summary ─────────────────────────────────────────────────────
+    analytics_bundle  = _get_analytics(parent_match_id, trigger_if_missing=True)
+    analytics_summary = _build_analytics_summary(analytics_bundle)
+
+    return _signed_response({
+        "ok":              True,
+        "match_id":        um.id,
+        "parent_match_id": parent_match_id,
+        "home_team":       um.home_team_name,
+        "away_team":       um.away_team_name,
+        "competition":     um.competition_name,
+        "sport":           _normalise_sport_slug(um.sport_name or ""),
+        "start_time":      um.start_time.isoformat() if um.start_time else None,
+        "status":          status_out,
+        "is_live":         status_out == "IN_PLAY",
+        "markets_by_bk":   combined,
+        "best":            best,
+        "arb_markets":     arb_markets,
+        "has_arb":         bool(arb_markets),
+        "market_count":    len(best),
+        "market_slugs":    sorted(best.keys()),
+        "bk_market_counts": {sl: len(mkts) for sl, mkts in combined.items()},
+        "bookmakers":      sorted(combined.keys()),
+        "bt_live_fetched": bool(fresh_bt),
+        "bt_external_id":  bt_external_id,
+        "stored_bookmakers": sorted(stored_markets.keys()),
+        "fetch_errors":    fetch_errors,
+        # Analytics
+        "has_analytics":   analytics_summary.get("available", False),
+        "analytics":       analytics_summary,
+        "latency_ms":      int((time.perf_counter() - t0) * 1000),
+        "server_time":     _now_utc().isoformat(),
+    }, encrypt_for=user)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# OTHER ROUTES
+# DEDICATED ANALYTICS ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bp_odds_customer.route("/odds/match/<parent_match_id>/analytics")
+def get_match_analytics(parent_match_id: str):
+    """
+    Returns the full Sportradar analytics bundle for a match.
+
+    Includes:
+      • Tournament / season / venue metadata
+      • Home team upcoming fixtures (next 30 days)
+      • Away team upcoming fixtures (next 30 days)
+      • Season draw / fixtures (if available)
+      • Coverage flags (headtohead, tennisranking, etc.)
+
+    If analytics are not yet cached, a background fetch is triggered
+    and {"available": false, "fetching": true} is returned.
+    The client should retry in ~5 s.
+    """
+    t0   = time.perf_counter()
+    user = _current_user_from_header()
+
+    # Validate the match exists
+    from app.models.odds_model import UnifiedMatch
+    um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
+    if not um:
+        return _err("Match not found", 404)
+
+    log_event("match_analytics_view", {"match_id": parent_match_id})
+
+    bundle    = _get_analytics(parent_match_id, trigger_if_missing=True)
+    analytics = _build_analytics_full(bundle)
+    available = analytics.get("available", False)
+    fetching  = not available  # background task was dispatched
+
+    return _signed_response({
+        "ok":              True,
+        "match_id":        um.id,
+        "parent_match_id": parent_match_id,
+        "betradar_id":     parent_match_id,
+        "home_team":       um.home_team_name,
+        "away_team":       um.away_team_name,
+        "competition":     um.competition_name,
+        "sport":           _normalise_sport_slug(um.sport_name or ""),
+        "start_time":      um.start_time.isoformat() if um.start_time else None,
+        "available":       available,
+        "fetching":        fetching,   # True = background job dispatched, retry in 5s
+        "analytics":       analytics,
+        "latency_ms":      int((time.perf_counter() - t0) * 1000),
+        "server_time":     _now_utc().isoformat(),
+    }, encrypt_for=user)
+
+
+@bp_odds_customer.route("/odds/match/<parent_match_id>/analytics/refresh", methods=["POST"])
+def refresh_match_analytics(parent_match_id: str):
+    """
+    Force re-fetch of Sportradar analytics for a match.
+    Dispatches a background task and returns immediately.
+    Poll GET /analytics in ~5 s for the result.
+    """
+    from app.models.odds_model import UnifiedMatch
+    from app.workers.celery_tasks import celery
+
+    um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
+    if not um:
+        return _err("Match not found", 404)
+
+    try:
+        celery.send_task(
+            "tasks.sp.get_match_analytics",
+            args=[parent_match_id, True],   # force_refresh=True
+            queue="harvest",
+            countdown=0,
+        )
+        dispatched = True
+    except Exception as exc:
+        dispatched = False
+
+    return _signed_response({
+        "ok":              dispatched,
+        "parent_match_id": parent_match_id,
+        "dispatched":      dispatched,
+        "message":         "Analytics refresh queued. Poll GET .../analytics in ~5s.",
+        "server_time":     _now_utc().isoformat(),
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OTHER ROUTES  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_odds_customer.route("/odds/sports")
@@ -1361,7 +1615,6 @@ def search_matches():
     if sport:
         qs = _sport_filter(qs, sport)
     qs = _mode_time_filter(qs, mode)
-
     total   = qs.count()
     um_list = qs.order_by(UnifiedMatch.start_time).offset((page-1)*per_page).limit(per_page).all()
     match_ids = [um.id for um in um_list]
@@ -1385,6 +1638,7 @@ def search_matches():
         "is_live":         _is_live(getattr(um, "status", None), um.start_time),
         "bookie_count":    bk_counts.get(um.id, 0),
         "detail_url":      f"/api/odds/match/{um.parent_match_id}",
+        "analytics_url":   f"/api/odds/match/{um.parent_match_id}/analytics",
     } for um in um_list]
 
     log_event("odds_search", {"q": q_str, "mode": mode, "total": total})
@@ -1407,14 +1661,12 @@ def harvest_status():
         from app.models.bookmakers_model import Bookmaker
         from sqlalchemy import func
         from app.extensions import db
-        total_db   = UnifiedMatch.query.count()
-        live_count = UnifiedMatch.query.filter(
+        total_db       = UnifiedMatch.query.count()
+        live_count     = UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >  now - _LIVE_WINDOW,
         ).count()
-        upcoming_count = UnifiedMatch.query.filter(
-            UnifiedMatch.start_time > now
-        ).count()
+        upcoming_count = UnifiedMatch.query.filter(UnifiedMatch.start_time > now).count()
         bk_cov = dict(
             db.session.query(BookmakerMatchOdds.bookmaker_id, func.count(BookmakerMatchOdds.match_id))
             .group_by(BookmakerMatchOdds.bookmaker_id).all()
@@ -1431,15 +1683,15 @@ def harvest_status():
 
     return _signed_response({
         "ok": True, "free_access": FREE_ACCESS,
-        "worker_alive":     heartbeat.get("alive", False),
-        "last_heartbeat":   heartbeat.get("checked_at"),
-        "db_match_count":   total_db,
-        "live_count":       live_count,
-        "upcoming_count":   upcoming_count,
-        "live_window_minutes": int(_LIVE_WINDOW.total_seconds() / 60),
-        "server_time":      now.isoformat(),
-        "bookmaker_coverage": coverage,
-        "source":           "postgresql",
+        "worker_alive":          heartbeat.get("alive", False),
+        "last_heartbeat":        heartbeat.get("checked_at"),
+        "db_match_count":        total_db,
+        "live_count":            live_count,
+        "upcoming_count":        upcoming_count,
+        "live_window_minutes":   int(_LIVE_WINDOW.total_seconds() / 60),
+        "server_time":           now.isoformat(),
+        "bookmaker_coverage":    coverage,
+        "source":                "postgresql",
     })
 
 
@@ -1511,3 +1763,16 @@ def stream_arb():
 def stream_ev():
     return Response(stream_with_context(_sse_stream(_EV_CHANNEL)),
                     mimetype="text/event-stream", headers=_SSE_HEADERS)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INTERNAL HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _SiblingBMO:
+    def __init__(self, bmo, primary_match_id):
+        self._bmo = bmo
+        self._primary_match_id = primary_match_id
+
+    def __getattr__(self, name):
+        return getattr(self._bmo, name)
