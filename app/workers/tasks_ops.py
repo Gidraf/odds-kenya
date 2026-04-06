@@ -264,6 +264,7 @@ def _extract_best_price(val) -> float | None:
  
     # Try well-known scalar price keys first (cheapest path)
     for key in ("odds", "odd", "price", "value"):
+        logger.log(logging.DEBUG - 1, "Checking for price key '%s' in %s", key, val) 
         inner = val.get(key)
         if isinstance(inner, (int, float)):
             fv = float(inner)
@@ -618,6 +619,9 @@ def persist_combined_batch(
         from app.workers.persist_hook import persist_from_serialized
         stats = persist_from_serialized(match_dicts, sport_slug=sport_slug, mode=mode)
         stats.update({"sport": sport_slug, "mode": mode})
+        logger.info("[persist] %s %s: persisted=%d failed=%d in %d ms",
+                    sport_slug, mode, stats.get("persisted", 0), stats.get("failed", 0),
+                    int((time.perf_counter() - t0) * 1000))
         log_job(bookmaker="combined", sport=sport_slug, mode=mode,
                 count=len(match_dicts), status="ok",
                 unified_ok=stats.get("persisted", 0), unified_fail=stats.get("failed", 0),
