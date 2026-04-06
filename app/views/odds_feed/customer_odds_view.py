@@ -845,6 +845,160 @@ def stream_upcoming(sport_slug: str):
     return Response(stream_with_context(_gen()), headers=_SSE_HEADERS)
 
 
+
+@bp_odds_customer.route("/odds/match/<parent_match_id>/markets")
+def get_match_full_markets(parent_match_id: str):
+    """
+    Fetch ALL markets for a match by calling each bookmaker's detail API
+    on-demand. Returns richer data than the stored snapshot.
+
+    Slow (~500ms–2s) but always fresh and complete.
+    """
+    t0   = time.perf_counter()
+    user = _current_user_from_header()
+
+    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
+    if not um:
+        return _err("Match not found", 404)
+
+    # Load stored bookmaker links to know which external IDs to use
+    links = BookmakerMatchLink.query.filter_by(match_id=um.id).all()
+    bk_map = {b.id: b for b in Bookmaker.query.all()}
+
+    # Stored markets as baseline — always returned even if live fetch fails
+    bmo_rows = BookmakerMatchOdds.query.filter_by(match_id=um.id).all()
+    stored_markets: dict[str, dict] = {}
+    for bmo in bmo_rows:
+        bk_obj = bk_map.get(bmo.bookmaker_id)
+        slug   = _bk_slug((bk_obj.name if bk_obj else "").lower())
+        stored_markets[slug] = _flatten_db_markets(bmo.markets_json or {})
+
+    # Fetch fresh full markets from each bookmaker in parallel
+    fresh_markets: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+
+    def _fetch_bt(link):
+        try:
+            from app.workers.bt_harvester import get_full_markets
+            pid = link.external_match_id or link.betradar_id
+            if not pid:
+                return "bt", {}
+            bt_sport_id = 14  # default soccer; resolver could look this up
+            return "bt", get_full_markets(pid, bt_sport_id)
+        except Exception as exc:
+            return "bt", {"_error": str(exc)}
+
+    def _fetch_od(link):
+        try:
+            from app.workers.od_harvester import fetch_event_detail
+            eid = link.external_match_id
+            if not eid:
+                return "od", {}
+            mkts, _ = fetch_event_detail(eid)
+            return "od", mkts
+        except Exception as exc:
+            return "od", {"_error": str(exc)}
+
+    def _fetch_sp(link):
+        try:
+            from app.workers.sp_harvester import fetch_event_markets
+            eid = link.external_match_id
+            if not eid:
+                return "sp", {}
+            return "sp", fetch_event_markets(eid)
+        except Exception as exc:
+            return "sp", {"_error": str(exc)}
+
+    fetchers = {
+        "bt": _fetch_bt,
+        "od": _fetch_od,
+        "sp": _fetch_sp,
+    }
+
+    link_by_bk: dict[str, object] = {}
+    for lnk in links:
+        bk_obj = bk_map.get(lnk.bookmaker_id)
+        if bk_obj:
+            slug = _bk_slug(bk_obj.name.lower())
+            link_by_bk[slug] = lnk
+
+    futures = {}
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        for slug, fn in fetchers.items():
+            if slug in link_by_bk:
+                futures[pool.submit(fn, link_by_bk[slug])] = slug
+
+        for fut in as_completed(futures):
+            try:
+                bk_slug, mkts = fut.result()
+                if mkts and not mkts.get("_error"):
+                    fresh_markets[bk_slug] = mkts
+                elif mkts.get("_error"):
+                    errors[bk_slug] = mkts["_error"]
+            except Exception as exc:
+                errors[futures[fut]] = str(exc)
+
+    # Merge: fresh overrides stored, stored fills gaps
+    combined: dict[str, dict] = {}
+    for slug in set(list(stored_markets.keys()) + list(fresh_markets.keys())):
+        base  = stored_markets.get(slug, {})
+        fresh = fresh_markets.get(slug, {})
+        combined[slug] = {**base, **fresh}  # fresh wins
+
+    # Build best odds across all bookmakers per market
+    best: dict[str, dict] = {}
+    for sl, mkts in combined.items():
+        for mkt, outcomes in mkts.items():
+            best.setdefault(mkt, {})
+            for out, odd_data in (outcomes or {}).items():
+                try:
+                    fv = (
+                        float(odd_data.get("price") or odd_data.get("odd") or 0)
+                        if isinstance(odd_data, dict) else float(odd_data)
+                    )
+                except Exception:
+                    continue
+                if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
+                    best[mkt][out] = {"odd": fv, "bk": sl}
+
+    # Market summary per bookmaker
+    bk_market_counts = {sl: len(mkts) for sl, mkts in combined.items()}
+
+    db_status  = getattr(um, "status", None)
+    status_out = _effective_status(db_status, um.start_time)
+
+    return _signed_response({
+        "ok":              True,
+        "match_id":        um.id,
+        "parent_match_id": um.parent_match_id,
+        "home_team":       um.home_team_name,
+        "away_team":       um.away_team_name,
+        "competition":     um.competition_name,
+        "sport":           _normalise_sport_slug(um.sport_name or ""),
+        "start_time":      um.start_time.isoformat() if um.start_time else None,
+        "status":          status_out,
+        "is_live":         status_out == "IN_PLAY",
+        # All markets per bookmaker
+        "markets_by_bk":        combined,
+        # Best price for each outcome across all bookmakers
+        "best":                 best,
+        # Summary counts
+        "market_count":         len(best),
+        "market_slugs":         sorted(best.keys()),
+        "bk_market_counts":     bk_market_counts,
+        # Data provenance
+        "bookmakers_fetched":   list(fresh_markets.keys()),
+        "bookmakers_stored":    list(stored_markets.keys()),
+        "fetch_errors":         errors,
+        "data_source":          "live_fetch+stored",
+        "latency_ms":           int((time.perf_counter() - t0) * 1000),
+        "server_time":          _now_utc().isoformat(),
+    }, encrypt_for=user)
+
 @bp_odds_customer.route("/odds/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
     """
