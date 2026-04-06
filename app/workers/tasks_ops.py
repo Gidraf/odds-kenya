@@ -55,6 +55,9 @@ PERSIST_SPORTS: list[str] = [
     "table-tennis", "esoccer", "mma", "boxing", "darts",
 ]
 
+# All bookmaker cache key prefixes — must match what each harvester writes
+_BK_SLUGS: list[str] = ["sp", "bt", "od", "b2b", "sbo"]
+
 # ── Structured job logger ─────────────────────────────────────────────────────
 LOG_DIR = Path(os.environ.get("LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -104,13 +107,6 @@ def _dispatch_startup_harvests() -> None:
     """
     Fan-out upcoming harvest tasks immediately on worker boot.
     Staggered countdowns so external APIs aren't hit simultaneously.
-
-    SP/BT/OD are long-running (up to 1 hour each) so we give them large
-    countdowns relative to each other to avoid overloading Celery queues.
-
-    Market alignment is scheduled after harvests complete automatically
-    (via _schedule_alignment in each harvest task), so we don't need to
-    dispatch it here — it will trigger itself.
     """
     upcoming_tasks = [
         # (task_name, countdown_seconds)
@@ -125,12 +121,10 @@ def _dispatch_startup_harvests() -> None:
         celery.send_task(task_name, queue="harvest", countdown=cd)
         logger.debug("[startup] dispatched %s (countdown=%ds)", task_name, cd)
 
-    # Health check so heartbeat appears in Redis immediately
     celery.send_task("tasks.ops.health_check",        queue="default",  countdown=1)
     celery.send_task("tasks.ops.build_health_report", queue="default",  countdown=25)
 
-    # Initial alignment pass — runs after harvests have had a chance to seed
-    # the DB. 120s gives the fast bookmakers (b2b/sbo) time to finish.
+    # Initial alignment pass — 120s gives fast bookmakers time to finish
     celery.send_task("tasks.align.all", queue="results", countdown=120)
 
     logger.info("[startup] %d upcoming tasks dispatched + alignment queued (live DISABLED)",
@@ -161,9 +155,7 @@ def setup_periodic_tasks(sender, **kwargs):
         name="registry-cleanup-daily",
     )
 
-    # ── SP / BT / OD  (long-running — 1 hour interval)
-    # These each run for up to 1 hour fetching 15k matches with full markets.
-    # Running them more often would overlap with previous run.
+    # ── SP / BT / OD  (long-running — 1 hour interval) ────────────────────────
     sender.add_periodic_task(
         3600.0, sp_harvest_all_upcoming.s(),
         name="sp-upcoming-1h",
@@ -177,7 +169,7 @@ def setup_periodic_tasks(sender, **kwargs):
         name="od-upcoming-1h",
     )
 
-    # ── B2B / SBO / page fan-out  (faster — shorter intervals are fine)
+    # ── B2B / SBO / page fan-out  (faster) ────────────────────────────────────
     sender.add_periodic_task(
         480.0, b2b_harvest_all_upcoming.s(),
         name="b2b-upcoming-8min",
@@ -191,10 +183,7 @@ def setup_periodic_tasks(sender, **kwargs):
         name="sbo-upcoming-3min",
     )
 
-    # ── Market Alignment  (runs every 15 min as safety net)
-    # Also triggered automatically 60s after each bookmaker harvest via
-    # _schedule_alignment() in tasks_upcoming.py — so markets are aligned
-    # within ~1 minute of any new data arriving.
+    # ── Market Alignment  (15 min safety net + auto-triggered after harvests) ──
     sender.add_periodic_task(
         900.0, align_all_sports.s(),
         name="market-align-15min",
@@ -230,7 +219,7 @@ def setup_periodic_tasks(sender, **kwargs):
         name="health-report-1min",
     )
 
-    # ── Live tasks (commented out — re-enable when LIVE_ENABLED = True) ───────
+    # ── Live tasks (re-enable when LIVE_ENABLED = True) ───────────────────────
     # from app.workers.tasks_live import (
     #     sp_harvest_all_live, bt_harvest_all_live,
     #     od_harvest_all_live, b2b_harvest_all_live,
@@ -283,9 +272,35 @@ def compute_ev_arb(self, match_id: int) -> dict:
         if not um or not um.markets_json:
             return {"ok": False, "reason": "no markets"}
 
+        # ── Sanitise markets_json before passing to detector ─────────────────
+        # Any market stored as a bare float (e.g. {"1x2": 1.85} instead of
+        # {"1x2": {"home": 1.85}}) will crash the detector with:
+        #   "'float' object has no attribute 'get'"
+        raw = um.markets_json if isinstance(um.markets_json, dict) else {}
+        clean: dict = {}
+        for mkt, selections in raw.items():
+            if isinstance(selections, dict):
+                clean[mkt] = {
+                    sel: val for sel, val in selections.items()
+                    if isinstance(val, (int, float, dict))
+                }
+            elif isinstance(selections, (int, float)):
+                # Flat float → wrap so detector can read it
+                clean[mkt] = {"value": float(selections)}
+            # else: unexpected type, skip entirely
+
+        if not clean:
+            return {"ok": False, "reason": "markets_json empty after sanitise"}
+
+        # Swap in cleaned copy temporarily; restore after detection
+        original_markets = um.markets_json
+        um.markets_json  = clean
+
         detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
         arbs     = detector.find_arbs(um)
         evs      = detector.find_ev(um)
+
+        um.markets_json = original_markets  # don't persist the temp copy
 
         for kwargs in arbs:
             db.session.add(ArbitrageOpportunity(**kwargs))
@@ -330,7 +345,7 @@ def update_match_results() -> dict:
         now     = datetime.now(timezone.utc)
         updated = 0
 
-        # PRE_MATCH → IN_PLAY (kicked off in the last 3 hours)
+        # PRE_MATCH → IN_PLAY
         for um in UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >= now - timedelta(hours=3),
@@ -340,7 +355,7 @@ def update_match_results() -> dict:
                 um.status = "IN_PLAY"
                 updated  += 1
 
-        # IN_PLAY → FINISHED (past the 2h30m live window)
+        # IN_PLAY → FINISHED
         for um in UnifiedMatch.query.filter(
             UnifiedMatch.start_time <= now - timedelta(hours=2, minutes=30),
             UnifiedMatch.status == "IN_PLAY",
@@ -607,9 +622,13 @@ def persist_combined_batch(
 def persist_all_sports() -> dict:
     """
     Beat task — every 5 minutes.
-    Reads combined:upcoming:{sport} from Redis for every sport in PERSIST_SPORTS
-    and fans out one persist_combined_batch task per sport.
-    Live mode is skipped while LIVE_ENABLED = False.
+
+    FIX (Bug 3): was reading combined:upcoming:{sport} which is only written
+    by tasks_market_align AFTER persist — so this task always found empty
+    cache and dispatched zero persist jobs for BT/OD/SBO/B2B.
+
+    Now reads per-bookmaker cache keys ({bk}:upcoming:{sport}) which every
+    harvester writes to immediately after fetching.
     """
     dispatched = 0
     skipped    = 0
@@ -620,23 +639,25 @@ def persist_all_sports() -> dict:
         modes.append(("live", 2))
 
     for sport in PERSIST_SPORTS:
-        summary[sport] = {m: 0 for m, _ in modes}
-        for mode, countdown in modes:
-            cached = cache_get(f"combined:{mode}:{sport}")
-            if not cached or not cached.get("matches"):
-                skipped += 1
-                continue
-            match_dicts = cached["matches"]
-            if not match_dicts:
-                skipped += 1
-                continue
-            persist_combined_batch.apply_async(
-                args=[match_dicts, sport, mode],
-                queue="results",
-                countdown=countdown,
-            )
-            summary[sport][mode] = len(match_dicts)
-            dispatched += 1
+        summary[sport] = {}
+        for bk_slug in _BK_SLUGS:
+            for mode, countdown in modes:
+                # Read from per-bookmaker cache, not combined:upcoming:{sport}
+                cached = cache_get(f"{bk_slug}:{mode}:{sport}")
+                if not cached or not cached.get("matches"):
+                    skipped += 1
+                    continue
+                match_dicts = cached["matches"]
+                if not match_dicts:
+                    skipped += 1
+                    continue
+                persist_combined_batch.apply_async(
+                    args=[match_dicts, sport, mode],
+                    queue="results",
+                    countdown=countdown,
+                )
+                summary[sport][f"{bk_slug}:{mode}"] = len(match_dicts)
+                dispatched += 1
 
     logger.info(
         "[persist_all_sports] dispatched=%d skipped=%d live_enabled=%s",
@@ -684,31 +705,40 @@ def build_health_report() -> dict:
     cold_sports: list[str] = []
 
     for sport in PERSIST_SPORTS:
-        u   = cache_get(f"combined:upcoming:{sport}") or {}
-        u_m = u.get("matches", [])
-        u_arbs = sum(1 for m in u_m if m.get("has_arb"))
-        u_evs  = sum(1 for m in u_m if m.get("has_ev"))
-        populated = bool(u_m)
+        # Aggregate match counts across all bookmakers for this sport
+        u_matches: list[dict] = []
+        bk_counts: dict[str, int] = {}
+        harvested_at = None
+        for bk_slug in _BK_SLUGS:
+            bk_cache = cache_get(f"{bk_slug}:upcoming:{sport}") or {}
+            bk_m     = bk_cache.get("matches", [])
+            if bk_m:
+                bk_counts[bk_slug] = len(bk_m)
+                u_matches.extend(bk_m)
+                if not harvested_at:
+                    harvested_at = bk_cache.get("harvested_at")
+
+        u_arbs    = sum(1 for m in u_matches if m.get("has_arb"))
+        u_evs     = sum(1 for m in u_matches if m.get("has_ev"))
+        populated = bool(u_matches)
         if not populated:
             cold_sports.append(sport)
-        total_upcoming += len(u_m)
+        total_upcoming += len(u_matches)
         total_arbs     += u_arbs
         total_evs      += u_evs
 
-        # Pull last alignment stats for this sport
         align_stats = cache_get(f"align:stats:{sport}") or {}
 
         sports_report.append({
             "sport":           sport,
-            "upcoming_count":  len(u_m),
+            "upcoming_count":  len(u_matches),
             "live_count":      0,
             "upcoming_arbs":   u_arbs,
             "upcoming_evs":    u_evs,
-            "harvested_at_up": u.get("harvested_at"),
-            "bk_counts_up":    u.get("bk_counts", {}),
+            "harvested_at_up": harvested_at,
+            "bk_counts_up":    bk_counts,
             "populated":       populated,
             "status":          "ok" if populated else "cold",
-            # Alignment stats
             "align_last_run":  align_stats.get("ts"),
             "align_aligned":   align_stats.get("aligned", 0),
             "align_arbs":      align_stats.get("arbs_found", 0),
@@ -740,19 +770,18 @@ def build_health_report() -> dict:
     _chk("Arb opportunities", total_arbs >= 0,    f"{total_arbs}")
     _chk("EV opportunities",  total_evs  >= 0,    f"{total_evs}")
 
-    # Check alignment service is running (last run within 20 min)
     any_align_stats = cache_get("align:stats:soccer") or {}
     align_ts_raw    = any_align_stats.get("ts")
     align_recent    = False
     align_age_s: int | None = None
     if align_ts_raw:
         try:
-            align_dt  = datetime.fromisoformat(align_ts_raw.replace("Z", "+00:00"))
+            align_dt    = datetime.fromisoformat(align_ts_raw.replace("Z", "+00:00"))
             align_age_s = int((datetime.now(timezone.utc) - align_dt).total_seconds())
-            align_recent = align_age_s < 1200   # within 20 min
+            align_recent = align_age_s < 1200
         except Exception:
             pass
-    _chk("Market alignment",  align_recent,
+    _chk("Market alignment", align_recent,
          f"last run {align_age_s}s ago" if align_age_s else "never run")
 
     passed = sum(1 for c in checks if c["passed"])
@@ -776,9 +805,9 @@ def build_health_report() -> dict:
         },
         "redis":  {"ok": redis_ok},
         "alignment": {
-            "last_run":   align_ts_raw,
+            "last_run":    align_ts_raw,
             "age_seconds": align_age_s,
-            "is_recent":  align_recent,
+            "is_recent":   align_recent,
         },
         "totals": {
             "upcoming_matches":  total_upcoming,

@@ -6,7 +6,7 @@ Harvest targets:
   BT  — fetch until 15,000 matches total (parallel full-market enrichment)
   OD  — fetch entire current calendar month day-by-day
 
-After each harvest completes, schedule_alignment(sport_slug) is called
+After each harvest completes, _schedule_alignment(sport_slug) is called
 with a 60-second countdown so the persist pipeline finishes writing BMO
 rows before the alignment job reads and merges them.
 
@@ -215,6 +215,12 @@ def _persist_bk_matches(
     Serialise raw harvested matches and dispatch Celery persist task(s).
     Splits large batches into chunks of 500 to avoid oversized messages
     and DB transaction timeouts.
+
+    FIX (Bug 1): markets are stored FLAT as {mkt_key: {outcome: price}} —
+    NOT wrapped under the bookmaker slug.  The previous shape
+    {"markets": {bk_slug: markets}} caused _upsert_unified_match to see
+    mkt_key=bk_slug → outcome=market_name → odds_data=dict, which resolves
+    to price=0 and silently drops every BT/OD/SBO selection.
     """
     if not matches:
         return
@@ -256,16 +262,20 @@ def _persist_bk_matches(
             continue
 
         serialized.append({
-            "join_key":    join_key,
-            "home_team":   m.get("home_team")    or m.get("home_team_name")    or "",
-            "away_team":   m.get("away_team")    or m.get("away_team_name")    or "",
-            "competition": m.get("competition")  or m.get("competition_name")  or "",
-            "start_time":  m.get("start_time")   or "",
-            "is_live":     False,
-            "betradar_id": betradar_id,
-            "sport":       canonical_sport,
-            "bk_ids":      {bk_slug: bk_ext_id or join_key},
-            "markets":     {bk_slug: markets},
+            "join_key":       join_key,
+            "home_team":      m.get("home_team")    or m.get("home_team_name")    or "",
+            "away_team":      m.get("away_team")    or m.get("away_team_name")    or "",
+            "competition":    m.get("competition")  or m.get("competition_name")  or "",
+            "start_time":     m.get("start_time")   or "",
+            "is_live":        False,
+            "betradar_id":    betradar_id,
+            "sport":          canonical_sport,
+            "bk_ids":         {bk_slug: bk_ext_id or join_key},
+            # FIX: store markets FLAT, not wrapped under bk_slug.
+            # Wrong:  "markets": {bk_slug: markets}
+            # Correct: "markets": markets  (i.e. {mkt_key: {outcome: price}})
+            "markets":        markets,
+            "bookmaker_slug": bk_slug,   # kept for traceability / debugging
         })
 
     if not serialized:
@@ -274,7 +284,7 @@ def _persist_bk_matches(
         )
         return
 
-    # Chunk into 500s
+    # Chunk into 500s to avoid oversized Celery messages / DB timeouts
     chunk_size  = 500
     chunks      = [serialized[i: i + chunk_size]
                    for i in range(0, len(serialized), chunk_size)]
@@ -604,8 +614,6 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
     _upsert_and_chain(matches, "SportPesa")
     _persist_bk_matches(matches, "sp", sport_slug)
     _emit("sportpesa", sport_slug, len(matches), latency)
-
-    # Schedule alignment 60s after persist tasks are dispatched
     _schedule_alignment(sport_slug, countdown=60)
 
     return {
@@ -641,7 +649,6 @@ def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -
             enrich_matches_with_full_markets,
         )
 
-        # BT paginates at 50/page → need ~300 pages for 15k
         max_pages = (max_matches // 50) + 10
 
         logger.info(
@@ -665,7 +672,6 @@ def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -
             sport_slug, len(matches),
         )
 
-        # Parallel detail API calls → 20-30 markets per match
         matches = enrich_matches_with_full_markets(matches, max_workers=12)
 
         avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
@@ -693,8 +699,6 @@ def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -
     _upsert_and_chain(matches, "Betika")
     _persist_bk_matches(matches, "bt", sport_slug)
     _emit("betika", sport_slug, len(matches), latency)
-
-    # Schedule alignment 60s after persist tasks are dispatched
     _schedule_alignment(sport_slug, countdown=60)
 
     logger.info("[bt:upcoming] %s → %d matches %dms (avg %d markets/match)",
@@ -798,8 +802,6 @@ def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
     _upsert_and_chain(matches, "OdiBets")
     _persist_bk_matches(matches, "od", sport_slug)
     _emit("odibets", sport_slug, len(matches), latency)
-
-    # Schedule alignment 60s after persist tasks are dispatched
     _schedule_alignment(sport_slug, countdown=60)
 
     return {
