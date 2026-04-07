@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timezone
 
 from app.extensions import db
+from app.models.oppotunity_detector import OpportunityDetector
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ class EntityResolver:
     def persist_combined_match(self, cm) -> int | None:
         from app.models.odds_model import (
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
-            OpportunityDetector, ArbitrageOpportunity, EVOpportunity,
+            ArbitrageOpportunity, EVOpportunity,
             OpportunityStatus,
         )
         try:
