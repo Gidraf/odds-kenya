@@ -321,7 +321,7 @@ def snapshot_matches(sport_slug: str):
     Reads from the combined live cache written by the pollers.
     """
     from app.workers.celery_tasks import cache_get
-    from app.views.odds_feed.odds_routes import _load_db_matches, _normalise_sport_slug
+    from app.views.odds_feed.customer_odds_view import _load_db_matches, _normalise_sport_slug
     t0 = time.perf_counter()
     try:
         matches, total, pages = _load_db_matches(
@@ -373,7 +373,7 @@ def snapshot_match(match_ref: str):
         try:
             from app.models.odds_model import BookmakerMatchOdds
             from app.models.bookmakers_model import Bookmaker
-            from app.views.odds_feed.odds_routes import _flatten_db_markets, _bk_slug
+            from app.views.odds_feed.customer_odds_view import _flatten_db_markets, _bk_slug
             bmos = BookmakerMatchOdds.query.filter_by(match_id=match_id).all()
             bk_map = {b.id: b for b in Bookmaker.query.all()}
             for bmo in bmos:
