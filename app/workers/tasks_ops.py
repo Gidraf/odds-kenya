@@ -30,6 +30,7 @@ import requests
 from celery.signals import worker_ready
 from celery.utils.log import get_task_logger
 
+from app.models.oppotunity_detector import OpportunityDetector
 from app.workers.celery_tasks import (
     celery, cache_set, cache_get, _now_iso, _publish,
 )
@@ -321,7 +322,7 @@ def _sanitise_markets(raw: dict) -> dict:
 def compute_ev_arb(self, match_id: int) -> dict:
     try:
         from app.models.odds_model import (
-            UnifiedMatch, OpportunityDetector,
+            UnifiedMatch,
             ArbitrageOpportunity, EVOpportunity,
         )
         from app.extensions import db
