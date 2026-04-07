@@ -136,7 +136,7 @@ def _resolve_sport_slug(betradar_id: str, sport_id: int | None) -> str:
             return slug
     try:
         from app.models.odds_model import UnifiedMatch
-        from app.views.odds_feed.odds_routes import _normalise_sport_slug
+        from app.views.odds_feed.customer_odds_view import _normalise_sport_slug
         um = UnifiedMatch.query.filter_by(parent_match_id=betradar_id).first()
         if um and um.sport_name:
             return _normalise_sport_slug(um.sport_name)
