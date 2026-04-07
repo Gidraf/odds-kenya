@@ -994,7 +994,8 @@ class OpportunityDetector:
                                 or sel_data.get("odd")       or sel_data.get("price"))
                     else:
                         best_p = None
-                    best_bk = sel_data.get("best_bookmaker_id")
+                    
+                    best_bk = sel_data.get("best_bookmaker_id") if not isinstance(sel_data, (int, float)) else sel_data
                     if not best_p or best_p <= 1.0:
                         continue
                     # Find bookmaker name from legs_json context — use ID as fallback
