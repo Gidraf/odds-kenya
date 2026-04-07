@@ -37,7 +37,7 @@ from app.workers.celery_tasks import (
 
 logger = get_task_logger(__name__)
 
-LIVE_ENABLED: bool = False
+LIVE_ENABLED: bool = True
 
 WS_CHANNEL  = "odds:updates"
 ARB_CHANNEL = "arb:updates"
@@ -179,53 +179,74 @@ def _dispatch_startup_harvests() -> None:
 # BT and OD are NOT in the beat — they run via sp_cross_bk_enrich every
 # time SP completes (every ~1 h per sport).
 # =============================================================================
-
-@celery.on_after_configure.connect
-def setup_periodic_tasks(sender, **kwargs):
+def setup_periodic_tasks(sender, **kw):
+    """
+    Celery beat schedule.
+ 
+    Upcoming section   — unchanged, always active
+    Live section       — gated by LIVE_ENABLED; now includes cross-BK refresh
+                         and harvester watchdog.
+    """
+ 
+    # ── Upcoming (always on) ──────────────────────────────────────────────────
     from app.workers.tasks_upcoming import (
-        harvest_all_registry_upcoming, cleanup_old_snapshots,
         sp_harvest_all_upcoming,
         b2b_harvest_all_upcoming,
-        b2b_page_harvest_all_upcoming, sbo_harvest_all_upcoming,
+        b2b_page_harvest_all_upcoming,
+        sbo_harvest_all_upcoming,
     )
-    from app.workers.tasks_market_align import align_all_sports
-
-    # ── Registry ──────────────────────────────────────────────────────────────
-    sender.add_periodic_task(14400.0, harvest_all_registry_upcoming.s(),
-                             name="registry-upcoming-4h")
-    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),
-                             name="registry-cleanup-daily")
-
-    # ── SP (drives BT+OD via sp_cross_bk_enrich) ─────────────────────────────
-    sender.add_periodic_task(3600.0, sp_harvest_all_upcoming.s(),
-                             name="sp-upcoming-1h")
-    # bt_harvest_all_upcoming and od_harvest_all_upcoming are intentionally
-    # NOT scheduled — BT/OD enrichment runs automatically via sp_cross_bk_enrich.
-
-    # ── B2B / SBO / page ──────────────────────────────────────────────────────
-    sender.add_periodic_task( 480.0, b2b_harvest_all_upcoming.s(),
-                             name="b2b-upcoming-8min")
-    sender.add_periodic_task( 300.0, b2b_page_harvest_all_upcoming.s(),
-                             name="b2b-page-upcoming-5min")
-    sender.add_periodic_task( 180.0, sbo_harvest_all_upcoming.s(),
-                             name="sbo-upcoming-3min")
-
-    # ── Market Alignment ──────────────────────────────────────────────────────
-    sender.add_periodic_task(900.0, align_all_sports.s(), name="market-align-15min")
-
-    # ── Ops ───────────────────────────────────────────────────────────────────
-    sender.add_periodic_task( 300.0, update_match_results.s(),   name="results-5min")
-    sender.add_periodic_task(3600.0, cache_finished_games.s(),   name="cache-finished-hourly")
-    sender.add_periodic_task(  30.0, health_check.s(),           name="health-30s")
-    sender.add_periodic_task(3600.0, expire_subscriptions.s(),   name="expire-subs-hourly")
-    sender.add_periodic_task( 300.0, persist_all_sports.s(),     name="persist-upcoming-5min")
-    sender.add_periodic_task(  60.0, build_health_report.s(),    name="health-report-1min")
-
-    logger.info(
-        "[beat] Schedule registered — SP drives BT+OD via cross-BK enrich. "
-        "BT/OD all_upcoming NOT scheduled. Live disabled."
+    from app.workers.tasks_ops import (
+        update_match_results,
+        expire_subscriptions,
+        health_check,
+        cleanup_old_snapshots,
     )
-
+ 
+    # SP is source of truth — runs every 5 min
+    sender.add_periodic_task(300.0,  sp_harvest_all_upcoming.s(),       name="sp-upcoming-5min")
+    # B2B / SBO run every 3–5 min
+    sender.add_periodic_task(180.0,  b2b_harvest_all_upcoming.s(),      name="b2b-upcoming-3min")
+    sender.add_periodic_task(240.0,  b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-4min")
+    sender.add_periodic_task(300.0,  sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-5min")
+ 
+    # Ops
+    sender.add_periodic_task(600.0,  update_match_results.s(),          name="results-10min")
+    sender.add_periodic_task(3600.0, expire_subscriptions.s(),          name="expire-subs-1hr")
+    sender.add_periodic_task(60.0,   health_check.s(),                  name="health-1min")
+    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),        name="cleanup-daily")
+ 
+    # ── Live (gated by LIVE_ENABLED) ──────────────────────────────────────────
+    if not LIVE_ENABLED:
+        return
+ 
+    from app.workers.tasks_live import (
+        sp_harvest_all_live,
+        bt_harvest_all_live,
+        od_harvest_all_live,
+        b2b_harvest_all_live,
+        b2b_page_harvest_all_live,
+        sbo_harvest_all_live,
+        sp_poll_all_event_details,
+        live_cross_bk_refresh,
+        ensure_harvester_running,
+    )
+ 
+    # SP WebSocket harvester watchdog — restarts thread if it crashes
+    sender.add_periodic_task(  60.0, ensure_harvester_running.s(),     name="sp-harvester-watchdog-1min")
+ 
+    # SP event-detail poll — fast (5 s) for score + clock + market prices
+    sender.add_periodic_task(   5.0, sp_poll_all_event_details.s(),    name="sp-details-5s")
+ 
+    # Cross-BK enrichment — BT+OD prices refreshed every 15 s via betradar_id
+    sender.add_periodic_task(  15.0, live_cross_bk_refresh.s(),        name="live-cross-bk-15s")
+ 
+    # Full live snapshots (slower, used for new match discovery)
+    sender.add_periodic_task(  60.0, sp_harvest_all_live.s(),          name="sp-live-60s")
+    sender.add_periodic_task(  90.0, bt_harvest_all_live.s(),          name="bt-live-90s")
+    sender.add_periodic_task(  90.0, od_harvest_all_live.s(),          name="od-live-90s")
+    sender.add_periodic_task( 120.0, b2b_harvest_all_live.s(),         name="b2b-live-2min")
+    sender.add_periodic_task(  30.0, b2b_page_harvest_all_live.s(),    name="b2b-page-live-30s")
+    sender.add_periodic_task(  60.0, sbo_harvest_all_live.s(),         name="sbo-live-60s")
 
 # =============================================================================
 # WS PUBLISH
