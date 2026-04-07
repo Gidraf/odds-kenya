@@ -94,6 +94,7 @@ def create_app() -> Flask:
     from app.views.odds_feed.customer_odds_view import bp_odds_customer
     from app.views.odds_feed.analytics_view import bp_analytics
     from app.views.odds_feed.match_refresh import bp_match_refresh
+    from app.views.odds_feed.live_sse_routes import bp_live_sse
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -120,7 +121,8 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_monitor) 
     flask_app.register_blueprint(bp_harvest_ctrl)  
     flask_app.register_blueprint(bp_analytics)
-    flask_app.register_blueprint(bp_match_refresh)          # GET /api/od/...
+    flask_app.register_blueprint(bp_match_refresh)  
+    flask_app.register_blueprint(bp_live_sse)        # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
@@ -152,6 +154,7 @@ def create_app() -> Flask:
         from app.models.customer              import Customer
         from app.models.email_tokens          import EmailToken
         from app.models.match               import MatchEvent, MatchEventType, MatchLineup, PlayerPosition, MatchPeriod 
+        from app.models.live_snapshot_model import LiveRawSnapshot
 
     import app.sockets  # noqa: registers /admin namespace handlers
 
