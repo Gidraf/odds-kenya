@@ -8,26 +8,6 @@ Smart status logic:
 
 Terminal statuses (never returned in live/upcoming):
   FINISHED, CANCELLED, POSTPONED, SUSPENDED
-
-Analytics integration:
-  - Match analytics cached under sr:analytics:{betradar_id} by sp_enrich_analytics
-  - Included inline on GET /api/odds/match/<id> and GET /api/odds/match/<id>/markets
-  - Dedicated endpoint: GET /api/odds/match/<id>/analytics
-  - On-demand refresh:  POST /api/odds/match/<id>/analytics/refresh
-  - List endpoints accept ?analytics=1 to include summaries per match
-
-Streaming endpoints:
-  GET /api/odds/stream/upcoming/<sport>
-  GET /api/odds/stream/live/<sport>
-
-Paginated JSON:
-  GET /api/odds/upcoming/<sport>
-  GET /api/odds/live/<sport>
-  GET /api/odds/results[/<date>]
-  GET /api/odds/match/<parent_match_id>
-  GET /api/odds/match/<parent_match_id>/markets
-  GET /api/odds/match/<parent_match_id>/analytics
-  POST /api/odds/match/<parent_match_id>/analytics/refresh
 """
 
 from __future__ import annotations
@@ -63,11 +43,8 @@ _CACHE_PREFIXES  = ["sbo", "sp", "bt", "od", "b2b"]
 _STREAM_BATCH    = 20
 _LIVE_WINDOW     = timedelta(hours=2, minutes=30)
 
-# Statuses that are never surfaced in live or upcoming feeds
 _TERMINAL_STATUSES = frozenset({"FINISHED", "CANCELLED", "POSTPONED", "SUSPENDED"})
 
-# Statuses that must never appear in the upcoming (PRE_MATCH) feed.
-# Includes terminal statuses PLUS any in-play variant stored in the DB.
 _EXCLUDE_FROM_UPCOMING = frozenset({
     "FINISHED", "CANCELLED", "POSTPONED", "SUSPENDED",
     "IN_PLAY", "LIVE", "INPLAY", "IN PLAY",
@@ -122,7 +99,6 @@ def _now_utc() -> datetime:
 
 
 def _effective_status(db_status: str | None, start_time: datetime | None) -> str:
-    # Terminal overrides — always respected regardless of time
     if db_status in _TERMINAL_STATUSES:
         return db_status
     if start_time is None:
@@ -151,15 +127,10 @@ def _is_finished(db_status, start_time) -> bool:
 
 
 def _is_available(db_status, start_time) -> bool:
-    """True for any match that is either PRE_MATCH or IN_PLAY (i.e. bettable now or soon)."""
     return _effective_status(db_status, start_time) in ("PRE_MATCH", "IN_PLAY")
 
 
 def _is_upcoming_safe(db_status, start_time) -> bool:
-    """
-    Strict upcoming check — also blocks matches whose DB status is already
-    IN_PLAY / LIVE regardless of the time-based calculation.
-    """
     if (db_status or "").upper() in _EXCLUDE_FROM_UPCOMING:
         return False
     return _effective_status(db_status, start_time) == "PRE_MATCH"
@@ -376,15 +347,10 @@ def _mode_time_filter(q, mode: str):
     now         = _now_utc()
     live_cutoff = now - _LIVE_WINDOW
 
-    # All statuses that must never appear in the upcoming feed
     _no_upcoming = list(_EXCLUDE_FROM_UPCOMING)
-    # All statuses that must never appear in the live feed
     _dead        = list(_TERMINAL_STATUSES)
 
     if mode == "upcoming":
-        # PRE_MATCH only: starts strictly in the future AND not already live/terminal.
-        # Status check is the primary gate — if the DB has flagged a match as IN_PLAY
-        # or any terminal value it must be excluded regardless of start_time arithmetic.
         return q.filter(
             UnifiedMatch.status.notin_(_no_upcoming),
             or_(
@@ -396,7 +362,6 @@ def _mode_time_filter(q, mode: str):
             ),
         )
     elif mode == "live":
-        # IN_PLAY only: started but within the live window, not terminal
         return q.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >  live_cutoff,
@@ -415,18 +380,52 @@ def _bk_slug(name: str) -> str:
 
 
 def _flatten_db_markets(raw_markets: dict) -> dict:
+    """
+    Standardize outcomes to always include:
+    - odd (float)
+    - locked (bool)
+    """
     flat: dict = {}
     for mkt_slug, spec_dict in (raw_markets or {}).items():
         if not isinstance(spec_dict, dict):
             flat[mkt_slug] = spec_dict
             continue
+            
         outcomes: dict = {}
         for spec_val, inner in spec_dict.items():
             if isinstance(inner, dict):
                 for out_key, out_val in inner.items():
-                    outcomes[out_key] = out_val
+                    if isinstance(out_val, dict):
+                        raw_price = out_val.get("price") or out_val.get("odd") or 0.0
+                        try:
+                            f_price = float(raw_price)
+                        except (TypeError, ValueError):
+                            f_price = 0.0
+                            
+                        outcomes[out_key] = {
+                            "odd": f_price,
+                            "locked": f_price <= 1.0,
+                            **out_val
+                        }
+                    else:
+                        try:
+                            f_price = float(out_val)
+                        except (TypeError, ValueError):
+                            f_price = 0.0
+                        outcomes[out_key] = {
+                            "odd": f_price,
+                            "locked": f_price <= 1.0
+                        }
             else:
-                outcomes[spec_val] = inner
+                try:
+                    f_price = float(inner)
+                except (TypeError, ValueError):
+                    f_price = 0.0
+                outcomes[spec_val] = {
+                    "odd": f_price,
+                    "locked": f_price <= 1.0
+                }
+                
         flat[mkt_slug] = outcomes
     return flat
 
@@ -456,8 +455,10 @@ def _build_match_dict(
         slug     = _bk_slug(bk_name)
         label    = bk_obj.name if bk_obj else slug.upper()
         mkt_data = _flatten_db_markets(bmo.markets_json or {})
+        
         if not mkt_data:
             continue
+            
         if slug in bookmakers:
             bookmakers[slug]["markets"].update(mkt_data)
             bookmakers[slug]["market_count"] = len(bookmakers[slug]["markets"])
@@ -478,17 +479,15 @@ def _build_match_dict(
         for mkt, outcomes in bk_mkts.items():
             best.setdefault(mkt, {})
             for out, odd_data in (outcomes or {}).items():
-                try:
-                    fv = (
-                        float(odd_data.get("price") or odd_data.get("odd") or 0)
-                        if isinstance(odd_data, dict) else float(odd_data)
-                    )
-                except (TypeError, ValueError):
-                    continue
-                if fv <= 1.0:
-                    continue
-                if out not in best[mkt] or fv > best[mkt][out]["odd"]:
-                    best[mkt][out] = {"odd": fv, "bk": sl}
+                fv = odd_data.get("odd", 0.0)
+                is_locked = odd_data.get("locked", True)
+                
+                # Only store valid >1.0 odds in the 'best' payload 
+                # (so we don't accidentally compute arbs on locked odds). 
+                # The UI can still fetch the locked status from 'markets_by_bk'.
+                if not is_locked and fv > 1.0:
+                    if out not in best[mkt] or fv > best[mkt][out]["odd"]:
+                        best[mkt][out] = {"odd": fv, "bk": sl}
 
     best_odds = {
         mkt: {out: {"odd": v["odd"], "bookie": v["bk"]} for out, v in outs.items()}
@@ -543,8 +542,8 @@ def _build_match_dict(
         "parent_match_id":  br_id,
         "betradar_id":      br_id,
         "join_key":         f"br_{br_id}" if br_id else f"db_{um.id}",
-        "home_team":        um.home_team_name   or "",
-        "away_team":        um.away_team_name   or "",
+        "home_team":        um.home_team_name  or "",
+        "away_team":        um.away_team_name  or "",
         "competition":      um.competition_name or "",
         "sport":            sport_out,
         "start_time":       um.start_time.isoformat() if um.start_time else None,
@@ -573,7 +572,6 @@ def _build_match_dict(
         "analytics":        analytics_summary,
         "source":           "postgresql",
     }
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SHARED QUERY BUILDER + BATCH FETCHER
@@ -723,7 +721,6 @@ def _stream_matches(
             batch_matches = []
             for um in um_list:
                 db_st = getattr(um, "status", None)
-                # Strict race-condition guard: upcoming must not include live/terminal rows
                 if mode == "upcoming" and not _is_upcoming_safe(db_st, um.start_time):
                     continue
                 elif mode != "upcoming" and not _is_available(db_st, um.start_time):
@@ -783,7 +780,6 @@ def _load_db_matches(sport_slug, mode="upcoming", page=1, per_page=20,
     result = []
     for um in um_list:
         db_st = getattr(um, "status", None)
-        # Race-condition guard: upcoming uses the strict check (blocks IN_PLAY/LIVE too)
         if mode == "upcoming" and not _is_upcoming_safe(db_st, um.start_time):
             total -= 1
             continue
@@ -874,13 +870,11 @@ def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
     db_status  = m.get("status") or "PRE_MATCH"
     status_out = _effective_status(db_status, start_dt)
 
-    # For upcoming: block anything whose raw DB status is already live/terminal
     if mode == "upcoming":
         if (db_status or "").upper() in _EXCLUDE_FROM_UPCOMING:
             return None
         if status_out != "PRE_MATCH":
             return None
-    # For live: hard-exclude terminal statuses
     if mode == "live" and status_out in _TERMINAL_STATUSES:
         return None
     if mode == "live"     and status_out != "IN_PLAY":
@@ -1279,13 +1273,11 @@ def get_match(parent_match_id: str):
         for mkt, outcomes in bk_mkts.items():
             best.setdefault(mkt, {})
             for out, odd_data in (outcomes or {}).items():
-                try:
-                    fv = (float(odd_data.get("price") or odd_data.get("odd") or 0)
-                          if isinstance(odd_data, dict) else float(odd_data))
-                except Exception:
-                    continue
-                if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
-                    best[mkt][out] = {"odd": fv, "bk": sl}
+                fv = odd_data.get("odd", 0.0)
+                is_locked = odd_data.get("locked", True)
+                if not is_locked and fv > 1.0:
+                    if out not in best[mkt] or fv > best[mkt][out]["odd"]:
+                        best[mkt][out] = {"odd": fv, "bk": sl}
 
     db_status      = getattr(um, "status", None)
     status_out     = _effective_status(db_status, um.start_time)
@@ -1402,13 +1394,11 @@ def get_match_full_markets(parent_match_id: str):
         for mkt, outcomes in (mkts or {}).items():
             best.setdefault(mkt, {})
             for out, odd_data in (outcomes or {}).items():
-                try:
-                    fv = (float(odd_data.get("price") or odd_data.get("odd") or 0)
-                          if isinstance(odd_data, dict) else float(odd_data))
-                except Exception:
-                    continue
-                if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
-                    best[mkt][out] = {"odd": fv, "bk": sl}
+                fv = odd_data.get("odd", 0.0)
+                is_locked = odd_data.get("locked", True)
+                if not is_locked and fv > 1.0:
+                    if out not in best[mkt] or fv > best[mkt][out]["odd"]:
+                        best[mkt][out] = {"odd": fv, "bk": sl}
 
     arb_markets: list[dict] = []
     if len(combined) >= 2:
