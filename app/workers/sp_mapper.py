@@ -482,3 +482,115 @@ def get_sport_primary_markets(sport_id: int) -> list[str]:
 
 def get_sport_meta(sport_id: int) -> dict:
     return SPORT_META.get(sport_id, {"name": f"Sport {sport_id}", "emoji": "🏆", "slugs": []})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. LEGACY COMPATIBILITY API (get_sport_table)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_GENERIC: dict[int, tuple[str, bool]] = {
+    382: ("match_winner",  False),
+    51:  ("asian_handicap", True),
+    52:  ("over_under",    True),
+    45:  ("odd_even",      False),
+    353: ("home_total",    True),
+    352: ("away_total",    True),
+    226: ("total_games",   True),
+    233: ("set_betting",   False),
+}
+
+_SPORT_TABLES: dict[int, dict[int, tuple[str, bool]]] = {
+    1: { # Football
+        1: ("1x2", False), 10: ("1x2", False), 381: ("1x2", False), 46: ("double_chance", False),
+        47: ("draw_no_bet", False), 43: ("btts", False), 29: ("btts", False), 386: ("btts_and_result", False),
+        52: ("over_under_goals", True), 18: ("over_under_goals", True), 56: ("over_under_goals", True),
+        353: ("home_goals", True), 352: ("away_goals", True), 208: ("result_and_over_under", True),
+        258: ("exact_goals", False), 202: ("goal_groups", False), 332: ("correct_score", False),
+        51: ("asian_handicap", True), 53: ("first_half_asian_handicap", True), 55: ("european_handicap", True),
+        45: ("odd_even", False), 41: ("first_team_to_score", False), 207: ("highest_scoring_half", False),
+        42: ("first_half_1x2", False), 60: ("first_half_1x2", False), 15: ("first_half_over_under", True),
+        54: ("first_half_over_under", True), 68: ("first_half_over_under", True), 44: ("ht_ft", False),
+        328: ("first_half_btts", False), 203: ("first_half_correct_score", False), 162: ("total_corners", False),
+        166: ("total_corners", True), 136: ("total_bookings", False), 139: ("total_bookings", True),
+    },
+    2: { # Basketball
+        382: ("match_winner", False), 51: ("point_spread", True), 52: ("total_points", True),
+        353: ("home_total_points", True), 352: ("away_total_points", True), 45: ("odd_even", False),
+        222: ("winning_margin", False), 42: ("first_half_winner", False), 53: ("first_half_spread", True),
+        54: ("first_half_total", True), 224: ("highest_scoring_quarter", False), 362: ("q1_total", True),
+        363: ("q2_total", True), 364: ("q3_total", True), 365: ("q4_total", True), 366: ("q1_spread", True),
+        367: ("q2_spread", True), 368: ("q3_spread", True), 369: ("q4_spread", True),
+    },
+    3: { # Baseball
+        382: ("match_winner", False), 51: ("run_line", True), 52: ("total_runs", True),
+        45: ("odd_even", False), 353: ("home_runs_total", True), 352: ("away_runs_total", True),
+    },
+    4: { # Ice Hockey
+        1: ("1x2", False), 10: ("1x2", False), 382: ("match_winner", False), 52: ("over_under_goals", True),
+        51: ("puck_line", True), 45: ("odd_even", False), 46: ("double_chance", False),
+        353: ("home_goals", True), 352: ("away_goals", True), 208: ("result_and_over_under", True),
+        43: ("btts", False), 210: ("first_period_winner", False), 378: ("match_winner_ot", False),
+    },
+    5: { # Tennis
+        382: ("match_winner", False), 204: ("first_set_winner", False), 231: ("second_set_winner", False),
+        51: ("game_handicap", True), 226: ("total_games", True), 233: ("set_betting", False),
+        439: ("set_handicap", True), 45: ("odd_even_games", False), 339: ("first_set_game_handicap", True),
+        340: ("first_set_total_games", True), 433: ("first_set_match_winner", False),
+        353: ("player1_games", True), 352: ("player2_games", True),
+    },
+    6: { # Handball
+        1: ("1x2", False), 10: ("1x2", False), 382: ("match_winner", False), 52: ("over_under_goals", True),
+        51: ("asian_handicap", True), 45: ("odd_even", False), 46: ("double_chance", False),
+        47: ("draw_no_bet", False), 353: ("home_goals", True), 352: ("away_goals", True),
+        208: ("result_and_over_under", True), 43: ("btts", False), 42: ("first_half_1x2", False),
+        207: ("highest_scoring_half", False),
+    },
+    10: { # Boxing
+        382: ("match_winner", False), 51: ("round_betting", True), 52: ("total_rounds", True),
+    },
+    12: { # Rugby
+        10: ("1x2", False), 1: ("1x2", False), 382: ("match_winner", False), 46: ("double_chance", False),
+        42: ("first_half_1x2", False), 51: ("asian_handicap", True), 53: ("first_half_asian_handicap", True),
+        60: ("total_points", True), 52: ("total_points", True), 353: ("home_points", True),
+        352: ("away_points", True), 45: ("odd_even", False), 379: ("winning_margin", False),
+        207: ("highest_scoring_half", False), 44: ("ht_ft", False),
+    },
+    15: { # American Football
+        382: ("match_winner", False), 51: ("point_spread", True), 52: ("total_points", True),
+        45: ("odd_even", False), 353: ("home_total_points", True), 352: ("away_total_points", True),
+    },
+    16: { # Table Tennis
+        382: ("match_winner", False), 51: ("game_handicap", True), 226: ("total_games", True),
+        45: ("odd_even", False), 233: ("set_betting", False), 340: ("first_set_total_games", True),
+    },
+    21: { # Cricket
+        382: ("match_winner", False), 1: ("1x2", False), 51: ("run_handicap", True),
+        52: ("total_runs", True), 353: ("home_runs", True), 352: ("away_runs", True),
+    },
+    23: { # Volleyball
+        382: ("match_winner", False), 204: ("first_set_winner", False), 20: ("match_winner", False),
+        51: ("set_handicap", True), 226: ("total_sets", True), 233: ("set_betting", False),
+        45: ("odd_even", False), 353: ("home_points", True), 352: ("away_points", True),
+    },
+    49: { # Darts
+        382: ("match_winner", False), 226: ("total_legs", True), 45: ("odd_even", False),
+        51: ("leg_handicap", True),
+    },
+    117: { # MMA
+        382: ("match_winner", False), 20: ("match_winner", False), 51: ("round_betting", True),
+        52: ("total_rounds", True),
+    },
+    126: { # eFootball / eSoccer
+        381: ("1x2", False), 1: ("1x2", False), 10: ("1x2", False), 56: ("over_under_goals", True),
+        52: ("over_under_goals", True), 46: ("double_chance", False), 47: ("draw_no_bet", False),
+        43: ("btts", False), 51: ("asian_handicap", True), 45: ("odd_even", False),
+        208: ("result_and_over_under", True), 258: ("exact_goals", False), 202: ("goal_groups", False),
+    },
+}
+
+def get_sport_table(sport_id: int) -> dict[int, tuple[str, bool]]:
+    """Return the full market-ID lookup table for a sport (with _GENERIC fallbacks)."""
+    base   = _SPORT_TABLES.get(sport_id, {})
+    merged = dict(_GENERIC)
+    merged.update(base)
+    return merged

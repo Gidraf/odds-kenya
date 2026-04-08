@@ -33,7 +33,6 @@ from app.workers.canonical_mapper import (   # noqa: F401
 
 from app.workers.sp_mapper import (          # noqa: F401
     normalize_sp_market,
-    get_sport_table,
     list_all_slugs,
 )
 
@@ -44,8 +43,8 @@ def is_line_market(mkt_id: int, sport_id: int = 1) -> bool:
     Return True if this market ID uses a line suffix for the given sport.
     Equivalent to looking up the (base, uses_line) tuple in the sport table.
     """
-    from app.workers.sp_mapper import get_sport_table, _GENERIC
-    table = get_sport_table(sport_id)
+    from app.workers.sp_mapper import _GENERIC
+    # table = get_sport_table(sport_id)
     entry = table.get(mkt_id) or _GENERIC.get(mkt_id)
     return bool(entry and entry[1])
 
