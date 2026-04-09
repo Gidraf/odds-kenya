@@ -706,38 +706,6 @@ def fetch_event_detail(
       GET https://api.odi.site/sportsbook/v1
           ?resource=sportevent&id={betradar_id}&...
 
-    The `id` parameter accepts the Sportradar match ID (same value as SP's
-    betradar_id field). OD returns the match with 100+ markets.
-
-    Confirmed response shape (2026-04-06):
-      {
-        "status_code": 200,
-        "data": {
-          "info": {
-            "parent_match_id": "61624524",
-            "home_team": "Girona FC",
-            "away_team": "Villarreal CF",
-            "start_time": "2026-04-06 22:00:00",
-            "sport_id": "1",
-            "s_binomen": "soccer",
-            ...
-          },
-          "markets_list": [...],
-          "markets": [
-            {
-              "sub_type_id": "1",
-              "status": "1",
-              "specifiers": "",
-              "outcomes": [
-                { "outcome_key": "1", "odd_value": "3.05", "active": "1", ... }
-              ]
-            },
-            ...
-          ],
-          "meta": { "id": "...", ... }
-        }
-      }
-
     Returns:
       (markets_dict, meta_dict)
       markets_dict: {canonical_slug: {outcome_key: float}}
@@ -757,14 +725,11 @@ def fetch_event_detail(
         return {}, {}
 
     # ── Unwrap confirmed response envelope ────────────────────────────────────
-    # data = { "status_code": 200, "data": { "info": {...}, "markets": [...] } }
     inner = data.get("data")
     if not isinstance(inner, dict):
-        # Fallback: try the top level itself
         inner = data
 
     # ── Extract match info ────────────────────────────────────────────────────
-    # Team names and other metadata live under inner["info"]
     info = inner.get("info") or {}
     if not isinstance(info, dict):
         info = {}
@@ -790,10 +755,47 @@ def fetch_event_detail(
     od_sport_id_, _ = _resolve_sport(raw_sport, od_sport_id)
 
     # ── Extract and parse markets ─────────────────────────────────────────────
-    # Markets live at inner["markets"] — each has outcomes[] directly (no lines[])
     markets_raw = inner.get("markets") or []
     if not isinstance(markets_raw, list):
         markets_raw = []
+        
+    # ── Iteratively fetch missing sub_types ───────────────────────────────────
+    markets_list = inner.get("markets_list") or []
+    if isinstance(markets_list, list):
+        # 1. Identify which sub_types we already have
+        fetched_sub_types = {str(m.get("sub_type_id")) for m in markets_raw if m.get("sub_type_id")}
+        
+        # 2. Find missing sub_types
+        missing_sub_types = []
+        for ml in markets_list:
+            stid = str(ml.get("sub_type_id"))
+            if stid and stid not in fetched_sub_types:
+                missing_sub_types.append(stid)
+                
+        # 3. Concurrently fetch missing markets (Limit workers to avoid rate limits)
+        if missing_sub_types:
+            logger.debug("OD fetch_event_detail: fetching %d missing market tabs for event %s", len(missing_sub_types), event_id)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futs = {}
+                for stid in missing_sub_types:
+                    sub_params = params.copy()
+                    sub_params["sub_type_id"] = stid
+                    futs[pool.submit(_get, SBOOK_V1, sub_params)] = stid
+                    
+                for fut in as_completed(futs):
+                    stid = futs[fut]
+                    try:
+                        sub_data = fut.result()
+                        if sub_data and isinstance(sub_data, dict):
+                            sub_inner = sub_data.get("data")
+                            if isinstance(sub_inner, dict):
+                                sub_markets = sub_inner.get("markets") or []
+                                if isinstance(sub_markets, list):
+                                    markets_raw.extend(sub_markets)
+                    except Exception as exc:
+                        logger.warning("OD fetch_event_detail: failed to fetch sub_type_id %s for event %s: %s", stid, event_id, exc)
 
     if not markets_raw:
         logger.debug("OD fetch_event_detail: no markets in response for id=%s", event_id)
@@ -806,8 +808,6 @@ def fetch_event_detail(
         event_id, len(markets_raw), len(markets),
     )
     return markets, meta
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE POLLER (background thread)
 # ══════════════════════════════════════════════════════════════════════════════
