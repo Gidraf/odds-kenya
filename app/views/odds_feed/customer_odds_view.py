@@ -77,22 +77,26 @@ _BK_SLUG: dict[str, str] = {
     "sportpesa": "sp", "betika": "bt", "odibets": "od",
     "sp": "sp", "bt": "bt", "od": "od", "sbo": "sbo", "b2b": "b2b",
 }
+
 _SPORT_ALIASES: dict[str, list[str]] = {
-    "soccer":       ["Soccer", "Football"],
-    "football":     ["Soccer", "Football"],
-    "basketball":   ["Basketball"],
-    "tennis":       ["Tennis"],
-    "ice-hockey":   ["Ice Hockey"],
-    "volleyball":   ["Volleyball"],
-    "cricket":      ["Cricket"],
-    "rugby":        ["Rugby"],
-    "table-tennis": ["Table Tennis"],
-    "handball":     ["Handball"],
-    "mma":          ["MMA"],
-    "boxing":       ["Boxing"],
-    "darts":        ["Darts"],
-    "esoccer":      ["eSoccer"],
+    "soccer":            ["Soccer", "Football"],
+    "football":          ["Soccer", "Football"],
+    "basketball":        ["Basketball"],
+    "tennis":            ["Tennis"],
+    "ice-hockey":        ["Ice Hockey"],
+    "volleyball":        ["Volleyball"],
+    "cricket":           ["Cricket"],
+    "rugby":             ["Rugby"],
+    "table-tennis":      ["Table Tennis"],
+    "handball":          ["Handball"],
+    "mma":               ["MMA"],
+    "boxing":            ["Boxing"],
+    "darts":             ["Darts"],
+    "esoccer":           ["eSoccer", "eFootball"],
+    "baseball":          ["Baseball"],
+    "american-football": ["American Football"],
 }
+
 _CANONICAL_SLUG: dict[str, str] = {
     "Football": "soccer",      "football": "soccer",
     "Soccer":   "soccer",      "soccer":   "soccer",
@@ -103,7 +107,10 @@ _CANONICAL_SLUG: dict[str, str] = {
     "Rugby":   "rugby",      "Handball": "handball",
     "MMA":     "mma",        "Boxing": "boxing",
     "Darts":   "darts",      "eSoccer": "esoccer", "eFootball": "esoccer",
+    "Baseball": "baseball",  "baseball": "baseball",
+    "American Football": "american-football", "american football": "american-football", "american-football": "american-football",
 }
+
 _SSE_HEADERS = {
     "Content-Type":               "text/event-stream",
     "Cache-Control":              "no-cache",
@@ -1321,6 +1328,7 @@ def get_match(parent_match_id: str):
         "match_id":        um.id,
         "parent_match_id": br_id,
         "betradar_id":     br_id,
+        "join_key":        f"br_{br_id}" if br_id else f"db_{um.id}",
         "home_team":       um.home_team_name,
         "away_team":       um.away_team_name,
         "competition":     um.competition_name,
