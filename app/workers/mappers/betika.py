@@ -13,6 +13,43 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SPORT ID MAPS (Betika Specific)
+# ══════════════════════════════════════════════════════════════════════════════
+
+BT_SPORT_IDS: dict[str, str] = {
+    "soccer":            "14",
+    "basketball":        "15",
+    "tennis":            "28",
+    "cricket":           "17",
+    "cricket_srl":       "37",
+    "rugby":             "41",
+    "ice-hockey":        "29",
+    "volleyball":        "35",
+    "handball":          "33",
+    "table-tennis":      "22",
+    "baseball":          "23",
+    "american-football": "24",
+    "mma":               "36",
+    "boxing":            "39",
+    "darts":             "27",
+    "esoccer":           "105",
+}
+
+BT_SPORT_SLUGS: dict[str, str] = {v: k for k, v in BT_SPORT_IDS.items()}
+
+def slug_to_bt_sport_id(slug: str) -> str:
+    return BT_SPORT_IDS.get(slug, "14")
+
+def bt_sport_to_slug(sport_id: str | int) -> str:
+    # Map back to canonical base (e.g. cricket_srl -> cricket)
+    slug = BT_SPORT_SLUGS.get(str(sport_id), "soccer")
+    return "cricket" if slug == "cricket_srl" else slug
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BASE MAPPER
+# ══════════════════════════════════════════════════════════════════════════════
 
 class BaseBetikaMapper:
     """Base class handling common string formatting and specifier logic for Betika."""
