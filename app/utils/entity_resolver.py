@@ -2,8 +2,8 @@
 app/services/entity_resolver.py
 ==========================================
 Key change: 
-- Fixed AttributeError bug: cm is passed as a dictionary via Celery. Added `_val()` 
-  helper to safely extract properties whether `cm` is a dict or an object.
+- Added comprehensive traceback logging to `persist_combined_match` to catch silent DB fails.
+- cm is passed as a dictionary via Celery. Uses `_val()` helper to safely extract properties.
 - _infer_sport_slug() normalises via _NAME_TO_SLUG map.
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import traceback
 from datetime import datetime, timezone
 
 from app.extensions import db
@@ -309,7 +310,16 @@ class EntityResolver:
                 return um.id
 
         except Exception as exc:
-            logger.error("persist_combined_match error: %s", exc)
+            # 🔴 MASSIVE TRACEBACK ADDED HERE 🔴
+            logger.error(
+                "\n" + "="*50 + "\n"
+                "❌ CRITICAL ERROR IN PERSIST_COMBINED_MATCH ❌\n"
+                f"Error: {str(exc)}\n"
+                f"Match: {cm_home_team} vs {cm_away_team}\n"
+                f"Join Key: {cm_join_key} | Betradar ID: {cm_betradar_id}\n"
+                f"Traceback:\n{traceback.format_exc()}\n"
+                + "="*50 + "\n"
+            )
             self._comp_cache.clear()
             self._team_cache.clear()
             self._sport_cache.clear()
@@ -326,13 +336,13 @@ class EntityResolver:
                 else:
                     failed += 1
             except Exception as exc:
-                logger.error("batch persist error: %s", exc)
+                logger.error("batch persist error: %s\n%s", exc, traceback.format_exc())
                 failed += 1
         if commit:
             try:
                 db.session.commit()
             except Exception as exc:
-                logger.error("batch commit error: %s", exc)
+                logger.error("batch commit error: %s\n%s", exc, traceback.format_exc())
                 db.session.rollback()
                 return {"persisted": 0, "failed": len(combined_matches), "error": str(exc)}
         return {"persisted": persisted, "failed": failed}
