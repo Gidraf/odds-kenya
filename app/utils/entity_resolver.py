@@ -1,8 +1,10 @@
 """
-app/services/entity_resolver.py  — PATCHED
+app/services/entity_resolver.py
 ==========================================
-Key change: _infer_sport_slug() now reads sport from the CombinedMatch
-instead of always returning "soccer".  Normalises via _NAME_TO_SLUG map.
+Key change: 
+- Fixed AttributeError bug: cm is passed as a dictionary via Celery. Added `_val()` 
+  helper to safely extract properties whether `cm` is a dict or an object.
+- _infer_sport_slug() normalises via _NAME_TO_SLUG map.
 """
 
 from __future__ import annotations
@@ -59,6 +61,13 @@ class EntityResolver:
         self._comp_cache:      dict[str, int]        = {}
         self._team_cache:      dict[str, int]        = {}
         self._bookmaker_cache: dict[str, int | None] = {}
+
+    @staticmethod
+    def _val(obj, key: str, default=None):
+        """Safely extract values whether obj is a dictionary (Celery) or Class Object."""
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
 
     def _get_bookmaker_id(self, bk_slug: str) -> int | None:
         if bk_slug in self._bookmaker_cache:
@@ -164,37 +173,48 @@ class EntityResolver:
             ArbitrageOpportunity, EVOpportunity,
             OpportunityStatus,
         )
+        
+        cm_competition = self._val(cm, "competition")
+        cm_home_team   = self._val(cm, "home_team")
+        cm_away_team   = self._val(cm, "away_team")
+        cm_betradar_id = self._val(cm, "betradar_id")
+        cm_join_key    = self._val(cm, "join_key")
+        cm_start_time  = self._val(cm, "start_time")
+        cm_bk_ids      = self._val(cm, "bk_ids") or {}
+        cm_markets     = self._val(cm, "markets") or {}
+
         try:
             with db.session.begin_nested():
                 sport_slug = self._infer_sport_slug(cm)
                 sport_id   = self.resolve_sport(sport_slug) if sport_slug else None
                 comp_id    = None
-                if sport_id and cm.competition:
-                    comp_id = self.resolve_competition(cm.competition, sport_id)
+                
+                if sport_id and cm_competition:
+                    comp_id = self.resolve_competition(cm_competition, sport_id)
                 home_team_id = away_team_id = None
                 if sport_id:
-                    if cm.home_team:
-                        home_team_id = self.resolve_team(cm.home_team, sport_id)
-                    if cm.away_team:
-                        away_team_id = self.resolve_team(cm.away_team, sport_id)
+                    if cm_home_team:
+                        home_team_id = self.resolve_team(cm_home_team, sport_id)
+                    if cm_away_team:
+                        away_team_id = self.resolve_team(cm_away_team, sport_id)
 
-                parent_id = cm.betradar_id or cm.join_key
+                parent_id = cm_betradar_id or cm_join_key
                 if not parent_id:
                     return None
 
                 um = UnifiedMatch.query.filter_by(
                     parent_match_id=parent_id
                 ).with_for_update().first()
-                start_time   = self._parse_start_time(cm.start_time)
+                start_time   = self._parse_start_time(cm_start_time)
                 sport_name_db = SPORT_SLUG_MAP.get(sport_slug or "", sport_slug or "")
 
                 if not um:
                     um = UnifiedMatch(
                         parent_match_id=parent_id,
-                        home_team_name=cm.home_team,
-                        away_team_name=cm.away_team,
+                        home_team_name=cm_home_team,
+                        away_team_name=cm_away_team,
                         sport_name=sport_name_db,
-                        competition_name=cm.competition or "",
+                        competition_name=cm_competition or "",
                         start_time=start_time,
                         competition_id=comp_id,
                         home_team_id=home_team_id,
@@ -203,12 +223,12 @@ class EntityResolver:
                     db.session.add(um)
                     db.session.flush()
                 else:
-                    if cm.home_team and not um.home_team_name:
-                        um.home_team_name = cm.home_team
-                    if cm.away_team and not um.away_team_name:
-                        um.away_team_name = cm.away_team
-                    if cm.competition and not um.competition_name:
-                        um.competition_name = cm.competition
+                    if cm_home_team and not um.home_team_name:
+                        um.home_team_name = cm_home_team
+                    if cm_away_team and not um.away_team_name:
+                        um.away_team_name = cm_away_team
+                    if cm_competition and not um.competition_name:
+                        um.competition_name = cm_competition
                     if start_time and not um.start_time:
                         um.start_time = start_time
                     if comp_id and not um.competition_id:
@@ -220,21 +240,23 @@ class EntityResolver:
                     if sport_name_db:
                         um.sport_name = sport_name_db
 
-                for bk_slug, ext_id in (cm.bk_ids or {}).items():
+                for bk_slug, ext_id in cm_bk_ids.items():
                     if ext_id:
-                        self._map_bookmaker_match(bk_slug, um.id, ext_id, cm.betradar_id)
+                        self._map_bookmaker_match(bk_slug, um.id, ext_id, cm_betradar_id)
 
-                for bk_slug, bk_markets in (cm.markets or {}).items():
+                for bk_slug, bk_markets in cm_markets.items():
                     bk_id = self._get_bookmaker_id(bk_slug)
                     if not bk_id:
                         continue
                     bmo = BookmakerMatchOdds.query.filter_by(
                         match_id=um.id, bookmaker_id=bk_id
                     ).with_for_update().first()
+                    
                     if not bmo:
                         bmo = BookmakerMatchOdds(match_id=um.id, bookmaker_id=bk_id)
                         db.session.add(bmo)
                         db.session.flush()
+                        
                     history_batch: list[dict] = []
                     for mkt_slug, outcomes in bk_markets.items():
                         for outcome, odd in outcomes.items():
@@ -244,6 +266,7 @@ class EntityResolver:
                                 continue
                             if price <= 1.0:
                                 continue
+                                
                             price_changed, old_price = bmo.upsert_selection(
                                 market=mkt_slug, specifier=None,
                                 selection=outcome, price=price,
@@ -261,6 +284,7 @@ class EntityResolver:
                                     "price_delta": round(price - old_price, 4) if old_price else None,
                                     "recorded_at": datetime.utcnow(),
                                 })
+                                
                     if history_batch:
                         BookmakerOddsHistory.bulk_append(history_batch)
 
@@ -272,6 +296,7 @@ class EntityResolver:
                               "closed_at": datetime.utcnow()})
                     for arb_kw in detector.find_arbs(um):
                         db.session.add(ArbitrageOpportunity(**arb_kw))
+                        
                     EVOpportunity.query.filter_by(
                         match_id=um.id, status=OpportunityStatus.OPEN
                     ).update({"status": OpportunityStatus.CLOSED,
@@ -312,20 +337,21 @@ class EntityResolver:
                 return {"persisted": 0, "failed": len(combined_matches), "error": str(exc)}
         return {"persisted": persisted, "failed": failed}
 
-    @staticmethod
-    def _infer_sport_slug(cm) -> str | None:
-        """Read sport from CombinedMatch, normalise, fall back to heuristics."""
+    @classmethod
+    def _infer_sport_slug(cls, cm) -> str | None:
+        """Read sport from CombinedMatch safely, normalise, fall back to heuristics."""
         raw = (
-            getattr(cm, "sport",      None) or
-            getattr(cm, "sport_slug", None) or
-            getattr(cm, "sport_name", None) or
+            cls._val(cm, "sport") or
+            cls._val(cm, "sport_slug") or
+            cls._val(cm, "sport_name") or
             ""
         )
         if raw:
             slug = _NAME_TO_SLUG.get(raw) or _NAME_TO_SLUG.get(raw.lower())
             return slug or raw.lower().replace(" ", "-")
+            
         # Competition-name heuristics
-        comp = (getattr(cm, "competition", None) or "").lower()
+        comp = (cls._val(cm, "competition") or "").lower()
         if any(w in comp for w in ("league", "cup", " fc", "fc ", "united", "premier",
                                    "championship", "serie", "bundesliga", "laliga")):
             return "soccer"
