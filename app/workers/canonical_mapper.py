@@ -32,7 +32,6 @@ from app.workers.mappers.shared import (    # noqa: F401
     _WINNING_MARGIN,
 )
 from app.workers.mappers.betika import (    # noqa: F401
-    normalize_bt_market,
     _BT_SUBTYPE,
     _BT_NAME,
     _BT_PATTERNS,
