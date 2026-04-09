@@ -38,6 +38,7 @@ Can be triggered manually:
 
 from __future__ import annotations
 
+import random
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -240,7 +241,7 @@ def _align_single_match(um, bmo_rows: list, bk_map: dict) -> dict:
     """
     from app.extensions import db
     from app.models.odds_model import (
-        ArbitrageOpportunity, EVOpportunity, OpportunityStatus,
+        ArbitrageOpportunity, OpportunityStatus,
     )
 
     if not bmo_rows:
@@ -318,9 +319,9 @@ def _align_single_match(um, bmo_rows: list, bk_map: dict) -> dict:
 @celery.task(
     name="tasks.align.sport",
     bind=True,
-    max_retries=2,
-    default_retry_delay=30,
-    soft_time_limit=600,   # 10 min per sport
+    max_retries=3,          # Increased retries to handle deadlocks gracefully
+    default_retry_delay=10, 
+    soft_time_limit=600,    # 10 min per sport
     time_limit=660,
     acks_late=True,
 )
@@ -351,7 +352,8 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
         "cricket": "Cricket", "rugby": "Rugby",
         "table-tennis": "Table Tennis", "handball": "Handball",
         "mma": "MMA", "boxing": "Boxing", "darts": "Darts",
-        "esoccer": "eSoccer",
+        "esoccer": "eSoccer", "baseball": "Baseball",
+        "american-football": "American Football",
     }
     db_sport_names = []
     if sport_slug == "soccer":
@@ -427,6 +429,11 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
             batch_ums = base_q.offset(offset).limit(batch_size).all()
             if not batch_ums:
                 break
+                
+            # CRITICAL DEADLOCK FIX: Sort the UnifiedMatches in the batch by ID BEFORE processing.
+            # This ensures that if two workers grab overlapping batches, they will attempt 
+            # to acquire row locks in the exact same order, preventing deadlocks.
+            batch_ums = sorted(batch_ums, key=lambda m: m.id)
 
             batch_stats = []
             for um in batch_ums:
@@ -462,6 +469,7 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
             except Exception as exc:
                 logger.error("[align:%s] batch commit error at offset=%d: %s",
                              sport_slug, offset, exc)
+                # Must cleanly rollback the entire batch transaction before retrying
                 try:
                     db.session.rollback()
                 except Exception:
@@ -476,7 +484,8 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
             db.session.rollback()
         except Exception:
             pass
-        raise self.retry(exc=exc)
+        # Add Jitter to the retry to ensure workers don't immediately collide again
+        raise self.retry(exc=exc, countdown=random.uniform(5.0, 20.0))
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -538,8 +547,8 @@ def align_all_sports() -> dict:
 @celery.task(
     name="tasks.align.match",
     bind=True,
-    max_retries=2,
-    default_retry_delay=10,
+    max_retries=3,          # Increased retries
+    default_retry_delay=5,
     soft_time_limit=30,
     time_limit=40,
     acks_late=True,
@@ -587,7 +596,8 @@ def align_single_match_task(self, match_id: int) -> dict:
             db.session.rollback()
         except Exception:
             pass
-        raise self.retry(exc=exc)
+        # Jitter the retry to prevent immediate secondary collisions
+        raise self.retry(exc=exc, countdown=random.uniform(2.0, 8.0))
 
 
 @celery.task(
@@ -626,13 +636,18 @@ def schedule_alignment(sport_slug: str, countdown: int = 60) -> None:
         schedule_alignment(sport_slug, countdown=60)
     """
     try:
+        # Add Jitter to the scheduling delay to prevent multiple bookmakers 
+        # from finishing at the exact same time and triggering parallel alignments 
+        # that collide in the database.
+        jittered_delay = countdown + random.uniform(5.0, 30.0)
+        
         align_sport_markets.apply_async(
             args=[sport_slug, 100],
             queue="results",
-            countdown=countdown,
+            countdown=jittered_delay,
         )
         logger.info(
-            "[align] scheduled alignment for %s in %ds", sport_slug, countdown,
+            "[align] scheduled alignment for %s in %ds", sport_slug, int(jittered_delay),
         )
     except Exception as exc:
         logger.warning("[align] failed to schedule alignment for %s: %s",
