@@ -43,7 +43,7 @@ def persist_merged_sync(
     Best for Celery tasks or background workers.
     """
     try:
-        from app.services.entity_resolver import EntityResolver
+        from app.utils.entity_resolver import EntityResolver
         
         resolver = EntityResolver()
         stats = resolver.persist_batch(combined_matches, commit=True)
@@ -95,7 +95,7 @@ def persist_from_serialized(
     Thanks to the patched EntityResolver, we can pass the raw JSON dictionaries 
     directly into the resolver without needing to rebuild proxy objects!
     """
-    from app.services.entity_resolver import EntityResolver
+    from app.utils.entity_resolver import EntityResolver
 
     # Ensure the sport_slug makes it into the dictionary so the resolver can find it
     for md in match_dicts:

@@ -712,7 +712,7 @@ def bt_harvest_all_live() -> dict:
     """
     try:
         from app.workers.bt_harvester import fetch_live_matches
-        from app.services.entity_resolver import EntityResolver
+        from app.utils.entity_resolver import EntityResolver
         from app.workers.celery_tasks import _get_or_create_bookmaker, _persist_bk_matches
 
         matches = fetch_live_matches()
@@ -858,7 +858,7 @@ def stream_event_details_sse(
 @celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=120, time_limit=150)
 def sp_harvest_all_upcoming() -> dict:
     try:
-        from app.workers.sp_harvester import fetch_upcoming
+        from app.workers.sp_harvester_ import fetch_upcoming
         SPORTS = ["soccer","basketball","tennis","ice-hockey","volleyball",
                   "rugby","handball","cricket","table-tennis","darts","mma"]
         total = 0
