@@ -1,7 +1,7 @@
 """
 app/workers/bt_harvester.py
 ============================
-Betika live + upcoming harvester.
+Betika live + upcoming harvester (Dynamic Mapper Integrated).
 
 Architecture
 ────────────
@@ -15,34 +15,7 @@ Architecture
   │    • Polls /v1/uo/matches every 1.5 s → publishes delta events  │
   │    • Writes bt:live:{sport_id}:data to Redis (TTL 60 s)         │
   │    • Publishes bt:live:{sport_id}:updates channel (SSE feed)    │
-  ├─────────────────────────────────────────────────────────────────┤
-  │  Celery tasks (uncomment to wire into beat schedule)            │
   └─────────────────────────────────────────────────────────────────┘
-
-Canonical output format (matches SP pipeline SpMatch shape)
-───────────────────────────────────────────────────────────
-  {
-    "bt_match_id":    "10688359",
-    "bt_parent_id":   "69164878",
-    "sp_game_id":     None,
-    "betradar_id":    None,
-    "home_team":      "Senegal",
-    "away_team":      "Peru",
-    "competition":    "Int. Friendly Games",
-    "category":       "International",
-    "sport":          "soccer",          ← canonical slug
-    "bt_sport_id":    14,
-    "canonical_sport_id": 1,
-    "start_time":     "2026-03-28T19:00:00",
-    "source":         "betika",
-    "is_live":        False,
-    "market_count":   3,
-    "markets": {
-        "1x2":                    {"1": 1.47, "X": 4.20, "2": 7.00},
-        "over_under_goals_2.5":   {"over": 1.99, "under": 1.80},
-        ...
-    },
-  }
 """
 
 from __future__ import annotations
@@ -57,22 +30,34 @@ from typing import Any
 
 import httpx
 
-from app.workers.bt_mapper import (
-    BT_TO_CANONICAL_SPORT,
-    BT_SPORT_SLUGS,
-    SLUG_TO_BT_SPORT,
-    extract_bt_line,
-    get_bt_sport_table,
-    get_bt_sport_primary_markets,
-    normalize_bt_market,
-    normalize_bt_outcome,
-    parse_bt_odds_to_dict,
-    bt_sport_to_slug,
+# Import the new dynamic multi-sport mappers
+from app.workers.mappers.betika import (
+    get_market_slug,
+    normalize_outcome,
     slug_to_bt_sport_id,
-    _GENERIC_BT,
+    bt_sport_to_slug,
 )
 
 logger = logging.getLogger(__name__)
+
+# Standard Canonical IDs for downstream unified matching
+CANONICAL_SPORT_IDS = {
+    "soccer": 1,
+    "basketball": 2,
+    "tennis": 3,
+    "cricket": 4,
+    "rugby": 5,
+    "ice-hockey": 6,
+    "volleyball": 7,
+    "handball": 8,
+    "table-tennis": 9,
+    "baseball": 10,
+    "american-football": 11,
+    "mma": 15,
+    "boxing": 16,
+    "darts": 17,
+    "esoccer": 1001,
+}
 
 # ── Betika API endpoints ──────────────────────────────────────────────────────
 LIVE_BASE  = "https://live.betika.com/v1/uo"
@@ -82,7 +67,7 @@ LIVE_SPORTS_URL    = f"{LIVE_BASE}/sports"
 LIVE_MATCHES_URL   = f"{LIVE_BASE}/matches"
 LIVE_MATCH_URL     = f"{LIVE_BASE}/match"      # GET ?id=match_id  (live detail)
 UPCOMING_URL       = f"{API_BASE}/matches"
-MATCH_MARKETS_URL  = f"{API_BASE}/match"        # GET ?parent_match_id=X  (pre-match detail)
+MATCH_MARKETS_URL  = f"{API_BASE}/match"       # GET ?parent_match_id=X  (pre-match detail)
 
 HEADERS: dict[str, str] = {
     "accept":          "application/json, text/plain, */*",
@@ -96,14 +81,6 @@ HEADERS: dict[str, str] = {
     ),
 }
 
-# Line market sub_type_ids that need a specifier parsed from sbv
-LINE_SIDS: frozenset[int] = frozenset({
-    14,15,16,18,19,20,36,37,51,52,53,54,55,56,58,59,65,66,68,69,70,
-    71,74,79,86,87,88,90,91,92,93,94,95,98,138,139,142,166,167,168,
-    172,177,226,339,340,342,362,363,364,365,366,367,368,369,439,544,
-    547,549,550,
-})
-
 # ── Redis key patterns ────────────────────────────────────────────────────────
 _LIVE_DATA_KEY   = "bt:live:{sport_id}:data"
 _LIVE_HASH_KEY   = "bt:live:{sport_id}:hash"
@@ -115,21 +92,26 @@ _UPC_CHAN_KEY    = "bt:upcoming:{sport_slug}:updates"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HTTP HELPERS
+# HTTP HELPERS (With 500 Error Protection)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get(url: str, params: dict | None = None, timeout: float = 8.0) -> dict | None:
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout)
-            r.raise_for_status()
+            
+            if not r.is_success:
+                logger.warning("BT HTTP %s %s (attempt %d)", r.status_code, url, attempt + 1)
+                # If the server is crashing, don't hammer it or pass bad data downstream
+                if r.status_code >= 500:
+                    return None 
+                continue
+                
             return r.json()
-        except httpx.HTTPStatusError as exc:
-            logger.warning("BT HTTP %s %s (attempt %d)", exc.response.status_code, url, attempt+1)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("BT request error %s (attempt %d): %s", url, attempt+1, exc)
-        if attempt == 0:
-            time.sleep(0.4)
+        except httpx.RequestError as exc:
+            logger.warning("BT request error %s (attempt %d): %s", url, attempt + 1, exc)
+            
+        time.sleep(0.5)
     return None
 
 
@@ -137,98 +119,41 @@ def _get(url: str, params: dict | None = None, timeout: float = 8.0) -> dict | N
 # NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _parse_inline_market(mkt: dict, bt_sport_id: int) -> tuple[str, dict[str, float]] | None:
-    """
-    Parse ONE Betika market dict from the list-endpoint inline odds.
-    Returns (canonical_slug, {outcome: odd}) or None if no valid odds.
-
-    Handles the multi-line Total market correctly: each specValue variant
-    becomes a separate slug entry (e.g. over_under_goals_2.5, _3.5 ...).
-    """
-    try:
-        sid      = int(mkt.get("sub_type_id", 0))
-        odds_raw = mkt.get("odds") or []
-        if not odds_raw:
-            return None
-
-        # Group by specValue so we create one slug per line
-        by_line: dict[str, list[dict]] = {}
-        for o in odds_raw:
-            sbv = (o.get("special_bet_value") or "").strip()
-            by_line.setdefault(sbv, []).append(o)
-
-        results: list[tuple[str, dict[str, float]]] = []
-        for sbv, group in by_line.items():
-            line  = extract_bt_line(sbv)
-            table = get_bt_sport_table(bt_sport_id)
-            entry = table.get(sid) or _GENERIC_BT.get(sid)
-            if entry:
-                base, uses_line = entry
-                slug = f"{base}_{line}" if (uses_line and line) else base
-            else:
-                slug = normalize_bt_market(sid, mkt.get("name",""), bt_sport_id, sbv)
-
-            outcomes = parse_bt_odds_to_dict(group, slug, sbv)
-            if outcomes:
-                results.append((slug, outcomes))
-
-        if not results:
-            return None
-
-        # If single line, return directly
-        if len(results) == 1:
-            return results[0]
-
-        # Multiple lines: return the first (caller can call again for each)
-        # Caller should use _parse_all_inline_markets for full expansion
-        return results[0]
-
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("BT market parse error: %s | mkt=%s", exc, mkt)
-        return None
-
-
 def _parse_all_inline_markets(
-    raw_mkts:    list[dict],
-    bt_sport_id: int,
+    raw_mkts: list[dict],
+    sport_slug: str,
 ) -> dict[str, dict[str, float]]:
     """
-    Parse ALL inline markets from a match/list entry into the canonical
-    markets dict: {slug → {outcome → odd}}.
-
-    Multi-line markets (Total O/U at multiple lines) are expanded into
-    individual slugs: over_under_goals_0.5, over_under_goals_1.5, etc.
+    Parse ALL inline markets using the new dynamic multi-sport mapper.
+    Automatically groups lines (e.g. over_under_goals_2.5) by building the 
+    slug directly from the parsed_special_bet_value attached to each odd.
     """
     result: dict[str, dict[str, float]] = {}
 
     for mkt in raw_mkts:
-        sid      = int(mkt.get("sub_type_id", 0))
+        sid = str(mkt.get("sub_type_id", ""))
+        name = mkt.get("name", "")
         odds_raw = mkt.get("odds") or []
-        if not odds_raw:
-            continue
 
-        # Group by specValue
-        by_sbv: dict[str, list[dict]] = {}
         for o in odds_raw:
-            sbv = (o.get("special_bet_value") or "").strip()
-            by_sbv.setdefault(sbv, []).append(o)
+            try:
+                val = float(o.get("odd_value") or 0)
+            except (ValueError, TypeError):
+                continue
 
-        table = get_bt_sport_table(bt_sport_id)
+            if val <= 1.0:
+                continue
 
-        for sbv, group in by_sbv.items():
-            line  = extract_bt_line(sbv)
-            entry = table.get(sid) or _GENERIC_BT.get(sid)
-            if entry:
-                base, uses_line = entry
-                slug = f"{base}_{line}" if (uses_line and line) else base
-            else:
-                slug = normalize_bt_market(sid, mkt.get("name",""), bt_sport_id, sbv)
+            parsed_specs = o.get("parsed_special_bet_value") or {}
 
-            outcomes = parse_bt_odds_to_dict(group, slug, sbv)
-            if outcomes:
-                existing = result.get(slug, {})
-                existing.update(outcomes)
-                result[slug] = existing
+            # Route to the dynamic mapper
+            slug = get_market_slug(sport_slug, sid, parsed_specs, fallback_name=name)
+            outcome_key = normalize_outcome(sport_slug, o.get("display", ""))
+
+            if slug not in result:
+                result[slug] = {}
+                
+            result[slug][outcome_key] = val
 
     return result
 
@@ -236,12 +161,11 @@ def _parse_all_inline_markets(
 def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
     """
     Transform one Betika match dict (from either endpoint) into canonical shape.
-    Inline odds are parsed; full markets require get_full_markets().
     """
     try:
-        bt_sport_id   = int(raw.get("sport_id") or 14)
+        bt_sport_id   = str(raw.get("sport_id") or "14")
         match_id      = str(raw.get("match_id") or raw.get("game_id") or "")
-        parent_id     = str(raw.get("parent_match_id") or "")
+        parent_id     = str(raw.get("parent_match_id") or match_id)
         home          = str(raw.get("home_team") or "").strip()
         away          = str(raw.get("away_team") or "").strip()
         competition   = str(raw.get("competition_name") or "").strip()
@@ -249,12 +173,15 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
         start_time    = str(raw.get("start_time") or "")
         sport_name    = str(raw.get("sport_name") or "").strip()
 
+        if not match_id:
+            return None
+
         # Start time → ISO format
         if start_time and " " in start_time:
             start_time = start_time.replace(" ", "T")
 
         sport_slug      = bt_sport_to_slug(bt_sport_id)
-        can_sport_id    = BT_TO_CANONICAL_SPORT.get(bt_sport_id, 1)
+        can_sport_id    = CANONICAL_SPORT_IDS.get(sport_slug, 1)
 
         # Live-only fields
         is_live       = source == "live"
@@ -276,69 +203,49 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
             except IndexError:
                 pass
 
-        # Cards / corners (live)
-        home_red    = int(raw.get("home_red_card")    or 0)
-        away_red    = int(raw.get("away_red_card")    or 0)
-        home_yellow = int(raw.get("home_yellow_card") or 0)
-        away_yellow = int(raw.get("away_yellow_card") or 0)
-        home_corners= int(raw.get("home_corners")     or 0)
-        away_corners= int(raw.get("away_corners")     or 0)
+        # Parse inline odds using the dynamic mapper
+        markets = _parse_all_inline_markets(raw.get("odds") or [], sport_slug)
 
-        # Parse inline odds
-        markets = _parse_all_inline_markets(raw.get("odds") or [], bt_sport_id)
-
-        # Also parse quick top-level odds (home_odd / neutral_odd / away_odd)
-        if "home_odd" in raw and "1x2" not in markets:
+        # Also parse quick top-level odds (home_odd / neutral_odd / away_odd) if missing standard 1x2
+        if "home_odd" in raw and not any(k.endswith("1x2") for k in markets):
             try:
                 ho = float(raw.get("home_odd") or 0)
                 no = float(raw.get("neutral_odd") or 0)
                 ao = float(raw.get("away_odd") or 0)
                 if ho > 1 or no > 1 or ao > 1:
-                    markets["1x2"] = {
+                    base = f"{sport_slug}_1x2" if sport_slug != "soccer" else "1x2"
+                    markets[base] = {
                         k: v for k, v in [("1", ho), ("X", no), ("2", ao)] if v > 1
                     }
             except (TypeError, ValueError):
                 pass
 
         return {
-            # Identity
             "bt_match_id":       match_id,
             "bt_parent_id":      parent_id,
             "sp_game_id":        None,
             "betradar_id":       None,
-            # Teams / competition
             "home_team":         home,
             "away_team":         away,
             "competition":       competition,
             "category":          category,
             "sport_name":        sport_name,
             "sport":             sport_slug,
-            "bt_sport_id":       bt_sport_id,
+            "bt_sport_id":       int(bt_sport_id),
             "canonical_sport_id": can_sport_id,
             "start_time":        start_time,
-            # Source
             "source":            "betika",
             "is_live":           is_live,
             "is_suspended":      bet_status in ("STOPPED", "BET_STOP"),
-            # Live state
             "match_time":        match_time,
             "event_status":      event_status,
             "match_status":      match_status,
             "bet_status":        bet_status,
             "bet_stop_reason":   bet_stop,
-            # Scores
             "current_score":     current_score,
             "score_home":        score_home,
             "score_away":        score_away,
             "ht_score":          ht_score,
-            # Cards / corners
-            "home_red_cards":    home_red,
-            "away_red_cards":    away_red,
-            "home_yellow_cards": home_yellow,
-            "away_yellow_cards": away_yellow,
-            "home_corners":      home_corners,
-            "away_corners":      away_corners,
-            # Markets
             "markets":           markets,
             "market_count":      len(markets),
         }
@@ -352,36 +259,27 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
 # FULL MARKETS  (on-demand via /v1/uo/match)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_full_markets(parent_match_id: str | int, bt_sport_id: int = 14) -> dict[str, dict[str, float]]:
+def get_full_markets(parent_match_id: str | int, sport_slug: str) -> dict[str, dict[str, float]]:
     """
     Fetch all markets for one pre-match event from api.betika.com.
-    Returns canonical {slug → {outcome → odd}} dict.
     """
     data = _get(MATCH_MARKETS_URL, params={"parent_match_id": str(parent_match_id)})
     if not data:
         return {}
     raw_mkts = data.get("data") or []
-    return _parse_all_inline_markets(raw_mkts, bt_sport_id)
+    return _parse_all_inline_markets(raw_mkts, sport_slug)
 
 
-def get_live_match_markets(match_id: str | int, bt_sport_id: int = 14) -> tuple[dict[str, dict[str, float]], dict]:
+def get_live_match_markets(match_id: str | int, sport_slug: str) -> tuple[dict[str, dict[str, float]], dict]:
     """
     Fetch all available markets for one LIVE event from live.betika.com.
-
-    Live endpoint:  GET https://live.betika.com/v1/uo/match?id={match_id}
-    Uses `match_id` (integer game id), NOT `parent_match_id`.
-
-    Returns:
-      (markets, meta) where:
-        markets = canonical {slug → {outcome → odd}}
-        meta    = raw meta dict from response (score, match_time, etc.)
     """
     data = _get(LIVE_MATCH_URL, params={"id": str(match_id)}, timeout=6.0)
     if not data:
         return {}, {}
     raw_mkts = data.get("data") or []
     meta     = data.get("meta") or {}
-    markets  = _parse_all_inline_markets(raw_mkts, bt_sport_id)
+    markets  = _parse_all_inline_markets(raw_mkts, sport_slug)
     return markets, meta
 
 
@@ -391,14 +289,14 @@ def enrich_matches_with_full_markets(
 ) -> list[dict]:
     """
     Parallel-fetch full markets for every match in the list and merge them.
-    Returns enriched copies (original dicts untouched).
     """
     def _fetch(match: dict) -> dict:
         pid = match.get("bt_parent_id")
-        sid = match.get("bt_sport_id", 14)
+        sport_slug = match.get("sport", "soccer")
         if not pid:
             return match
-        full = get_full_markets(pid, sid)
+            
+        full = get_full_markets(pid, sport_slug)
         if full:
             merged = {**match, "markets": {**match.get("markets", {}), **full}}
             merged["market_count"] = len(merged["markets"])
@@ -415,6 +313,7 @@ def enrich_matches_with_full_markets(
                 ordered[idx] = fut.result()
             except Exception:  # noqa: BLE001
                 ordered[idx] = matches[idx]
+                
     for i in range(len(matches)):
         results.append(ordered.get(i, matches[i]))
     return results
@@ -430,16 +329,18 @@ def fetch_live_sports() -> list[dict]:
     return (data or {}).get("data") or []
 
 
-def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
+def fetch_live_matches(bt_sport_id: str | int | None = None) -> list[dict]:
     """
-    GET /v1/uo/matches with live sub_type_ids (1, 186, 340).
-    Returns list of normalised canonical match dicts.
+    GET /v1/uo/matches with common live sub_type_ids.
     """
+    # Expanded list of primary IDs covering most major live sports
+    _LIVE_SUB_TYPES = "1,10,11,18,29,60,186,219,251,340,406"
+    
     params: dict[str, Any] = {
         "page":        1,
         "limit":       1000,
-        "sub_type_id": "1,10,18,29,186,340",
-        "sport":       bt_sport_id if bt_sport_id is not None else "null",
+        "sub_type_id": _LIVE_SUB_TYPES,
+        "sport":       str(bt_sport_id) if bt_sport_id is not None else "null",
         "sort":        1,
     }
     data = _get(LIVE_MATCHES_URL, params=params, timeout=6.0)
@@ -470,21 +371,12 @@ def fetch_upcoming_matches(
 ) -> list[dict]:
     """
     Paginate through Betika upcoming matches for one sport.
-    Optionally fetches full markets (slower but richer data).
-
-    sub_type_id covers all primary columns shown in the grid:
-      1   = 1X2
-      10  = Double Chance (1X, X2, 12)
-      18  = Over/Under Goals (OV/UN 2.5 etc)
-      29  = BTTS (GG/NG)
-      186 = Match Winner (live 1X2 alt)
-      340 = Over/Under alt (live)
     """
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
     all_matches: list[dict] = []
 
-    # Request all primary market sub_type_ids so every grid column has data
-    _PRIMARY_SUB_TYPE_IDS = "1,10,18,29,186,340"
+    # Broad list of typical primary IDs across different sports
+    _PRIMARY_SUB_TYPE_IDS = "1,10,11,18,29,60,186,219,251,340,406"
 
     for page in range(1, max_pages + 1):
         params: dict[str, Any] = {
@@ -549,9 +441,7 @@ def _payload_hash(matches: list[dict]) -> str:
 class BetikaLivePoller:
     """
     Polls Betika live REST endpoint every `interval` seconds.
-    Publishes change events to Redis pub/sub channels, mirrors the
-    SP WebSocket + Redis pub/sub architecture so the same SSE endpoints
-    and frontend components can consume both bookmakers uniformly.
+    Publishes change events to Redis pub/sub channels.
     """
 
     def __init__(
@@ -577,7 +467,7 @@ class BetikaLivePoller:
         self._sports_thread = threading.Thread(target=self._sports_loop, daemon=True, name="bt-sports")
         self._thread        = threading.Thread(target=self._poll_loop,   daemon=True, name="bt-live")
         self._sports_thread.start()
-        time.sleep(0.5)   # let sports populate first
+        time.sleep(0.5)   
         self._thread.start()
         logger.info("BetikaLivePoller started (interval=%.1fs)", self.interval)
 
@@ -598,7 +488,6 @@ class BetikaLivePoller:
                 if sports:
                     with self._lock:
                         self._live_sports = sports
-                    # Cache sport counts in Redis
                     self.redis.set(
                         _LIVE_SPORTS_KEY,
                         json.dumps({"ok": True, "sports": sports}),
@@ -610,11 +499,9 @@ class BetikaLivePoller:
             time.sleep(max(0, self.sports_interval - elapsed))
 
     def _poll_loop(self) -> None:
-        """Main polling loop — fetches all live matches and publishes deltas."""
         while self._running:
             tick = time.time()
             try:
-                # Fetch all live matches in one call (sport=null)
                 matches = fetch_live_matches()
                 if matches:
                     self._process_live_batch(matches)
@@ -624,7 +511,6 @@ class BetikaLivePoller:
             time.sleep(max(0, self.interval - elapsed))
 
     def _process_live_batch(self, matches: list[dict]) -> None:
-        """Group matches by sport, detect changes, publish deltas."""
         by_sport: dict[int, list[dict]] = {}
         for m in matches:
             by_sport.setdefault(m["bt_sport_id"], []).append(m)
@@ -638,14 +524,12 @@ class BetikaLivePoller:
             self._prev_hashes[bt_sport_id] = new_hash
             sport_slug = bt_sport_to_slug(bt_sport_id)
 
-            # Write snapshot to Redis
             self.redis.set(
                 _LIVE_DATA_KEY.format(sport_id=bt_sport_id),
                 json.dumps(sport_matches, ensure_ascii=False),
                 ex=60,
             )
 
-            # Compute delta events (market changes per match)
             events = self._build_delta_events(sport_matches, bt_sport_id)
             if events:
                 channel = _LIVE_CHAN_KEY.format(sport_id=bt_sport_id)
@@ -664,10 +548,6 @@ class BetikaLivePoller:
         matches: list[dict],
         bt_sport_id: int,
     ) -> list[dict]:
-        """
-        Compare current markets against cached snapshot and return only
-        changed outcomes as SSE-style event dicts (same shape as SP events).
-        """
         events: list[dict] = []
         for m in matches:
             mid       = m["bt_match_id"]
@@ -704,17 +584,9 @@ class BetikaLivePoller:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class BetikaHarvesterPlugin:
-    """
-    Registry-compatible plugin.  Wire into harvest_registry.py:
-
-        from app.workers.bt_harvester import BetikaHarvesterPlugin
-        from app.workers.harvest_registry import register_bookmaker
-        register_bookmaker(BetikaHarvesterPlugin())
-    """
-
     bookie_id   = "betika"
     bookie_name = "Betika"
-    sport_slugs = list(SLUG_TO_BT_SPORT.keys())
+    sport_slugs = list(CANONICAL_SPORT_IDS.keys())
 
     def fetch_upcoming(
         self,
@@ -737,7 +609,7 @@ class BetikaHarvesterPlugin:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# REDIS CACHE HELPERS  (used by bt_module.py Flask views)
+# REDIS CACHE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def cache_upcoming(
@@ -746,12 +618,10 @@ def cache_upcoming(
     matches:      list[dict],
     ttl:          int = 300,
 ) -> None:
-    """Write upcoming matches to Redis cache."""
     key = _UPC_DATA_KEY.format(sport_slug=sport_slug)
     redis_client.set(key, json.dumps(matches, ensure_ascii=False), ex=ttl)
     redis_client.set(_UPC_HASH_KEY.format(sport_slug=sport_slug), _payload_hash(matches), ex=ttl)
 
-    # Publish refresh event on pub/sub channel
     channel = _UPC_CHAN_KEY.format(sport_slug=sport_slug)
     redis_client.publish(channel, json.dumps({
         "type":      "upcoming_refresh",
@@ -762,16 +632,14 @@ def cache_upcoming(
 
 
 def get_cached_upcoming(redis_client: Any, sport_slug: str) -> list[dict] | None:
-    key  = _UPC_DATA_KEY.format(sport_slug=sport_slug)
-    data = redis_client.get(key)
+    data = redis_client.get(_UPC_DATA_KEY.format(sport_slug=sport_slug))
     if data:
         return json.loads(data)
     return None
 
 
 def get_cached_live(redis_client: Any, bt_sport_id: int) -> list[dict] | None:
-    key  = _LIVE_DATA_KEY.format(sport_id=bt_sport_id)
-    data = redis_client.get(key)
+    data = redis_client.get(_LIVE_DATA_KEY.format(sport_id=bt_sport_id))
     if data:
         return json.loads(data)
     return None
@@ -786,56 +654,17 @@ def get_cached_live_sports(redis_client: Any) -> list[dict] | None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CELERY TASKS  (wire in once celery_app is available)
-# ══════════════════════════════════════════════════════════════════════════════
-#
-# from app.core.celery_app import celery_app
-# from app.core.cache import redis_client
-#
-# @celery_app.task(name="betika.harvest_upcoming", bind=True,
-#                  max_retries=3, soft_time_limit=120, time_limit=150)
-# def harvest_bt_upcoming(self, sport_slug: str = "soccer"):
-#     try:
-#         matches = fetch_upcoming_matches(sport_slug=sport_slug, max_pages=10, fetch_full=True)
-#         if matches:
-#             cache_upcoming(redis_client, sport_slug, matches)
-#     except Exception as exc:
-#         logger.exception("harvest_bt_upcoming failed for %s: %s", sport_slug, exc)
-#         raise self.retry(exc=exc, countdown=10)
-#
-# @celery_app.task(name="betika.poll_live", bind=True,
-#                  max_retries=None, soft_time_limit=8, time_limit=10)
-# def poll_bt_live(self):
-#     """Called by beat every 2 seconds as a fallback if the poller thread isn't running."""
-#     try:
-#         matches = fetch_live_matches()
-#         for m in matches:
-#             sid = m["bt_sport_id"]
-#             cached = get_cached_live(redis_client, sid) or []
-#             # merge
-#             by_id = {x["bt_match_id"]: x for x in cached}
-#             by_id[m["bt_match_id"]] = m
-#             redis_client.set(_LIVE_DATA_KEY.format(sport_id=sid),
-#                              json.dumps(list(by_id.values())), ex=60)
-#     except Exception as exc:
-#         logger.exception("poll_bt_live failed: %s", exc)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SINGLETON POLLER  (for ENABLE_HARVESTER=1 mode)
+# SINGLETON POLLER
 # ══════════════════════════════════════════════════════════════════════════════
 
 _poller_instance: BetikaLivePoller | None = None
 
-
 def start_live_poller(redis_client: Any, interval: float = 1.5) -> BetikaLivePoller:
-    """Start the singleton live polling thread (idempotent)."""
     global _poller_instance
     if _poller_instance is None:
         _poller_instance = BetikaLivePoller(redis_client, interval=interval)
         _poller_instance.start()
     return _poller_instance
-
 
 def get_live_poller() -> BetikaLivePoller | None:
     return _poller_instance
@@ -846,7 +675,6 @@ def get_live_poller() -> BetikaLivePoller | None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_live_loop(interval: float = 1.5) -> None:
-    """Dev runner — press Ctrl+C to stop."""
     import logging as _log
     _log.basicConfig(level=_log.INFO, format="%(levelname)s  %(message)s")
     print("── Betika live harvester (Ctrl-C to stop) ──")
@@ -874,7 +702,6 @@ def run_live_loop(interval: float = 1.5) -> None:
 
 
 def run_upcoming_snapshot(sport_slug: str = "soccer") -> None:
-    """Fetch + print upcoming matches for quick debugging."""
     matches = fetch_upcoming_matches(sport_slug=sport_slug, max_pages=1)
     print(f"Upcoming {sport_slug}: {len(matches)} matches")
     print(json.dumps(matches[:3], indent=2, ensure_ascii=False))
