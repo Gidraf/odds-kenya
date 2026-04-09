@@ -24,19 +24,6 @@ Endpoint map
   ────────
     GET  /api/bt/meta/sports                   ← sport list with slugs
     GET  /api/bt/meta/markets/<sport>          ← primary markets for a sport
-
-SSE event format  (matches SP for uniform frontend consumption)
-──────────────────────────────────────────────────────────────
-  Upcoming stream:
-    {"type":"start",  "estimated_max": N}
-    {"type":"match",  "match": {...}}      ← repeated for each match
-    {"type":"done",   "total": N, "latency_ms": X, "harvested_at": "..."}
-    {"type":"error",  "message": "..."}
-
-  Live stream:
-    {"type":"connected",    "sport": "...", "bt_sport_id": N}
-    {"type":"batch_update", "events": [...], "total": N}  ← every poll cycle
-    {"type":"snapshot",     "matches": [...]}              ← on subscribe
 """
 
 from __future__ import annotations
@@ -48,6 +35,7 @@ from typing import Any
 
 from flask import Blueprint, Response, current_app, request, stream_with_context
 
+# Import from the updated harvester
 from app.workers.bt_harvester import (
     fetch_live_matches,
     fetch_live_sports,
@@ -58,19 +46,17 @@ from app.workers.bt_harvester import (
     get_full_markets,
     get_live_match_markets,
     cache_upcoming,
-    slug_to_bt_sport_id,
-    bt_sport_to_slug,
     _LIVE_CHAN_KEY,
     _UPC_CHAN_KEY,
-    BT_SPORT_SLUGS,
-    SLUG_TO_BT_SPORT,
 )
-from app.workers.bt_mapper import (
-    MARKET_DISPLAY_NAMES,
-    SPORT_PRIMARY_MARKETS,
-    get_bt_sport_primary_markets,
-    get_market_display_name,
-    bt_sport_to_slug as slug_from_id,
+
+# Import from the new dynamic mappers
+from app.workers.mappers.betika import (
+    slug_to_bt_sport_id,
+    bt_sport_to_slug,
+    BT_SPORT_SLUGS,
+    BT_SPORT_IDS,
+    _MAPPERS,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,16 +122,33 @@ def _sort_matches(matches: list[dict], sort: str, order: str) -> list[dict]:
     return sorted(matches, key=lambda m: m.get("start_time") or "", reverse=reverse)
 
 
-def _market_metas(bt_sport_id: int) -> list[dict]:
-    """Build market metadata list for a sport (same format as SP's meta/markets)."""
-    primary = set(get_bt_sport_primary_markets(bt_sport_id))
+def _market_metas(sport_slug: str) -> list[dict]:
+    """Build market metadata list for a sport using the new dynamic mapper classes."""
+    mapper_class = _MAPPERS.get(sport_slug.lower())
+    
+    if not mapper_class:
+        return []
+
+    # Get the unique canonical slugs defined for this sport
+    unique_slugs = set(mapper_class.MARKET_MAP.values())
+    
+    # Simple heuristic to determine "primary" markets (the most common ones)
+    primary_identifiers = ["1x2", "winner", "over_under", "double_chance", "btts", "spread", "moneyline"]
+    
     result = []
-    for slug, label in MARKET_DISPLAY_NAMES.items():
+    for slug in unique_slugs:
+        # Create a clean display label (e.g. "first_half_1x2" -> "First Half 1X2")
+        label = slug.replace("_", " ").title()
+        
+        # Check if it's a primary market
+        is_primary = any(pid in slug for pid in primary_identifiers)
+        
         result.append({
             "slug":       slug,
             "label":      label,
-            "is_primary": slug in primary,
+            "is_primary": is_primary,
         })
+        
     return sorted(result, key=lambda x: (0 if x["is_primary"] else 1, x["slug"]))
 
 
@@ -176,7 +179,6 @@ def upcoming_cached(sport: str):
     source  = "cache"
 
     if not matches:
-        # Cache miss → fetch directly and cache
         source  = "direct"
         matches = fetch_upcoming_matches(sport_slug=sport, max_pages=10, fetch_full=False)
         if matches and rd:
@@ -185,7 +187,6 @@ def upcoming_cached(sport: str):
             except Exception:  # noqa: BLE001
                 pass
 
-    # Filter + sort
     matches = _apply_filters(matches or [], comp=comp, team=team, market=market, date=date)
     matches = _sort_matches(matches, sort, order)
 
@@ -247,7 +248,7 @@ def upcoming_direct(sport: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING — SSE STREAM  (same format as sp_module /stream/upcoming)
+# UPCOMING — SSE STREAM
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_betika.route("/stream/upcoming/<sport>")
@@ -255,7 +256,6 @@ def stream_upcoming(sport: str):
     """
     SSE GET /api/bt/stream/upcoming/<sport>
     Streams all upcoming matches one-by-one, then caches result in Redis.
-    Frontend receives: start → match × N → done
     """
     def generate():
         rd  = _redis()
@@ -264,7 +264,6 @@ def stream_upcoming(sport: str):
         all_matches: list[dict] = []
 
         try:
-            # Emit start
             page = 1; limit = 50; total_est = 500
             yield _sse({"type": "start", "estimated_max": total_est})
 
@@ -306,7 +305,6 @@ def stream_upcoming(sport: str):
 
             latency = int((time.time() - t0) * 1000)
 
-            # Cache completed set in Redis
             if all_matches and rd:
                 try:
                     cache_upcoming(rd, sport, all_matches, ttl=_UPC_TTL)
@@ -339,16 +337,11 @@ def stream_upcoming(sport: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE — SNAPSHOT  (Redis cache from BetikaLivePoller)
+# LIVE — SNAPSHOT
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_betika.route("/live/snapshot/<sport>")
 def live_snapshot(sport: str):
-    """
-    GET /api/bt/live/snapshot/<sport>
-    Returns the most recent live matches from Redis.
-    Falls back to a direct API call if Redis is cold.
-    """
     rd          = _redis()
     bt_sport_id = slug_to_bt_sport_id(sport)
     t0          = time.time()
@@ -373,28 +366,17 @@ def live_snapshot(sport: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE — SSE STREAM  (Redis pub/sub → browser)
+# LIVE — SSE STREAM
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_betika.route("/live/stream/<sport>")
 def live_stream(sport: str):
-    """
-    SSE GET /api/bt/live/stream/<sport>
-    Subscribes to Redis pub/sub channel for this sport and forwards
-    market_update events to the browser in real-time.
-
-    First event: snapshot of current live state.
-    Subsequent events: batch_update dicts from BetikaLivePoller.
-
-    Format mirrors sp_live_module SSE for uniform frontend handling.
-    """
     bt_sport_id = slug_to_bt_sport_id(sport)
     channel     = _LIVE_CHAN_KEY.format(sport_id=bt_sport_id)
 
     def generate():
         rd = _redis()
 
-        # Send initial snapshot
         try:
             snapshot = get_cached_live(rd, bt_sport_id) if rd else None
             if not snapshot:
@@ -413,9 +395,7 @@ def live_stream(sport: str):
             yield _sse({"type": "error", "message": str(exc)})
             return
 
-        # Subscribe to Redis pub/sub for real-time updates
         if not rd:
-            # No Redis → fall back to polling loop
             prev_hash = ""
             while True:
                 try:
@@ -447,7 +427,7 @@ def live_stream(sport: str):
                         except (json.JSONDecodeError, TypeError):
                             pass
                     else:
-                        yield ": heartbeat\n\n"   # keep-alive
+                        yield ": heartbeat\n\n"   
             except GeneratorExit:
                 pass
             finally:
@@ -474,15 +454,14 @@ def live_stream(sport: str):
 
 @bp_betika.route("/live/sports")
 def live_sports():
-    """GET /api/bt/live/sports — current live sport counts."""
     rd = _redis()
     sports = get_cached_live_sports(rd) if rd else None
     if not sports:
         sports = fetch_live_sports()
-    # Enrich with canonical slug
+        
     enriched = []
     for s in (sports or []):
-        sid = int(s.get("sport_id") or 0)
+        sid = str(s.get("sport_id") or 0)
         enriched.append({
             **s,
             "sport_slug":   bt_sport_to_slug(sid),
@@ -492,25 +471,18 @@ def live_sports():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MATCH FULL MARKETS  (on-demand)
+# MATCH FULL MARKETS
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_betika.route("/match/markets")
 def match_markets():
-    """
-    GET /api/bt/match/markets?parent_match_id=...&sport=soccer
-    Fetch ALL markets for one match (all sub_type_ids — 40+ for soccer).
-    Redis-cached for 90 s so drawer opens fast on re-open.
-    """
     parent_id   = request.args.get("parent_match_id", "")
     sport       = request.args.get("sport", "soccer")
-    bt_sport_id = int(request.args.get("bt_sport_id", slug_to_bt_sport_id(sport)))
     t0          = time.time()
 
     if not parent_id:
         return {"ok": False, "error": "parent_match_id required"}, 400
 
-    # Try cache
     rd        = _redis()
     cache_key = f"bt:match:{parent_id}:markets"
     if rd:
@@ -524,11 +496,10 @@ def match_markets():
         except Exception:
             pass
 
-    markets = get_full_markets(parent_id, bt_sport_id)
+    markets = get_full_markets(parent_id, sport)
     if not markets:
         return {"ok": False, "error": "No markets returned"}, 404
 
-    # Cache 90 s
     if rd:
         try:
             rd.set(cache_key, json.dumps(markets, ensure_ascii=False), ex=90)
@@ -543,25 +514,9 @@ def match_markets():
 
 @bp_betika.route("/live/match/<match_id>")
 def live_match_detail(match_id: str):
-    """
-    GET /api/bt/live/match/<match_id>?bt_sport_id=14
-
-    Fetch ALL available markets for one LIVE Betika match.
-    Calls:  GET https://live.betika.com/v1/uo/match?id={match_id}
-
-    The live endpoint uses the integer `match_id` (bt_match_id), NOT
-    `parent_match_id`. Live matches return fewer markets than pre-match
-    detail (only currently-open markets), but this gets everything available.
-
-    Also returns live meta: score, match_time, event_status, etc.
-
-    Returns:
-      {ok, match_id, markets, market_count, meta, source, latency_ms}
-    """
     t0          = time.time()
-    bt_sport_id = int(request.args.get("bt_sport_id", 14))
+    sport_slug  = request.args.get("sport", "soccer")
 
-    # Redis cache (30 s TTL for live — short because odds change fast)
     rd        = _redis()
     cache_key = f"bt:live:match:{match_id}:markets"
     if rd:
@@ -576,7 +531,7 @@ def live_match_detail(match_id: str):
             pass
 
     try:
-        markets, meta = get_live_match_markets(match_id, bt_sport_id)
+        markets, meta = get_live_match_markets(match_id, sport_slug)
     except Exception as exc:
         logger.warning("bt live match detail %s: %s", match_id, exc)
         return {"ok": False, "error": str(exc)}, 500
@@ -584,7 +539,6 @@ def live_match_detail(match_id: str):
     if not markets and not meta:
         return {"ok": False, "error": "No data returned from live API"}, 404
 
-    # Extract useful live state from meta
     live_state = {
         "match_id":    meta.get("match_id"),
         "score":       meta.get("current_score", ""),
@@ -611,7 +565,6 @@ def live_match_detail(match_id: str):
         "latency_ms":   int((time.time() - t0) * 1000),
     }
 
-    # Cache 30 s (live odds change fast, don't cache longer)
     if rd:
         try:
             rd.set(cache_key, json.dumps(payload, ensure_ascii=False), ex=30)
@@ -622,18 +575,12 @@ def live_match_detail(match_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TRIGGER HARVEST  (mirrors sp /stream/trigger)
+# TRIGGER HARVEST
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_betika.route("/stream/trigger/<sport>", methods=["POST"])
 def trigger_harvest(sport: str):
-    """
-    POST /api/bt/stream/trigger/<sport>
-    Force-refetch upcoming matches, busting the cache first so fresh data
-    includes all market sub_type_ids (1,10,18,29,186,340).
-    """
     rd = _redis()
-    # Bust stale cache so fresh fetch replaces it immediately
     if rd:
         try:
             from app.workers.bt_harvester import _UPC_DATA_KEY, _UPC_HASH_KEY
@@ -641,7 +588,6 @@ def trigger_harvest(sport: str):
             rd.delete(_UPC_HASH_KEY.format(sport_slug=sport))
         except Exception:
             pass
-    # Synchronous fetch with all markets
     try:
         from app.workers.bt_harvester import fetch_upcoming_matches, cache_upcoming
         matches = fetch_upcoming_matches(sport_slug=sport, max_pages=5, fetch_full=False)
@@ -660,7 +606,6 @@ def trigger_harvest(sport: str):
 
 @bp_betika.route("/cache/bust/<sport>", methods=["POST"])
 def cache_bust(sport: str):
-    """POST /api/bt/cache/bust/<sport> — delete cached data so next GET re-fetches."""
     rd = _redis()
     if not rd:
         return {"ok": False, "error": "Redis unavailable"}, 503
@@ -681,7 +626,6 @@ def cache_bust(sport: str):
 
 @bp_betika.route("/meta/sports")
 def meta_sports():
-    """GET /api/bt/meta/sports — sport list for the sport pill row."""
     SPORT_NAMES = {
         "soccer":       ("Football",     "⚽"),
         "basketball":   ("Basketball",   "🏀"),
@@ -699,7 +643,7 @@ def meta_sports():
     }
     sports = []
     seen   = set()
-    for bt_sid, slug in BT_SPORT_SLUGS.items():
+    for slug, bt_sid in BT_SPORT_IDS.items():
         if slug in seen:
             continue
         seen.add(slug)
@@ -715,15 +659,12 @@ def meta_sports():
 
 @bp_betika.route("/meta/markets/<sport>")
 def meta_markets(sport: str):
-    """GET /api/bt/meta/markets/<sport> — market list for the market filter drawer."""
-    bt_sport_id = slug_to_bt_sport_id(sport)
-    markets     = _market_metas(bt_sport_id)
+    markets = _market_metas(sport)
     return {"ok": True, "markets": markets, "sport": sport}
 
 
 @bp_betika.route("/status")
 def status():
-    """Health check."""
     rd = _redis()
     redis_ok = False
     live_count = 0
