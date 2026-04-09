@@ -24,7 +24,7 @@ from app.workers.canonical_mapper import (   # noqa: F401
     slug_with_line,
     normalize_outcome,
     normalize_od_market,
-    normalize_bt_market,
+    # normalize_bt_market,
     normalize_b2b_market,
     normalize_mozzartbet_market,
     normalize_betin_market,
@@ -44,7 +44,7 @@ def is_line_market(mkt_id: int, sport_id: int = 1) -> bool:
     Equivalent to looking up the (base, uses_line) tuple in the sport table.
     """
     from app.workers.sp_mapper import _GENERIC
-    # table = get_sport_table(sport_id)
+    table = get_sport_table(sport_id)
     entry = table.get(mkt_id) or _GENERIC.get(mkt_id)
     return bool(entry and entry[1])
 

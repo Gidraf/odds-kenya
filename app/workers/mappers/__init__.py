@@ -27,9 +27,9 @@ from app.workers.mappers.shared import (    # noqa: F401
     slug_with_line,
     normalize_outcome,
 )
-from app.workers.mappers.betika import (    # noqa: F401
-    normalize_bt_market,
-)
+# from app.workers.mappers.betika import (    # noqa: F401
+#     normalize_bt_market,
+# )
 from app.workers.mappers.odibets import (   # noqa: F401
     normalize_od_market,
 )

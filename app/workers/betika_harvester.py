@@ -48,7 +48,7 @@ import httpx
 # ── project imports ────────────────────────────────────────────────────────────
 # Adjust the import paths to match your actual project layout.
 from app.workers.canonical_mapper import (
-    normalize_bt_market,
+
     normalize_outcome,
     slug_with_line,
 )
