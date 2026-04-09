@@ -10,7 +10,7 @@ DB persistence happens async or in background).
 
 Usage in combined_module.py:
 ────────────────────────────
-    from app.services.persist_hook import persist_merged_async
+    from app.utils.persist_hook import persist_merged_async
 
     # After merger produces combined list:
     combined = merger.merge(sp, bt, od, is_live=False)
@@ -19,7 +19,7 @@ Usage in combined_module.py:
     persist_merged_async(combined, sport_slug="soccer", mode="upcoming")
 
     # Or synchronous (blocks — use only if latency is acceptable):
-    from app.services.persist_hook import persist_merged_sync
+    from app.utils.persist_hook import persist_merged_sync
     stats = persist_merged_sync(combined, sport_slug="soccer")
 """
 
@@ -43,7 +43,7 @@ def persist_merged_sync(
     Best for Celery tasks or background workers.
     """
     try:
-        from app.utils.entity_resolver import EntityResolver
+        from app.services.entity_resolver import EntityResolver
         
         resolver = EntityResolver()
         stats = resolver.persist_batch(combined_matches, commit=True)
@@ -91,57 +91,22 @@ def persist_from_serialized(
     """
     Called by Celery task — takes serialized match dicts (from to_dict())
     and persists them to DB.
-
-    This reconstructs just enough structure for the EntityResolver.
+    
+    Thanks to the patched EntityResolver, we can pass the raw JSON dictionaries 
+    directly into the resolver without needing to rebuild proxy objects!
     """
-    from app.utils.entity_resolver import EntityResolver
-    from dataclasses import dataclass, field
+    from app.services.entity_resolver import EntityResolver
 
-    # Lightweight stand-in that has the same attributes EntityResolver expects
-    @dataclass
-    class _MatchProxy:
-        join_key: str = ""
-        home_team: str = ""
-        away_team: str = ""
-        competition: str = ""
-        start_time: str = ""
-        is_live: bool = False
-        betradar_id: str | None = None
-        bk_ids: dict = field(default_factory=dict)
-        markets: dict = field(default_factory=dict)
-        sport_slug: str = "" # FIX: Added this so the resolver knows what sport it is
-
-        def to_dict(self):
-            return {
-                "join_key": self.join_key,
-                "home_team": self.home_team,
-                "away_team": self.away_team,
-                "competition": self.competition,
-                "start_time": self.start_time,
-                "is_live": self.is_live,
-                "betradar_id": self.betradar_id,
-                "bk_ids": self.bk_ids,
-                "markets": self.markets,
-                "sport_slug": self.sport_slug,
-            }
-
-    proxies = []
+    # Ensure the sport_slug makes it into the dictionary so the resolver can find it
     for md in match_dicts:
-        proxies.append(_MatchProxy(
-            join_key=md.get("join_key", ""),
-            home_team=md.get("home_team", ""),
-            away_team=md.get("away_team", ""),
-            competition=md.get("competition", ""),
-            start_time=md.get("start_time", ""),
-            is_live=md.get("is_live", False),
-            betradar_id=md.get("betradar_id"),
-            bk_ids=md.get("bk_ids", {}),
-            markets=md.get("markets", {}),
-            sport_slug=sport_slug, # FIX: Pass the argument down into the proxy
-        ))
+        if "sport_slug" not in md and "sport" not in md:
+            md["sport_slug"] = sport_slug
 
     resolver = EntityResolver()
-    stats = resolver.persist_batch(proxies, commit=True)
+    
+    # We pass the raw dictionaries directly!
+    stats = resolver.persist_batch(match_dicts, commit=True)
+    
     logger.info(
         "persist_from_serialized [%s/%s]: persisted=%d failed=%d",
         sport_slug, mode, stats["persisted"], stats["failed"],
