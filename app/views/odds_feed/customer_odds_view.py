@@ -1380,3 +1380,157 @@ class _SiblingBMO:
         self._bmo = bmo
         self._primary_match_id = primary_match_id
     def __getattr__(self, name): return getattr(self._bmo, name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NAVIGATION & POPULARITY SORTING API
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 1. Define custom popularity tiers per sport. 
+# We removed "world/europe" buckets. Unlisted countries default to weight 99 
+# and will be dynamically sorted by match volume underneath these popular ones.
+_POPULARITY_WEIGHTS = {
+    "soccer": {
+        "england": 1, "spain": 2, "germany": 3, "italy": 4, "france": 5, 
+        "brazil": 6, "argentina": 7, "netherlands": 8, "portugal": 9
+    },
+    "basketball": {
+        "usa": 1, "spain": 2, "greece": 3, "turkey": 4, "italy": 5
+    },
+    "cricket": {
+        "india": 1, "australia": 2, "england": 3, "pakistan": 4, "south africa": 5, "new zealand": 6
+    },
+    "tennis": {
+        "atp": 1, "wta": 2, "challenger": 3, "itf": 4
+    }
+}
+
+def _get_country_weight(sport_slug: str, category_name: str) -> int:
+    """Returns a sorting weight. 99 is the default for remaining countries."""
+    if not category_name: return 99
+    weights = _POPULARITY_WEIGHTS.get(sport_slug, {})
+    return weights.get(category_name.lower(), 99)
+
+@bp_odds_customer.route("/odds/navigation")
+def get_navigation_tree():
+    t0 = time.perf_counter()
+    user = _current_user_from_header()
+    
+    from app.models.odds_model import UnifiedMatch
+    from app.extensions import db
+    from sqlalchemy import func
+    
+    now = _now_utc()
+    
+    try:
+        # Group all upcoming/live matches by Sport and Competition
+        rows = (
+            db.session.query(
+                UnifiedMatch.sport_name,
+                UnifiedMatch.competition_name,
+                func.count(UnifiedMatch.id)
+            )
+            .filter(UnifiedMatch.start_time > now)
+            .filter(UnifiedMatch.status.notin_(list(_TERMINAL_STATUSES)))
+            .group_by(UnifiedMatch.sport_name, UnifiedMatch.competition_name)
+            .all()
+        )
+        
+        nav_tree = {}
+        
+        for sport, comp, count in rows:
+            if not sport or not comp: continue
+            
+            sport_slug = _normalise_sport_slug(sport)
+            
+            category = "International"
+            comp_clean = comp
+            
+            # Extract Country/Category
+            if " - " in comp:
+                parts = comp.split(" - ", 1)
+                category = parts[0].strip()
+                comp_clean = parts[1].strip()
+            elif ": " in comp:
+                parts = comp.split(": ", 1)
+                category = parts[0].strip()
+                comp_clean = parts[1].strip()
+            
+            # Special parsing for Tennis
+            if sport_slug == "tennis":
+                comp_upper = comp.upper()
+                if "ATP" in comp_upper: category = "ATP"
+                elif "WTA" in comp_upper: category = "WTA"
+                elif "ITF" in comp_upper: category = "ITF"
+                elif "CHALLENGER" in comp_upper: category = "Challenger"
+            
+            # DEDUPLICATION FIX 1: Normalize category casing (e.g., "ENGLAND" -> "England")
+            category = category.title() if sport_slug != "tennis" else category
+            
+            if sport_slug not in nav_tree:
+                nav_tree[sport_slug] = {"sport": sport, "slug": sport_slug, "count": 0, "categories": {}}
+            
+            nav_tree[sport_slug]["count"] += count
+            
+            if category not in nav_tree[sport_slug]["categories"]:
+                nav_tree[sport_slug]["categories"][category] = {
+                    "name": category,
+                    "weight": _get_country_weight(sport_slug, category),
+                    "count": 0,
+                    "competitions": {} # Use dict here to act as a Set for deduplication
+                }
+                
+            nav_tree[sport_slug]["categories"][category]["count"] += count
+            
+            # DEDUPLICATION FIX 2: Squashing identical competitions together
+            comps_dict = nav_tree[sport_slug]["categories"][category]["competitions"]
+            
+            if comp_clean not in comps_dict:
+                comps_dict[comp_clean] = {
+                    "name": comp_clean,
+                    "original_name": comp, 
+                    "count": 0
+                }
+                
+            comps_dict[comp_clean]["count"] += count
+            
+        # Format and Sort the Tree
+        sorted_sports = []
+        for s_slug, s_data in nav_tree.items():
+            sorted_categories = []
+            
+            for c_name, c_data in s_data["categories"].items():
+                # Convert the deduplicated competitions dict back to a list
+                comps_list = list(c_data["competitions"].values())
+                
+                # Sort competitions inside a country (Biggest count first, then alphabetical)
+                comps_list.sort(key=lambda x: (-x["count"], x["name"]))
+                c_data["competitions"] = comps_list
+                
+                sorted_categories.append(c_data)
+            
+            # THE HYBRID SORT:
+            # 1. x["weight"] -> Popular countries go to the top (1, 2, 3...)
+            #    (Remaining countries default to 99, so they are pushed below the popular ones)
+            # 2. -x["count"] -> The remaining countries are sorted by match volume (Highest to lowest)
+            # 3. x["name"]   -> If match volume is identical, sort alphabetically
+            sorted_categories.sort(key=lambda x: (x["weight"], -x["count"], x["name"]))
+            
+            sorted_sports.append({
+                "slug": s_slug,
+                "name": s_data["sport"],
+                "count": s_data["count"],
+                "categories": sorted_categories
+            })
+        
+        # Sort the main sports tabs by total match volume
+        sorted_sports.sort(key=lambda x: -x["count"])
+        
+        return _signed_response({
+            "ok": True,
+            "navigation": sorted_sports,
+            "latency_ms": int((time.perf_counter() - t0) * 1000)
+        }, encrypt_for=user)
+        
+    except Exception as exc:
+        return _err(str(exc), 500)

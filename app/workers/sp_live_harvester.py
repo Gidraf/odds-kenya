@@ -572,8 +572,13 @@ def _handle_market_update(data: dict) -> None:
             sport_id    = sport_id,
             kind        = "market_update",
         )
+        from app.workers.live_broadcaster import broadcast_market_odds
+        # Format the outcomes into a simple { "1": 2.50, "X": 3.10 } dictionary
+        formatted_outcomes = {sel["outcome_key"]: float(sel["odds"]) for sel in normalised_sels}
+        broadcast_market_odds(betradar_id, "sp", slug, formatted_outcomes)
     except Exception as exc:
         _D("cross_bk trigger market_update: %s", exc, level="warning")
+
 
 
 def _handle_event_update(data: dict) -> None:
@@ -1050,6 +1055,13 @@ class LivePoller:
         )
         if not state_changed:
             return
+        
+        # ---- INJECT LIVE BROADCASTER HERE ----
+        from app.workers.live_broadcaster import broadcast_event_state
+        old_state_dict = {"score": f"{prev.get('scoreHome', '')}-{prev.get('scoreAway', '')}", "phase": prev.get("phase", "")}
+        new_state_dict = {"score": f"{new_home}-{new_away}", "phase": new_phase, "match_time": new_time}
+        broadcast_event_state(betradar_id, "sp", old_state_dict, new_state_dict)
+        # --------------------------------------
 
         r.setex(state_key, TTL_STATE, json.dumps({
             "phase": new_phase, "matchTime": new_time,
