@@ -10,6 +10,9 @@ Flow
     → fetches SP matches, persists them
     → dispatches sp_cross_bk_enrich  (10 s countdown)
     → dispatches sp_enrich_analytics (60 s countdown)
+    → dispatches tasks.bt_od.harvest_sport (30 s countdown)
+         ↳ reads SP cache (now warm), fetches BT+OD by team name,
+           persists only matches in 2+ bookmakers
 
   sp_cross_bk_enrich(sport_slug)
     → reads SP cache
@@ -64,28 +67,29 @@ _SBO_SPORTS = [
     "handball", "mma", "table-tennis",
 ]
 
-PAGE_SIZE        = 15
-MAX_PAGES        = 6
-WS_CHANNEL       = "odds:updates"
-ARB_CHANNEL      = "arb:updates"
-EV_CHANNEL       = "ev:updates"
-SP_MAX_MATCHES   = 3_000
-BT_MAX_MATCHES   = 3_000   # manual only
+PAGE_SIZE         = 15
+MAX_PAGES         = 6
+WS_CHANNEL        = "odds:updates"
+ARB_CHANNEL       = "arb:updates"
+EV_CHANNEL        = "ev:updates"
+SP_MAX_MATCHES    = 3_000
+BT_MAX_MATCHES    = 3_000   # manual only
 _CROSS_BK_WORKERS = 8
-_ANALYTICS_TTL   = 86_400
-_NEAR_TERM_DAYS  = 7
+_ANALYTICS_TTL    = 86_400
+_NEAR_TERM_DAYS   = 7
 
 _BK_NAMES: dict[str, str] = {
-    "sp": "SportPesa", "bt": "Betika",
-    "od": "OdiBets",   "b2b": "1xBet", "sbo": "SBO",
+    "sp":  "SportPesa", "bt": "Betika",
+    "od":  "OdiBets",   "b2b": "1xBet", "sbo": "SBO",
 }
 _SPORT_SLUG_TO_DB: dict[str, str] = {
-    "soccer": "Soccer", "football": "Soccer",
-    "basketball": "Basketball", "tennis": "Tennis",
-    "ice-hockey": "Ice Hockey", "volleyball": "Volleyball",
-    "cricket": "Cricket", "rugby": "Rugby",
-    "table-tennis": "Table Tennis", "handball": "Handball",
-    "mma": "MMA", "boxing": "Boxing", "darts": "Darts", "esoccer": "eSoccer",
+    "soccer":        "Soccer",       "football":    "Soccer",
+    "basketball":    "Basketball",   "tennis":      "Tennis",
+    "ice-hockey":    "Ice Hockey",   "volleyball":  "Volleyball",
+    "cricket":       "Cricket",      "rugby":       "Rugby",
+    "table-tennis":  "Table Tennis", "handball":    "Handball",
+    "mma":           "MMA",          "boxing":      "Boxing",
+    "darts":         "Darts",        "esoccer":     "eSoccer",
 }
 
 
@@ -243,7 +247,7 @@ def _is_near_term(start_time_str: str, days: int = _NEAR_TERM_DAYS) -> bool:
 
 
 # =============================================================================
-# REGISTRY PIPELINE  (unchanged)
+# REGISTRY PIPELINE
 # =============================================================================
 
 @celery.task(
@@ -441,8 +445,11 @@ def cleanup_old_snapshots(days_keep: int = 7) -> dict:
 def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -> dict:
     """
     Fetch SP matches (source of truth). After persisting, dispatches:
-      sp_cross_bk_enrich  — BT + OD by betradar_id (no list fetch)
-      sp_enrich_analytics — Sportradar stats
+      sp_cross_bk_enrich        — BT + OD by betradar_id (fast path, +10s)
+      sp_enrich_analytics       — Sportradar stats (+60s)
+      tasks.bt_od.harvest_sport — BT + OD by team-name match (+30s)
+                                  SP cache is warm by this point so SP data
+                                  is included as a third bookmaker where available.
     """
     t0      = time.perf_counter()
     matches = []
@@ -465,7 +472,18 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
             raise self.retry(exc=exc)
 
     if not matches:
-        return {"ok": False, "reason": "No matches fetched"}
+        # Still dispatch bt_od even when SP returns nothing (e.g. cricket) so
+        # BT+OD can match each other independently without SP involvement.
+        try:
+            celery.send_task(
+                "tasks.bt_od.harvest_sport",
+                args=[sport_slug],
+                queue="harvest",
+                countdown=5,
+            )
+        except Exception as exc:
+            logger.warning("[sp] bt_od dispatch (no-sp) failed %s: %s", sport_slug, exc)
+        return {"ok": False, "reason": "No SP matches fetched"}
 
     latency     = int((time.perf_counter() - t0) * 1000)
     avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
@@ -474,30 +492,66 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
     logger.info("[sp] %s → %d matches (%d with betradar_id), avg %d mkts, %dms",
                 sport_slug, len(matches), br_count, avg_markets, latency)
 
+    # Write SP cache — bt_od_harvest_sport reads this at +30s
     cache_set(f"sp:upcoming:{sport_slug}", {
-        "source": "sportpesa", "sport": sport_slug, "mode": "upcoming",
-        "match_count": len(matches), "harvested_at": _now_iso(),
-        "latency_ms": latency, "matches": matches,
-        "avg_markets": avg_markets, "br_count": br_count,
+        "source":       "sportpesa",
+        "sport":        sport_slug,
+        "mode":         "upcoming",
+        "match_count":  len(matches),
+        "harvested_at": _now_iso(),
+        "latency_ms":   latency,
+        "matches":      matches,
+        "avg_markets":  avg_markets,
+        "br_count":     br_count,
     }, ttl=3600)
 
     _upsert_and_chain(matches, "SportPesa")
     _persist_bk_matches(matches, "sp", sport_slug)
     _emit("sportpesa", sport_slug, len(matches), latency)
 
+    # ── Downstream dispatches ─────────────────────────────────────────────────
+
+    # 1. Cross-BK enrich by betradar_id (fast path — uses SP's betradar_ids
+    #    to directly pull BT/OD market pages without any list fetching)
     if br_count > 0:
         sp_cross_bk_enrich.apply_async(
             args=[sport_slug], queue="harvest", countdown=10,
         )
-        logger.info("[sp] %s → cross-BK enrich dispatched (%d betradar_ids)", sport_slug, br_count)
+        logger.info("[sp] %s → cross-BK enrich dispatched (%d betradar_ids)",
+                    sport_slug, br_count)
 
-    sp_enrich_analytics.apply_async(args=[sport_slug], queue="harvest", countdown=60)
+    # 2. Sportradar analytics
+    sp_enrich_analytics.apply_async(
+        args=[sport_slug], queue="harvest", countdown=60,
+    )
+
+    # 3. Market alignment
     _schedule_alignment(sport_slug, countdown=60)
 
+    # 4. BT+OD team-name harvest — catches matches cross-BK enrich missed
+    #    (betradar_id absent, BT/OD list-only sports, cricket, etc.)
+    #    Runs at +30s so cross-BK enrich has already written BT/OD rows —
+    #    bt_od will skip persisting anything already covered, and will add
+    #    what was missed (e.g. basketball where SP had no betradar_id).
+    try:
+        celery.send_task(
+            "tasks.bt_od.harvest_sport",
+            args=[sport_slug],
+            queue="harvest",
+            countdown=30,
+        )
+        logger.info("[sp] %s → bt_od harvest dispatched", sport_slug)
+    except Exception as exc:
+        logger.warning("[sp] bt_od dispatch failed %s: %s", sport_slug, exc)
+
     return {
-        "ok": True, "source": "sportpesa", "sport": sport_slug,
-        "count": len(matches), "br_count": br_count,
-        "avg_markets": avg_markets, "latency_ms": latency,
+        "ok":           True,
+        "source":       "sportpesa",
+        "sport":        sport_slug,
+        "count":        len(matches),
+        "br_count":     br_count,
+        "avg_markets":  avg_markets,
+        "latency_ms":   latency,
     }
 
 
@@ -509,33 +563,26 @@ def sp_harvest_all_upcoming() -> dict:
 
 
 # =============================================================================
-# CROSS-BK ENRICHMENT
+# CROSS-BK ENRICHMENT  (fast path — betradar_id driven)
 # BT: parent_match_id = betradar_id  →  GET /v1/uo/match?parent_match_id={br_id}
 # OD: id             = betradar_id  →  GET /sportsbook/v1?resource=sportevent&id={br_id}
-# No list fetching. No lookup tables. Pure betradar_id driven.
 # =============================================================================
 
 def _fetch_bt_by_betradar_id(
-    sp_match: dict, sport_slug: str, # CRITICAL FIX: Pass sport_slug directly
+    sp_match: dict, sport_slug: str,
 ) -> tuple[dict, dict[str, dict[str, float]]]:
     """BT: parent_match_id == betradar_id. Call get_full_markets directly."""
     from app.workers.bt_harvester import get_full_markets
-    markets = get_full_markets(
-        sp_match["betradar_id"],   
-        sport_slug,                
-    )
+    markets = get_full_markets(sp_match["betradar_id"], sport_slug)
     return sp_match, markets
 
 
 def _fetch_od_by_betradar_id(
-    sp_match: dict, od_sport_id: int, 
+    sp_match: dict, od_sport_id: int,
 ) -> tuple[dict, dict[str, dict[str, float]]]:
     """OD: event id == betradar_id. Call fetch_event_detail directly."""
     from app.workers.od_harvester import fetch_event_detail
-    markets, _meta = fetch_event_detail(
-        sp_match["betradar_id"],   
-        od_sport_id,
-    )
+    markets, _meta = fetch_event_detail(sp_match["betradar_id"], od_sport_id)
     return sp_match, markets
 
 
@@ -575,11 +622,10 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
     od_batch:    list[dict] = []
     bt_enriched = od_enriched = bt_errors = od_errors = 0
 
-    # ── BT: parallel fetch by betradar_id → parent_match_id ──────────────────
+    # ── BT parallel fetch ─────────────────────────────────────────────────────
     try:
         with ThreadPoolExecutor(max_workers=_CROSS_BK_WORKERS) as pool:
             bt_futs = {
-                # CRITICAL FIX: Pass the string sport_slug to Betika
                 pool.submit(_fetch_bt_by_betradar_id, m, sport_slug): m
                 for m in with_br
             }
@@ -608,9 +654,10 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
         _upsert_and_chain(bt_batch, "Betika")
         _persist_bk_matches(bt_batch, "bt", sport_slug)
 
-    logger.info("[cross_bk] %s BT: enriched=%d errors=%d", sport_slug, bt_enriched, bt_errors)
+    logger.info("[cross_bk] %s BT: enriched=%d errors=%d",
+                sport_slug, bt_enriched, bt_errors)
 
-    # ── OD: parallel fetch by betradar_id → event id ─────────────────────────
+    # ── OD parallel fetch ─────────────────────────────────────────────────────
     try:
         with ThreadPoolExecutor(max_workers=_CROSS_BK_WORKERS) as pool:
             od_futs = {
@@ -642,13 +689,18 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
         _upsert_and_chain(od_batch, "OdiBets")
         _persist_bk_matches(od_batch, "od", sport_slug)
 
-    logger.info("[cross_bk] %s OD: enriched=%d errors=%d", sport_slug, od_enriched, od_errors)
+    logger.info("[cross_bk] %s OD: enriched=%d errors=%d",
+                sport_slug, od_enriched, od_errors)
     _schedule_alignment(sport_slug, countdown=30)
 
     return {
-        "ok": True, "sport": sport_slug, "total": len(with_br),
-        "bt_enriched": bt_enriched, "bt_errors": bt_errors,
-        "od_enriched": od_enriched, "od_errors": od_errors,
+        "ok":          True,
+        "sport":       sport_slug,
+        "total":       len(with_br),
+        "bt_enriched": bt_enriched,
+        "bt_errors":   bt_errors,
+        "od_enriched": od_enriched,
+        "od_errors":   od_errors,
     }
 
 
@@ -722,13 +774,14 @@ def sp_get_match_analytics(betradar_id: str, force_refresh: bool = False) -> dic
     soft_time_limit=600, time_limit=660, acks_late=True,
 )
 def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -> dict:
-    """Manual-trigger only. sp_cross_bk_enrich handles BT at startup."""
+    """Manual-trigger only. sp_cross_bk_enrich + bt_od handle BT at startup."""
     t0      = time.perf_counter()
     matches = []
     try:
         from app.workers.bt_harvester import fetch_upcoming_matches
-        matches = fetch_upcoming_matches(sport_slug,
-                                         max_pages=(max_matches // 50) + 10, fetch_full=False)
+        matches = fetch_upcoming_matches(
+            sport_slug, max_pages=(max_matches // 50) + 10, fetch_full=False,
+        )
         if len(matches) > max_matches:
             matches = matches[:max_matches]
     except SoftTimeLimitExceeded:
@@ -749,7 +802,9 @@ def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -
     _upsert_and_chain(matches, "Betika")
     _persist_bk_matches(matches, "bt", sport_slug)
     _emit("betika", sport_slug, len(matches), latency)
-    bt_enrich_sport.apply_async(args=[sport_slug, matches], queue="harvest", countdown=120)
+    bt_enrich_sport.apply_async(
+        args=[sport_slug, matches], queue="harvest", countdown=120,
+    )
     return {"ok": True, "source": "betika", "sport": sport_slug,
             "count": len(matches), "latency_ms": latency}
 
@@ -775,7 +830,8 @@ def bt_enrich_sport(self, sport_slug: str, matches: list[dict]) -> dict:
     cache_set(f"bt:upcoming:{sport_slug}", {
         "source": "betika", "sport": sport_slug, "mode": "upcoming",
         "match_count": len(enriched), "harvested_at": _now_iso(),
-        "latency_ms": latency, "matches": enriched, "avg_markets": avg_markets, "enriched": True,
+        "latency_ms": latency, "matches": enriched,
+        "avg_markets": avg_markets, "enriched": True,
     }, ttl=3600)
     _upsert_and_chain(enriched, "Betika")
     _persist_bk_matches(enriched, "bt", sport_slug)
@@ -802,7 +858,7 @@ def bt_harvest_all_upcoming() -> dict:
     soft_time_limit=1800, time_limit=1860, acks_late=True,
 )
 def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
-    """Manual-trigger only. sp_cross_bk_enrich handles OD at startup."""
+    """Manual-trigger only. sp_cross_bk_enrich + bt_od handle OD at startup."""
     t0      = time.perf_counter()
     matches = []
     try:
@@ -977,14 +1033,19 @@ def sbo_harvest_sport(self, sport_slug: str, max_matches: int = 90) -> dict:
         _upsert_and_chain(matches, "SBO")
         _persist_bk_matches(matches, "sbo", sport_slug)
     arb_count = sum(1 for m in matches if m.get("arbitrage"))
-    _publish(WS_CHANNEL, {"event": "odds_updated", "source": "sbo",
-                           "sport": sport_slug, "count": len(matches),
-                           "arb_count": arb_count, "ts": _now_iso()})
+    _publish(WS_CHANNEL, {
+        "event": "odds_updated", "source": "sbo",
+        "sport": sport_slug, "count": len(matches),
+        "arb_count": arb_count, "ts": _now_iso(),
+    })
     if arb_count:
-        _publish(ARB_CHANNEL, {"event": "arb_found", "sport": sport_slug,
-                                "arb_count": arb_count, "ts": _now_iso()})
+        _publish(ARB_CHANNEL, {
+            "event": "arb_found", "sport": sport_slug,
+            "arb_count": arb_count, "ts": _now_iso(),
+        })
     _schedule_alignment(sport_slug, countdown=60)
-    return {"ok": True, "count": len(matches), "arb_count": arb_count, "latency_ms": latency}
+    return {"ok": True, "count": len(matches),
+            "arb_count": arb_count, "latency_ms": latency}
 
 
 @celery.task(name="tasks.sbo.harvest_all_upcoming", soft_time_limit=60, time_limit=120)
