@@ -336,7 +336,7 @@ def merge_and_broadcast(sport_slug: str) -> dict:
             for out_key, bk_odds in outcomes.items():
                 if bk_odds:
                     best_bk = max(bk_odds, key=lambda b: bk_odds[b])
-                    match["best_odds"][f"{mkt_slug}__{out_key}"] = {
+                    match["best_odds"][f"{mkt_slug}____{out_key}"] = {
                         "bookmaker": best_bk, "odd": bk_odds[best_bk],
                     }
     cache_set(f"odds:upcoming:all:{sport_slug}", {
@@ -447,7 +447,7 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
     t0      = time.perf_counter()
     matches = []
     try:
-        from app.workers.sp_harvester import fetch_upcoming_stream
+        from app.workers.sp_harvester_ import fetch_upcoming_stream
         logger.info("[sp] %s → fetching up to %d matches", sport_slug, max_matches)
         for match in fetch_upcoming_stream(
             sport_slug, fetch_full_markets=True,
@@ -516,24 +516,24 @@ def sp_harvest_all_upcoming() -> dict:
 # =============================================================================
 
 def _fetch_bt_by_betradar_id(
-    sp_match: dict, bt_sport_id: int,
+    sp_match: dict, sport_slug: str, # CRITICAL FIX: Pass sport_slug directly
 ) -> tuple[dict, dict[str, dict[str, float]]]:
     """BT: parent_match_id == betradar_id. Call get_full_markets directly."""
     from app.workers.bt_harvester import get_full_markets
     markets = get_full_markets(
-        sp_match["betradar_id"],   # ← this IS the BT parent_match_id
-        bt_sport_id,
+        sp_match["betradar_id"],   
+        sport_slug,                
     )
     return sp_match, markets
 
 
 def _fetch_od_by_betradar_id(
-    sp_match: dict, od_sport_id: int,
+    sp_match: dict, od_sport_id: int, 
 ) -> tuple[dict, dict[str, dict[str, float]]]:
     """OD: event id == betradar_id. Call fetch_event_detail directly."""
     from app.workers.od_harvester import fetch_event_detail
     markets, _meta = fetch_event_detail(
-        sp_match["betradar_id"],   # ← this IS the OD event id
+        sp_match["betradar_id"],   
         od_sport_id,
     )
     return sp_match, markets
@@ -554,7 +554,6 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
     Both use betradar_id as the universal event key — no list fetch needed.
     Runs _CROSS_BK_WORKERS threads in parallel for each bookmaker.
     """
-    from app.workers.bt_harvester import slug_to_bt_sport_id
     from app.workers.od_harvester import slug_to_od_sport_id
 
     cached = cache_get(f"sp:upcoming:{sport_slug}")
@@ -567,7 +566,6 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
     if not with_br:
         return {"ok": True, "bt_enriched": 0, "od_enriched": 0}
 
-    bt_sport_id = slug_to_bt_sport_id(sport_slug)
     od_sport_id = slug_to_od_sport_id(sport_slug)
 
     logger.info("[cross_bk] %s: direct-fetching BT+OD for %d ids (%d workers)",
@@ -581,7 +579,8 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
     try:
         with ThreadPoolExecutor(max_workers=_CROSS_BK_WORKERS) as pool:
             bt_futs = {
-                pool.submit(_fetch_bt_by_betradar_id, m, bt_sport_id): m
+                # CRITICAL FIX: Pass the string sport_slug to Betika
+                pool.submit(_fetch_bt_by_betradar_id, m, sport_slug): m
                 for m in with_br
             }
             for fut in as_completed(bt_futs):
