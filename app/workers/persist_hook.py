@@ -22,15 +22,26 @@ def _sort_batch(match_dicts: list[dict | Any]) -> list[dict | Any]:
     """
     Sorts a batch of matches by a deterministic key before DB operations.
     CRITICAL FIX: By ensuring all workers attempt to lock/update database rows 
-    in the exact same alphabetical order, we prevent PostgreSQL deadlocks.
+    in the exact same order, we prevent PostgreSQL deadlocks.
     """
     def sort_key(m):
         if isinstance(m, dict):
-            # Prefer parent_match_id, fallback to home_team to guarantee consistent order
-            return str(m.get("parent_match_id") or m.get("home_team") or "")
+            # Look for the universal betradar_id first, then platform-specific IDs, then fallback to string
+            return str(
+                m.get("betradar_id") or 
+                m.get("parent_match_id") or 
+                m.get("bt_parent_id") or 
+                m.get("od_parent_id") or 
+                m.get("home_team") or 
+                ""
+            )
         else:
             # If it's an object (e.g., CombinedMatch), use getattr
-            return str(getattr(m, "parent_match_id", None) or getattr(m, "home_team", ""))
+            return str(
+                getattr(m, "betradar_id", None) or 
+                getattr(m, "parent_match_id", None) or 
+                getattr(m, "home_team", "")
+            )
 
     return sorted(match_dicts, key=sort_key)
 
