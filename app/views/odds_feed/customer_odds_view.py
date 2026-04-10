@@ -389,9 +389,6 @@ def _mode_time_filter(q, mode: str):
     _dead        = list(_TERMINAL_STATUSES)
 
     if mode == "upcoming":
-        # PRE_MATCH only: starts strictly in the future AND not already live/terminal.
-        # Status check is the primary gate — if the DB has flagged a match as IN_PLAY
-        # or any terminal value it must be excluded regardless of start_time arithmetic.
         return q.filter(
             UnifiedMatch.status.notin_(_no_upcoming),
             or_(
@@ -403,7 +400,6 @@ def _mode_time_filter(q, mode: str):
             ),
         )
     elif mode == "live":
-        # IN_PLAY only: started but within the live window, not terminal
         return q.filter(
             UnifiedMatch.start_time <= now,
             UnifiedMatch.start_time >  live_cutoff,
@@ -730,7 +726,6 @@ def _stream_matches(
             batch_matches = []
             for um in um_list:
                 db_st = getattr(um, "status", None)
-                # Strict race-condition guard: upcoming must not include live/terminal rows
                 if mode == "upcoming" and not _is_upcoming_safe(db_st, um.start_time):
                     continue
                 elif mode != "upcoming" and not _is_available(db_st, um.start_time):
@@ -790,7 +785,6 @@ def _load_db_matches(sport_slug, mode="upcoming", page=1, per_page=20,
     result = []
     for um in um_list:
         db_st = getattr(um, "status", None)
-        # Race-condition guard: upcoming uses the strict check (blocks IN_PLAY/LIVE too)
         if mode == "upcoming" and not _is_upcoming_safe(db_st, um.start_time):
             total -= 1
             continue
@@ -881,13 +875,11 @@ def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
     db_status  = m.get("status") or "PRE_MATCH"
     status_out = _effective_status(db_status, start_dt)
 
-    # For upcoming: block anything whose raw DB status is already live/terminal
     if mode == "upcoming":
         if (db_status or "").upper() in _EXCLUDE_FROM_UPCOMING:
             return None
         if status_out != "PRE_MATCH":
             return None
-    # For live: hard-exclude terminal statuses
     if mode == "live" and status_out in _TERMINAL_STATUSES:
         return None
     if mode == "live"     and status_out != "IN_PLAY":
@@ -1397,7 +1389,9 @@ def get_match_full_markets(parent_match_id: str):
     bt_external_id = parent_match_id
     try:
         from app.workers.bt_harvester import get_full_markets
-        fresh_bt = get_full_markets(bt_external_id, bt_sport_id=14)
+        sport_slug = _normalise_sport_slug(um.sport_name or "soccer")
+        # CRITICAL BUG FIX: Pass sport_slug to dynamic mapper instead of bt_sport_id integer
+        fresh_bt = get_full_markets(bt_external_id, sport_slug=sport_slug)
     except Exception as exc:
         fetch_errors["bt"] = str(exc)
 
