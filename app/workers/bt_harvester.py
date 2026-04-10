@@ -674,32 +674,51 @@ def get_live_poller() -> BetikaLivePoller | None:
 # STANDALONE RUNNER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def run_live_loop(interval: float = 1.5) -> None:
-    import logging as _log
-    _log.basicConfig(level=_log.INFO, format="%(levelname)s  %(message)s")
-    print("── Betika live harvester (Ctrl-C to stop) ──")
-    prev: dict[int, str] = {}
+def run_live_loop(interval: float = 1.0) -> None:
+    from app.workers.live_broadcaster import broadcast_event_state, broadcast_market_odds
+    import redis, os, json
+    
+    r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+    last_hash = ""
+
     while True:
         tick = time.time()
         try:
-            matches  = fetch_live_matches()
-            by_sport: dict[int, list] = {}
-            for m in matches:
-                by_sport.setdefault(m["bt_sport_id"], []).append(m)
-            for sid, sm in by_sport.items():
-                h = _payload_hash(sm)
-                if h != prev.get(sid):
-                    prev[sid] = h
-                    print(f"  [{time.strftime('%H:%M:%S')}] sport={sid} "
-                          f"count={len(sm)}  hash={h[:8]}")
-        except KeyboardInterrupt:
-            print("\nStopped.")
-            break
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Live loop error: %s", exc)
-        elapsed = time.time() - tick
-        time.sleep(max(0, interval - elapsed))
+            matches = fetch_live_matches()
+            new_hash = _payload_hash(matches)
 
+            if new_hash != last_hash:
+                last_hash = new_hash
+                for m in matches:
+                    betradar_id = m.get("betradar_id") or m.get("parent_match_id")
+                    if not betradar_id: continue
+                    
+                    # Track State
+                    state_key = f"bt:state:{betradar_id}"
+                    prev_state = json.loads(r.get(state_key) or "{}")
+                    new_score = m.get("current_score", "")
+                    new_phase = m.get("match_status", "")
+                    
+                    if prev_state.get("score") != new_score or prev_state.get("phase") != new_phase:
+                        new_state = {"score": new_score, "phase": new_phase, "match_time": m.get("match_time", "")}
+                        broadcast_event_state(betradar_id, "bt", prev_state, new_state)
+                        r.setex(state_key, 3600, json.dumps(new_state))
+                        
+                    # Track Odds
+                    for mkt in m.get("markets", []):
+                        slug = mkt["slug"]
+                        outcomes = {o["key"]: o["odds"] for o in mkt.get("outcomes", []) if o["odds"] > 1}
+                        if outcomes:
+                            # You can add the same prev_odd check here as OdiBets to reduce noise, 
+                            # or just broadcast it and let the frontend filter it.
+                            broadcast_market_odds(betradar_id, "bt", slug, outcomes)
+
+        except Exception as exc:
+            logger.error("Live loop error: %s", exc)
+
+        elapsed = time.time() - tick
+        time.sleep(max(0.0, interval - elapsed))
+        
 
 def run_upcoming_snapshot(sport_slug: str = "soccer") -> None:
     matches = fetch_upcoming_matches(sport_slug=sport_slug, max_pages=1)

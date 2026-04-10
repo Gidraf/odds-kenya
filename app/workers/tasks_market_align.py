@@ -27,9 +27,14 @@ _LOCAL_SPORTS = [
 
 _ALIGN_WINDOW_DAYS = 60
 
-# =============================================================================
-# CORE MARKET MERGING
-# =============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# CORE MARKET MERGING & ARB DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+SAFE_ARB_MARKETS = {
+    "match_winner", "1x2", "moneyline", "btts", "both_teams_score",
+    "double_chance", "odd_even"
+}
 
 def _extract_price(odd_data: Any) -> float:
     if isinstance(odd_data, (int, float)):
@@ -114,18 +119,38 @@ def _merge_bookmaker_markets(bmo_rows: list, bk_map: dict[int, Any]) -> tuple[di
 def _detect_arbs(best_markets: dict[str, dict], match_id: int, home_team: str, away_team: str, sport: str) -> list[dict]:
     arbs = []
     for mkt_slug, outcomes in best_markets.items():
+        # 1. Filter safe markets only
+        is_safe = (
+            mkt_slug in SAFE_ARB_MARKETS or
+            "over_under" in mkt_slug or
+            "asian_handicap" in mkt_slug
+        )
+        if not is_safe:
+            continue
+
         if len(outcomes) < 2:
             continue
-            
+
+        # 2. Strict outcome count verification
+        if mkt_slug in ("match_winner", "1x2") and len(outcomes) != 3:
+            continue
+        if ("over_under" in mkt_slug or mkt_slug in ("btts", "both_teams_score", "odd_even")) and len(outcomes) != 2:
+            continue
+
         all_bk_ids = set()
         prices     = {}
+        is_complete = True
+
         for outcome, data in outcomes.items():
             price = data.get("best_price", 0.0)
             if price > 1.0:
                 prices[outcome] = price
                 all_bk_ids.add(data.get("best_bookmaker_id"))
+            else:
+                is_complete = False
 
-        if len(prices) < 2 or len(all_bk_ids) < 2:
+        # 3. Final validation: Must have all legs, must span multiple bookmakers
+        if not is_complete or len(prices) < 2 or len(all_bk_ids) < 2:
             continue
 
         arb_sum = sum(1.0 / p for p in prices.values())
@@ -313,7 +338,6 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
             if not batch_ums:
                 break
                 
-            # CRITICAL DEADLOCK FIX: Sort the batch to prevent overlapping lock collisions
             batch_ums = sorted(batch_ums, key=lambda m: m.id)
 
             batch_stats = []

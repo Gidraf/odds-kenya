@@ -700,30 +700,40 @@ class OdiBetsLivePoller:
                 logger.error("OD live poll error: %s", exc)
             elapsed = time.time() - tick
             time.sleep(max(0.1, self.interval - elapsed))
-
     def _process_batch(self, matches: list[dict]) -> None:
-        by_sport: dict[int, list[dict]] = {}
+        from app.workers.live_broadcaster import broadcast_event_state, broadcast_market_odds
+        
         for m in matches:
-            by_sport.setdefault(m["od_sport_id"], []).append(m)
-        for od_sport_id, sport_matches in by_sport.items():
-            new_hash = _payload_hash(sport_matches)
-            if new_hash == self._prev_hashes.get(od_sport_id, ""):
-                continue
-            self._prev_hashes[od_sport_id] = new_hash
-            sport_slug = od_sport_to_slug(od_sport_id)
-            self.redis.set(
-                _LIVE_DATA_KEY.format(sport_id=od_sport_id),
-                json.dumps(sport_matches, ensure_ascii=False), ex=60,
-            )
-            events = self._build_delta_events(sport_matches, od_sport_id)
-            if events:
-                channel = _LIVE_CHAN_KEY.format(sport_id=od_sport_id)
-                payload = json.dumps({
-                    "type": "batch_update", "sport_id": od_sport_id,
-                    "sport_slug": sport_slug, "events": events,
-                    "total": len(sport_matches), "ts": time.time(),
-                }, ensure_ascii=False)
-                self.redis.publish(channel, payload)
+            betradar_id = m.get("betradar_id")
+            if not betradar_id: continue
+                
+            cache_key = f"od:state:{betradar_id}"
+            prev_state_raw = self.redis.get(cache_key)
+            prev_state = json.loads(prev_state_raw) if prev_state_raw else {}
+            
+            current_score = str(m.get("current_score", ""))
+            current_phase = str(m.get("event_status", ""))
+            
+            # Broadcast State Changes (Goals/Halftime)
+            if prev_state.get("score") != current_score or prev_state.get("phase") != current_phase:
+                new_state = {"score": current_score, "phase": current_phase, "match_time": m.get("match_time", "")}
+                broadcast_event_state(betradar_id, "od", prev_state, new_state)
+                self.redis.setex(cache_key, 3600, json.dumps(new_state))
+
+            # Broadcast Market Changes
+            markets = m.get("markets") or {}
+            for slug, outcomes in markets.items():
+                changed_outcomes = {}
+                for outcome_key, odd_val in outcomes.items():
+                    odd_cache_key = f"{m['od_match_id']}:{slug}:{outcome_key}"
+                    prev_val = self._prev_odds.get(odd_cache_key)
+                    
+                    if prev_val is None or abs(odd_val - prev_val) > 0.001:
+                        self._prev_odds[odd_cache_key] = odd_val
+                        changed_outcomes[outcome_key] = odd_val
+                        
+                if changed_outcomes:
+                    broadcast_market_odds(betradar_id, "od", slug, changed_outcomes)
 
     def _build_delta_events(self, matches: list[dict], od_sport_id: int) -> list[dict]:
         events: list[dict] = []
