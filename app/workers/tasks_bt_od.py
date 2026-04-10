@@ -265,11 +265,17 @@ def _build_multi_bk_matches(
             "bookmakers":     bookmakers,
             "markets_by_bk":  markets_by_bk,
             "bk_slugs":       sorted(bookmakers.keys()),
-            # persist helpers
+            # persist helpers: dynamically lookup the right ID, fallback to shared betradar_id
             "bk_ids": {
                 slug: str(
-                    m.get("bt_match_id") or m.get("od_match_id") or
-                    m.get("sp_game_id")  or m.get("match_id") or ""
+                    m.get(f"{slug}_match_id") or 
+                    m.get(f"{slug}_game_id") or 
+                    m.get(f"{slug}_event_id") or 
+                    m.get(f"{slug}_parent_id") or 
+                    m.get("match_id") or 
+                    m.get("event_id") or 
+                    betradar_id or 
+                    ""
                 )
                 for slug, m in sources.items()
             },

@@ -135,18 +135,35 @@ class EntityResolver:
                 external_name=external_name, betradar_id=betradar_id,
             )
         except Exception as exc: logger.debug("entity map error: %s", exc)
-
     def _map_bookmaker_match(self, bk_slug, match_id, external_match_id, betradar_id=None):
         bk_id = self._get_bookmaker_id(bk_slug)
-        if not bk_id or not match_id or not external_match_id: return
+        
+        # 1. Log exactly WHY it's skipping the link
+        if not bk_id or not match_id or not external_match_id: 
+            logger.warning(
+                f"⚠️ [Linker Warning] Skipping link for '{bk_slug}'. Missing data -> "
+                f"DB bk_id: {bk_id}, DB match_id: {match_id}, "
+                f"Received external_match_id: '{external_match_id}'"
+            )
+            return
+
         try:
             from app.models.bookmakers_model import BookmakerMatchLink
             BookmakerMatchLink.upsert(
                 match_id=match_id, bookmaker_id=bk_id,
                 external_match_id=external_match_id, betradar_id=betradar_id,
             )
-        except Exception as exc: logger.debug("match link error: %s", exc)
+            # Optional: Log success if you want to see it working
+            # logger.debug(f"✅ Linked {bk_slug} match {external_match_id} to DB Match {match_id}")
 
+        except Exception as exc: 
+            # 2. Log database errors with the FULL traceback
+            logger.error(
+                f"❌ [Linker Error] DB failure while upserting link for {bk_slug} "
+                f"(Match: {match_id}, ExtID: {external_match_id}). "
+                f"Error: {str(exc)}", 
+                exc_info=True  # <--- This forces Python to print the full stack trace!
+            )
     def persist_combined_match(self, cm) -> int | None:
         from app.models.odds_model import (
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
