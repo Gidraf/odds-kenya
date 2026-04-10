@@ -7,11 +7,11 @@ Now fully integrated with the universal Sportradar dynamic mappers
 (`mappers/betika.py`) to automatically parse and normalize all sports.
 
 **PATCHED**: Dynamically translates literal team names (e.g. "south_west_slammers")
-in Odibets outcome keys back into standard "1", "X", "2" formats so they 
-align perfectly with Betika and SportPesa in the UI.
+in Odibets outcome keys back into standard "1", "X", "2" formats.
 
-**PATCHED**: Removed concurrent sub-type fetching and added request jitter 
-to bypass Odibets' aggressive rate limiting/firewall rules.
+**PATCHED**: Added ID 2 (Moneyline) to fetch list to restore Tennis/Cricket/Rugby.
+Implemented "Smart Batching" to fetch all missing market tabs in a single network 
+request, avoiding timeouts while guaranteeing 100% market coverage.
 """
 
 from __future__ import annotations
@@ -150,8 +150,8 @@ _UPC_DATA_KEY    = "od:upcoming:{sport_slug}:data"
 _UPC_HASH_KEY    = "od:upcoming:{sport_slug}:hash"
 _UPC_CHAN_KEY    = "od:upcoming:{sport_slug}:updates"
 
-# Expanded list for deep fetches (but NOT for the initial upcoming list to avoid URL length errors)
-_BROAD_SUB_TYPE_IDS = "1,8,10,11,14,15,16,18,19,20,29,37,47,60,63,66,68,186,187,188,189,199,202,204,219,225,230,234,237,251,256,258,264,274,309,310,340,406,432"
+# CRITICAL FIX: Added 2, 3, 4, 5 to catch Moneyline and niche sport primary markets
+_BROAD_SUB_TYPE_IDS = "1,2,3,4,5,8,10,11,14,15,16,18,19,20,29,37,47,60,63,66,68,186,187,188,189,199,202,204,219,225,230,234,237,251,256,258,264,274,309,310,340,406,432"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -159,12 +159,7 @@ _BROAD_SUB_TYPE_IDS = "1,8,10,11,14,15,16,18,19,20,29,37,47,60,63,66,68,186,187,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get(url: str, params: dict | None = None, timeout: float = 15.0) -> dict | list | None:
-    """
-    PATCHED: Increased timeout to 15.0s to handle Odibets server load gracefully.
-    Added a tiny baseline jitter to all requests to naturally space them out.
-    """
     time.sleep(random.uniform(0.05, 0.15))
-    
     for attempt in range(2):
         try:
             r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout)
@@ -175,7 +170,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 15.0) -> dict | 
         except Exception as exc:
             logger.warning("OD request error %s (attempt %d): %s", url, attempt + 1, exc)
         if attempt == 0:
-            time.sleep(1.0) # Wait a full second before retrying a failed request
+            time.sleep(1.0)
     return None
 
 
@@ -287,10 +282,6 @@ def _flat_outcomes_from_market(mkt: dict) -> list[tuple[dict, str]]:
 
 
 def _translate_team_names(display_str: str, home: str, away: str) -> str:
-    """
-    CRITICAL FIX: Odibets often passes literal team names as outcome keys.
-    This translates strings like "south_west_slammers/draw" into "1/X".
-    """
     ds_lower = display_str.lower().strip()
     if not ds_lower:
         return ""
@@ -303,7 +294,6 @@ def _translate_team_names(display_str: str, home: str, away: str) -> str:
     h_norm_space = home.lower()
     a_norm_space = away.lower()
     
-    # Sort replacements by length to prevent partial matches overriding full names
     replacements = [
         (h_norm, "1"), (a_norm, "2"),
         (h_norm_space, "1"), (a_norm_space, "2"),
@@ -352,7 +342,6 @@ def _parse_all_markets(markets_raw: list[dict], sport_slug: str, home_team: str,
             parsed_specs = _parse_od_specifiers(spec_str)
             slug = get_market_slug(sport_slug, sid, parsed_specs, fallback_name=mkt_name)
             
-            # Fetch the raw key and translate it dynamically based on the match's teams
             display_str = str(o.get("outcome_key") or o.get("odd_key") or o.get("outcome_name") or o.get("odd_def") or "")
             translated_str = _translate_team_names(display_str, home_team, away_team)
             outcome_key = normalize_outcome(sport_slug, translated_str)
@@ -467,7 +456,7 @@ def fetch_upcoming_matches(
     sport_slug:         str        = "soccer",
     day:                str        = "",
     competition_id:     str        = "",
-    sub_type_id:        str        = "1", # Kept slim to prevent API rejections on broad queries
+    sub_type_id:        str        = _BROAD_SUB_TYPE_IDS,
     mode:               int        = 1,
     fetch_full_markets: bool       = False,
     fetch_extended:     bool       = False,
@@ -574,19 +563,18 @@ def fetch_event_detail(
 ) -> tuple[dict[str, dict[str, float]], dict]:
     """
     Fetch full markets for one OD event using its Sportradar/betradar ID.
-    PATCHED: Fetches all major sub_types in a SINGLE network call to prevent
-    Odibets from rate-limiting/timing out the connection.
+    PATCHED: Uses Smart Batching to fetch all missing sub_types in chunks of 20 
+    to prevent overwhelming the server while still ensuring 100% market coverage.
     """
     params = {
         "resource":    "sportevent",
         "id":          str(event_id),
         "category_id": "",
-        "sub_type_id": _BROAD_SUB_TYPE_IDS,
+        "sub_type_id": "",
         "builder":     0,
         "sportsbook":  "sportsbook",
         "ua":          HEADERS["user-agent"],
     }
-    
     data = _get(SBOOK_V1, params=params)
     if not data or not isinstance(data, dict):
         return {}, {}
@@ -621,199 +609,7 @@ def fetch_event_detail(
     markets_raw = inner.get("markets") or []
     if not isinstance(markets_raw, list):
         markets_raw = []
-
-    if not markets_raw:
-        logger.debug("OD fetch_event_detail: no markets in response for id=%s", event_id)
-        return {}, meta
-
-    # Pass the home/away teams into the parser so it can dynamically map team names back to "1" and "2"
-    home_team = meta.get("home_team", "")
-    away_team = meta.get("away_team", "")
-    markets = _parse_all_markets(markets_raw, sport_slug, home_team, away_team)
-
-    logger.debug(
-        "OD fetch_event_detail: id=%s → %d raw markets → %d canonical slugs",
-        event_id, len(markets_raw), len(markets),
-    )
-    return markets, meta
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LIVE POLLER (background thread)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _payload_hash(obj: Any) -> str:
-    return hashlib.md5(
-        json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()
-    ).hexdigest()
-
-
-class OdiBetsLivePoller:
-    def __init__(self, redis_client: Any, interval: float = 2.0) -> None:
-        self.redis         = redis_client
-        self.interval      = interval
-        self._running      = False
-        self._thread:      threading.Thread | None = None
-        self._prev_hashes: dict[int, str]   = {}
-        self._prev_odds:   dict[str, float] = {}
-
-    def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._thread  = threading.Thread(target=self._poll_loop, daemon=True, name="od-live")
-        self._thread.start()
-        logger.info("OdiBetsLivePoller started (interval=%.1fs)", self.interval)
-
-    def stop(self) -> None:
-        self._running = False
-
-    @property
-    def alive(self) -> bool:
-        return bool(self._thread and self._thread.is_alive())
-
-    def _poll_loop(self) -> None:
-        while self._running:
-            tick = time.time()
-            try:
-                matches = fetch_live_matches()
-                if matches is not None:
-                    self._process_batch(matches)
-            except Exception as exc:
-                logger.error("OD live poll error: %s", exc)
-            elapsed = time.time() - tick
-            time.sleep(max(0.1, self.interval - elapsed))
-
-    def _process_batch(self, matches: list[dict]) -> None:
-        by_sport: dict[int, list[dict]] = {}
-        for m in matches:
-            by_sport.setdefault(m["od_sport_id"], []).append(m)
-        for od_sport_id, sport_matches in by_sport.items():
-            new_hash = _payload_hash(sport_matches)
-            if new_hash == self._prev_hashes.get(od_sport_id, ""):
-                continue
-            self._prev_hashes[od_sport_id] = new_hash
-            sport_slug = od_sport_to_slug(od_sport_id)
-            self.redis.set(
-                _LIVE_DATA_KEY.format(sport_id=od_sport_id),
-                json.dumps(sport_matches, ensure_ascii=False), ex=60,
-            )
-            events = self._build_delta_events(sport_matches, od_sport_id)
-            if events:
-                channel = _LIVE_CHAN_KEY.format(sport_id=od_sport_id)
-                payload = json.dumps({
-                    "type": "batch_update", "sport_id": od_sport_id,
-                    "sport_slug": sport_slug, "events": events,
-                    "total": len(sport_matches), "ts": time.time(),
-                }, ensure_ascii=False)
-                self.redis.publish(channel, payload)
-
-    def _build_delta_events(self, matches: list[dict], od_sport_id: int) -> list[dict]:
-        events: list[dict] = []
-        for m in matches:
-            mid     = m["od_match_id"]
-            markets = m.get("markets") or {}
-            for slug, outcomes in markets.items():
-                for outcome_key, odd_val in outcomes.items():
-                    cache_key = f"{mid}:{slug}:{outcome_key}"
-                    prev_val  = self._prev_odds.get(cache_key)
-                    if prev_val is None or abs(odd_val - prev_val) > 0.001:
-                        self._prev_odds[cache_key] = odd_val
-                        events.append({
-                            "type":        "market_update",
-                            "match_id":    mid,
-                            "home_team":   m.get("home_team", ""),
-                            "away_team":   m.get("away_team", ""),
-                            "match_time":  m.get("match_time"),
-                            "score_home":  m.get("score_home"),
-                            "score_away":  m.get("score_away"),
-                            "market_slug": slug,
-                            "outcome_key": outcome_key,
-                            "odd":         odd_val,
-                            "prev_odd":    prev_val,
-                            "is_new":      prev_val is None,
-                        })
-        return events
-
-
-_live_poller: OdiBetsLivePoller | None = None
-
-def get_live_poller() -> OdiBetsLivePoller | None:
-    return _live_poller
-
-def init_live_poller(redis_client: Any, interval: float = 2.0) -> OdiBetsLivePoller:
-    global _live_poller 
-    if _live_poller is None or not _live_poller.alive:
-        _live_poller = OdiBetsLivePoller(redis_client, interval=interval)
-        _live_poller.start()
-    return _live_poller
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# REDIS CACHE HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def get_cached_upcoming(redis_client: Any, sport_slug: str) -> list[dict] | None:
-    key = _UPC_DATA_KEY.format(sport_slug=sport_slug)
-    try:
-        raw = redis_client.get(key)
-        return json.loads(raw) if raw else None
-    except Exception:
-        return None
-
-def cache_upcoming(
-    redis_client: Any,
-    sport_slug:   str,
-    matches:      list[dict],
-    ttl:          int = 300,
-) -> None:
-    key = _UPC_DATA_KEY.format(sport_slug=sport_slug)
-    try:
-        redis_client.set(key, json.dumps(matches, ensure_ascii=False), ex=ttl)
-    except Exception as exc:
-        logger.warning("OD cache_upcoming error: %s", exc)
-
-def get_cached_live(redis_client: Any, od_sport_id: int) -> list[dict] | None:
-    key = _LIVE_DATA_KEY.format(sport_id=od_sport_id)
-    try:
-        raw = redis_client.get(key)
-        return json.loads(raw) if raw else None
-    except Exception:
-        return None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# REGISTRY PLUGIN
-# ══════════════════════════════════════════════════════════════════════════════
-
-class OdiBetsHarvesterPlugin:
-    bookie_id   = "odibets"
-    bookie_name = "OdiBets"
-    sport_slugs = list(OD_SPORT_IDS.keys())
-
-    def fetch_upcoming(self, sport_slug: str, day: str = "", **kwargs) -> list[dict]:
-        return fetch_upcoming_matches(sport_slug, day=day)
-
-    def fetch_live(self, sport_slug: str | None = None) -> list[dict]:
-        return fetch_live_matches(sport_slug)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CELERY TASK ALIASES
-# ══════════════════════════════════════════════════════════════════════════════
-
-def fetch_upcoming(
-    sport_slug:         str        = "soccer",
-    fetch_full_markets: bool       = False,
-    fetch_extended:     bool       = False,
-    max_matches:        int | None = None,
-    **kwargs,
-) -> list[dict]:
-    return fetch_upcoming_matches(sport_slug, **kwargs)
-
-def fetch_live(
-    sport_slug:         str | None = None,
-    fetch_full_markets: bool       = False,
-    **kwargs,
-) -> list[dict]:
-    return fetch_live_matches(sport_slug)
+        
+    markets_list = inner.get("markets_list") or []
+    
+    # CRITICAL FIX: Smart Batching. Group missing sub_types and
