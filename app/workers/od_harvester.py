@@ -9,6 +9,9 @@ Now fully integrated with the universal Sportradar dynamic mappers
 **PATCHED**: Dynamically translates literal team names (e.g. "south_west_slammers")
 in Odibets outcome keys back into standard "1", "X", "2" formats so they 
 align perfectly with Betika and SportPesa in the UI.
+
+**PATCHED**: Removed concurrent sub-type fetching and added request jitter 
+to bypass Odibets' aggressive rate limiting/firewall rules.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import threading
 import time
 from datetime import date as _date
@@ -154,7 +158,13 @@ _BROAD_SUB_TYPE_IDS = "1,8,10,11,14,15,16,18,19,20,29,37,47,60,63,66,68,186,187,
 # HTTP
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _get(url: str, params: dict | None = None, timeout: float = 10.0) -> dict | list | None:
+def _get(url: str, params: dict | None = None, timeout: float = 15.0) -> dict | list | None:
+    """
+    PATCHED: Increased timeout to 15.0s to handle Odibets server load gracefully.
+    Added a tiny baseline jitter to all requests to naturally space them out.
+    """
+    time.sleep(random.uniform(0.05, 0.15))
+    
     for attempt in range(2):
         try:
             r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout)
@@ -165,7 +175,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 10.0) -> dict | 
         except Exception as exc:
             logger.warning("OD request error %s (attempt %d): %s", url, attempt + 1, exc)
         if attempt == 0:
-            time.sleep(0.5)
+            time.sleep(1.0) # Wait a full second before retrying a failed request
     return None
 
 
@@ -564,16 +574,19 @@ def fetch_event_detail(
 ) -> tuple[dict[str, dict[str, float]], dict]:
     """
     Fetch full markets for one OD event using its Sportradar/betradar ID.
+    PATCHED: Fetches all major sub_types in a SINGLE network call to prevent
+    Odibets from rate-limiting/timing out the connection.
     """
     params = {
         "resource":    "sportevent",
         "id":          str(event_id),
         "category_id": "",
-        "sub_type_id": "",
+        "sub_type_id": _BROAD_SUB_TYPE_IDS,
         "builder":     0,
         "sportsbook":  "sportsbook",
         "ua":          HEADERS["user-agent"],
     }
+    
     data = _get(SBOOK_V1, params=params)
     if not data or not isinstance(data, dict):
         return {}, {}
@@ -608,39 +621,6 @@ def fetch_event_detail(
     markets_raw = inner.get("markets") or []
     if not isinstance(markets_raw, list):
         markets_raw = []
-        
-    markets_list = inner.get("markets_list") or []
-    if isinstance(markets_list, list):
-        fetched_sub_types = {str(m.get("sub_type_id")) for m in markets_raw if m.get("sub_type_id")}
-        missing_sub_types = []
-        for ml in markets_list:
-            stid = str(ml.get("sub_type_id"))
-            if stid and stid not in fetched_sub_types:
-                missing_sub_types.append(stid)
-                
-        if missing_sub_types:
-            logger.debug("OD fetch_event_detail: fetching %d missing market tabs for event %s", len(missing_sub_types), event_id)
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            
-            with ThreadPoolExecutor(max_workers=5) as pool:
-                futs = {}
-                for stid in missing_sub_types:
-                    sub_params = params.copy()
-                    sub_params["sub_type_id"] = stid
-                    futs[pool.submit(_get, SBOOK_V1, sub_params)] = stid
-                    
-                for fut in as_completed(futs):
-                    stid = futs[fut]
-                    try:
-                        sub_data = fut.result()
-                        if sub_data and isinstance(sub_data, dict):
-                            sub_inner = sub_data.get("data")
-                            if isinstance(sub_inner, dict):
-                                sub_markets = sub_inner.get("markets") or []
-                                if isinstance(sub_markets, list):
-                                    markets_raw.extend(sub_markets)
-                    except Exception as exc:
-                        logger.warning("OD fetch_event_detail: failed to fetch sub_type_id %s for event %s: %s", stid, event_id, exc)
 
     if not markets_raw:
         logger.debug("OD fetch_event_detail: no markets in response for id=%s", event_id)
