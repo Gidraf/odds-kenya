@@ -35,27 +35,30 @@ TASK_ROUTES: dict[str, dict] = {
     "harvest.merge_broadcast":             {"queue": "harvest"},
     "harvest.value_bets":                  {"queue": "ev_arb"},
     "harvest.cleanup":                     {"queue": "harvest"},
- 
+
     # ── SportPesa (source of truth) ───────────────────────────────────────────
     "tasks.sp.harvest_sport":              {"queue": "harvest"},
     "tasks.sp.harvest_all_upcoming":       {"queue": "harvest"},
     "tasks.sp.harvest_all_live":           {"queue": "live"},
-    # New cross-BK and analytics tasks
-    "tasks.sp.cross_bk_enrich":           {"queue": "harvest"},   # BT+OD by betradar_id
-    "tasks.sp.enrich_analytics":          {"queue": "harvest"},   # Sportradar stats
-    "tasks.sp.get_match_analytics":       {"queue": "harvest"},   # on-demand analytics
- 
-    # ── Betika (manual trigger only — NOT scheduled) ───────────────────────────
+    "tasks.sp.cross_bk_enrich":           {"queue": "harvest"},
+    "tasks.sp.enrich_analytics":          {"queue": "harvest"},
+    "tasks.sp.get_match_analytics":       {"queue": "harvest"},
+
+    # ── BT + OD standalone (team-name matching, chained from SP) ─────────────
+    "tasks.bt_od.harvest_sport":          {"queue": "harvest"},
+    "tasks.bt_od.harvest_all":            {"queue": "harvest"},
+
+    # ── Betika (manual trigger only — NOT scheduled) ──────────────────────────
     "tasks.bt.harvest_sport":              {"queue": "harvest"},
     "tasks.bt.enrich_sport":              {"queue": "harvest"},
-    "tasks.bt.harvest_all_upcoming":       {"queue": "harvest"},   # manual only
+    "tasks.bt.harvest_all_upcoming":       {"queue": "harvest"},
     "tasks.bt.harvest_all_live":           {"queue": "live"},
- 
+
     # ── OdiBets (manual trigger only — NOT scheduled) ─────────────────────────
     "tasks.od.harvest_sport":              {"queue": "harvest"},
-    "tasks.od.harvest_all_upcoming":       {"queue": "harvest"},   # manual only
+    "tasks.od.harvest_all_upcoming":       {"queue": "harvest"},
     "tasks.od.harvest_all_live":           {"queue": "live"},
- 
+
     # ── B2B / SBO (scheduled) ─────────────────────────────────────────────────
     "tasks.b2b.harvest_sport":             {"queue": "harvest"},
     "tasks.b2b.harvest_all_upcoming":      {"queue": "harvest"},
@@ -67,7 +70,7 @@ TASK_ROUTES: dict[str, dict] = {
     "tasks.sbo.harvest_all_upcoming":      {"queue": "harvest"},
     "tasks.sbo.harvest_all_live":          {"queue": "live"},
     "tasks.sp.poll_all_event_details":     {"queue": "live"},
- 
+
     # ── Ops ───────────────────────────────────────────────────────────────────
     "tasks.ops.compute_ev_arb":            {"queue": "ev_arb"},
     "tasks.ops.update_match_results":      {"queue": "results"},
@@ -84,6 +87,7 @@ TASK_ROUTES: dict[str, dict] = {
     "tasks.align.sport":                   {"queue": "default"},
     "tasks.align.all":                     {"queue": "results"},
 }
+
 _BK_NAME_TO_SLUG: dict[str, str] = {
     "sportpesa": "sp",
     "betika":    "bt",
@@ -119,7 +123,8 @@ def make_celery(app=None):
             "app.workers.tasks_ops",
             "app.workers.tasks_upcoming",
             "app.workers.tasks_live",
-            "app.workers.tasks_market_align",   # ← was "tasks.align.sport" (wrong)
+            "app.workers.tasks_market_align",
+            "app.workers.tasks_bt_od",        # ← BT+OD standalone team-name harvest
         ],
     )
     return celery_service
@@ -198,23 +203,23 @@ def _publish(channel: str, data: dict) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _SPORT_NORM: dict[str, str] = {
-    "football":     "Soccer",   "Football":     "Soccer",
-    "soccer":       "Soccer",   "Soccer":       "Soccer",
-    "basketball":   "Basketball", "Basketball": "Basketball",
-    "tennis":       "Tennis",   "Tennis":       "Tennis",
-    "ice-hockey":   "Ice Hockey", "ice hockey": "Ice Hockey",
-    "Ice Hockey":   "Ice Hockey", "Ice hockey": "Ice Hockey",
-    "volleyball":   "Volleyball", "Volleyball": "Volleyball",
-    "cricket":      "Cricket",  "Cricket":      "Cricket",
-    "rugby":        "Rugby",    "Rugby":        "Rugby",
-    "table-tennis": "Table Tennis", "table tennis": "Table Tennis",
+    "football":     "Soccer",      "Football":     "Soccer",
+    "soccer":       "Soccer",      "Soccer":       "Soccer",
+    "basketball":   "Basketball",  "Basketball":   "Basketball",
+    "tennis":       "Tennis",      "Tennis":       "Tennis",
+    "ice-hockey":   "Ice Hockey",  "ice hockey":   "Ice Hockey",
+    "Ice Hockey":   "Ice Hockey",  "Ice hockey":   "Ice Hockey",
+    "volleyball":   "Volleyball",  "Volleyball":   "Volleyball",
+    "cricket":      "Cricket",     "Cricket":      "Cricket",
+    "rugby":        "Rugby",       "Rugby":        "Rugby",
+    "table-tennis": "Table Tennis","table tennis":  "Table Tennis",
     "Table Tennis": "Table Tennis",
-    "handball":     "Handball", "Handball":     "Handball",
-    "mma":          "MMA",      "MMA":          "MMA",
-    "boxing":       "Boxing",   "Boxing":       "Boxing",
-    "darts":        "Darts",    "Darts":        "Darts",
-    "esoccer":      "eSoccer",  "eSoccer":      "eSoccer",
-    "efootball":    "eSoccer",  "eFootball":    "eSoccer",
+    "handball":     "Handball",    "Handball":     "Handball",
+    "mma":          "MMA",         "MMA":          "MMA",
+    "boxing":       "Boxing",      "Boxing":       "Boxing",
+    "darts":        "Darts",       "Darts":        "Darts",
+    "esoccer":      "eSoccer",     "eSoccer":      "eSoccer",
+    "efootball":    "eSoccer",     "eFootball":    "eSoccer",
 }
 
 
@@ -240,7 +245,6 @@ def _get_or_create_bookmaker(bk_name: str) -> int | None:
         from app.models.bookmakers_model import Bookmaker
         from app.extensions import db
 
-        # Resolve slug → full name if needed
         canonical = _BK_SLUG_TO_NAME.get(bk_name.lower(), bk_name)
 
         bm = Bookmaker.query.filter(
@@ -249,7 +253,6 @@ def _get_or_create_bookmaker(bk_name: str) -> int | None:
         if bm:
             return bm.id
 
-        # Also try partial match on original name
         if canonical != bk_name:
             bm = Bookmaker.query.filter(
                 Bookmaker.name.ilike(f"%{bk_name}%")
@@ -295,8 +298,8 @@ def _extract_betradar_id(m: dict) -> str:
         m.get("betradar_id")  or
         m.get("betradarId")   or
         m.get("sr_id")        or
-        m.get("bt_parent_id") or   # Betika parent_match_id == sportradar ID
-        m.get("od_parent_id") or   # OdiBets parent_match_id == sportradar ID
+        m.get("bt_parent_id") or
+        m.get("od_parent_id") or
         ""
     )
     val = str(raw).strip()
@@ -310,7 +313,7 @@ def _extract_betradar_id(m: dict) -> str:
 def _fuzzy_find_match(
     home:           str,
     away:           str,
-    start_time_raw, # str | int | float | datetime | None
+    start_time_raw,
 ) -> str | None:
     """
     Find an existing unified_match by home + away + start_time (±90 min window).
@@ -396,18 +399,30 @@ def _to_upsert_shape(m: dict) -> dict:
     Normalise a raw harvested match dict into the shape expected by
     _upsert_unified_match.
 
-    FIX (Bug 2): Extended fallback chain for match_id to cover all bookmaker
-    ID field names (bt_match_id, od_match_id, generic match_id, event_id).
-    Without this BT/OD/SBO matches had no parent_id and were silently dropped.
+    Extended fallback chain for match_id to cover all bookmaker
+    ID field names (bt_match_id, od_match_id, generic match_id, event_id,
+    and bt_od join_key).
     """
     betradar_id = _extract_betradar_id(m)
+
+    # For bt_od matched events: join_key may be "bt_{id}" or "fuzzy_{home}_{away}"
+    # Strip the prefix so we use the raw ID as parent_id when no betradar_id exists
+    join_key_raw = str(m.get("join_key") or "")
+    join_key_id  = ""
+    for prefix in ("br_", "bt_", "od_", "fuzzy_"):
+        if join_key_raw.startswith(prefix):
+            join_key_id = join_key_raw[len(prefix):]
+            break
+
     return {
         "match_id": (
             betradar_id
-            or m.get("bt_match_id")   # Betika own game ID
-            or m.get("od_match_id")   # OdiBets own game ID
-            or m.get("match_id")      # generic fallback used by BT, OD, SBO
-            or m.get("event_id")      # SBO / b2b_page fallback
+            or m.get("bt_match_id")
+            or m.get("od_match_id")
+            or m.get("match_id")
+            or m.get("event_id")
+            or join_key_id       # bt_od fallback
+            or join_key_raw      # last resort: use raw join_key
             or ""
         ),
         "betradar_id": betradar_id,
@@ -429,9 +444,9 @@ def _upsert_unified_match(
     """
     Upsert a unified_match row and write BookmakerMatchOdds + history.
 
-    FIX (Bug 1 guard): markets values that are bare floats (flat format) are
-    normalised to {"value": price} before iteration so the inner loop never
-    calls .get() on a float.
+    markets values that are bare floats (flat format) are normalised to
+    {"value": price} before iteration so the inner loop never calls .get()
+    on a float.
 
     Returns unified_match.id on success, None on failure.
     """
@@ -503,8 +518,6 @@ def _upsert_unified_match(
         history_batch: list[dict] = []
         for mkt_key, outcomes in (match_data.get("markets") or {}).items():
 
-            # ── FIX (Bug 1): normalise flat float markets so .get() never
-            # called on a float.  e.g. {"1x2": 1.85} → {"1x2": {"value": 1.85}}
             if isinstance(outcomes, (int, float)):
                 outcomes = {"value": float(outcomes)}
             if not isinstance(outcomes, dict):
