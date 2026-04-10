@@ -35,6 +35,7 @@ from app.models.oppotunity_detector import OpportunityDetector
 from app.workers.celery_tasks import (
     celery, cache_set, cache_get, _now_iso, _publish,
 )
+from app.workers.tasks_bt_od import bt_od_harvest_all
 
 logger = get_task_logger(__name__)
 
@@ -188,6 +189,7 @@ def setup_periodic_tasks(sender, **kw):
     sender.add_periodic_task(600.0,  update_match_results.s(),          name="results-10min")
     sender.add_periodic_task(3600.0, expire_subscriptions.s(),          name="expire-subs-1hr")
     sender.add_periodic_task(60.0,   health_check.s(),                  name="health-1min")
+    sender.add_periodic_task(2700.0, bt_od_harvest_all.s(),             name="bt-od-harvest-all-45min")
     sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),        name="cleanup-daily")
 
     if not LIVE_ENABLED:
