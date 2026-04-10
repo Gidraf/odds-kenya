@@ -381,24 +381,19 @@ def _sport_filter(q, sport_slug: str):
 def _mode_time_filter(q, mode: str):
     from app.models.odds_model import UnifiedMatch
     from sqlalchemy import or_, and_
+    
+    # _now_utc() already uses ZoneInfo("Africa/Nairobi")
     now         = _now_utc()
     live_cutoff = now - _LIVE_WINDOW
 
-    # All statuses that must never appear in the upcoming feed
     _no_upcoming = list(_EXCLUDE_FROM_UPCOMING)
-    # All statuses that must never appear in the live feed
     _dead        = list(_TERMINAL_STATUSES)
 
     if mode == "upcoming":
         return q.filter(
             UnifiedMatch.status.notin_(_no_upcoming),
-            or_(
-                UnifiedMatch.start_time > now,
-                and_(
-                    UnifiedMatch.start_time.is_(None),
-                    UnifiedMatch.status.notin_(_no_upcoming),
-                ),
-            ),
+            UnifiedMatch.start_time.isnot(None),  # Must have a defined start time
+            UnifiedMatch.start_time > now         # Strictly in the future (Kenya Time)
         )
     elif mode == "live":
         return q.filter(
@@ -412,7 +407,6 @@ def _mode_time_filter(q, mode: str):
             UnifiedMatch.status.in_(list(_TERMINAL_STATUSES)),
         ))
     return q
-
 
 def _multi_bk_filter(q):
     """
