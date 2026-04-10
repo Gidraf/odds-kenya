@@ -59,8 +59,9 @@ FREE_MATCH_LIMIT = 1000
 _WS_CHANNEL      = "odds:updates"
 _ARB_CHANNEL     = "arb:updates"
 _EV_CHANNEL      = "ev:updates"
-_CACHE_PREFIXES  = ["sbo", "sp", "bt", "od", "b2b"]
+_CACHE_PREFIXES  = ["sbo", "sp", "bt", "od", "b2b", "bt_od"]   # ← bt_od added
 _STREAM_BATCH    = 20
+MIN_BOOKMAKERS   = 2
 _LIVE_WINDOW     = timedelta(hours=2, minutes=30)
 
 # Statuses that are never surfaced in live or upcoming feeds
@@ -413,6 +414,49 @@ def _mode_time_filter(q, mode: str):
     return q
 
 
+def _multi_bk_filter(q):
+    """
+    DB-level 2+ bookmaker filter (Layer 1).
+    Joins a subquery that counts distinct bookmakers per match and keeps
+    only matches with MIN_BOOKMAKERS or more.
+    """
+    from app.models.odds_model import BookmakerMatchOdds, UnifiedMatch
+    from app.extensions import db
+    from sqlalchemy import func
+ 
+    bk_count_sq = (
+        db.session.query(
+            BookmakerMatchOdds.match_id,
+            func.count(BookmakerMatchOdds.bookmaker_id.distinct()).label("bk_count"),
+        )
+        .group_by(BookmakerMatchOdds.match_id)
+        .having(func.count(BookmakerMatchOdds.bookmaker_id.distinct()) >= MIN_BOOKMAKERS)
+        .subquery()
+    )
+    return q.join(bk_count_sq, UnifiedMatch.id == bk_count_sq.c.match_id)
+
+def _multi_bk_filter(q):
+    """
+    DB-level 2+ bookmaker filter (Layer 1).
+    Joins a subquery that counts distinct bookmakers per match and keeps
+    only matches with MIN_BOOKMAKERS or more.
+    """
+    from app.models.odds_model import BookmakerMatchOdds, UnifiedMatch
+    from app.extensions import db
+    from sqlalchemy import func
+ 
+    bk_count_sq = (
+        db.session.query(
+            BookmakerMatchOdds.match_id,
+            func.count(BookmakerMatchOdds.bookmaker_id.distinct()).label("bk_count"),
+        )
+        .group_by(BookmakerMatchOdds.match_id)
+        .having(func.count(BookmakerMatchOdds.bookmaker_id.distinct()) >= MIN_BOOKMAKERS)
+        .subquery()
+    )
+    return q.join(bk_count_sq, UnifiedMatch.id == bk_count_sq.c.match_id)
+
+
 def _bk_slug(name: str) -> str:
     return _BK_SLUG.get(name.lower(), name.lower()[:4])
 
@@ -583,12 +627,18 @@ def _build_match_dict(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_base_query(sport_slug, mode, comp_filter, team_filter,
-                      date_str, from_dt, to_dt, sort):
+                      date_str, from_dt, to_dt, sort,
+                      apply_multi_bk: bool = True):          # ← new param
     from app.models.odds_model import UnifiedMatch
     from sqlalchemy import or_
     q = UnifiedMatch.query
     q = _sport_filter(q, sport_slug)
     q = _mode_time_filter(q, mode)
+ 
+    # ── LAYER 1: 2+ bookmaker DB filter ──────────────────────────────────────
+    if apply_multi_bk and mode in ("upcoming", "live"):
+        q = _multi_bk_filter(q)                              # ← new line
+ 
     if comp_filter:
         q = q.filter(UnifiedMatch.competition_name.ilike(f"%{comp_filter}%"))
     if team_filter:
@@ -735,6 +785,10 @@ def _stream_matches(
                     bk_objs, links_by_match, arb_set, sport_slug,
                     analytics_map=analytics_map,
                 )
+
+                if d["bk_count"] < MIN_BOOKMAKERS:
+                    continue
+
                 if has_arb and not d["has_arb"]:
                     continue
                 batch_matches.append(d)
@@ -796,6 +850,9 @@ def _load_db_matches(sport_slug, mode="upcoming", page=1, per_page=20,
             bk_objs, links_by_match, arb_set, sport_slug,
             analytics_map=analytics_map,
         )
+
+        if mode in ("upcoming", "live") and d["bk_count"] < MIN_BOOKMAKERS:
+            total -= 1
         if has_arb and not d["has_arb"]:
             total -= 1
             continue
@@ -816,7 +873,11 @@ def _read_cache_sources(mode, sport_slug):
     })
 
     def _fetch_prefix(prefix, slug):
-        c = cache_get(f"{prefix}:{mode}:{slug}")
+        # bt_od always uses upcoming regardless of mode (it's pre-match only)
+        if prefix == "bt_od":
+            c = cache_get(f"bt_od:upcoming:{slug}")
+        else:
+            c = cache_get(f"{prefix}:{mode}:{slug}")
         if c and c.get("matches"):
             for m in c["matches"]:
                 m.setdefault("_cache_source", prefix)
@@ -894,8 +955,13 @@ def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
 
     markets_by_bk: dict[str, dict] = {}
     src      = m.get("_cache_source", "")
-    raw_mkts = m.get("markets") or {}
-    if src and isinstance(raw_mkts, dict):
+    raw_mkts = m.get("markets") or m.get("markets_by_bk") or {}   # ← also check markets_by_bk
+ 
+    if src == "bt_od":
+        # bt_od structure: {bk_slug: {mkt: {outcome: price}}} — already multi-bk
+        markets_by_bk = {_bk_slug(bk): v for bk, v in raw_mkts.items()
+                         if isinstance(v, dict)}
+    elif src and isinstance(raw_mkts, dict):
         first_val = next(iter(raw_mkts.values()), None)
         if isinstance(first_val, dict):
             inner = next(iter(first_val.values()), None)
@@ -907,6 +973,10 @@ def _normalise_cache_match(m: dict, mode: str = "upcoming") -> dict | None:
             markets_by_bk[src] = raw_mkts
     elif isinstance(raw_mkts, dict):
         markets_by_bk = raw_mkts
+ 
+    # ── LAYER 3: cache-level 2+ bookmaker filter ──────────────────────────────
+    if mode in ("upcoming", "live") and len(markets_by_bk) < MIN_BOOKMAKERS:
+        return None
 
     best: dict[str, dict] = {}
     for sl, bk_mkts in markets_by_bk.items():
@@ -1006,6 +1076,7 @@ def _build_envelope(matches, sport, mode, tier, page, per_page,
         "bookie_count": len(bk_names), "bookmakers": sorted(bk_names),
         "matches": matches, "source": "postgresql",
         "server_time": _now_utc().isoformat(),
+        "min_bookmakers": MIN_BOOKMAKERS,
     }
     if truncated:
         env["upgrade_message"] = "Upgrade your plan to see all matches."
@@ -1616,6 +1687,8 @@ def search_matches():
     if sport:
         qs = _sport_filter(qs, sport)
     qs = _mode_time_filter(qs, mode)
+    if mode in ("upcoming", "live"):
+        qs = _multi_bk_filter(qs)
     total   = qs.count()
     um_list = qs.order_by(UnifiedMatch.start_time).offset((page-1)*per_page).limit(per_page).all()
     match_ids = [um.id for um in um_list]
