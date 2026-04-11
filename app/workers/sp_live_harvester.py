@@ -1197,8 +1197,9 @@ def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[
         betradar_id = str(ev.get("externalId") or "")
         sp_event_id = ev.get("id")
         
-        state = ev.get("state", {})
-        score = state.get("matchScore", {})
+        # 🟢 FIXED: Force explicit nulls to become empty dictionaries
+        state = ev.get("state") or {}
+        score = state.get("matchScore") or {}
         
         sp_match = {
             "sp_match_id": sp_event_id,
