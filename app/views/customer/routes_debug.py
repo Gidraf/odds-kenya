@@ -12,106 +12,143 @@ import os
 # UNIVERSAL MATCH NORMALIZER (BULLETPROOF CANONICAL PARSER)
 # ══════════════════════════════════════════════════════════════════════════════
 def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, bk_name: str) -> dict:
+    if not raw_match: return {}
+    
     st = raw_match.get("start_time") or ""
     if st and not st.endswith("Z") and "+" not in st:
         st = st.replace(" ", "T")
         if len(st) == 19: st += ".000Z"
             
-    h_clean = re.sub(r'[^a-z0-9]', '_', raw_match.get("home_team", "").lower()).strip('_')
-    a_clean = re.sub(r'[^a-z0-9]', '_', raw_match.get("away_team", "").lower()).strip('_')
+    comps = raw_match.get("competitors") or [{}, {}]
+    h_team = raw_match.get("home_team") or raw_match.get("home_team_name") or (comps[0].get("name") if len(comps) > 0 else "Home")
+    a_team = raw_match.get("away_team") or raw_match.get("away_team_name") or (comps[1].get("name") if len(comps) > 1 else "Away")
+    
+    h_clean = re.sub(r'[^a-z0-9]', '_', h_team.lower()).strip('_')
+    a_clean = re.sub(r'[^a-z0-9]', '_', a_team.lower()).strip('_')
 
     best_mock = {}
     bk_markets = {}
     
     raw_list = raw_match.get("markets", {})
-    items = raw_list.items() if isinstance(raw_list, dict) else []
+    if not raw_list: raw_list = []
+    
+    standardized_markets = {}
+    
+    # Extract based on data structure
+    if isinstance(raw_list, list):
+        for mkt_obj in raw_list:
+            m_id = mkt_obj.get("id")
+            spec = mkt_obj.get("specValue") or mkt_obj.get("specialValue") or ""
+            name = mkt_obj.get("name", "").lower()
+            m = name
+            
+            if m_id in (52, 105): m = f"over_under_{str(spec)}"
+            elif m_id == 54: m = f"first_half_over_under_{str(spec)}"
+            elif m_id in (51, 184): m = f"asian_handicap_{str(spec)}"
+            elif m_id == 53: m = f"first_half_asian_handicap_{str(spec)}"
+            elif m_id in (55, 151): m = f"european_handicap_{str(spec)}"
+            elif m_id in (208, 196): m = f"result_and_over_under_{str(spec)}"
+            elif m_id in (386, 124): m = "btts_and_result"
+            elif m_id in (10, 194): m = "match_winner"
+            elif m_id in (43, 138): m = "btts"
+            elif m_id in (46, 147): m = "double_chance"
+            elif m_id in (47, 166): m = "draw_no_bet"
+            
+            standardized_markets[m] = {}
+            for sel in mkt_obj.get("selections", []):
+                ok = str(sel.get("shortName") or sel.get("name"))
+                price = float(sel.get("odds", 0))
+                if price > 1.0: standardized_markets[m][ok] = price
+    else:
+        for mkt_slug, outcomes in raw_list.items():
+            m = str(mkt_slug)
+            standardized_markets[m] = {}
+            for out_key, price in outcomes.items():
+                p = float(price) if not isinstance(price, dict) else float(price.get("price", 0))
+                if p > 1.0: standardized_markets[m][str(out_key)] = p
 
-    # ── AGGRESSIVE CANONICAL ALIGNMENT (SP + BT + OD) ──
-    for mkt_slug, outcomes in items:
+    # ── AGGRESSIVE CANONICAL ALIGNMENT ──
+    for mkt_slug, outcomes in standardized_markets.items():
+        if not outcomes: continue
+        
         m = mkt_slug.lower()
-        
-        # 1. Clean Sport Prefixes
         m = re.sub(r"^(soccer|basketball|tennis|ice_hockey|volleyball|cricket|rugby|table_tennis|handball|mma|boxing|darts|esoccer|baseball|american_football)_+", "", m)
-        
-        # 2. Clean Time Prefixes
         m = m.replace("1st_half___", "first_half_").replace("1st_half_", "first_half_")
         m = m.replace("2nd_half___", "second_half_").replace("2nd_half_", "second_half_")
-        
-        # 3. Clean Team Names out of Slugs
         if h_clean and len(h_clean) > 3 and h_clean in m: m = m.replace(h_clean, "home")
         if a_clean and len(a_clean) > 3 and a_clean in m: m = m.replace(a_clean, "away")
         m = m.replace("___", "_").replace("_&_", "_and_").replace(" ", "_")
-        
-        # 4. Standardize Core Markets
         m = m.replace("both_teams_to_score", "btts").replace("over_under_goals", "over_under").replace("total_goals", "over_under").replace("total_points", "over_under")
-        if m in ("1x2", "moneyline", "match_winner", "3_way"): m = "match_winner"
+        
+        if m in ("1x2", "moneyline", "3_way"): m = "match_winner"
         if m.endswith("_1x2"): m = m.replace("_1x2", "_match_winner")
         if m.startswith("1x2_"): m = m.replace("1x2_", "match_winner_")
         if m == "match_winner_btts": m = "btts_and_result"
         if m.startswith("match_winner_over_under") or m.startswith("match_winner_and_over_under"): m = m.replace("match_winner_over_under", "result_and_over_under").replace("match_winner_and_over_under", "result_and_over_under")
         if m == "draw_no_bet_full_time": m = "draw_no_bet"
         
-        # 5. Format Decimals & Handicaps perfectly
         m = re.sub(r"exact_goals_\d+$", "exact_goals", m)
+        
+        # Format Decimals & Handicaps perfectly
         m = m.replace(".", "_")
         if "handicap_-" in m: m = m.replace("handicap_-", "handicap_minus_")
         elif "handicap_" in m: m = m.replace("handicap_+", "handicap_")
-        m = m.replace("_0_0", "_0") # Fix OdiBets Asian Handicap 0.0 -> 0
+        m = re.sub(r"_0_0$", "_0", m) # Fix Asian Handicap 0.0 -> 0
         m = re.sub(r"_+", "_", m).strip("_")
 
         bk_markets[m] = {}
         best_mock[m] = {}
-        for out_key, price in outcomes.items():
-            p = float(price) if not isinstance(price, dict) else float(price.get("price", 0))
-            if p > 1.0:
-                ok = str(out_key)
-                ok_lower = ok.lower()
+        for ok_raw, p in outcomes.items():
+            ok_lower = ok_raw.lower()
+            
+            # Step 1: Base 1X2 Translation
+            ok = "X" if ("draw" in ok_lower and "or" not in ok_lower and "&" not in ok_lower) else ok_raw
+            if h_clean and h_clean in ok_lower.replace(" ", "_") and "or" not in ok_lower and "&" not in ok_lower: ok = "1"
+            if a_clean and a_clean in ok_lower.replace(" ", "_") and "or" not in ok_lower and "&" not in ok_lower: ok = "2"
+            
+            ok_lower = ok.lower()
+            
+            # Step 2: Double Chance
+            if "double_chance" in m:
+                ok = ok_lower.replace("or", "").replace("/", "").replace("draw", "x").replace(h_clean, "1").replace(a_clean, "2").replace("home", "1").replace("away", "2").replace(" ", "").upper()
+                if ok == "X1": ok = "1X"
+                elif ok == "2X": ok = "X2"
+                elif ok == "21": ok = "12"
                 
-                # Normalize Base 1, X, 2
-                if "draw" in ok_lower and "or" not in ok_lower and "&" not in ok_lower: ok = "X"
-                elif h_clean and h_clean in ok_lower.replace(" ", "_") and "or" not in ok_lower and "&" not in ok_lower: ok = "1"
-                elif a_clean and a_clean in ok_lower.replace(" ", "_") and "or" not in ok_lower and "&" not in ok_lower: ok = "2"
+            # Step 3: Combos (Result & BTTS, Result & O/U)
+            elif "btts_and" in m or "result_and" in m:
+                suffix = "Yes" if "yes" in ok_lower else "No" if "no" in ok_lower else "Over" if "over" in ok_lower else "Under" if "under" in ok_lower else ""
+                prefix = "X" if "draw" in ok_lower or "x" in ok_lower.split() else "1" if h_clean in ok_lower.replace(" ", "_") or "home" in ok_lower or "1" in ok_lower.split() else "2" if a_clean in ok_lower.replace(" ", "_") or "away" in ok_lower or "2" in ok_lower.split() else ""
                 
-                ok_lower = ok.lower()
-                
-                # Force Double Chance Harmony (e.g. OdiBets "1 or X" vs Betika "1X")
-                if "double_chance" in m:
-                    ok = ok_lower.replace("or", "").replace("/", "").replace("draw", "x").replace(h_clean, "1").replace(a_clean, "2").replace(" ", "").upper()
-                    if ok == "X1": ok = "1X"
-                    elif ok == "2X": ok = "X2"
-                    elif ok == "21": ok = "12"
-                    
-                # Force BTTS Combos Harmony
-                elif "btts_and" in m or "result_and" in m:
-                    if h_clean in ok_lower and "yes" in ok_lower: ok = "1 Yes"
-                    elif h_clean in ok_lower and "no" in ok_lower: ok = "1 No"
-                    elif a_clean in ok_lower and "yes" in ok_lower: ok = "2 Yes"
-                    elif a_clean in ok_lower and "no" in ok_lower: ok = "2 No"
-                    elif "draw" in ok_lower and "yes" in ok_lower: ok = "X Yes"
-                    elif "draw" in ok_lower and "no" in ok_lower: ok = "X No"
-                    else:
-                        ok = ok_lower.replace(" & ", " ").replace("and", "").replace("yes", "Yes").replace("no", "No").replace("draw", "X")
-                        ok = ok.replace("home", "1").replace("away", "2").replace(h_clean, "1").replace(a_clean, "2")
-                        ok = ok.replace("1", "1 ").replace("x", "X ").replace("2", "2 ").replace("  ", " ").strip()
-                
-                # General Cleanup
+                if prefix and suffix: ok = f"{prefix} {suffix}"
                 else:
-                    if ok_lower == "yes": ok = "Yes"
-                    elif ok_lower == "no": ok = "No"
-                    elif ok_lower == "over": ok = "Over"
-                    elif ok_lower == "under": ok = "Under"
-                    elif ok_lower == "odd": ok = "Odd"
-                    elif ok_lower == "even": ok = "Even"
-                    elif ok_lower == "home": ok = "1"
-                    elif ok_lower == "away": ok = "2"
-                    elif ok_lower == "1x": ok = "1X"
-                    elif ok_lower == "x2": ok = "X2"
-                    elif ok_lower == "12": ok = "12"
-                    if "exact_goals" in m: ok = ok.replace(" OR MORE", "+").replace(" or more", "+").replace(" and over", "+")
-                    if "correct_score" in m: ok = ok.replace("-", ":")
+                    ok = ok_lower.replace(" & ", " ").replace("and", "").replace("yes", "Yes").replace("no", "No").replace("draw", "X").replace("home", "1").replace("away", "2").replace(h_clean, "1").replace(a_clean, "2")
+                    ok = ok.replace("1", "1 ").replace("x", "X ").replace("2", "2 ").replace("  ", " ").strip().title().replace(" X", " X")
 
-                best_mock[m][ok] = {"odd": p, "bk": bk_slug}
-                bk_markets[m][ok] = {"price": p}
+            # Step 4: General Cleanup
+            else:
+                if ok_lower in ("yes", "y"): ok = "Yes"
+                elif ok_lower in ("no", "n"): ok = "No"
+                elif "over" in ok_lower or ok_lower == "ov": ok = "Over"
+                elif "under" in ok_lower or ok_lower == "un": ok = "Under"
+                elif ok_lower == "odd": ok = "Odd"
+                elif ok_lower == "even": ok = "Even"
+                elif ok_lower == "home": ok = "1"
+                elif ok_lower == "away": ok = "2"
+                elif ok_lower == "1x": ok = "1X"
+                elif ok_lower == "x2": ok = "X2"
+                elif ok_lower == "12": ok = "12"
+                
+                # O/U edge cases
+                if "over_under" in m and ok not in ("Over", "Under"):
+                    if ok_lower.startswith("o"): ok = "Over"
+                    elif ok_lower.startswith("u"): ok = "Under"
+                
+                if "exact_goals" in m: ok = ok.replace(" OR MORE", "+").replace(" or more", "+").replace(" and over", "+")
+                if "correct_score" in m: ok = ok.replace("-", ":")
+
+            best_mock[m][ok] = {"odd": p, "bk": bk_slug}
+            bk_markets[m][ok] = {"price": p}
 
     actual_id = raw_match.get(f"{bk_slug}_match_id") or raw_match.get("match_id") or count
     b_id = raw_match.get("betradar_id") or raw_match.get(f"{bk_slug}_parent_id")
@@ -120,8 +157,8 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         "match_id": int(actual_id),
         "join_key": f"br_{b_id}" if b_id else f"{bk_slug}_{actual_id}",
         "parent_match_id": b_id, 
-        "home_team": raw_match.get("home_team", "Home"), 
-        "away_team": raw_match.get("away_team", "Away"),
+        "home_team": h_team, 
+        "away_team": a_team,
         "competition": raw_match.get("competition_name") or raw_match.get("competition", ""), 
         "sport": _normalise_sport_slug(raw_match.get("sport", "soccer")),
         "start_time": st, 
@@ -139,7 +176,6 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         "has_arb": False, "has_ev": False, "has_sharp": False
     }
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # UNIFIED DIRECT STREAM (BULK FETCH + REAL-TIME PUBSUB)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -155,7 +191,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
         try:
             count = 0
 
-            # ── 1. LIVE BATCH INITIALIZATION (ULTRA-FAST BULK FETCH) ─────────
+            # ── LIVE BATCH INITIALIZATION ──
             if mode == "live":
                 from app.workers.sp_live_harvester import fetch_live_stream, SPORT_SLUG_MAP
                 from app.workers.bt_harvester import fetch_live_matches as bt_fetch_live, slug_to_bt_sport_id
@@ -163,11 +199,9 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
                 sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
                 
-                # 1. Bulk Fetch Background APIs Instantly
                 bt_data = bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or []
                 od_data = od_fetch_live(sport_slug) or []
                 
-                # Map them entirely in memory via Betradar ID
                 bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m for m in bt_data}
                 od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m for m in od_data}
                 
@@ -175,7 +209,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
                 active_live_br_ids = []
                 seen_br_ids = set()
 
-                # 2. Iterate SP Stream (which parses markets automatically)
                 stream = fetch_live_stream(sport_slug, fetch_full_markets=True)
                 for sp_match in stream:
                     count += 1
@@ -188,7 +221,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
                     sp_clean["is_live"] = True
 
-                    # Instantly Merge BT and OD from bulk dictionaries
                     bt_match = bt_map.get(betradar_id)
                     if bt_match and bt_match.get("markets"):
                         b_clean = _unify_match_payload(bt_match, count, mode, "bt", "BETIKA")
@@ -203,7 +235,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
                     sp_clean["bk_count"] = len(sp_clean["bookmakers"])
 
-                    # Build Global Best
                     for bk_slug, mkts in sp_clean["markets_by_bk"].items():
                         for mkt_slug, outcomes in mkts.items():
                             if mkt_slug not in sp_clean["best"]: sp_clean["best"][mkt_slug] = {}
@@ -218,7 +249,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     yield _sse("batch", {"matches": [sp_clean], "batch": count, "of": "unknown", "offset": count - 1})
                     yield _keepalive()
                     
-                # 3. Inject any remaining matches that Betika/OdiBets have but SP doesn't
                 for br_id, bt_match in bt_map.items():
                     if br_id not in seen_br_ids and br_id and br_id != "None":
                         count += 1
@@ -268,7 +298,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
                 yield _sse("list_done", {"total_sent": count})
 
-            # ── 1. UPCOMING BATCH INITIALIZATION ───────────────────────────────
+            # ── UPCOMING BATCH INITIALIZATION ──
             else:
                 from app.workers.sp_harvester import fetch_upcoming_stream
                 from app.workers.bt_harvester import get_full_markets
@@ -317,7 +347,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
                 yield _sse("done", {"status": "finished", "total_sent": count})
                 return
 
-            # ── 2. REAL-TIME LIVE PUB/SUB ──────────────────────────────────────
+            # ── REAL-TIME LIVE PUB/SUB ──
             import redis
             r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
             pubsub = r.pubsub(ignore_subscribe_messages=True)
@@ -332,12 +362,10 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         payload = json.loads(msg["data"])
                         msg_type = payload.get("type")
 
-                        # Resolve Betradar ID
                         ev_id = payload.get("event_id")
                         br_id = next((k for k, v in sp_event_map.items() if v == ev_id), None)
                         if not br_id: br_id = str(ev_id)
 
-                        # Fast Event Updates
                         if msg_type == "event_update":
                             state = payload.get("state", {})
                             yield _sse("live_update", {
@@ -350,7 +378,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
                                 "is_live": True
                             })
 
-                        # Fast Market Updates
                         elif msg_type == "market_update":
                             norm_sels = payload.get("normalised_selections", [])
                             slug = payload.get("market_slug")
@@ -365,7 +392,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
                                     })
                     except Exception: pass
 
-                # Fetch fresh Betika/OdiBets data every 10 seconds to save bandwidth
                 if time.time() - last_poll > 10.0:
                     last_poll = time.time()
                     try:
@@ -376,7 +402,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         
                         for br_id in active_live_br_ids:
                             up_payload = {"parent_match_id": br_id, "home_team": "dummy", "bookmakers": {}, "markets_by_bk": {}}
-                            
                             if br_id in bt_map:
                                 b_clean = _unify_match_payload(bt_map[br_id], 0, "live", "bt", "BETIKA")
                                 up_payload["bookmakers"]["bt"] = b_clean["bookmakers"]["bt"]
