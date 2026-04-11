@@ -19,14 +19,23 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         st = st.replace(" ", "T")
         if len(st) == 19: st += ".000Z"
             
-    comps = raw_match.get("competitors") or [{}, {}]
-    
-    # 🟢 FIX: Force string conversion and handle explicit nulls gracefully
-    h_team = str(raw_match.get("home_team") or raw_match.get("home_team_name") or (comps[0].get("name") if len(comps) > 0 else "") or "Home")
-    a_team = str(raw_match.get("away_team") or raw_match.get("away_team_name") or (comps[1].get("name") if len(comps) > 1 else "") or "Away")
+    # 🟢 FIXED: Aggressive string casting for NULL team names
+    h_val = raw_match.get("home_team") or raw_match.get("home_team_name")
+    a_val = raw_match.get("away_team") or raw_match.get("away_team_name")
+    comps = raw_match.get("competitors")
+    if isinstance(comps, list):
+        if not h_val and len(comps) > 0 and isinstance(comps[0], dict): h_val = comps[0].get("name")
+        if not a_val and len(comps) > 1 and isinstance(comps[1], dict): a_val = comps[1].get("name")
+            
+    h_team = str(h_val or "Home")
+    a_team = str(a_val or "Away")
     
     h_clean = re.sub(r'[^a-z0-9]', '_', h_team.lower()).strip('_')
     a_clean = re.sub(r'[^a-z0-9]', '_', a_team.lower()).strip('_')
+    
+    sport_val = raw_match.get("sport") or raw_match.get("sport_name") or "soccer"
+    if isinstance(sport_val, dict): sport_val = sport_val.get("name", "soccer")
+    sport_slug = _normalise_sport_slug(str(sport_val))
 
     best_mock = {}
     bk_markets = {}
@@ -36,23 +45,23 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
     
     standardized_markets = {}
     
-    # Extract based on data structure
     if isinstance(raw_list, list):
         for mkt_obj in raw_list:
             if not isinstance(mkt_obj, dict): continue
             m_id = mkt_obj.get("id")
             spec = str(mkt_obj.get("specValue") or mkt_obj.get("specialValue") or "")
+            if spec.endswith(".00"): spec = spec[:-3]
+            elif spec.endswith(".0"): spec = spec[:-2]
             
-            # 🟢 FIX: Prevent 'NoneType' object has no attribute 'lower'
             name = str(mkt_obj.get("name") or "").lower()
             m = name
             
-            if m_id in (52, 105): m = f"over_under_{str(spec)}"
-            elif m_id == 54: m = f"first_half_over_under_{str(spec)}"
-            elif m_id in (51, 184): m = f"asian_handicap_{str(spec)}"
-            elif m_id == 53: m = f"first_half_asian_handicap_{str(spec)}"
-            elif m_id in (55, 151): m = f"european_handicap_{str(spec)}"
-            elif m_id in (208, 196): m = f"result_and_over_under_{str(spec)}"
+            if m_id in (52, 105): m = f"over_under_{spec}"
+            elif m_id == 54: m = f"first_half_over_under_{spec}"
+            elif m_id in (51, 184): m = f"asian_handicap_{spec}"
+            elif m_id == 53: m = f"first_half_asian_handicap_{spec}"
+            elif m_id in (55, 151): m = f"european_handicap_{spec}"
+            elif m_id in (208, 196): m = f"result_and_over_under_{spec}"
             elif m_id in (386, 124): m = "btts_and_result"
             elif m_id in (10, 194): m = "match_winner"
             elif m_id in (43, 138): m = "btts"
@@ -65,7 +74,6 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
                 ok = str(sel.get("shortName") or sel.get("name") or "")
                 try: price = float(sel.get("odds", 0))
                 except (ValueError, TypeError): price = 0.0
-                
                 if price > 1.0: standardized_markets[m][ok] = price
     else:
         for mkt_slug, outcomes in raw_list.items():
@@ -77,7 +85,6 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
                 except (ValueError, TypeError): p = 0.0
                 if p > 1.0: standardized_markets[m][str(out_key)] = p
 
-    # ── AGGRESSIVE CANONICAL ALIGNMENT ──
     for mkt_slug, outcomes in standardized_markets.items():
         if not outcomes: continue
         
@@ -90,7 +97,8 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         m = m.replace("___", "_").replace("_&_", "_and_").replace(" ", "_")
         m = m.replace("both_teams_to_score", "btts").replace("over_under_goals", "over_under").replace("total_goals", "over_under").replace("total_points", "over_under")
         
-        if m in ("1x2", "moneyline", "3_way"): m = "match_winner"
+        if m in ("1x2", "moneyline", "3_way", "match_winner"): m = "match_winner"
+        elif m in ("btts", "both_teams_to_score", "gg_ng", "both_teams_to_score__gg_ng_"): m = "btts"
         if m.endswith("_1x2"): m = m.replace("_1x2", "_match_winner")
         if m.startswith("1x2_"): m = m.replace("1x2_", "match_winner_")
         if m == "match_winner_btts": m = "btts_and_result"
@@ -98,12 +106,10 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         if m == "draw_no_bet_full_time": m = "draw_no_bet"
         
         m = re.sub(r"exact_goals_\d+$", "exact_goals", m)
-        
-        # Format Decimals & Handicaps perfectly
         m = m.replace(".", "_")
         if "handicap_-" in m: m = m.replace("handicap_-", "handicap_minus_")
         elif "handicap_" in m: m = m.replace("handicap_+", "handicap_")
-        m = re.sub(r"_0_0$", "_0", m) # Fix Asian Handicap 0.0 -> 0
+        m = re.sub(r"_0_0$", "_0", m)
         m = re.sub(r"_+", "_", m).strip("_")
 
         bk_markets[m] = {}
@@ -112,21 +118,17 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
             ok_raw = str(ok_raw)
             ok_lower = ok_raw.lower()
             
-            # Step 1: Base 1X2 Translation
             ok = "X" if ("draw" in ok_lower and "or" not in ok_lower and "&" not in ok_lower) else ok_raw
             if h_clean and h_clean in ok_lower.replace(" ", "_") and "or" not in ok_lower and "&" not in ok_lower: ok = "1"
             if a_clean and a_clean in ok_lower.replace(" ", "_") and "or" not in ok_lower and "&" not in ok_lower: ok = "2"
             
-            ok_lower = str(ok).lower()
+            ok_lower = ok.lower()
             
-            # Step 2: Double Chance
             if "double_chance" in m:
                 ok = ok_lower.replace("or", "").replace("/", "").replace("draw", "x").replace(h_clean, "1").replace(a_clean, "2").replace("home", "1").replace("away", "2").replace(" ", "").upper()
                 if ok == "X1": ok = "1X"
                 elif ok == "2X": ok = "X2"
                 elif ok == "21": ok = "12"
-                
-            # Step 3: Combos (Result & BTTS, Result & O/U)
             elif "btts_and" in m or "result_and" in m:
                 suffix = "Yes" if "yes" in ok_lower else "No" if "no" in ok_lower else "Over" if "over" in ok_lower else "Under" if "under" in ok_lower else ""
                 prefix = "X" if "draw" in ok_lower or "x" in ok_lower.split() else "1" if h_clean in ok_lower.replace(" ", "_") or "home" in ok_lower or "1" in ok_lower.split() else "2" if a_clean in ok_lower.replace(" ", "_") or "away" in ok_lower or "2" in ok_lower.split() else ""
@@ -135,8 +137,6 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
                 else:
                     ok = ok_lower.replace(" & ", " ").replace("and", "").replace("yes", "Yes").replace("no", "No").replace("draw", "X").replace("home", "1").replace("away", "2").replace(h_clean, "1").replace(a_clean, "2")
                     ok = ok.replace("1", "1 ").replace("x", "X ").replace("2", "2 ").replace("  ", " ").strip().title().replace(" X", " X")
-
-            # Step 4: General Cleanup
             else:
                 if ok_lower in ("yes", "y"): ok = "Yes"
                 elif ok_lower in ("no", "n"): ok = "No"
@@ -150,7 +150,6 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
                 elif ok_lower == "x2": ok = "X2"
                 elif ok_lower == "12": ok = "12"
                 
-                # O/U edge cases
                 if "over_under" in m and ok not in ("Over", "Under"):
                     if ok_lower.startswith("o"): ok = "Over"
                     elif ok_lower.startswith("u"): ok = "Under"
@@ -171,7 +170,7 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         "home_team": h_team, 
         "away_team": a_team,
         "competition": str(raw_match.get("competition_name") or raw_match.get("competition", "")), 
-        "sport": _normalise_sport_slug(str(raw_match.get("sport", "soccer"))),
+        "sport": sport_slug,
         "start_time": st, 
         "status": "IN_PLAY" if mode == "live" else "PRE_MATCH",
         "is_live": mode == "live", 
@@ -186,6 +185,7 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         "best_odds": best_mock,
         "has_arb": False, "has_ev": False, "has_sharp": False
     }
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UNIFIED DIRECT STREAM (BULK FETCH + REAL-TIME PUBSUB)
@@ -202,7 +202,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
         try:
             count = 0
 
-            # ── LIVE BATCH INITIALIZATION ──
             if mode == "live":
                 from app.workers.sp_live_harvester import fetch_live_stream, SPORT_SLUG_MAP
                 from app.workers.bt_harvester import fetch_live_matches as bt_fetch_live, slug_to_bt_sport_id
@@ -331,11 +330,11 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
                     
                     if bt_markets:
-                        bt_clean = _unify_match_payload({"markets": bt_markets, "betradar_id": betradar_id}, count, mode, "bt", "BETIKA")
+                        bt_clean = _unify_match_payload({"markets": bt_markets, "betradar_id": betradar_id, "home_team": sp_clean["home_team"], "away_team": sp_clean["away_team"]}, count, mode, "bt", "BETIKA")
                         sp_clean["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
                         sp_clean["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
                     if od_markets:
-                        od_clean = _unify_match_payload({"markets": od_markets, "betradar_id": betradar_id}, count, mode, "od", "ODIBETS")
+                        od_clean = _unify_match_payload({"markets": od_markets, "betradar_id": betradar_id, "home_team": sp_clean["home_team"], "away_team": sp_clean["away_team"]}, count, mode, "od", "ODIBETS")
                         sp_clean["bookmakers"]["od"] = od_clean["bookmakers"]["od"]
                         sp_clean["markets_by_bk"]["od"] = od_clean["markets_by_bk"]["od"]
 
