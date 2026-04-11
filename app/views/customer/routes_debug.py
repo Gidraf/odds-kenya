@@ -9,7 +9,7 @@ import time
 import os
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIVERSAL MATCH NORMALIZER
+# UNIVERSAL MATCH NORMALIZER (PRE-MATCH & LIVE)
 # ══════════════════════════════════════════════════════════════════════════════
 def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, bk_name: str) -> dict:
     st = raw_match.get("start_time") or ""
@@ -26,32 +26,37 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
     raw_list = raw_match.get("markets", [])
     items = raw_list.items() if isinstance(raw_list, dict) else []
 
-    # SportPesa Raw List Parser
+    # ── 1. SPORTPESA RAW PARSER (Catches Both Pre-Match & Live IDs) ──────────
     if isinstance(raw_list, list):
         for mkt_obj in raw_list:
             m_id = mkt_obj.get("id")
-            spec = mkt_obj.get("specValue")
+            spec = mkt_obj.get("specValue") or mkt_obj.get("specialValue") or ""
             name = mkt_obj.get("name", "").lower()
             
             m = name
-            if m_id in (52, 54, 226, 340, 352, 353): 
-                line = str(spec).replace(".", "_")
-                prefix = "first_half_" if m_id == 54 else "home_" if m_id == 353 else "away_" if m_id == 352 else ""
-                m = f"{prefix}over_under_{line}"
-            elif m_id in (51, 53, 339): 
-                line = str(spec).replace(".", "_").replace("-", "minus_")
-                prefix = "first_half_" if m_id == 53 else ""
-                m = f"{prefix}asian_handicap_{line}"
-            elif m_id == 55: 
-                line = str(spec).replace("-", "minus_").replace("+", "")
-                m = f"european_handicap_{line}"
-            elif m_id == 208: 
-                m = f"result_and_over_under_{str(spec).replace('.','_')}"
+            # Over/Under
+            if m_id in (52, 105): m = f"over_under_{str(spec).replace('.', '_')}"
+            elif m_id == 54: m = f"first_half_over_under_{str(spec).replace('.', '_')}"
+            # Asian Handicap
+            elif m_id in (51, 184): m = f"asian_handicap_{str(spec).replace('.', '_').replace('-', 'minus_')}"
+            elif m_id == 53: m = f"first_half_asian_handicap_{str(spec).replace('.', '_').replace('-', 'minus_')}"
+            # Euro Handicap
+            elif m_id in (55, 151): m = f"european_handicap_{str(spec).replace('-', 'minus_').replace('+', '')}"
+            # Combos
+            elif m_id in (208, 196): m = f"result_and_over_under_{str(spec).replace('.','_')}"
+            elif m_id in (386, 124): m = "btts_and_result"
+            # Main Markets
+            elif m_id in (10, 194): m = "match_winner"
+            elif m_id in (43, 138): m = "btts"
+            elif m_id in (46, 147): m = "double_chance"
+            elif m_id in (47, 166): m = "draw_no_bet"
+            elif m_id in (332, 183): m = "correct_score"
+            elif m_id in (258, 154): m = "exact_goals"
+            elif m_id in (45, 145): m = "odd_even"
             
             m = re.sub(r"^(soccer|volleyball|tennis|basketball)_+", "", m)
-            if h_clean in m: m = m.replace(h_clean, "home")
-            if a_clean in m: m = m.replace(a_clean, "away")
-            m = m.replace("3_way", "match_winner").replace("draw_no_bet_full_time", "draw_no_bet")
+            if h_clean and len(h_clean) > 3 and h_clean in m: m = m.replace(h_clean, "home")
+            if a_clean and len(a_clean) > 3 and a_clean in m: m = m.replace(a_clean, "away")
             m = m.replace(" ", "_").replace("-", "_").replace("___", "_")
             m = re.sub(r"_+", "_", m).strip("_")
 
@@ -65,14 +70,13 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
                     bk_markets[m][ok] = {"price": price}
                     best_mock[m][ok] = {"odd": price, "bk": bk_slug}
 
-    # Betika & OdiBets Canonical Parser
+    # ── 2. BETIKA & ODIBETS CANONICAL PARSER ────────────────────────────────
     else:
         for mkt_slug, outcomes in items:
             m = mkt_slug.lower()
             m = re.sub(r"^(soccer|basketball|tennis|ice_hockey|volleyball|cricket|rugby|table_tennis|handball|mma|boxing|darts|esoccer|baseball|american_football)_+", "", m)
             m = m.replace("1st_half___", "first_half_").replace("1st_half_", "first_half_")
             m = m.replace("2nd_half___", "second_half_").replace("2nd_half_", "second_half_")
-            m = m.replace("1st_2nd_half_", "both_halves_")
             if h_clean and len(h_clean) > 3 and h_clean in m: m = m.replace(h_clean, "home")
             if a_clean and len(a_clean) > 3 and a_clean in m: m = m.replace(a_clean, "away")
             m = m.replace("___", "_").replace("_&_", "_and_").replace(" ", "_")
@@ -86,6 +90,12 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
             if m.startswith("match_winner_over_under"): m = m.replace("match_winner_over_under", "result_and_over_under")
             
             m = re.sub(r"exact_goals_\d+$", "exact_goals", m)
+            
+            # Format decimals (e.g. 2.5 -> 2_5) to perfectly match SP
+            m = m.replace(".", "_")
+            if "handicap_-" in m: m = m.replace("handicap_-", "handicap_minus_")
+            elif "handicap_" in m: m = m.replace("handicap_+", "handicap_")
+                
             m = re.sub(r"_+", "_", m).strip("_")
 
             bk_markets[m] = {}
@@ -93,7 +103,10 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
             for out_key, price in outcomes.items():
                 p = float(price) if not isinstance(price, dict) else float(price.get("price", 0))
                 if p > 1.0:
+                    # Clean up outcome keys (1, X, 2, Over, Under, Yes, No)
                     ok = out_key.replace("draw", "X").replace("Draw", "X")
+                    ok = ok.replace("home", "1").replace("Home", "1")
+                    ok = ok.replace("away", "2").replace("Away", "2")
                     if "exact_goals" in m: ok = ok.replace(" OR MORE", "+").replace(" or more", "+")
                     if "correct_score" in m: ok = ok.replace("-", ":")
                         
@@ -104,13 +117,11 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
                     elif ok_lower == "under": ok = "Under"
                     elif ok_lower == "odd": ok = "Odd"
                     elif ok_lower == "even": ok = "Even"
-                    elif ok_lower == "home": ok = "1"
-                    elif ok_lower == "away": ok = "2"
 
                     best_mock[m][ok] = {"odd": p, "bk": bk_slug}
                     bk_markets[m][ok] = {"price": p}
 
-    actual_id = raw_match.get(f"{bk_slug}_match_id") or raw_match.get(f"{bk_slug}_game_id") or raw_match.get("match_id") or count
+    actual_id = raw_match.get(f"{bk_slug}_match_id") or raw_match.get("match_id") or count
     b_id = raw_match.get("betradar_id") or raw_match.get(f"{bk_slug}_parent_id")
 
     return {
@@ -138,7 +149,7 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIFIED DIRECT STREAM (NOW WITH REAL-TIME PUBSUB)
+# UNIFIED DIRECT STREAM (REAL-TIME PUBSUB ENGINE)
 # ══════════════════════════════════════════════════════════════════════════════
 @bp_odds_customer.route("/odds/debug/unified/stream/<mode>/<sport_slug>")
 def debug_stream_unified(mode: str, sport_slug: str):
@@ -165,7 +176,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
             if mode == "live":
                 sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
                 
-                # Use the new sp_live_harvester method to get accurate externalIds
+                # Fetch baseline state
                 raw_events = fetch_live_events(sport_id, limit=max_m)
                 sp_event_ids = [ev["id"] for ev in raw_events]
                 sp_markets_raw = fetch_live_markets(sp_event_ids, sport_id) if sp_event_ids else []
