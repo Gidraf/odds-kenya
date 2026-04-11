@@ -158,7 +158,6 @@ def _parse_all_inline_markets(
 
     return result
 
-
 def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
     """
     Transform one Betika match dict (from either endpoint) into canonical shape.
@@ -166,7 +165,11 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
     try:
         bt_sport_id   = str(raw.get("sport_id") or "14")
         match_id      = str(raw.get("match_id") or raw.get("game_id") or "")
-        parent_id     = str(raw.get("parent_match_id") or match_id)
+        
+        # 🟢 FIX: Betika uses parent_match_id for the Betradar/Sportradar ID!
+        betradar_id   = str(raw.get("parent_match_id") or "")
+        parent_id     = betradar_id or match_id
+        
         home          = str(raw.get("home_team") or "").strip()
         away          = str(raw.get("away_team") or "").strip()
         competition   = str(raw.get("competition_name") or "").strip()
@@ -184,7 +187,6 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
         sport_slug      = bt_sport_to_slug(bt_sport_id)
         can_sport_id    = CANONICAL_SPORT_IDS.get(sport_slug, 1)
 
-        # Live-only fields
         is_live       = source == "live"
         match_time    = str(raw.get("match_time") or "").strip()
         event_status  = str(raw.get("event_status") or "").strip()
@@ -194,20 +196,16 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
         current_score = str(raw.get("current_score") or "").strip()
         ht_score      = str(raw.get("ht_score") or "").strip()
 
-        score_home: str | None = None
-        score_away: str | None = None
+        score_home = score_away = None
         if current_score and "-" in current_score:
             parts = current_score.split("-", 1)
             try:
                 score_home = parts[0].strip()
                 score_away = parts[1].strip()
-            except IndexError:
-                pass
+            except IndexError: pass
 
-        # Parse inline odds using the dynamic mapper
         markets = _parse_all_inline_markets(raw.get("odds") or [], sport_slug)
 
-        # Also parse quick top-level odds (home_odd / neutral_odd / away_odd) if missing standard 1x2
         if "home_odd" in raw and not any(k.endswith("1x2") for k in markets):
             try:
                 ho = float(raw.get("home_odd") or 0)
@@ -215,17 +213,14 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
                 ao = float(raw.get("away_odd") or 0)
                 if ho > 1 or no > 1 or ao > 1:
                     base = f"{sport_slug}_1x2" if sport_slug != "soccer" else "1x2"
-                    markets[base] = {
-                        k: v for k, v in [("1", ho), ("X", no), ("2", ao)] if v > 1
-                    }
-            except (TypeError, ValueError):
-                pass
+                    markets[base] = {k: v for k, v in [("1", ho), ("X", no), ("2", ao)] if v > 1}
+            except (TypeError, ValueError): pass
 
         return {
             "bt_match_id":       match_id,
             "bt_parent_id":      parent_id,
             "sp_game_id":        None,
-            "betradar_id":       None,
+            "betradar_id":       betradar_id if betradar_id else None, # 🟢 FIX
             "home_team":         home,
             "away_team":         away,
             "competition":       competition,
@@ -251,7 +246,7 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
             "market_count":      len(markets),
         }
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("BT match normalise error: %s", exc)
         return None
 
