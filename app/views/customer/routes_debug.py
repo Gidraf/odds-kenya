@@ -9,7 +9,7 @@ import time
 import os
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIVERSAL MATCH NORMALIZER (Now Supports OdiBets)
+# UNIVERSAL MATCH NORMALIZER
 # ══════════════════════════════════════════════════════════════════════════════
 def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, bk_name: str) -> dict:
     st = raw_match.get("start_time") or ""
@@ -147,136 +147,221 @@ def debug_stream_unified(mode: str, sport_slug: str):
     log_event("debug_unified_stream", {"sport": sport_slug, "mode": mode})
 
     def _gen():
-        from app.workers.sp_harvester import fetch_upcoming_stream, fetch_live_stream
-        from app.workers.sp_live_harvester import SPORT_SLUG_MAP
+        from app.workers.sp_harvester import fetch_upcoming_stream
+        from app.workers.sp_live_harvester import fetch_live_events, fetch_live_markets, SPORT_SLUG_MAP
         from app.workers.bt_harvester import get_full_markets, get_live_match_markets
         from app.workers.od_harvester import fetch_event_detail, slug_to_od_sport_id
         
         od_sport_id = slug_to_od_sport_id(sport_slug)
         active_live_br_ids = []
+        sp_event_map = {} # Maps externalId (betradar) to internal SP id
 
         yield _sse("meta", {"source": "unified_direct", "sport": sport_slug, "mode": mode, "now": _now_utc().isoformat()})
         
         try:
-            # 1. INITIAL SNAPSHOT BATCH (SP + BT + OD)
-            stream = fetch_live_stream(sport_slug, fetch_full_markets=fetch_full) if mode == "live" else fetch_upcoming_stream(sport_slug, max_matches=max_m, fetch_full_markets=fetch_full)
             count = 0
-            
-            for sp_match in stream:
-                count += 1
-                betradar_id = sp_match.get("betradar_id")
-                bt_markets = {}
-                od_markets = {}
-                
-                if betradar_id:
-                    try:
-                        if mode == "live":
-                            active_live_br_ids.append(betradar_id)
-                            bt_markets, _ = get_live_match_markets(betradar_id, sport_slug)
-                            od_markets, _ = fetch_event_detail(betradar_id, od_sport_id)
-                        else:
-                            bt_markets = get_full_markets(betradar_id, sport_slug)
-                            od_markets, _ = fetch_event_detail(betradar_id, od_sport_id)
-                    except Exception: pass
-                
-                sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
-                
-                if bt_markets:
-                    bt_clean = _unify_match_payload({"markets": bt_markets, "betradar_id": betradar_id}, count, mode, "bt", "BETIKA")
-                    sp_clean["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
-                    sp_clean["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
-                if od_markets:
-                    od_clean = _unify_match_payload({"markets": od_markets, "betradar_id": betradar_id}, count, mode, "od", "ODIBETS")
-                    sp_clean["bookmakers"]["od"] = od_clean["bookmakers"]["od"]
-                    sp_clean["markets_by_bk"]["od"] = od_clean["markets_by_bk"]["od"]
 
-                sp_clean["bk_count"] = len(sp_clean["bookmakers"])
-                
-                for bk_slug, mkts in sp_clean["markets_by_bk"].items():
-                    for mkt_slug, outcomes in mkts.items():
-                        if mkt_slug not in sp_clean["best"]: sp_clean["best"][mkt_slug] = {}
-                        for out_key, price_dict in outcomes.items():
-                            p = price_dict["price"]
-                            if out_key not in sp_clean["best"][mkt_slug] or p > sp_clean["best"][mkt_slug][out_key]["odd"]:
-                                sp_clean["best"][mkt_slug][out_key] = {"odd": p, "bk": bk_slug}
-
-                sp_clean["market_slugs"] = list(sp_clean["best"].keys())
-                sp_clean["market_count"] = len(sp_clean["best"])
-                
-                yield _sse("batch", {"matches": [sp_clean], "batch": count, "of": "unknown", "offset": count - 1})
-                yield _keepalive()
-                
-            yield _sse("list_done", {"total_sent": count})
-            
-            # 2. REAL-TIME LIVE UPDATES (PubSub + Polling)
+            # ── 1. LIVE INITIALIZATION ─────────────────────────────────────────
             if mode == "live":
-                import redis
                 sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
-                r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
-                pubsub = r.pubsub(ignore_subscribe_messages=True)
-                pubsub.subscribe(f"sp:live:sport:{sport_id}")
-
-                last_poll = time.time()
                 
-                while True:
-                    # A. Ultra-low latency Match Clock & Score updates (via PubSub)
-                    msg = pubsub.get_message(timeout=0.5)
-                    if msg and msg["type"] == "message":
-                        try:
-                            payload = json.loads(msg["data"])
-                            if payload.get("type") == "event_update":
-                                # Safely extract betradar_id using backend lookup or fallback to SP id
-                                try:
-                                    from app.workers.sp_live_harvester import _event_betradar_id
-                                    br_id = _event_betradar_id(payload["event_id"]) or str(payload["event_id"])
-                                except Exception:
-                                    br_id = str(payload["event_id"])
+                # Use the new sp_live_harvester method to get accurate externalIds
+                raw_events = fetch_live_events(sport_id, limit=max_m)
+                sp_event_ids = [ev["id"] for ev in raw_events]
+                sp_markets_raw = fetch_live_markets(sp_event_ids, sport_id) if sp_event_ids else []
 
-                                state = payload.get("state", {})
-                                yield _sse("live_update", {
-                                    "parent_match_id": br_id,
-                                    "home_team": "dummy", # Satisfies React's object requirement
-                                    "match_time": state.get("matchTime", payload.get("match_time", "")),
-                                    "score_home": payload.get("score_home"),
-                                    "score_away": payload.get("score_away"),
-                                    "status": state.get("currentEventPhase"),
-                                    "is_live": True
-                                })
+                mkt_by_event = {}
+                for m in sp_markets_raw:
+                    eid = m.get("eventId")
+                    if eid: mkt_by_event.setdefault(eid, []).append(m)
+
+                for ev in raw_events:
+                    count += 1
+                    betradar_id = str(ev.get("externalId") or "")
+                    sp_event_id = ev.get("id")
+                    if betradar_id and betradar_id != "0":
+                        active_live_br_ids.append(betradar_id)
+                        sp_event_map[betradar_id] = sp_event_id
+
+                    state = ev.get("state", {})
+                    score = state.get("matchScore", {})
+                    
+                    sp_match = {
+                        "sp_match_id": sp_event_id,
+                        "betradar_id": betradar_id if betradar_id and betradar_id != "0" else None,
+                        "home_team": ev.get("competitors", [{},{}])[0].get("name", "Home"),
+                        "away_team": ev.get("competitors", [{},{}])[1].get("name", "Away"),
+                        "competition": ev.get("tournament", {}).get("name", ""),
+                        "start_time": ev.get("kickoffTimeUTC", ""),
+                        "match_time": state.get("matchTime", ""),
+                        "current_score": f"{score.get('home','')}-{score.get('away','')}",
+                        "event_status": state.get("currentEventPhase", ""),
+                        "markets": mkt_by_event.get(sp_event_id, [])
+                    }
+
+                    bt_markets, od_markets = {}, {}
+                    if sp_match["betradar_id"]:
+                        try: bt_markets, _ = get_live_match_markets(sp_match["betradar_id"], sport_slug)
+                        except Exception: pass
+                        try: od_markets, _ = fetch_event_detail(sp_match["betradar_id"], od_sport_id)
                         except Exception: pass
 
-                    # B. 6-Second polling loop to fetch fresh Betika and OdiBets Odds
-                    if time.time() - last_poll > 6.0:
-                        last_poll = time.time()
-                        for br_id in active_live_br_ids:
-                            try:
-                                bt_mkts, _ = get_live_match_markets(br_id, sport_slug)
-                                od_mkts, _ = fetch_event_detail(br_id, od_sport_id)
-                                
-                                up_payload = {
-                                    "parent_match_id": br_id, 
-                                    "home_team": "dummy", 
-                                    "bookmakers": {}, 
-                                    "markets_by_bk": {}
-                                }
-                                
-                                if bt_mkts:
-                                    bt_clean = _unify_match_payload({"markets": bt_mkts, "betradar_id": br_id}, 0, "live", "bt", "BETIKA")
-                                    up_payload["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
-                                    up_payload["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
-                                    
-                                if od_mkts:
-                                    od_clean = _unify_match_payload({"markets": od_mkts, "betradar_id": br_id}, 0, "live", "od", "ODIBETS")
-                                    up_payload["bookmakers"]["od"] = od_clean["bookmakers"]["od"]
-                                    up_payload["markets_by_bk"]["od"] = od_clean["markets_by_bk"]["od"]
+                    sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
+                    sp_clean["match_time"] = sp_match["match_time"]
+                    sp_clean["score_home"] = score.get("home", "")
+                    sp_clean["score_away"] = score.get("away", "")
+                    sp_clean["is_live"] = True
 
-                                if up_payload["bookmakers"]:
-                                    yield _sse("live_update", up_payload)
-                            except Exception: pass
+                    if bt_markets:
+                        bt_clean = _unify_match_payload({"markets": bt_markets, "betradar_id": betradar_id}, count, mode, "bt", "BETIKA")
+                        sp_clean["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
+                        sp_clean["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
+                    if od_markets:
+                        od_clean = _unify_match_payload({"markets": od_markets, "betradar_id": betradar_id}, count, mode, "od", "ODIBETS")
+                        sp_clean["bookmakers"]["od"] = od_clean["bookmakers"]["od"]
+                        sp_clean["markets_by_bk"]["od"] = od_clean["markets_by_bk"]["od"]
 
+                    sp_clean["bk_count"] = len(sp_clean["bookmakers"])
+
+                    for bk_slug, mkts in sp_clean["markets_by_bk"].items():
+                        for mkt_slug, outcomes in mkts.items():
+                            if mkt_slug not in sp_clean["best"]: sp_clean["best"][mkt_slug] = {}
+                            for out_key, price_dict in outcomes.items():
+                                p = price_dict["price"]
+                                if out_key not in sp_clean["best"][mkt_slug] or p > sp_clean["best"][mkt_slug][out_key]["odd"]:
+                                    sp_clean["best"][mkt_slug][out_key] = {"odd": p, "bk": bk_slug}
+
+                    sp_clean["market_slugs"] = list(sp_clean["best"].keys())
+                    sp_clean["market_count"] = len(sp_clean["best"])
+
+                    yield _sse("batch", {"matches": [sp_clean], "batch": count, "of": "unknown", "offset": count - 1})
                     yield _keepalive()
                     
+                yield _sse("list_done", {"total_sent": count})
+
+            # ── 1. UPCOMING INITIALIZATION ─────────────────────────────────────
             else:
+                stream = fetch_upcoming_stream(sport_slug, max_matches=max_m, fetch_full_markets=fetch_full)
+                for sp_match in stream:
+                    count += 1
+                    betradar_id = sp_match.get("betradar_id")
+                    bt_markets = {}; od_markets = {}
+                    
+                    if betradar_id:
+                        try: bt_markets = get_full_markets(betradar_id, sport_slug)
+                        except Exception: pass
+                        try: od_markets, _ = fetch_event_detail(betradar_id, od_sport_id)
+                        except Exception: pass
+                    
+                    sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
+                    
+                    if bt_markets:
+                        bt_clean = _unify_match_payload({"markets": bt_markets, "betradar_id": betradar_id}, count, mode, "bt", "BETIKA")
+                        sp_clean["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
+                        sp_clean["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
+                    if od_markets:
+                        od_clean = _unify_match_payload({"markets": od_markets, "betradar_id": betradar_id}, count, mode, "od", "ODIBETS")
+                        sp_clean["bookmakers"]["od"] = od_clean["bookmakers"]["od"]
+                        sp_clean["markets_by_bk"]["od"] = od_clean["markets_by_bk"]["od"]
+
+                    sp_clean["bk_count"] = len(sp_clean["bookmakers"])
+                    for bk_slug, mkts in sp_clean["markets_by_bk"].items():
+                        for mkt_slug, outcomes in mkts.items():
+                            if mkt_slug not in sp_clean["best"]: sp_clean["best"][mkt_slug] = {}
+                            for out_key, price_dict in outcomes.items():
+                                p = price_dict["price"]
+                                if out_key not in sp_clean["best"][mkt_slug] or p > sp_clean["best"][mkt_slug][out_key]["odd"]:
+                                    sp_clean["best"][mkt_slug][out_key] = {"odd": p, "bk": bk_slug}
+
+                    sp_clean["market_slugs"] = list(sp_clean["best"].keys())
+                    sp_clean["market_count"] = len(sp_clean["best"])
+                    
+                    yield _sse("batch", {"matches": [sp_clean], "batch": count, "of": "unknown", "offset": count - 1})
+                    yield _keepalive()
+                    
+                yield _sse("list_done", {"total_sent": count})
                 yield _sse("done", {"status": "finished", "total_sent": count})
+                return
+
+            # ── 2. REAL-TIME LIVE PUB/SUB ──────────────────────────────────────
+            # Only runs if mode == "live"
+            import redis
+            r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+            pubsub = r.pubsub(ignore_subscribe_messages=True)
+            pubsub.subscribe(f"sp:live:sport:{sport_id}")
+
+            last_poll = time.time()
+            
+            while True:
+                msg = pubsub.get_message(timeout=0.5)
+                if msg and msg["type"] == "message":
+                    try:
+                        payload = json.loads(msg["data"])
+                        msg_type = payload.get("type")
+
+                        # Resolve Betradar ID
+                        ev_id = payload.get("event_id")
+                        br_id = next((k for k, v in sp_event_map.items() if v == ev_id), None)
+                        if not br_id: br_id = str(ev_id)
+
+                        # Fast Event Updates (Clock, Score, Phase)
+                        if msg_type == "event_update":
+                            state = payload.get("state", {})
+                            yield _sse("live_update", {
+                                "parent_match_id": br_id,
+                                "home_team": "dummy", 
+                                "match_time": state.get("matchTime", payload.get("match_time", "")),
+                                "score_home": payload.get("score_home"),
+                                "score_away": payload.get("score_away"),
+                                "status": payload.get("phase", state.get("currentEventPhase", "")),
+                                "is_live": True
+                            })
+
+                        # Market Odds Updates from SP
+                        elif msg_type == "market_update":
+                            norm_sels = payload.get("normalised_selections", [])
+                            slug = payload.get("market_slug")
+                            if norm_sels and slug:
+                                outs = {s["outcome_key"]: {"price": float(s["odds"])} for s in norm_sels if float(s.get("odds",0)) > 1}
+                                if outs:
+                                    yield _sse("live_update", {
+                                        "parent_match_id": br_id,
+                                        "home_team": "dummy",
+                                        "bookmakers": {"sp": {"slug": "sp", "markets": {slug: outs}}},
+                                        "markets_by_bk": {"sp": {slug: outs}}
+                                    })
+                    except Exception: pass
+
+                # 6-Second polling loop for BT and OD
+                if time.time() - last_poll > 6.0:
+                    last_poll = time.time()
+                    for br_id in active_live_br_ids:
+                        try:
+                            bt_mkts, _ = get_live_match_markets(br_id, sport_slug)
+                            od_mkts, _ = fetch_event_detail(br_id, od_sport_id)
+                            
+                            up_payload = {
+                                "parent_match_id": br_id, 
+                                "home_team": "dummy", 
+                                "bookmakers": {}, 
+                                "markets_by_bk": {}
+                            }
+                            
+                            if bt_mkts:
+                                bt_clean = _unify_match_payload({"markets": bt_mkts, "betradar_id": br_id}, 0, "live", "bt", "BETIKA")
+                                up_payload["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
+                                up_payload["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
+                                
+                            if od_mkts:
+                                od_clean = _unify_match_payload({"markets": od_mkts, "betradar_id": br_id}, 0, "live", "od", "ODIBETS")
+                                up_payload["bookmakers"]["od"] = od_clean["bookmakers"]["od"]
+                                up_payload["markets_by_bk"]["od"] = od_clean["markets_by_bk"]["od"]
+
+                            if up_payload["bookmakers"]:
+                                yield _sse("live_update", up_payload)
+                        except Exception: pass
+
+                yield _keepalive()
                 
         except Exception as exc: 
             yield _sse("error", {"error": str(exc)})
