@@ -1161,3 +1161,58 @@ if __name__ == "__main__":
     except Exception as exc:
         _D("snapshot failed: %s", exc, level="error")
     SpLiveHarvester().run_forever()
+
+
+def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[dict]:
+    """
+    Ultra-fast bulk fetcher for SportPesa live games. 
+    Grabs all live events for a given sport and their markets in just 2 API calls.
+    """
+    sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
+    
+    # 1. Fetch all live events
+    events = fetch_live_events(sport_id, limit=100)
+    if not events:
+        return []
+
+    sp_event_ids = [ev["id"] for ev in events]
+    mkt_by_event = {}
+
+    # 2. Bulk fetch core markets (1X2, Total, BTTS, Double Chance, Handicap)
+    if fetch_full_markets and sp_event_ids:
+        # 194=1X2, 105=Total, 138=BTTS, 147=DC, 184=Handicap
+        for m_type in [194, 105, 138, 147, 184]: 
+            try:
+                res = fetch_live_markets(sp_event_ids, sport_id, m_type)
+                if res:
+                    for m in res:
+                        eid = m.get("eventId")
+                        if eid:
+                            mkt_by_event.setdefault(eid, []).append(m)
+            except Exception:
+                pass
+
+    stream_data = []
+    for ev in events:
+        betradar_id = str(ev.get("externalId") or "")
+        sp_event_id = ev.get("id")
+        
+        state = ev.get("state", {})
+        score = state.get("matchScore", {})
+        
+        sp_match = {
+            "sp_match_id": sp_event_id,
+            "betradar_id": betradar_id if betradar_id and betradar_id != "0" else None,
+            "home_team": ev.get("competitors", [{},{}])[0].get("name", "Home"),
+            "away_team": ev.get("competitors", [{},{}])[1].get("name", "Away"),
+            "competition": ev.get("tournament", {}).get("name", ""),
+            "sport": sport_slug,
+            "start_time": ev.get("kickoffTimeUTC", ""),
+            "match_time": state.get("matchTime", ""),
+            "current_score": f"{score.get('home','')}-{score.get('away','')}",
+            "event_status": state.get("currentEventPhase", ""),
+            "markets": mkt_by_event.get(sp_event_id, [])
+        }
+        stream_data.append(sp_match)
+        
+    return stream_data
