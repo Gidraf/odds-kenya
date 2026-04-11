@@ -197,6 +197,7 @@ def _detect_arbs(best_markets: dict[str, dict], match_id: int, home_team: str, a
 def _align_single_match(um, bmo_rows: list, bk_map: dict) -> dict:
     from app.extensions import db
     from app.models.odds_model import ArbitrageOpportunity, OpportunityStatus
+    from sqlalchemy.orm.attributes import flag_modified
 
     if not bmo_rows:
         return {"match_id": um.id, "market_count": 0, "bk_count": 0, "arbs_found": 0, "updated": False}
@@ -208,7 +209,7 @@ def _align_single_match(um, bmo_rows: list, bk_map: dict) -> dict:
 
     try:
         um.markets_json = best_markets
-        db.session.add(um)
+        flag_modified(um, "markets_json")  # CRITICAL: Forces SQLAlchemy to recognize JSON mutation
     except Exception as exc:
         logger.warning("[align] match %d markets_json write failed: %s", um.id, exc)
 
@@ -275,6 +276,7 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
     from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
     from app.models.bookmakers_model import Bookmaker
     from sqlalchemy import or_
+    from sqlalchemy.orm.exc import StaleDataError
 
     t0 = time.perf_counter()
 
@@ -317,28 +319,35 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
             )
         )
 
-        total_matches = base_q.count()
+        # 1. Fetch ONLY the IDs first (prevents massive memory buffering and staleness)
+        all_match_ids = [row.id for row in base_q.with_entities(UnifiedMatch.id).all()]
+        total_matches = len(all_match_ids)
+        
         logger.info("[align:%s] found %d matches to align", sport_slug, total_matches)
 
         if total_matches == 0:
             return {"ok": True, "sport": sport_slug, "aligned": 0, "skipped": 0, "arbs_found": 0, "latency_ms": 0}
 
-        all_match_ids = [row.id for row in base_q.with_entities(UnifiedMatch.id).all()]
-        all_bmo_rows = BookmakerMatchOdds.query.filter(BookmakerMatchOdds.match_id.in_(all_match_ids)).all()
-
-        bmo_by_match: dict[int, list] = {}
-        for bmo in all_bmo_rows:
-            bmo_by_match.setdefault(bmo.match_id, []).append(bmo)
-
         aligned = skipped = arbs_total = errors = 0
-        offset = 0
         
-        while offset < total_matches:
-            batch_ums = base_q.offset(offset).limit(batch_size).all()
+        # 2. Process in fresh, isolated chunks
+        for i in range(0, total_matches, batch_size):
+            chunk_ids = all_match_ids[i:i+batch_size]
+            
+            # FRESH QUERY: get current state of these matches right before processing
+            batch_ums = UnifiedMatch.query.filter(UnifiedMatch.id.in_(chunk_ids)).all()
             if not batch_ums:
-                break
+                continue
                 
+            # DEADLOCK PREVENTION: Always sort batch modifications by Primary Key
             batch_ums = sorted(batch_ums, key=lambda m: m.id)
+            current_um_ids = [um.id for um in batch_ums]
+
+            # FETCH BMOs specifically for this chunk
+            bmo_rows_chunk = BookmakerMatchOdds.query.filter(BookmakerMatchOdds.match_id.in_(current_um_ids)).all()
+            bmo_by_match: dict[int, list] = {}
+            for bmo in bmo_rows_chunk:
+                bmo_by_match.setdefault(bmo.match_id, []).append(bmo)
 
             batch_stats = []
             for um in batch_ums:
@@ -360,17 +369,17 @@ def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
                     logger.warning("[align:%s] match %d error: %s", sport_slug, um.id, exc)
                     errors += 1
 
+            # 3. Handle concurrent mutations safely
             try:
                 db.session.commit()
-            except Exception as exc:
-                logger.error("[align:%s] batch commit error at offset=%d: %s", sport_slug, offset, exc)
-                try:
-                    db.session.rollback()
-                except Exception:
-                    pass
+            except StaleDataError as exc:
+                logger.warning("[align:%s] StaleDataError at chunk %d (concurrent background update): %s", sport_slug, i, exc)
+                db.session.rollback()
                 errors += len(batch_ums)
-
-            offset += batch_size
+            except Exception as exc:
+                logger.error("[align:%s] batch commit error at chunk %d: %s", sport_slug, i, exc)
+                db.session.rollback()
+                errors += len(batch_ums)
 
     except Exception as exc:
         logger.error("[align:%s] fatal error: %s", sport_slug, exc)

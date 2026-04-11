@@ -34,6 +34,10 @@ bp_match_refresh = Blueprint("match-refresh", __name__, url_prefix="/api")
 _REFRESH_TIMEOUT = 18   # seconds per bookmaker fetch
 _MAX_WORKERS     = 3
 
+SAFE_ARB_MARKETS = {
+    "match_winner", "1x2", "moneyline", "btts", "both_teams_score",
+    "double_chance", "odd_even"
+}
 
 # ── Per-source fetchers ────────────────────────────────────────────────────────
 
@@ -56,9 +60,9 @@ def _fetch_sp(betradar_id: str, sp_game_id: str | None, sport_slug: str) -> tupl
 def _fetch_bt(betradar_id: str, sport_slug: str) -> tuple[str, dict, str]:
     """BT parent_match_id == betradar_id."""
     try:
-        from app.workers.bt_harvester import get_full_markets, slug_to_bt_sport_id
-        bt_sport_id = slug_to_bt_sport_id(sport_slug)
-        markets = get_full_markets(betradar_id, bt_sport_id)
+        from app.workers.bt_harvester import get_full_markets
+        # CRITICAL FIX: Pass sport_slug as kwargs string, not integer
+        markets = get_full_markets(betradar_id, sport_slug=sport_slug)
         if not markets:
             return "bt", {}, "no_markets"
         return "bt", markets, "ok"
@@ -83,8 +87,8 @@ def _fetch_od(betradar_id: str, sport_slug: str) -> tuple[str, dict, str]:
 
 def _normalise_markets(raw: dict, bk_slug: str) -> dict:
     """
-    Ensure markets are in the flat canonical shape:
-      {market_slug: {outcome_key: price_float}}
+    Ensure markets are in the flat canonical shape expected by the frontend:
+      {market_slug: {outcome_key: {"odd": price_float}}}
     """
     if not raw:
         return {}
@@ -94,6 +98,7 @@ def _normalise_markets(raw: dict, bk_slug: str) -> dict:
             continue
         clean_outs: dict = {}
         for out, val in outcomes.items():
+            fv = 0.0
             if isinstance(val, (int, float)):
                 fv = float(val)
             elif isinstance(val, dict):
@@ -105,10 +110,10 @@ def _normalise_markets(raw: dict, bk_slug: str) -> dict:
                     fv = float(val)
                 except ValueError:
                     continue
-            else:
-                continue
+            
             if fv > 1.0:
-                clean_outs[out] = fv
+                # Return in dict format to match DB fallback structure
+                clean_outs[out] = {"odd": fv}
         if clean_outs:
             clean[mkt] = clean_outs
     return clean
@@ -142,16 +147,20 @@ def _save_bk_markets(
     updates = 0
 
     for mkt_slug, outcomes in markets.items():
-        for outcome, price in outcomes.items():
+        for outcome, odd_data in outcomes.items():
+            price = float(odd_data.get("odd", 0)) if isinstance(odd_data, dict) else float(odd_data)
+            if price <= 1.0:
+                continue
+                
             try:
                 price_changed, old_price = bmo.upsert_selection(
                     market=mkt_slug, specifier=None,
-                    selection=outcome, price=float(price),
+                    selection=outcome, price=price,
                 )
                 if um:
                     um.upsert_bookmaker_price(
                         market=mkt_slug, specifier=None,
-                        selection=outcome, price=float(price),
+                        selection=outcome, price=price,
                         bookmaker_id=bookmaker_id,
                     )
                 if price_changed:
@@ -163,8 +172,8 @@ def _save_bk_markets(
                         "specifier":    None,
                         "selection":    outcome,
                         "old_price":    old_price,
-                        "new_price":    float(price),
-                        "price_delta":  round(float(price) - old_price, 4) if old_price else None,
+                        "new_price":    price,
+                        "price_delta":  round(price - old_price, 4) if old_price else None,
                         "recorded_at":  datetime.utcnow(),
                     })
                 updates += 1
@@ -178,16 +187,17 @@ def _save_bk_markets(
 
 
 def _detect_arbs(markets_by_bk: dict) -> list[dict]:
-    """Quick in-memory arb detection across bookmakers."""
-    # Build best-per-outcome across all BKs
+    """Quick in-memory arb detection across bookmakers with strict safety logic."""
     best: dict[str, dict[str, tuple[float, str]]] = {}
+    
+    # 1. Build best-per-outcome across all BKs
     for bk_slug, mkts in markets_by_bk.items():
         for mkt, outcomes in (mkts or {}).items():
             best.setdefault(mkt, {})
-            for out, price in outcomes.items():
+            for out, odd_data in outcomes.items():
                 try:
-                    fv = float(price)
-                except (TypeError, ValueError):
+                    fv = float(odd_data.get("odd") or odd_data.get("price") or odd_data) if isinstance(odd_data, dict) else float(odd_data)
+                except (TypeError, ValueError, AttributeError):
                     continue
                 if fv > 1.0:
                     existing = best[mkt].get(out)
@@ -195,28 +205,56 @@ def _detect_arbs(markets_by_bk: dict) -> list[dict]:
                         best[mkt][out] = (fv, bk_slug)
 
     arbs: list[dict] = []
+    
     for mkt, outcomes in best.items():
+        # 2. Filter safe markets only
+        is_safe = (
+            mkt in SAFE_ARB_MARKETS or
+            "over_under" in mkt or
+            "asian_handicap" in mkt
+        )
+        if not is_safe:
+            continue
+
         if len(outcomes) < 2:
             continue
+
+        # 3. Strict outcome count verification
+        if mkt in ("match_winner", "1x2") and len(outcomes) != 3:
+            continue
+        if ("over_under" in mkt or mkt in ("btts", "both_teams_score", "odd_even")) and len(outcomes) != 2:
+            continue
+
+        # Must span multiple bookmakers
+        bk_ids = {v[1] for v in outcomes.values()}
+        if len(bk_ids) < 2:
+            continue
+
         arb_sum = sum(1.0 / v[0] for v in outcomes.values())
-        if arb_sum < 1.0:
-            profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
-            legs = [
-                {
-                    "outcome":   out,
-                    "bk":        v[1],
-                    "odd":       v[0],
-                    "stake_pct": round((1.0 / v[0] / arb_sum) * 100, 3),
-                    "stake_kes": round(1000 * (1.0 / v[0] / arb_sum), 2),
-                }
-                for out, v in outcomes.items()
-            ]
-            arbs.append({
-                "market":     mkt,
-                "profit_pct": profit_pct,
-                "arb_sum":    round(arb_sum, 6),
-                "legs":       legs,
-            })
+        if arb_sum >= 1.0 or arb_sum == 0:
+            continue
+
+        profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
+        if profit_pct < 0.5:
+            continue
+            
+        legs = [
+            {
+                "outcome":   out,
+                "bk":        v[1],
+                "odd":       v[0],
+                "stake_pct": round((1.0 / v[0] / arb_sum) * 100, 3),
+                "stake_kes": round(1000 * (1.0 / v[0] / arb_sum), 2),
+            }
+            for out, v in outcomes.items()
+        ]
+        
+        arbs.append({
+            "market":     mkt,
+            "profit_pct": profit_pct,
+            "arb_sum":    round(arb_sum, 6),
+            "legs":       legs,
+        })
 
     return sorted(arbs, key=lambda x: -x["profit_pct"])
 
@@ -268,8 +306,6 @@ def refresh_match(parent_match_id: str):
     if not betradar_id:
         return _err("Match has no betradar_id — cannot refresh", 422)
 
-    # Infer sport slug
-   
     sport_slug = _normalise_sport_slug(um.sport_name or "soccer")
 
     # Resolve bookmaker IDs once
@@ -284,7 +320,7 @@ def refresh_match(parent_match_id: str):
     except Exception:
         pass
 
-    # SP game id (may be stored in a link table)
+    # SP game id
     sp_game_id: str | None = None
     try:
         from app.models.bookmakers_model import BookmakerMatchLink
@@ -322,7 +358,6 @@ def refresh_match(parent_match_id: str):
     # ── Normalise ──────────────────────────────────────────────────────────────
     markets_by_bk: dict[str, dict] = {}
     fetch_report:  dict[str, dict] = {}
-    t_fetch        = time.perf_counter()
 
     for slug, (_, raw_mkts, status) in raw_results.items():
         clean = _normalise_markets(raw_mkts, slug)
@@ -331,6 +366,25 @@ def refresh_match(parent_match_id: str):
             "status":       status,
             "market_count": len(clean),
         }
+
+    # Also include any existing DB markets not refreshed in this call
+    try:
+        from app.models.odds_model import BookmakerMatchOdds
+        from app.views.odds_feed.customer_odds_view import _flatten_db_markets, _bk_slug
+        from app.models.bookmakers_model import Bookmaker as Bk2
+        existing_bmos = BookmakerMatchOdds.query.filter_by(match_id=um.id).all()
+        all_bk = {b.id: b for b in Bk2.query.all()}
+        for bmo in existing_bmos:
+            bk_obj = all_bk.get(bmo.bookmaker_id)
+            if not bk_obj:
+                continue
+            slug = _bk_slug(bk_obj.name.lower())
+            if slug not in markets_by_bk or not markets_by_bk[slug]:
+                flat = _flatten_db_markets(bmo.markets_json or {})
+                if flat:
+                    markets_by_bk[slug] = flat
+    except Exception:
+        pass
 
     # ── Save to DB ─────────────────────────────────────────────────────────────
     changes: dict[str, int] = {}
@@ -359,35 +413,16 @@ def refresh_match(parent_match_id: str):
     for slug, mkts in markets_by_bk.items():
         for mkt, outcomes in mkts.items():
             best.setdefault(mkt, {})
-            for out, price in outcomes.items():
+            for out, odd_data in outcomes.items():
                 try:
-                    fv = float(price)
-                except (TypeError, ValueError):
+                    fv = float(odd_data.get("odd") or odd_data.get("price") or odd_data) if isinstance(odd_data, dict) else float(odd_data)
+                except (TypeError, ValueError, AttributeError):
                     continue
                 if fv > 1.0 and (out not in best[mkt] or fv > best[mkt][out]["odd"]):
                     best[mkt][out] = {"odd": fv, "bk": slug}
 
     arb_markets = _detect_arbs(markets_by_bk)
     has_arb     = bool(arb_markets)
-
-    # Also include any existing DB markets not refreshed in this call
-    try:
-        from app.models.odds_model import BookmakerMatchOdds
-        from app.views.odds_feed.customer_odds_view import _flatten_db_markets, _bk_slug
-        from app.models.bookmakers_model import Bookmaker as Bk2
-        existing_bmos = BookmakerMatchOdds.query.filter_by(match_id=um.id).all()
-        all_bk = {b.id: b for b in Bk2.query.all()}
-        for bmo in existing_bmos:
-            bk_obj = all_bk.get(bmo.bookmaker_id)
-            if not bk_obj:
-                continue
-            slug = _bk_slug(bk_obj.name.lower())
-            if slug not in markets_by_bk or not markets_by_bk[slug]:
-                flat = _flatten_db_markets(bmo.markets_json or {})
-                if flat:
-                    markets_by_bk[slug] = flat
-    except Exception:
-        pass
 
     now = datetime.now(timezone.utc)
     latency_ms = int((time.perf_counter() - t0) * 1000)
