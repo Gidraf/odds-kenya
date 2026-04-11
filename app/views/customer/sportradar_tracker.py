@@ -1,112 +1,120 @@
-from flask import Blueprint, request
+from flask import Blueprint, request, Response, stream_with_context
 import requests
-import time
-from app.utils.customer_jwt_helpers import _err, _signed_response
+import json
+from concurrent.futures import ThreadPoolExecutor
+from .utils import _sse
 
-bp_tracker = Blueprint("tracker", __name__, url_prefix="/api")
+bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
 
-def _parse_sportradar_timeline(doc_data: dict) -> dict:
-    """Parses the raw Sportradar timeline JSON into clean UI props."""
-    match = doc_data.get("match", {})
-    events = doc_data.get("events", [])
+# You should replace this with your dynamic token fetcher if you have one
+DEFAULT_TOKEN = "exp=1776014087~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cua2Uuc3BvcnRwZXNhLmNvbSIsImEiOiJmODYxN2E4OTZkMzU1MWJhNTBkNTFmMDE0OWQ0YjZkZCIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=0c5778166001c92fb20fe250e531cbfcacdc6e557ef04ddfd4162720cbad72ce"
 
-    # Basic Match Info
-    home_team = match.get("teams", {}).get("home", {}).get("name", "Home")
-    away_team = match.get("teams", {}).get("away", {}).get("name", "Away")
-    score_home = match.get("result", {}).get("home", 0)
-    score_away = match.get("result", {}).get("away", 0)
-    
-    # Calculate current minute from the last event or match.timeinfo
-    current_time = match.get("timeinfo", {}).get("played", "0")
-    if not current_time and events:
-        current_time = str(events[-1].get("time", 0))
-
-    scorers = []
-    stats_tally = {
-        "corner": {"home": 0, "away": 0, "label": "Corners"},
-        "shotontarget": {"home": 0, "away": 0, "label": "Shots on Target"},
-        "shotofftarget": {"home": 0, "away": 0, "label": "Shots off Target"},
-        "freekick": {"home": 0, "away": 0, "label": "Free Kicks"},
-    }
-
-    live_coords = {"x": 50, "y": 50, "action": "Waiting for data..."}
-
-    for ev in events:
-        team = ev.get("team") # "home" or "away"
-        ev_type = ev.get("type")
-        
-        # 1. Capture Goalscorers
-        if ev_type == "goal" and team:
-            player_name = ev.get("player", {}).get("name", "Unknown")
-            minute = str(ev.get("time", ""))
-            scorers.append({"minute": minute, "player": player_name.split(",")[-1].strip(), "team": team})
-
-        # 2. Tally Stats
-        if ev_type in stats_tally and team in ["home", "away"]:
-            stats_tally[ev_type][team] += 1
-
-        # 3. Capture Latest Action & Coordinates
-        if "X" in ev and "Y" in ev:
-            # Sportradar X/Y are usually 0-100. Y=100 is bottom, X=100 is right.
-            # If away team attacks, X might need flipping, but we'll pass raw for now.
-            live_coords = {
-                "x": float(ev["X"]),
-                "y": float(ev["Y"]),
-                "action": ev.get("name", "Action"),
-                "team": team
-            }
-
-    # Format stats array for the frontend
-    stats_array = []
-    for key, data in stats_tally.items():
-        total = max(data["home"] + data["away"], 1) # Prevent div by zero
-        stats_array.append({
-            "label": data["label"],
-            "homeVal": data["home"],
-            "awayVal": data["away"],
-            "max": total
-        })
-
-    return {
-        "homeTeam": home_team,
-        "awayTeam": away_team,
-        "scoreHome": str(score_home),
-        "scoreAway": str(score_away),
-        "time": str(current_time),
-        "scorers": scorers,
-        "stats": stats_array,
-        "liveCoords": live_coords
-    }
-
-@bp_tracker.route("/odds/match/<betradar_id>/tracker", methods=["GET"])
-def get_match_tracker(betradar_id: str):
-    """Fetches the latest match timeline from Sportradar."""
-    # NOTE: You will need to inject your dynamic Sportradar token (T=exp=...) here in production
-    SPORTRADAR_TOKEN = request.args.get("token", "YOUR_DEFAULT_TOKEN_HERE")
-    
-    url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/match_timeline/{betradar_id}?T={SPORTRADAR_TOKEN}"
-    
+def _fetch_sr(endpoint: str, item_id: str, token: str):
+    url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={token}"
     headers = {
         "accept": "application/json",
         "origin": "https://www.ke.sportpesa.com",
         "referer": "https://www.ke.sportpesa.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-
     try:
-        resp = requests.get(url, headers=headers, timeout=5)
-        resp.raise_for_status()
-        raw_data = resp.json()
-        
-        # Navigate the Sportradar JSON nesting
-        doc = raw_data.get("doc", [{}])[0]
-        data = doc.get("data", {})
-        
-        if not data.get("match"):
-            return _err("No live match data found", 404)
-            
-        parsed_payload = _parse_sportradar_timeline(data)
-        return _signed_response({"ok": True, "tracker": parsed_payload})
-        
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            return res.json().get("doc", [{}])[0].get("data", {})
     except Exception as e:
-        return _err(f"Tracker error: {str(e)}", 500)
+        print(f"SR Fetch Error ({endpoint}):", e)
+    return None
+
+@bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
+def stream_deep_analytics(betradar_id: str):
+    token = request.args.get("token", DEFAULT_TOKEN)
+
+    def generate():
+        yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
+
+        # 1. Fetch Timeline (Provides initial data, plus Team UIDs and Season ID)
+        timeline = _fetch_sr("match_timeline", betradar_id, token)
+        if not timeline:
+            yield _sse("error", {"message": "Could not load match metadata."})
+            return
+
+        match_info = timeline.get("match", {})
+        home_uid = match_info.get("teams", {}).get("home", {}).get("uid")
+        away_uid = match_info.get("teams", {}).get("away", {}).get("uid")
+        season_id = match_info.get("_seasonid")
+        
+        # Stream basic metadata immediately
+        yield _sse("meta", {
+            "home_team": match_info.get("teams", {}).get("home", {}).get("name"),
+            "away_team": match_info.get("teams", {}).get("away", {}).get("name"),
+            "status": match_info.get("status", {}).get("name"),
+            "match_time": match_info.get("timeinfo", {}).get("played"),
+            "score": match_info.get("result", {})
+        })
+
+        # 2. Concurrently fetch Momentum, Table, Home Form, Away Form, and Lineups
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            f_momentum = pool.submit(_fetch_sr, "stats_match_situation", betradar_id, token)
+            f_home_form = pool.submit(_fetch_sr, "stats_team_lastx", home_uid, token) if home_uid else None
+            f_away_form = pool.submit(_fetch_sr, "stats_team_lastx", away_uid, token) if away_uid else None
+            f_table = pool.submit(_fetch_sr, "season_dynamictable", season_id, token) if season_id else None
+            f_lineups = pool.submit(_fetch_sr, "match_lineups", betradar_id, token)
+            
+            # Yield Momentum
+            momentum_data = f_momentum.result()
+            if momentum_data:
+                parsed_momentum = []
+                for minute in momentum_data.get("data", []):
+                    parsed_momentum.append({
+                        "time": minute.get("time"),
+                        "home_danger": minute.get("home", {}).get("dangerous", 0),
+                        "away_danger": minute.get("away", {}).get("dangerous", 0)
+                    })
+                yield _sse("momentum", parsed_momentum)
+
+            # Yield H2H Form
+            if f_home_form and f_away_form:
+                hf = f_home_form.result()
+                af = f_away_form.result()
+                
+                def _parse_form(form_data):
+                    if not form_data: return []
+                    res = []
+                    for m in form_data.get("matches", [])[:5]: # Get last 5
+                        res.append("W" if m.get("result", {}).get("winner") == "home" else "L" if m.get("result", {}).get("winner") == "away" else "D")
+                    return res
+                
+                yield _sse("form", {"home": _parse_form(hf), "away": _parse_form(af)})
+
+            # Yield League Table (Standings)
+            if f_table:
+                table_data = f_table.result()
+                if table_data:
+                    rows = []
+                    # Find the "Total" table type
+                    tables = table_data.get("season", {}).get("tables", [])
+                    for t in tables:
+                        if t.get("name") == "Total" or len(t.get("tablerows", [])) > 0:
+                            for tr in t.get("tablerows", []):
+                                rows.append({
+                                    "pos": tr.get("pos"),
+                                    "team": tr.get("team", {}).get("name"),
+                                    "played": tr.get("total"),
+                                    "gd": tr.get("goalDiffTotal"),
+                                    "pts": tr.get("pointsTotal"),
+                                    "is_target": str(tr.get("team", {}).get("uid")) in [str(home_uid), str(away_uid)]
+                                })
+                            break
+                    rows = sorted(rows, key=lambda x: x["pos"])
+                    yield _sse("standings", rows)
+
+            # Yield Lineups (If available)
+            lineups_data = f_lineups.result()
+            if lineups_data:
+                yield _sse("lineups", lineups_data)
+            else:
+                yield _sse("lineups", {"status": "Not announced yet"})
+
+        yield _sse("done", {"status": "complete"})
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")

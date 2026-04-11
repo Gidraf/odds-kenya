@@ -96,7 +96,7 @@ def create_app() -> Flask:
     # from app.views.odds_feed.match_refresh import bp_match_refresh
     from app.views.odds_feed.live_sse_routes import bp_live_sse
     from app.views.monitor.analytics_view import bp_analytics_dash
-    from app.views.customer.sportradar_tracker import bp_tracker
+    from app.views.customer.sportradar_tracker import bp_deep_analytics
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -126,7 +126,7 @@ def create_app() -> Flask:
     # flask_app.register_blueprint(bp_match_refresh)  
     flask_app.register_blueprint(bp_live_sse)  
     flask_app.register_blueprint(bp_analytics_dash) 
-    flask_app.register_blueprint(bp_tracker)     
+    flask_app.register_blueprint(bp_deep_analytics)     
     # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
