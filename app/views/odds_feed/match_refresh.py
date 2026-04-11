@@ -44,7 +44,7 @@ def _fetch_sp(betradar_id: str, sp_game_id: str | None, sport_slug: str) -> tupl
     Falls back to fetching by betradar_id via the search endpoint.
     """
     try:
-        from app.workers.sp_harvester_ import fetch_match_markets
+        from app.workers.sp_harvester import fetch_match_markets
         markets = fetch_match_markets(sp_game_id or betradar_id, sport_slug)
         if not markets:
             return "sp", {}, "no_markets"

@@ -11,7 +11,7 @@ Usage
   cfg = get_config("soccer")          # → SportConfig(sport_id=1, …)
 """
 
-from app.workers.sp_harvester_base import SportConfig
+from app.workers.sp_harvesterbase import SportConfig
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPORT CONFIGS

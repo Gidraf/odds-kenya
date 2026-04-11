@@ -146,7 +146,7 @@ def _get_args():
 # =============================================================================
 
 def _run_direct_fetch(sport_slug, is_live, days, max_m):
-    from app.workers.sp_harvester_ import fetch_upcoming, fetch_live  # noqa
+    from app.workers.sp_harvester import fetch_upcoming, fetch_live  # noqa
 
     if is_live:
         matches   = fetch_live(sport_slug, fetch_full_markets=True)
@@ -435,7 +435,7 @@ def stream_upcoming(sport_slug: str):
         all_matches = []
 
         try:
-            from app.workers.sp_harvester_ import fetch_upcoming_stream  # noqa
+            from app.workers.sp_harvester import fetch_upcoming_stream  # noqa
 
             gen = fetch_upcoming_stream(
                 sport_slug, days=days, max_matches=max_m,
@@ -504,7 +504,7 @@ def stream_live(sport_slug: str):
         all_matches = []
 
         try:
-            from app.workers.sp_harvester_ import fetch_live_stream, SP_SPORT_ID  # noqa
+            from app.workers.sp_harvester import fetch_live_stream, SP_SPORT_ID  # noqa
             from app.workers.sp_live_harvester import fetch_live_events as _live_events  # noqa
 
             # Pre-fetch event count so the frontend can show a progress bar
@@ -583,7 +583,7 @@ def get_match_markets(game_id: str):
     sport_slug = request.args.get("sport", "soccer")
 
     try:
-        from app.workers.sp_harvester_ import fetch_match_markets
+        from app.workers.sp_harvester import fetch_match_markets
         from app.workers.sp_mapper    import (
             get_market_display_name,
             get_outcome_display,
@@ -653,7 +653,7 @@ def debug_markets(game_id: str):
     t0         = time.perf_counter()
     sport_slug = request.args.get("sport", "soccer")
     try:
-        from app.workers.sp_harvester_ import _fetch_markets_for_debug, _parse_markets_for_debug  # noqa
+        from app.workers.sp_harvester import _fetch_markets_for_debug, _parse_markets_for_debug  # noqa
         raw    = _fetch_markets_for_debug(game_id, sport_slug=sport_slug, debug=True)
         parsed = _parse_markets_for_debug(raw, game_id=game_id, sport_slug=sport_slug)
         mkt_ids = [m.get("id") for m in raw if isinstance(m, dict)]

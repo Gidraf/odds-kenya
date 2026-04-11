@@ -484,7 +484,7 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
     t0      = time.perf_counter()
     matches = []
     try:
-        from app.workers.sp_harvester_ import fetch_upcoming_stream
+        from app.workers.sp_harvester import fetch_upcoming_stream
         logger.info("[sp] %s → fetching up to %d matches", sport_slug, max_matches)
         for match in fetch_upcoming_stream(
             sport_slug, fetch_full_markets=True,

@@ -1,5 +1,5 @@
 """app/workers/sp_sports/efootball.py — eFootball / eSoccer (sportId=126)"""
-from app.workers.sp_harvester_base import SportConfig
+from app.workers.sp_harvesterbase import SportConfig
 
 CONFIG = SportConfig(
     slugs        = ("esoccer", "efootball", "e-football", "virtual-football"),

@@ -6,7 +6,7 @@ used by ALL per-sport Sportpesa harvesters.
 
 Nothing in this file is sport-specific.  Import it from a sport module:
 
-    from app.workers.sp_harvester_base import (
+    from app.workers.sp_harvesterbase import (
         fetch_upcoming_stream, fetch_live_stream,
         fetch_upcoming, fetch_live, fetch_match_markets,
     )
