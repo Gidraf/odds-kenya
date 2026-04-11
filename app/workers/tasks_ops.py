@@ -182,40 +182,40 @@ def setup_periodic_tasks(sender, **kw):
 
     # SP every 5 min — bt_od is auto-chained from SP (+30s), no separate schedule needed
     sender.add_periodic_task(300.0,  sp_harvest_all_upcoming.s(),       name="sp-upcoming-5min")
-    sender.add_periodic_task(180.0,  b2b_harvest_all_upcoming.s(),      name="b2b-upcoming-3min")
-    sender.add_periodic_task(240.0,  b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-4min")
-    sender.add_periodic_task(300.0,  sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-5min")
+    # sender.add_periodic_task(180.0,  b2b_harvest_all_upcoming.s(),      name="b2b-upcoming-3min")
+    # sender.add_periodic_task(240.0,  b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-4min")
+    # sender.add_periodic_task(300.0,  sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-5min")
 
-    sender.add_periodic_task(600.0,  update_match_results.s(),          name="results-10min")
-    sender.add_periodic_task(3600.0, expire_subscriptions.s(),          name="expire-subs-1hr")
-    sender.add_periodic_task(60.0,   health_check.s(),                  name="health-1min")
-    sender.add_periodic_task(2700.0, bt_od_harvest_all.s(),             name="bt-od-harvest-all-45min")
+    # sender.add_periodic_task(600.0,  update_match_results.s(),          name="results-10min")
+    # sender.add_periodic_task(3600.0, expire_subscriptions.s(),          name="expire-subs-1hr")
+    # sender.add_periodic_task(60.0,   health_check.s(),                  name="health-1min")
+    # sender.add_periodic_task(2700.0, bt_od_harvest_all.s(),             name="bt-od-harvest-all-45min")
     sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),        name="cleanup-daily")
 
     if not LIVE_ENABLED:
         return
 
-    from app.workers.tasks_live import (
-        sp_harvest_all_live,
-        bt_harvest_all_live,
-        od_harvest_all_live,
-        b2b_harvest_all_live,
-        b2b_page_harvest_all_live,
-        sbo_harvest_all_live,
-        sp_poll_all_event_details,
-        live_cross_bk_refresh,
-        ensure_harvester_running,
-    )
+    # from app.workers.tasks_live import (
+    #     sp_harvest_all_live,
+    #     bt_harvest_all_live,
+    #     od_harvest_all_live,
+    #     b2b_harvest_all_live,
+    #     b2b_page_harvest_all_live,
+    #     sbo_harvest_all_live,
+    #     sp_poll_all_event_details,
+    #     live_cross_bk_refresh,
+    #     ensure_harvester_running,
+    # )
 
-    sender.add_periodic_task(  60.0, ensure_harvester_running.s(),     name="sp-harvester-watchdog-1min")
-    sender.add_periodic_task(   5.0, sp_poll_all_event_details.s(),    name="sp-details-5s")
-    sender.add_periodic_task(  15.0, live_cross_bk_refresh.s(),        name="live-cross-bk-15s")
-    sender.add_periodic_task(  60.0, sp_harvest_all_live.s(),          name="sp-live-60s")
-    sender.add_periodic_task(  90.0, bt_harvest_all_live.s(),          name="bt-live-90s")
-    sender.add_periodic_task(  90.0, od_harvest_all_live.s(),          name="od-live-90s")
-    sender.add_periodic_task( 120.0, b2b_harvest_all_live.s(),         name="b2b-live-2min")
-    sender.add_periodic_task(  30.0, b2b_page_harvest_all_live.s(),    name="b2b-page-live-30s")
-    sender.add_periodic_task(  60.0, sbo_harvest_all_live.s(),         name="sbo-live-60s")
+    # sender.add_periodic_task(  60.0, ensure_harvester_running.s(),     name="sp-harvester-watchdog-1min")
+    # sender.add_periodic_task(   5.0, sp_poll_all_event_details.s(),    name="sp-details-5s")
+    # sender.add_periodic_task(  15.0, live_cross_bk_refresh.s(),        name="live-cross-bk-15s")
+    # sender.add_periodic_task(  60.0, sp_harvest_all_live.s(),          name="sp-live-60s")
+    # sender.add_periodic_task(  90.0, bt_harvest_all_live.s(),          name="bt-live-90s")
+    # sender.add_periodic_task(  90.0, od_harvest_all_live.s(),          name="od-live-90s")
+    # sender.add_periodic_task( 120.0, b2b_harvest_all_live.s(),         name="b2b-live-2min")
+    # sender.add_periodic_task(  30.0, b2b_page_harvest_all_live.s(),    name="b2b-page-live-30s")
+    # sender.add_periodic_task(  60.0, sbo_harvest_all_live.s(),         name="sbo-live-60s")
 
 
 # =============================================================================

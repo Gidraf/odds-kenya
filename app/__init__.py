@@ -176,8 +176,8 @@ def create_app() -> Flask:
     #   ENABLE_HARVESTER=1 flask run   (or set it in your .env)
     if os.environ.get("ENABLE_HARVESTER", "0") == "1":
         from app.workers.sp_live_harvester import start_harvester_thread
-        start_harvester_thread()
-        init_fetcher_manager()
+        # start_harvester_thread()
+        # init_fetcher_manager()
 
         # OdiBets live poller (REST polling, 2 s interval)
         try:
@@ -187,14 +187,14 @@ def create_app() -> Flask:
                 decode_responses=False, socket_timeout=3,
             )
             from app.workers.od_harvester import init_live_poller as od_init
-            od_init(_rd, interval=2.0)
+            # od_init(_rd, interval=2.0)
         except Exception as _e:
             print(f"[init] OdiBets live poller skipped: {_e}")
 
         # Betika live poller (REST polling, 1.5 s interval)
         try:
             from app.workers.bt_harvester import init_live_poller as bt_init
-            bt_init(_rd, interval=1.5)
+            # bt_init(_rd, interval=1.5)
         except Exception as _e:
             print(f"[init] Betika live poller skipped: {_e}")
 
