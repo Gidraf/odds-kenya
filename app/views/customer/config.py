@@ -18,16 +18,9 @@ MIN_BOOKMAKERS   = 2
 _LIVE_WINDOW     = timedelta(hours=2, minutes=30)
 
 _TERMINAL_STATUSES = frozenset({"FINISHED", "CANCELLED", "POSTPONED", "SUSPENDED"})
+_EXCLUDE_FROM_UPCOMING = frozenset({"FINISHED", "CANCELLED", "POSTPONED", "SUSPENDED", "IN_PLAY", "LIVE", "INPLAY", "IN PLAY"})
 
-_EXCLUDE_FROM_UPCOMING = frozenset({
-    "FINISHED", "CANCELLED", "POSTPONED", "SUSPENDED",
-    "IN_PLAY", "LIVE", "INPLAY", "IN PLAY",
-})
-
-_BK_SLUG = {
-    "sportpesa": "sp", "betika": "bt", "odibets": "od",
-    "sp": "sp", "bt": "bt", "od": "od", "sbo": "sbo", "b2b": "b2b",
-}
+_BK_SLUG = {"sportpesa": "sp", "betika": "bt", "odibets": "od", "sp": "sp", "bt": "bt", "od": "od", "sbo": "sbo", "b2b": "b2b"}
 
 _SPORT_ALIASES = {
     "soccer": ["Soccer", "Football"], "football": ["Soccer", "Football"],
@@ -50,11 +43,8 @@ _CANONICAL_SLUG = {
 }
 
 _SSE_HEADERS = {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    "X-Accel-Buffering": "no",
-    "Access-Control-Allow-Origin": "*",
-    "Connection": "keep-alive",
+    "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no", "Access-Control-Allow-Origin": "*", "Connection": "keep-alive",
 }
 
 _POPULARITY_WEIGHTS = {

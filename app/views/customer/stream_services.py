@@ -10,18 +10,14 @@ def _stream_matches(sport_slug, mode="upcoming", comp_filter="", team_filter="",
     match_ids_for_redis = set()
     
     try:
-        q     = _build_base_query(sport_slug, mode, comp_filter, team_filter, date_str, from_dt, to_dt, sort)
+        q = _build_base_query(sport_slug, mode, comp_filter, team_filter, date_str, from_dt, to_dt, sort)
         total = q.count()
     except Exception as exc:
         yield _sse("error", {"error": str(exc)})
         return
 
     total_batches = max(1, (total + batch_size - 1) // batch_size)
-    yield _sse("meta", {
-        "total": total, "sport": _normalise_sport_slug(sport_slug), "mode": mode,
-        "batch_size": batch_size, "total_batches": total_batches, "now": _now_utc().isoformat(),
-        "live_window_minutes": int(config._LIVE_WINDOW.total_seconds() / 60), "analytics_included": include_analytics,
-    })
+    yield _sse("meta", {"total": total, "sport": _normalise_sport_slug(sport_slug), "mode": mode, "batch_size": batch_size, "total_batches": total_batches, "now": _now_utc().isoformat(), "live_window_minutes": int(config._LIVE_WINDOW.total_seconds() / 60), "analytics_included": include_analytics})
 
     if total == 0:
         yield _sse("done", {"total_sent": 0, "latency_ms": 0})
@@ -34,10 +30,8 @@ def _stream_matches(sport_slug, mode="upcoming", comp_filter="", team_filter="",
             um_list = q.offset(offset).limit(batch_size).all()
             if not um_list: break
 
-            match_ids = [um.id for um in um_list]
-            bmo_rows, bk_objs, links_by_match, arb_set = _fetch_batch_data(match_ids)
+            bmo_rows, bk_objs, links_by_match, arb_set = _fetch_batch_data([um.id for um in um_list])
             analytics_map = _fetch_analytics_map(um_list, include_analytics)
-
             bmo_by_match = {}
             for bmo in bmo_rows: bmo_by_match.setdefault(bmo.match_id, []).append(bmo)
 
@@ -54,12 +48,10 @@ def _stream_matches(sport_slug, mode="upcoming", comp_filter="", team_filter="",
                 batch_matches.append(d)
                 match_ids_for_redis.add(um.id) 
 
-            batch_num  += 1
-            total_sent += len(batch_matches)
+            batch_num += 1; total_sent += len(batch_matches)
             yield _sse("batch", {"matches": batch_matches, "batch": batch_num, "of": total_batches, "offset": offset})
             yield _keepalive()
             offset += batch_size
-
         except Exception as exc:
             yield _sse("error", {"error": str(exc), "offset": offset})
             break
@@ -72,11 +64,9 @@ def _stream_matches(sport_slug, mode="upcoming", comp_filter="", team_filter="",
         
     import redis as _rl
     from app.workers.celery_tasks import celery as _celery
-    url  = _celery.conf.broker_url or "redis://localhost:6379/0"
+    url = _celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
-    r    = _rl.Redis.from_url(f"{base}/2", decode_responses=True)
-    ps   = r.pubsub()
-
+    ps = _rl.Redis.from_url(f"{base}/2", decode_responses=True).pubsub()
     channels = [f"match:update:{mid}" for mid in match_ids_for_redis]
     ps.subscribe(*channels)
 
@@ -90,23 +80,19 @@ def _stream_matches(sport_slug, mode="upcoming", comp_filter="", team_filter="",
             if (now_tz - last_hb).seconds >= 20:
                 yield _keepalive()
                 last_hb = now_tz
-    except (GeneratorExit, Exception):
-        ps.unsubscribe(*channels)
+    except Exception: ps.unsubscribe(*channels)
 
 def _sse_stream(channel):
     import redis as _rl
     from app.workers.celery_tasks import celery as _celery
-    url  = _celery.conf.broker_url or "redis://localhost:6379/0"
+    url = _celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
-    r    = _rl.Redis.from_url(f"{base}/2", decode_responses=True)
-    ps   = r.pubsub()
+    ps = _rl.Redis.from_url(f"{base}/2", decode_responses=True).pubsub()
     ps.subscribe(channel)
     last_hb = _now_utc()
     try:
         for msg in ps.listen():
             now = _now_utc()
             if msg["type"] == "message": yield f"data: {msg['data']}\n\n"
-            if (now - last_hb).seconds >= 20:
-                yield ": ping\n\n"
-                last_hb = now
-    except (GeneratorExit, Exception): ps.unsubscribe(channel)
+            if (now - last_hb).seconds >= 20: yield ": ping\n\n"; last_hb = now
+    except Exception: ps.unsubscribe(channel)

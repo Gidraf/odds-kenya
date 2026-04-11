@@ -3,7 +3,7 @@ import threading
 from flask import Flask
 from dotenv import load_dotenv
 from app.extensions import db, init_celery, jwt, socketio, migrate, cors
-from app.views.onboarding.playwright_onboarding import bp_fetcher, init_fetcher_manager
+# from app.views.onboarding.playwright_onboarding import bp_fetcher, init_fetcher_manager
 
 load_dotenv()
 
@@ -71,7 +71,7 @@ def create_app() -> Flask:
     from app.views.auth                              import authorization
     from app.views.research                          import bp_research
     from app.views.odds_feed                         import bp_odds as odds_bp
-    from app.views.onboarding.playwright_onboarding  import bp_fetcher
+    # from app.views.onboarding.playwright_onboarding  import bp_fetcher
     from app.views.bookmarkers                        import bookmarker
     from app.views.bookmakers_crud                    import bp_search
     from app.views.mapping                            import bp as mapping_bp
@@ -109,7 +109,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
-    flask_app.register_blueprint(bp_fetcher)
+    # flask_app.register_blueprint(bp_fetcher)
     flask_app.register_blueprint(bp_interceptor)
     # flask_app.register_blueprint(bp_sp)
     # flask_app.register_blueprint(bp_sp_live)
