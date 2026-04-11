@@ -2,14 +2,14 @@ class BetikaSoccerMapper:
     """Maps Betika Soccer JSON to internal canonical slugs."""
 
     MARKET_MAP = {
-        "1":   "1x2",
+        "1":   "match_winner",
         "8":   "first_team_to_score",
         "10":  "double_chance",
         "11":  "draw_no_bet",
         "14":  "european_handicap",
         "15":  "winning_margin",
         "16":  "asian_handicap",
-        "18":  "over_under_goals",
+        "18":  "over_under",
         "19":  "home_over_under",
         "20":  "away_over_under",
         "21":  "exact_goals",
@@ -26,7 +26,7 @@ class BetikaSoccerMapper:
         "63":  "first_half_double_chance",
         "65":  "first_half_european_handicap",
         "66":  "first_half_asian_handicap",
-        "68":  "first_half_over_under_goals",
+        "68":  "first_half_over_under",
         "69":  "first_half_home_over_under",
         "70":  "first_half_away_over_under",
         "71":  "first_half_exact_goals",
