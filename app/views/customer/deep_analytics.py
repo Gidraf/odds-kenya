@@ -2,18 +2,18 @@ from flask import Blueprint, request, Response, stream_with_context
 import requests
 import json
 from concurrent.futures import ThreadPoolExecutor
-from .utils import _sse
+from .utils import _sse 
 
 bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
 
-DEFAULT_TOKEN = "exp=1776014087~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cua2Uuc3BvcnRwZXNhLmNvbSIsImEiOiJmODYxN2E4OTZkMzU1MWJhNTBkNTFmMDE0OWQ0YjZkZCIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=0c5778166001c92fb20fe250e531cbfcacdc6e557ef04ddfd4162720cbad72ce"
+DEFAULT_TOKEN = "exp=1776025306~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cuYmV0aWthLmNvbSIsImEiOiI2MDAwNmI1MjM0YzMxY2NmOGIxNGYxNmYyODczZWU3MSIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=016ea9a66a30e7c493628bc5a2beb8e294aeefa76ea7582648f6e40904e395d4"
 
 def _fetch_sr(endpoint: str, item_id: str, token: str):
     url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={token}"
     headers = {
         "accept": "application/json",
-        "origin": "https://www.ke.sportpesa.com",
-        "referer": "https://www.ke.sportpesa.com/",
+        "origin": "https://www.betika.com",
+        "referer": "https://www.betika.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     try:
@@ -31,7 +31,7 @@ def stream_deep_analytics(betradar_id: str):
     def generate():
         yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
 
-        # 1. Fetch Match Info (Crucial for Jerseys, Score, and Time)
+        # 1. Fetch Match Info First
         info = _fetch_sr("match_info", betradar_id, token)
         
         if not info:
@@ -48,14 +48,10 @@ def stream_deep_analytics(betradar_id: str):
         home_color = f"#{jerseys.get('home', {}).get('player', {}).get('base', 'F06C6C')}"
         away_color = f"#{jerseys.get('away', {}).get('player', {}).get('base', '0DD8E8')}"
 
-        # Determine Live Time
         match_time = match_data.get("timeinfo", {}).get("played")
-        if not match_time: 
-            match_time = match_data.get("p") # Sometimes stored as 'p' (e.g., "31")
-        if not match_time:
-            match_time = match_data.get("status", {}).get("shortName", "")
+        if not match_time: match_time = match_data.get("p")
+        if not match_time: match_time = match_data.get("status", {}).get("shortName", "")
 
-        # 2. Yield Metadata immediately to UI
         yield _sse("meta", {
             "home_team": match_data.get("teams", {}).get("home", {}).get("name", "Home"),
             "away_team": match_data.get("teams", {}).get("away", {}).get("name", "Away"),
@@ -67,27 +63,57 @@ def stream_deep_analytics(betradar_id: str):
             "away_color": away_color
         })
 
-        # 3. Concurrently fetch Momentum, Table, Home Form, Away Form, and Lineups
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        # 3. Concurrently fetch Momentum, Squads, Timeline (Comments), Form, and Tables
+        with ThreadPoolExecutor(max_workers=6) as pool:
             f_momentum = pool.submit(_fetch_sr, "stats_match_situation", betradar_id, token)
-            f_home_form = pool.submit(_fetch_sr, "stats_team_lastx", home_uid, token) if home_uid else None
-            f_away_form = pool.submit(_fetch_sr, "stats_team_lastx", away_uid, token) if away_uid else None
-            f_table = pool.submit(_fetch_sr, "season_dynamictable", season_id, token) if season_id else None
-            f_lineups = pool.submit(_fetch_sr, "match_lineups", betradar_id, token)
+            f_squads   = pool.submit(_fetch_sr, "match_squads", betradar_id, token)
+            f_timeline = pool.submit(_fetch_sr, "match_timeline", betradar_id, token)
+            f_home_form= pool.submit(_fetch_sr, "stats_team_lastx", home_uid, token) if home_uid else None
+            f_away_form= pool.submit(_fetch_sr, "stats_team_lastx", away_uid, token) if away_uid else None
+            f_table    = pool.submit(_fetch_sr, "season_dynamictable", season_id, token) if season_id else None
             
-            # Yield Momentum
+            # --- Momentum ---
             momentum_data = f_momentum.result()
             if momentum_data:
-                parsed_momentum = []
-                for minute in momentum_data.get("data", []):
-                    parsed_momentum.append({
-                        "time": minute.get("time"),
-                        "home_danger": minute.get("home", {}).get("dangerous", 0),
-                        "away_danger": minute.get("away", {}).get("dangerous", 0)
-                    })
+                parsed_momentum = [{"time": m.get("time"), "home_danger": m.get("home", {}).get("dangerous", 0), "away_danger": m.get("away", {}).get("dangerous", 0)} for m in momentum_data.get("data", [])]
                 yield _sse("momentum", parsed_momentum)
 
-            # Yield Form (H2H)
+            # --- Squads / Lineups ---
+            squads_data = f_squads.result()
+            if squads_data and "home" in squads_data:
+                h_lineup = squads_data.get("home", {}).get("startinglineup", {})
+                a_lineup = squads_data.get("away", {}).get("startinglineup", {})
+                yield _sse("lineups", {
+                    "home": {
+                        "formation": h_lineup.get("formation", "4-3-3"),
+                        "players": [{"name": p.get("playername", "").split(",")[0].strip(), "num": p.get("shirtnumber")} for p in h_lineup.get("players", [])]
+                    },
+                    "away": {
+                        "formation": a_lineup.get("formation", "4-3-3"),
+                        "players": [{"name": p.get("playername", "").split(",")[0].strip(), "num": p.get("shirtnumber")} for p in a_lineup.get("players", [])]
+                    }
+                })
+            else:
+                yield _sse("lineups", {"fallback": True})
+
+            # --- Comments / Play-by-play ---
+            timeline_data = f_timeline.result()
+            if timeline_data:
+                events = timeline_data.get("events", [])
+                comments = []
+                for ev in reversed(events): # Get newest first
+                    if ev.get("type") in ["matchsituation", "freekick", "possession", "card", "goal", "corner", "substitution", "shotontarget", "shotofftarget"]:
+                        p_name = ev.get("player", {}).get("name", "") if isinstance(ev.get("player"), dict) else ""
+                        comments.append({
+                            "time": ev.get("time"),
+                            "team": ev.get("team"),
+                            "type": ev.get("type"),
+                            "name": ev.get("name", ""),
+                            "player": p_name.split(",")[0] if p_name else ""
+                        })
+                yield _sse("comments", comments[:20]) # Top 20 recent events
+
+            # --- H2H Form ---
             if f_home_form and f_away_form:
                 hf, af = f_home_form.result(), f_away_form.result()
                 def _parse_form(form_data):
@@ -95,7 +121,7 @@ def stream_deep_analytics(betradar_id: str):
                     return ["W" if m.get("result", {}).get("winner") == "home" else "L" if m.get("result", {}).get("winner") == "away" else "D" for m in form_data.get("matches", [])[:5]]
                 yield _sse("form", {"home": _parse_form(hf), "away": _parse_form(af)})
 
-            # Yield League Table
+            # --- Standings Table ---
             if f_table:
                 table_data = f_table.result()
                 if table_data:
@@ -115,13 +141,10 @@ def stream_deep_analytics(betradar_id: str):
                             break
                     yield _sse("standings", sorted(rows, key=lambda x: x["pos"]))
 
-            # Yield Lineups (Safely handle the exception)
-            lineups_data = f_lineups.result()
-            if lineups_data and not lineups_data.get("message") == "Ups! Something went wrong":
-                yield _sse("lineups", lineups_data)
-            else:
-                yield _sse("lineups", {"fallback": True}) # Tell UI to use default formation
-
         yield _sse("done", {"status": "complete"})
 
-    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+    return Response(stream_with_context(generate()), mimetype="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no"
+    })
