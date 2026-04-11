@@ -1,8 +1,9 @@
 from flask import request, Response, stream_with_context
-from .blueprint import bp_odds_customer
-from . import config
-from .utils import _now_utc, _normalise_sport_slug, _sse, _keepalive
+from ..customer import bp_odds_customer
+from ..customer import config
 from app.utils.decorators_ import log_event
+from ..customer.utils import _now_utc, _normalise_sport_slug, _sse, _keepalive
+
 import re
 import json
 import time
