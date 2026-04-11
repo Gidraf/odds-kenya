@@ -17,7 +17,7 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         st = st.replace(" ", "T")
         if len(st) == 19: st += ".000Z"
             
-    # Clean Team Names for regex matching
+    # 2. Clean Team Names for regex matching
     h_clean = re.sub(r'[^a-z0-9]', '_', raw_match.get("home_team", "").lower()).strip('_')
     a_clean = re.sub(r'[^a-z0-9]', '_', raw_match.get("away_team", "").lower()).strip('_')
 
@@ -27,36 +27,37 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
     for mkt, outs in raw_match.get("markets", {}).items():
         m = mkt.lower()
         
-        # 2. Strip sports prefixes
+        # 3. Strip Betika's sports prefixes
         m = re.sub(r"^(soccer|basketball|tennis|ice_hockey|volleyball|cricket|rugby|table_tennis|handball|mma|boxing|darts|esoccer|baseball|american_football)_+", "", m)
         
-        # 3. Strip Team Names (Betika injects them into slugs)
-        if h_clean and h_clean in m: m = m.replace(h_clean, "home")
-        if a_clean and a_clean in m: m = m.replace(a_clean, "away")
+        # 4. Fix Half Time labels
+        m = m.replace("1st_half___", "first_half_").replace("1st_half_", "first_half_")
+        m = m.replace("2nd_half___", "second_half_").replace("2nd_half_", "second_half_")
+        m = m.replace("1st_2nd_half_", "both_halves_")
+        
+        # 5. Strip Team Names (Betika injects team names into the market slug!)
+        if h_clean and len(h_clean) > 3 and h_clean in m: m = m.replace(h_clean, "home")
+        if a_clean and len(a_clean) > 3 and a_clean in m: m = m.replace(a_clean, "away")
             
-        # 4. Standardize core names
+        # 6. Standardize core names
         m = m.replace("___", "_").replace("_&_", "_and_").replace(" ", "_")
-        m = m.replace("1st_half", "first_half").replace("2nd_half", "second_half")
         m = m.replace("both_teams_to_score", "btts")
         m = m.replace("over_under_goals", "over_under").replace("total_goals", "over_under")
         
         # Normalize 1x2 to match_winner
         if m == "1x2" or m == "moneyline": m = "match_winner"
-        m = m.replace("_1x2", "_match_winner").replace("1x2_", "match_winner_")
-
-        # 5. Exact Goals Cleanup (Betika appends the highest cap, e.g. exact_goals_6)
+        if m.endswith("_1x2"): m = m.replace("_1x2", "_match_winner")
+        if m.startswith("1x2_"): m = m.replace("1x2_", "match_winner_")
+        
+        # Normalize BTTS & Result Combos
+        if m == "match_winner_btts": m = "btts_and_result"
+        if m.startswith("match_winner_over_under"): m = m.replace("match_winner_over_under", "result_and_over_under")
+        
+        # Normalize Exact Goals (Betika appends the maximum goal limit)
         m = re.sub(r"exact_goals_\d+$", "exact_goals", m)
         
-        # 6. Normalize Numbers/Lines to X_Y format (e.g. over_under_5 -> over_under_5_0)
-        def fix_line(match):
-            val = match.group(1)
-            if "_" not in val: return f"_{val}_0"
-            return f"_{val}"
-        
-        if "over_under" in m or "handicap" in m:
-            m = re.sub(r"_(\d+(?:_\d+)?)$", fix_line, m)
-
-        m = re.sub(r"_+", "_", m) # Clean double underscores
+        # Clean up any leftover double underscores
+        m = re.sub(r"_+", "_", m).strip("_")
 
         best_mock[m] = {}
         bk_markets[m] = {}
@@ -67,19 +68,19 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
                 # Standardize Outcomes
                 ok = out_key.replace("draw", "X").replace("Draw", "X")
                 
-                # Standardize exact goals (6+ vs 6 OR MORE)
-                if "exact_goals" in m:
-                    ok = ok.replace(" OR MORE", "+").replace(" or more", "+")
-                    
+                # Standardize Exact goals (6+ vs 6 OR MORE)
+                if "exact_goals" in m: ok = ok.replace(" OR MORE", "+").replace(" or more", "+")
+                
                 # Standardize Correct score keys (e.g. "0-0" -> "0:0")
-                if "correct_score" in m:
-                    ok = ok.replace("-", ":")
+                if "correct_score" in m: ok = ok.replace("-", ":")
                     
                 ok_lower = ok.lower()
                 if ok_lower == "yes": ok = "Yes"
-                if ok_lower == "no": ok = "No"
-                if ok_lower == "over": ok = "Over"
-                if ok_lower == "under": ok = "Under"
+                elif ok_lower == "no": ok = "No"
+                elif ok_lower == "over": ok = "Over"
+                elif ok_lower == "under": ok = "Under"
+                elif ok_lower == "odd": ok = "Odd"
+                elif ok_lower == "even": ok = "Even"
 
                 best_mock[m][ok] = {"odd": p, "bk": bk_slug}
                 bk_markets[m][ok] = {"price": p}
@@ -144,7 +145,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     bt_mock = {"markets": bt_markets}
                     bt_clean = _unify_match_payload(bt_mock, count, mode, "bt", "BETIKA")
                     
-                    # Merge them
+                    # Merge them safely
                     sp_clean["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
                     sp_clean["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
                     sp_clean["bk_count"] = 2
