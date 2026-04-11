@@ -49,7 +49,8 @@ def _fetch_sp(betradar_id: str, sp_game_id: str | None, sport_slug: str) -> tupl
     """
     try:
         from app.workers.sp_harvester_ import fetch_match_markets
-        markets = fetch_match_markets(sp_game_id or betradar_id, sport_slug)
+        target_id = sp_game_id or betradar_id
+        markets = fetch_match_markets(target_id, sport_slug)
         if not markets:
             return "sp", {}, "no_markets"
         return "sp", markets, "ok"
@@ -57,12 +58,13 @@ def _fetch_sp(betradar_id: str, sp_game_id: str | None, sport_slug: str) -> tupl
         return "sp", {}, str(exc)[:120]
 
 
-def _fetch_bt(betradar_id: str, sport_slug: str) -> tuple[str, dict, str]:
-    """BT parent_match_id == betradar_id."""
+def _fetch_bt(betradar_id: str, bt_game_id: str | None, sport_slug: str) -> tuple[str, dict, str]:
+    """BT fetch using specific external ID from the link table if available."""
     try:
         from app.workers.bt_harvester import get_full_markets
-        # CRITICAL FIX: Pass sport_slug as kwargs string, not integer
-        markets = get_full_markets(betradar_id, sport_slug=sport_slug)
+        # CRITICAL FIX: Use Betika's actual external ID instead of the master unified ID
+        target_id = bt_game_id or betradar_id
+        markets = get_full_markets(target_id, sport_slug=sport_slug)
         if not markets:
             return "bt", {}, "no_markets"
         return "bt", markets, "ok"
@@ -70,12 +72,14 @@ def _fetch_bt(betradar_id: str, sport_slug: str) -> tuple[str, dict, str]:
         return "bt", {}, str(exc)[:120]
 
 
-def _fetch_od(betradar_id: str, sport_slug: str) -> tuple[str, dict, str]:
-    """OD event id == betradar_id."""
+def _fetch_od(betradar_id: str, od_game_id: str | None, sport_slug: str) -> tuple[str, dict, str]:
+    """OD fetch using specific external ID from the link table if available."""
     try:
         from app.workers.od_harvester import fetch_event_detail, slug_to_od_sport_id
         od_sport_id = slug_to_od_sport_id(sport_slug)
-        markets, _meta = fetch_event_detail(betradar_id, od_sport_id)
+        # CRITICAL FIX: Use OdiBets' actual external ID instead of the master unified ID
+        target_id = od_game_id or betradar_id
+        markets, _meta = fetch_event_detail(target_id, od_sport_id)
         if not markets:
             return "od", {}, "no_markets"
         return "od", markets, "ok"
@@ -274,15 +278,6 @@ def refresh_match(parent_match_id: str):
     Query params:
       sources=sp,bt,od   (comma-separated, default all)
       save=1             (1=persist to DB, 0=return only, default 1)
-
-    Returns:
-      {
-        ok, match_id, parent_match_id, home_team, away_team,
-        markets_by_bk, best, arb_markets, has_arb, best_arb_pct,
-        fetch_report: { sp: {status, market_count, latency_ms}, ... },
-        changes: { sp: N, bt: N, od: N },
-        latency_ms, server_time
-      }
     """
     t0 = time.perf_counter()
 
@@ -320,17 +315,18 @@ def refresh_match(parent_match_id: str):
     except Exception:
         pass
 
-    # SP game id
-    sp_game_id: str | None = None
+    # ── CRITICAL FIX: Look up specific IDs from BookmakerMatchLink ───────────
+    sp_game_id, bt_game_id, od_game_id = None, None, None
     try:
         from app.models.bookmakers_model import BookmakerMatchLink
-        sp_bk_id = bk_id_map.get("sp")
-        if sp_bk_id:
-            lnk = BookmakerMatchLink.query.filter_by(
-                match_id=um.id, bookmaker_id=sp_bk_id
-            ).first()
-            if lnk:
+        links = BookmakerMatchLink.query.filter_by(match_id=um.id).all()
+        for lnk in links:
+            if lnk.bookmaker_id == bk_id_map.get("sp"):
                 sp_game_id = lnk.external_match_id
+            elif lnk.bookmaker_id == bk_id_map.get("bt"):
+                bt_game_id = lnk.external_match_id
+            elif lnk.bookmaker_id == bk_id_map.get("od"):
+                od_game_id = lnk.external_match_id
     except Exception:
         pass
 
@@ -344,9 +340,9 @@ def refresh_match(parent_match_id: str):
         if "sp" in sources:
             fetch_jobs["sp"] = pool.submit(_fetch_sp, betradar_id, sp_game_id, sport_slug)
         if "bt" in sources:
-            fetch_jobs["bt"] = pool.submit(_fetch_bt, betradar_id, sport_slug)
+            fetch_jobs["bt"] = pool.submit(_fetch_bt, betradar_id, bt_game_id, sport_slug)
         if "od" in sources:
-            fetch_jobs["od"] = pool.submit(_fetch_od, betradar_id, sport_slug)
+            fetch_jobs["od"] = pool.submit(_fetch_od, betradar_id, od_game_id, sport_slug)
 
     raw_results: dict[str, tuple[str, dict, str]] = {}
     for slug, fut in fetch_jobs.items():
