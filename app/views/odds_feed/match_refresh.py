@@ -191,7 +191,7 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
 # ══════════════════════════════════════════════════════════════════════════════
 # UNIFIED DIRECT STREAM (BULK FETCH + REAL-TIME PUBSUB)
 # ══════════════════════════════════════════════════════════════════════════════
-@bp_odds_customer.route("/odds/debug/unified/stream/<mode>/<sport_slug>")
+@bp_odds_customer.route("/odds/match/<parent_match_id>/refresh", methods=["POST"])
 def debug_stream_unified(mode: str, sport_slug: str):
     fetch_full = request.args.get("full", "true").lower() in ("1", "true")
     max_m      = int(request.args.get("max", 50))
