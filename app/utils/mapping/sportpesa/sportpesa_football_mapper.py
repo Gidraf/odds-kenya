@@ -5,7 +5,7 @@ class SportpesaFootballMapper:
     
     # 1. STATIC MARKETS (No specValue required)
     STATIC_MARKETS = {
-        10:  "1x2",                      # 3 Way
+        10:  "match_winner",             # 3 Way
         46:  "double_chance",            # Double Chance
         43:  "btts",                     # Both Teams To Score (Base Market)
         47:  "draw_no_bet",              # Draw No Bet
@@ -17,7 +17,7 @@ class SportpesaFootballMapper:
         332: "correct_score",            # Correct Score
         258: "exact_goals",              # Total Goals Exactly
         45:  "odd_even",                 # Odd/Even
-        202: "goals_band_0_1",           # Number of Goals in Groups (Needs specific mapping below)
+        202: "goal_groups",              # Number of Goals in Groups
     }
 
     @staticmethod
@@ -35,22 +35,20 @@ class SportpesaFootballMapper:
     def get_market_slug(cls, sp_id: int, spec_value: float) -> str | None:
         """
         Returns the base internal market slug for a given SportPesa market.
-        If your database splits Over and Under into SEPARATE markets, see the selection mapper below.
         """
         
-        # Static Markets (Simple Lookup)
+        # 1. Static Markets (Simple Lookup)
         if sp_id in cls.STATIC_MARKETS:
             return cls.STATIC_MARKETS[sp_id]
 
         # ---------------------------------------------------------
-        # DYNAMIC MARKETS (Requires parsing the specValue)
+        # 2. DYNAMIC MARKETS (Requires parsing the specValue)
         # ---------------------------------------------------------
         line_str = cls.format_line(spec_value)
 
         # Total Goals Over/Under - Full Time
         if sp_id == 52:
-            # Matches standard format: over_under_goals_2_5
-            return f"over_under_goals_{line_str}"
+            return f"over_under_{line_str}"
             
         # Total Goals Over/Under - Half Time
         elif sp_id == 54:
@@ -58,45 +56,36 @@ class SportpesaFootballMapper:
 
         # Total Goals Home Team (id: 353)
         elif sp_id == 353:
-            return f"total_goals_home_{line_str}"
+            return f"home_over_under_{line_str}"
 
         # Total Goals Away Team (id: 352)
         elif sp_id == 352:
-            return f"total_goals_away_{line_str}"
+            return f"away_over_under_{line_str}"
 
         # Asian Handicap - Full Time (id: 51)
         elif sp_id == 51:
-            if spec_value == 0:
-                return "ah_0_0"
-            prefix = "plus" if spec_value > 0 else "minus"
-            val = str(abs(spec_value)).replace(".", "_")
-            return f"ah_{prefix}_{val}"
+            return f"asian_handicap_{line_str}"
 
         # Asian Handicap - Half Time (id: 53)
         elif sp_id == 53:
-            if spec_value == 0:
-                return "first_half_ah_0_0"
-            prefix = "plus" if spec_value > 0 else "minus"
-            val = str(abs(spec_value)).replace(".", "_")
-            return f"first_half_ah_{prefix}_{val}"
+            return f"first_half_asian_handicap_{line_str}"
 
         # Euro Handicap (id: 55)
         elif sp_id == 55:
-            # Euro handicaps are integers (e.g., -2, 1)
             prefix = "plus" if spec_value > 0 else "minus"
             val = int(abs(spec_value))
             return f"european_handicap_{prefix}_{val}"
 
         # Result + Over/Under Combo (id: 208)
         elif sp_id == 208:
-            return f"result_and_over_under_{line_str}"
+            return f"1x2_over_under_{line_str}"
             
         # Result + BTTS Combo (id: 386)
         elif sp_id == 386:
-            return "btts_and_result"
+            return "1x2_btts"
 
         # Unknown Market
-        return None
+        return f"unknown_{sp_id}"
 
     @classmethod
     def get_exhaustive_selection_slug(cls, sp_id: int, spec_value: float, selection_name: str) -> str | None:
