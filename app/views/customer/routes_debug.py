@@ -7,7 +7,7 @@ import re
 import json
 import time
 import os
-import traceback
+import traceback # 🟢 IMPORT TRACEBACK
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UNIVERSAL MATCH NORMALIZER (BULLETPROOF CANONICAL PARSER)
@@ -216,6 +216,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
                 bt_data = bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or []
                 od_data = od_fetch_live(sport_slug) or []
                 
+                # 🟢 Safety check: Ensure m is actually a dict before calling m.get()
                 bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m for m in bt_data if isinstance(m, dict)}
                 od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m for m in od_data if isinstance(m, dict)}
                 
@@ -435,12 +436,12 @@ def debug_stream_unified(mode: str, sport_slug: str):
                 yield _keepalive()
                 
         except Exception as exc: 
-            # 🟢 EXPLICIT TRACEBACK CATCHER
+            # 🟢 FULL STACK TRACE CATCHER
             tb_str = traceback.format_exc()
             print("=== STREAM CRASH ===")
             print(tb_str)
             print("====================")
-            # Sends the exact error and file line number to the frontend Network tab payload
+            # Sends the exact error and file line number to the frontend
             yield _sse("error", {"error": str(exc), "traceback": tb_str})
             
     return Response(stream_with_context(_gen()), headers=config._SSE_HEADERS)
