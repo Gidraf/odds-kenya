@@ -261,14 +261,25 @@ def _normalise_match(raw: dict, *, source: str = "upcoming") -> dict | None:
 
 def get_full_markets(parent_match_id: str | int, sport_slug: str) -> dict[str, dict[str, float]]:
     """
-    Fetch all markets for one pre-match event from api.betika.com.
+    Fetch all markets for one event.
+    CRITICAL FIX: Checks by parent_match_id first, then standard match_id.
+    If empty (because the match went LIVE), it automatically falls back to the live endpoint.
     """
+    # 1. Try Upcoming Endpoint with parent_match_id
     data = _get(MATCH_MARKETS_URL, params={"parent_match_id": str(parent_match_id)})
-    if not data:
-        return {}
-    raw_mkts = data.get("data") or []
+    raw_mkts = (data or {}).get("data") or []
+    
+    # 2. Try Upcoming Endpoint with match_id (just in case)
+    if not raw_mkts:
+        data = _get(MATCH_MARKETS_URL, params={"match_id": str(parent_match_id)})
+        raw_mkts = (data or {}).get("data") or []
+        
+    # 3. If empty, the match is likely LIVE. Try Live Endpoint.
+    if not raw_mkts:
+        live_data = _get(LIVE_MATCH_URL, params={"id": str(parent_match_id)})
+        raw_mkts = (live_data or {}).get("data") or []
+        
     return _parse_all_inline_markets(raw_mkts, sport_slug)
-
 
 def get_live_match_markets(match_id: str | int, sport_slug: str) -> tuple[dict[str, dict[str, float]], dict]:
     """
@@ -718,7 +729,7 @@ def run_live_loop(interval: float = 1.0) -> None:
 
         elapsed = time.time() - tick
         time.sleep(max(0.0, interval - elapsed))
-        
+
 
 def run_upcoming_snapshot(sport_slug: str = "soccer") -> None:
     matches = fetch_upcoming_matches(sport_slug=sport_slug, max_pages=1)

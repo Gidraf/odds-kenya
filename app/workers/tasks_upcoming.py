@@ -158,13 +158,16 @@ def _resolve_match_id(m: dict, bk_slug: str) -> tuple[str | None, str | None]:
         found = _fuzzy_find_match(home, away, start)
         if found:
             betradar_id = found
+            
+    # CRITICAL FIX: Prioritize specific native parent IDs for accurate API querying later
     bk_ext_id = str(
-        m.get("sp_game_id")  or m.get("bt_match_id") or
-        m.get("od_match_id") or m.get("match_id")    or
-        m.get("event_id")    or ""
+        m.get("sp_game_id")  or 
+        m.get("bt_parent_id") or m.get("bt_match_id") or
+        m.get("od_parent_id") or m.get("od_event_id") or m.get("od_match_id") or 
+        m.get("match_id")    or m.get("event_id")    or ""
     ).strip() or None
+    
     return betradar_id, bk_ext_id
-
 
 def _persist_bk_matches(matches: list[dict], bk_slug: str, sport_slug: str) -> None:
     if not matches:
