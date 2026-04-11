@@ -3,11 +3,12 @@ from .blueprint import bp_odds_customer
 from . import config
 from .utils import _now_utc, _normalise_sport_slug, _sse, _keepalive
 from app.utils.decorators_ import log_event
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import json
 import time
 import os
-import traceback # 🟢 IMPORT TRACEBACK
+import traceback
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UNIVERSAL MATCH NORMALIZER (BULLETPROOF CANONICAL PARSER)
@@ -186,16 +187,13 @@ def _unify_match_payload(raw_match: dict, count: int, mode: str, bk_slug: str, b
         "has_arb": False, "has_ev": False, "has_sharp": False
     }
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIFIED DIRECT STREAM (BULK FETCH + REAL-TIME PUBSUB)
+# MULTI-THREADED UNIFIED STREAM (MAXIMUM CONCURRENCY)
 # ══════════════════════════════════════════════════════════════════════════════
 @bp_odds_customer.route("/odds/debug/unified/stream/<mode>/<sport_slug>")
 def debug_stream_unified(mode: str, sport_slug: str):
-    
     full_arg_raw = request.args.get("full")
     fetch_full = str(full_arg_raw or "true").lower() in ("1", "true", "yes")
-    
     max_m = int(request.args.get("max", 50))
     log_event("debug_unified_stream", {"sport": sport_slug, "mode": mode})
 
@@ -213,10 +211,16 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
                 sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
                 
-                bt_data = bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or []
-                od_data = od_fetch_live(sport_slug) or []
-                
-                # 🟢 Safety check: Ensure m is actually a dict before calling m.get()
+                # 🟢 PARALLELISM: Fetch SP, BT, and OD live matches concurrently
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    f_bt = pool.submit(bt_fetch_live, slug_to_bt_sport_id(sport_slug))
+                    f_od = pool.submit(od_fetch_live, sport_slug)
+                    f_sp = pool.submit(lambda: list(fetch_live_stream(sport_slug, fetch_full_markets=True)))
+                    
+                    bt_data = f_bt.result() or []
+                    od_data = f_od.result() or []
+                    stream = f_sp.result() or []
+
                 bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m for m in bt_data if isinstance(m, dict)}
                 od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m for m in od_data if isinstance(m, dict)}
                 
@@ -224,7 +228,6 @@ def debug_stream_unified(mode: str, sport_slug: str):
                 active_live_br_ids = []
                 seen_br_ids = set()
 
-                stream = fetch_live_stream(sport_slug, fetch_full_markets=True)
                 for sp_match in stream:
                     if not isinstance(sp_match, dict): continue
                     count += 1
@@ -314,25 +317,55 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
                 yield _sse("list_done", {"total_sent": count})
 
-            # ── UPCOMING BATCH INITIALIZATION ──
+            # ── UPCOMING BATCH INITIALIZATION (HEAVY PARALLELISM) ──
             else:
                 from app.workers.sp_harvester import fetch_upcoming_stream
                 from app.workers.bt_harvester import get_full_markets
                 from app.workers.od_harvester import fetch_event_detail, slug_to_od_sport_id
                 
                 od_sport_id = slug_to_od_sport_id(sport_slug)
-                stream = fetch_upcoming_stream(sport_slug, max_matches=max_m, fetch_full_markets=fetch_full)
-                for sp_match in stream:
+                
+                # 1. Fetch SP Matches first (this is fast)
+                sp_matches_raw = list(fetch_upcoming_stream(sport_slug, max_matches=max_m, fetch_full_markets=fetch_full))
+                
+                bt_mkts_dict = {}
+                od_mkts_dict = {}
+                
+                # Helper functions for threads
+                def _get_bt(brid):
+                    try: return brid, get_full_markets(brid, sport_slug)
+                    except: return brid, {}
+                    
+                def _get_od(brid):
+                    try: return brid, fetch_event_detail(brid, od_sport_id)[0]
+                    except: return brid, {}
+
+                # 🟢 PARALLELISM: Fetch ALL Betika and OdiBets matches concurrently (20 threads)
+                with ThreadPoolExecutor(max_workers=20) as pool:
+                    bt_futs = []
+                    od_futs = []
+                    for sp_match in sp_matches_raw:
+                        if not isinstance(sp_match, dict): continue
+                        brid = str(sp_match.get("betradar_id") or "")
+                        if brid and brid != "None":
+                            bt_futs.append(pool.submit(_get_bt, brid))
+                            od_futs.append(pool.submit(_get_od, brid))
+                    
+                    for f in as_completed(bt_futs):
+                        brid, res = f.result()
+                        if res: bt_mkts_dict[brid] = res
+                    for f in as_completed(od_futs):
+                        brid, res = f.result()
+                        if res: od_mkts_dict[brid] = res
+
+                # 3. Assemble and yield instantly
+                for sp_match in sp_matches_raw:
                     if not isinstance(sp_match, dict): continue
                     count += 1
                     betradar_id = str(sp_match.get("betradar_id") or "")
-                    bt_markets = {}; od_markets = {}
                     
-                    if betradar_id and betradar_id != "None":
-                        try: bt_markets = get_full_markets(betradar_id, sport_slug)
-                        except Exception: pass
-                        try: od_markets, _ = fetch_event_detail(betradar_id, od_sport_id)
-                        except Exception: pass
+                    bt_markets = bt_mkts_dict.get(betradar_id, {})
+                    od_markets = od_mkts_dict.get(betradar_id, {})
                     
                     sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
                     
@@ -364,7 +397,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
                 yield _sse("done", {"status": "finished", "total_sent": count})
                 return
 
-            # ── REAL-TIME LIVE PUB/SUB ──
+            # ── REAL-TIME LIVE PUB/SUB (NON-BLOCKING POLLER) ──
             import redis
             r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
             pubsub = r.pubsub(ignore_subscribe_messages=True)
@@ -372,8 +405,20 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
             last_poll = time.time()
             
+            # 🟢 PARALLELISM: Background thread for OD/BT live polling so SP Pub/Sub never blocks!
+            bg_pool = ThreadPoolExecutor(max_workers=2)
+            bg_future = None
+
+            def _fetch_bg_live_data():
+                try:
+                    b = bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or []
+                    o = od_fetch_live(sport_slug) or []
+                    return b, o
+                except Exception:
+                    return [], []
+
             while True:
-                msg = pubsub.get_message(timeout=0.5)
+                msg = pubsub.get_message(timeout=0.2)
                 if msg and msg["type"] == "message":
                     try:
                         payload = json.loads(msg["data"])
@@ -409,39 +454,42 @@ def debug_stream_unified(mode: str, sport_slug: str):
                                     })
                     except Exception: pass
 
+                # Handle background task completion without blocking
                 if time.time() - last_poll > 10.0:
                     last_poll = time.time()
+                    if bg_future is None or bg_future.done():
+                        bg_future = bg_pool.submit(_fetch_bg_live_data)
+
+                if bg_future and bg_future.done():
                     try:
-                        bt_data = bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or []
-                        od_data = od_fetch_live(sport_slug) or []
-                        bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m for m in bt_data if isinstance(m, dict)}
-                        od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m for m in od_data if isinstance(m, dict)}
+                        bt_data_live, od_data_live = bg_future.result()
+                        bt_map_live = {str(m.get("betradar_id") or m.get("bt_parent_id")): m for m in bt_data_live if isinstance(m, dict)}
+                        od_map_live = {str(m.get("betradar_id") or m.get("od_parent_id")): m for m in od_data_live if isinstance(m, dict)}
                         
                         for br_id in active_live_br_ids:
                             up_payload = {"parent_match_id": br_id, "home_team": "dummy", "bookmakers": {}, "markets_by_bk": {}}
-                            if br_id in bt_map:
-                                b_clean = _unify_match_payload(bt_map[br_id], 0, "live", "bt", "BETIKA")
+                            if br_id in bt_map_live:
+                                b_clean = _unify_match_payload(bt_map_live[br_id], 0, "live", "bt", "BETIKA")
                                 up_payload["bookmakers"]["bt"] = b_clean["bookmakers"]["bt"]
                                 up_payload["markets_by_bk"]["bt"] = b_clean["markets_by_bk"]["bt"]
                                 
-                            if br_id in od_map:
-                                o_clean = _unify_match_payload(od_map[br_id], 0, "live", "od", "ODIBETS")
+                            if br_id in od_map_live:
+                                o_clean = _unify_match_payload(od_map_live[br_id], 0, "live", "od", "ODIBETS")
                                 up_payload["bookmakers"]["od"] = o_clean["bookmakers"]["od"]
                                 up_payload["markets_by_bk"]["od"] = o_clean["markets_by_bk"]["od"]
 
                             if up_payload["bookmakers"]:
                                 yield _sse("live_update", up_payload)
                     except Exception: pass
+                    bg_future = None # Reset so it triggers again on next cycle
 
                 yield _keepalive()
                 
         except Exception as exc: 
-            # 🟢 FULL STACK TRACE CATCHER
             tb_str = traceback.format_exc()
             print("=== STREAM CRASH ===")
             print(tb_str)
             print("====================")
-            # Sends the exact error and file line number to the frontend
             yield _sse("error", {"error": str(exc), "traceback": tb_str})
             
     return Response(stream_with_context(_gen()), headers=config._SSE_HEADERS)
