@@ -1,7 +1,7 @@
 from flask import Blueprint
 
 # Create the Blueprint once
-bp_odds_customer = Blueprint("customer-odds", __name__, url_prefix="/api")
+bp_odds_customer = Blueprint("customer-odds-web", __name__, url_prefix="/api")
 
 # Import routes so they register with the blueprint
 # (Flake8/Linters might complain about unused imports, this is intentional in Flask)
