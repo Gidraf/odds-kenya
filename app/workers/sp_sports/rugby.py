@@ -18,7 +18,7 @@ NOTE: SP uses market ID 60 for rugby Total Points (not 52).
       first_half_asian_handicap; add the same mapping to _RUGBY.
 """
 
-from app.workers.sp_harvester_base import SportConfig
+from app.workers.sp_harvesterbase import SportConfig
 
 CONFIG = SportConfig(
     slugs        = ("rugby", "rugby-league", "rugby-union"),

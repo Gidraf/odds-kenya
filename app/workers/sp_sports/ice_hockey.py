@@ -1,5 +1,5 @@
 """app/workers/sp_sports/ice_hockey.py — Ice Hockey (sportId=4)"""
-from app.workers.sp_harvester_base import SportConfig
+from app.workers.sp_harvesterbase import SportConfig
 
 CONFIG = SportConfig(
     slugs        = ("ice-hockey", "icehockey"),

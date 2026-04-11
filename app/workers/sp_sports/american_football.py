@@ -1,5 +1,5 @@
 """app/workers/sp_sports/american_football.py — American Football / NFL (sportId=15)"""
-from app.workers.sp_harvester_base import SportConfig
+from app.workers.sp_harvesterbase import SportConfig
 
 CONFIG = SportConfig(
     slugs        = ("american-football", "americanfootball", "nfl"),
