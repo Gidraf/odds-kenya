@@ -2,7 +2,9 @@
 app/services/entity_resolver.py
 ==========================================
 Key change: 
-- Added comprehensive traceback logging to `persist_combined_match`.
+- Stripped all multi-bookmaker logic. 
+- Strictly persists ONLY SportPesa (sp) markets and links.
+- Removed Arbitrage and EV logic (since a single bookmaker cannot have cross-bookmaker arbitrage).
 - cm is passed as a dictionary via Celery. Uses `_val()` helper to safely extract properties.
 - _infer_sport_slug() normalises via _NAME_TO_SLUG map.
 """
@@ -15,11 +17,8 @@ import traceback
 from datetime import datetime, timezone
 
 from app.extensions import db
-from app.models.oppotunity_detector import OpportunityDetector
 
 logger = logging.getLogger(__name__)
-
-BK_SLUG_TO_NAME = {"sp": "SportPesa", "bt": "Betika", "od": "OdiBets"}
 
 SPORT_SLUG_MAP = {
     "soccer": "Soccer", "football": "Soccer", "Football": "Soccer",
@@ -61,28 +60,25 @@ class EntityResolver:
         self._sport_cache:     dict[str, int]        = {}
         self._comp_cache:      dict[str, int]        = {}
         self._team_cache:      dict[str, int]        = {}
-        self._bookmaker_cache: dict[str, int | None] = {}
+        self._sp_bookmaker_id: int | None            = None
 
     @staticmethod
     def _val(obj, key: str, default=None):
         if isinstance(obj, dict): return obj.get(key, default)
         return getattr(obj, key, default)
 
-    def _get_bookmaker_id(self, bk_slug: str) -> int | None:
-        if bk_slug in self._bookmaker_cache:
-            return self._bookmaker_cache[bk_slug]
+    def _get_sp_bookmaker_id(self) -> int | None:
+        """Fetch and cache ONLY the SportPesa bookmaker ID."""
+        if self._sp_bookmaker_id is not None:
+            return self._sp_bookmaker_id
         try:
             from app.models.bookmakers_model import Bookmaker
-            name = BK_SLUG_TO_NAME.get(bk_slug)
-            if name:
-                bm = Bookmaker.query.filter(db.func.lower(Bookmaker.name) == name.lower()).first()
-            else:
-                bm = Bookmaker.query.filter_by(slug=bk_slug).first()
-            bk_id = bm.id if bm else None
-            self._bookmaker_cache[bk_slug] = bk_id
-            return bk_id
+            bm = Bookmaker.query.filter(db.func.lower(Bookmaker.name) == "sportpesa").first()
+            if not bm:
+                bm = Bookmaker.query.filter_by(slug="sp").first()
+            self._sp_bookmaker_id = bm.id if bm else None
+            return self._sp_bookmaker_id
         except Exception:
-            self._bookmaker_cache[bk_slug] = None
             return None
 
     def resolve_sport(self, sport_slug: str) -> int | None:
@@ -124,60 +120,50 @@ class EntityResolver:
         self._team_cache[cache_key] = team.id
         return team.id
 
-    def _map_bookmaker_entity(self, bk_slug, entity_type, canonical_id, external_id, external_name=None, betradar_id=None):
-        bk_id = self._get_bookmaker_id(bk_slug)
-        if not bk_id or not canonical_id or not external_id: return
-        try:
-            from app.models.bookmakers_model import BookmakerEntityMap
-            BookmakerEntityMap.upsert(
-                bookmaker_id=bk_id, entity_type=entity_type,
-                canonical_id=canonical_id, external_id=external_id,
-                external_name=external_name, betradar_id=betradar_id,
-            )
-        except Exception as exc: logger.debug("entity map error: %s", exc)
-    def _map_bookmaker_match(self, bk_slug, match_id, external_match_id, betradar_id=None):
-        bk_id = self._get_bookmaker_id(bk_slug)
+    def _map_sp_match(self, match_id, sp_game_id, betradar_id=None):
+        sp_id = self._get_sp_bookmaker_id()
         
-        # 1. Log exactly WHY it's skipping the link
-        if not bk_id or not match_id or not external_match_id: 
+        if not sp_id or not match_id or not sp_game_id: 
             logger.warning(
-                f"⚠️ [Linker Warning] Skipping link for '{bk_slug}'. Missing data -> "
-                f"DB bk_id: {bk_id}, DB match_id: {match_id}, "
-                f"Received external_match_id: '{external_match_id}'"
+                f"⚠️ [Linker Warning] Skipping SP link. Missing data -> "
+                f"DB sp_id: {sp_id}, DB match_id: {match_id}, "
+                f"Received sp_game_id: '{sp_game_id}'"
             )
             return
 
         try:
             from app.models.bookmakers_model import BookmakerMatchLink
             BookmakerMatchLink.upsert(
-                match_id=match_id, bookmaker_id=bk_id,
-                external_match_id=external_match_id, betradar_id=betradar_id,
+                match_id=match_id, bookmaker_id=sp_id,
+                external_match_id=sp_game_id, betradar_id=betradar_id,
             )
-            # Optional: Log success if you want to see it working
-            # logger.debug(f"✅ Linked {bk_slug} match {external_match_id} to DB Match {match_id}")
-
         except Exception as exc: 
-            # 2. Log database errors with the FULL traceback
             logger.error(
-                f"❌ [Linker Error] DB failure while upserting link for {bk_slug} "
-                f"(Match: {match_id}, ExtID: {external_match_id}). "
+                f"❌ [Linker Error] DB failure while upserting link for SportPesa "
+                f"(Match: {match_id}, ExtID: {sp_game_id}). "
                 f"Error: {str(exc)}", 
-                exc_info=True  # <--- This forces Python to print the full stack trace!
+                exc_info=True
             )
-    def persist_combined_match(self, cm) -> int | None:
+
+    def persist_sp_match(self, cm) -> int | None:
+        """
+        Persists ONLY SportPesa data. The expected dictionary `cm` comes directly
+        from the `sp_harvester.py` yield output.
+        """
         from app.models.odds_model import (
-            UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
-            ArbitrageOpportunity, EVOpportunity, OpportunityStatus,
+            UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory
         )
         
         cm_competition = self._val(cm, "competition")
         cm_home_team   = self._val(cm, "home_team")
         cm_away_team   = self._val(cm, "away_team")
         cm_betradar_id = self._val(cm, "betradar_id")
-        cm_join_key    = self._val(cm, "join_key")
+        cm_sp_game_id  = self._val(cm, "sp_game_id")
         cm_start_time  = self._val(cm, "start_time")
-        cm_bk_ids      = self._val(cm, "bk_ids") or {}
         cm_markets     = self._val(cm, "markets") or {}
+
+        # The fallback parent ID is the SP Game ID if Betradar is missing
+        parent_id = cm_betradar_id or f"sp_{cm_sp_game_id}"
 
         try:
             with db.session.begin_nested():
@@ -194,13 +180,13 @@ class EntityResolver:
                     if cm_away_team:
                         away_team_id = self.resolve_team(cm_away_team, sport_id)
 
-                parent_id = cm_betradar_id or cm_join_key
                 if not parent_id: return None
 
                 um = UnifiedMatch.query.filter_by(parent_match_id=parent_id).with_for_update().first()
                 start_time = self._parse_start_time(cm_start_time)
                 sport_name_db = SPORT_SLUG_MAP.get(sport_slug or "", sport_slug or "")
 
+                # --- 1. UPSERT UNIFIED MATCH ---
                 if not um:
                     um = UnifiedMatch(
                         parent_match_id=parent_id, home_team_name=cm_home_team,
@@ -220,23 +206,24 @@ class EntityResolver:
                     if away_team_id and not um.away_team_id: um.away_team_id = away_team_id
                     if sport_name_db: um.sport_name = sport_name_db
 
-                for bk_slug, ext_id in cm_bk_ids.items():
-                    if ext_id: self._map_bookmaker_match(bk_slug, um.id, ext_id, cm_betradar_id)
+                # --- 2. MAP SPORTPESA EXTERNAL ID ---
+                if cm_sp_game_id: 
+                    self._map_sp_match(um.id, cm_sp_game_id, cm_betradar_id)
 
-                for bk_slug, bk_markets in cm_markets.items():
-                    bk_id = self._get_bookmaker_id(bk_slug)
-                    if not bk_id: continue
+                # --- 3. PERSIST SPORTPESA MARKETS ONLY ---
+                sp_id = self._get_sp_bookmaker_id()
+                if sp_id and cm_markets:
                     bmo = BookmakerMatchOdds.query.filter_by(
-                        match_id=um.id, bookmaker_id=bk_id
+                        match_id=um.id, bookmaker_id=sp_id
                     ).with_for_update().first()
                     
                     if not bmo:
-                        bmo = BookmakerMatchOdds(match_id=um.id, bookmaker_id=bk_id)
+                        bmo = BookmakerMatchOdds(match_id=um.id, bookmaker_id=sp_id)
                         db.session.add(bmo)
                         db.session.flush()
                         
                     history_batch: list[dict] = []
-                    for mkt_slug, outcomes in bk_markets.items():
+                    for mkt_slug, outcomes in cm_markets.items():
                         for outcome, odd in outcomes.items():
                             try: price = float(odd)
                             except (TypeError, ValueError): continue
@@ -247,11 +234,11 @@ class EntityResolver:
                             )
                             um.upsert_bookmaker_price(
                                 market=mkt_slug, specifier=None,
-                                selection=outcome, price=price, bookmaker_id=bk_id,
+                                selection=outcome, price=price, bookmaker_id=sp_id,
                             )
                             if price_changed:
                                 history_batch.append({
-                                    "bmo_id": bmo.id, "bookmaker_id": bk_id,
+                                    "bmo_id": bmo.id, "bookmaker_id": sp_id,
                                     "match_id": um.id, "market": mkt_slug,
                                     "specifier": None, "selection": outcome,
                                     "old_price": old_price, "new_price": price,
@@ -261,45 +248,28 @@ class EntityResolver:
                                 
                     if history_batch: BookmakerOddsHistory.bulk_append(history_batch)
 
-                try:
-                    detector = OpportunityDetector(min_profit_pct=0.5, min_ev_pct=3.0)
-                    ArbitrageOpportunity.query.filter_by(
-                        match_id=um.id, status=OpportunityStatus.OPEN
-                    ).update({"status": OpportunityStatus.CLOSED, "closed_at": datetime.utcnow()})
-                    for arb_kw in detector.find_arbs(um):
-                        db.session.add(ArbitrageOpportunity(**arb_kw))
-                        
-                    EVOpportunity.query.filter_by(
-                        match_id=um.id, status=OpportunityStatus.OPEN
-                    ).update({"status": OpportunityStatus.CLOSED, "closed_at": datetime.utcnow()})
-                    for ev_kw in detector.find_ev(um):
-                        db.session.add(EVOpportunity(**ev_kw))
-                except Exception as exc:
-                    logger.warning("opportunity detection error: %s", exc)
-
                 return um.id
 
         except Exception as exc:
             logger.error(
                 "\n" + "="*50 + "\n"
-                "❌ CRITICAL ERROR IN PERSIST_COMBINED_MATCH ❌\n"
+                "❌ CRITICAL ERROR IN PERSIST_SP_MATCH ❌\n"
                 f"Error: {str(exc)}\n"
                 f"Match: {cm_home_team} vs {cm_away_team}\n"
-                f"Join Key: {cm_join_key} | Betradar ID: {cm_betradar_id}\n"
+                f"SP Game ID: {cm_sp_game_id} | Betradar ID: {cm_betradar_id}\n"
                 f"Traceback:\n{traceback.format_exc()}\n"
                 + "="*50 + "\n"
             )
             self._comp_cache.clear()
             self._team_cache.clear()
             self._sport_cache.clear()
-            self._bookmaker_cache.clear()
             return None
 
-    def persist_batch(self, combined_matches: list, commit: bool = True) -> dict:
+    def persist_batch(self, sp_matches: list, commit: bool = True) -> dict:
         persisted = failed = 0
-        for cm in combined_matches:
+        for m in sp_matches:
             try:
-                mid = self.persist_combined_match(cm)
+                mid = self.persist_sp_match(m)
                 if mid: persisted += 1
                 else: failed += 1
             except Exception as exc:
@@ -310,7 +280,7 @@ class EntityResolver:
             except Exception as exc:
                 logger.error("batch commit error: %s\n%s", exc, traceback.format_exc())
                 db.session.rollback()
-                return {"persisted": 0, "failed": len(combined_matches), "error": str(exc)}
+                return {"persisted": 0, "failed": len(sp_matches), "error": str(exc)}
         return {"persisted": persisted, "failed": failed}
 
     @classmethod
