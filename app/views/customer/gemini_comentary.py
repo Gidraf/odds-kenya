@@ -1,13 +1,16 @@
 """
-Gemini Commentary + TTS Blueprint
+Gemini Commentary + Edge-TTS Blueprint
 Route: /api/odds/match/<betradar_id>/commentary
-Returns JSON with per-scene commentary text + base64 WAV audio + player/manager enrichment.
+Returns JSON with per-scene commentary text + base64 MP3 audio + player/manager enrichment.
 """
 from flask import Blueprint, request, jsonify
 import requests, json, base64, os, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import tempfile
+import asyncio
+import edge_tts
 
-# ── Gemini SDK ────────────────────────────────────────────────────────────────
+# ── Gemini SDK (For Text Generation Only) ─────────────────────────────────────
 try:
     from google import genai as _genai
     from google.genai import types as _gtypes
@@ -44,9 +47,7 @@ def _sh(endpoint, item_id, extra=""):
     except: pass
     return {}
 
-# ── Gemini helpers ────────────────────────────────────────────────────────────
-VOICES = ["Charon", "Fenrir", "Aoede", "Puck"]
-
+# ── Gemini Text Helpers ───────────────────────────────────────────────────────
 _TEXT_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-preview-05-20",
@@ -54,13 +55,8 @@ _TEXT_MODELS = [
     "gemini-1.5-flash",
     "gemini-1.5-flash-latest",
 ]
-_TTS_MODELS = [
-    "gemini-2.5-flash-preview-tts",
-    "gemini-2.5-flash-tts",
-    "gemini-2.0-flash-live-001",
-]
 
-import threading as _threading, re as _re
+import threading as _threading
 
 class _RateLimiter:
     """Token-bucket: max `rate` calls per `period` seconds."""
@@ -84,10 +80,9 @@ class _RateLimiter:
 _rl = _RateLimiter(rate=4, period=62.0)
 
 def _parse_retry_delay(err_str, default=17.0):
-    """Pull the retryDelay seconds out of a 429 error message."""
-    m = _re.search(r"retry in ([0-9.]+)s", err_str, _re.I)
+    m = re.search(r"retry in ([0-9.]+)s", err_str, re.I)
     if m: return float(m.group(1)) + 1.0
-    m = _re.search(r"retryDelay.*?([0-9.]+)s", err_str, _re.I)
+    m = re.search(r"retryDelay.*?([0-9.]+)s", err_str, re.I)
     if m: return float(m.group(1)) + 1.0
     return default
 
@@ -111,52 +106,45 @@ def _gemini_text(prompt, model=None, max_retries=4):
                     print(f"[Gemini] 429 on {m}, waiting {wait:.1f}s (attempt {attempt+1}/{max_retries})")
                     time.sleep(wait)
                 elif "404" in last_err or "NOT_FOUND" in last_err:
-                    break   # model gone, try next
+                    break   
                 else:
                     return f"[Error: {last_err}]"
     return f"[Error: {last_err}]"
 
-def _gemini_tts(text, voice="Charon", max_retries=4):
-    """TTS via Gemini. Rate-limited + retries 429 with server-supplied delay."""
-    if not GENAI_AVAILABLE:
+# ── NEW: Edge-TTS Engine ──────────────────────────────────────────────────────
+def _edge_tts(text, voice="en-GB-RyanNeural"):
+    """
+    Generates fast, high-quality TTS using Microsoft Edge Neural Voices.
+    Does not require API keys or suffer from strict free-tier rate limits.
+    """
+    if not text or text.startswith("[Error"):
         return None
-    for model in _TTS_MODELS:
-        for attempt in range(max_retries):
-            try:
-                _rl.acquire()
-                resp = _genai_client.models.generate_content(
-                    model=model,
-                    contents=_gtypes.Content(role="user", parts=[_gtypes.Part(text=text)]),
-                    config=_gtypes.GenerateContentConfig(
-                        response_modalities=["AUDIO"],
-                        speech_config=_gtypes.SpeechConfig(
-                            voice_config=_gtypes.VoiceConfig(
-                                prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name=voice)
-                            )
-                        )
-                    )
-                )
-                cands = resp.candidates
-                if cands and cands[0].content.parts:
-                    part = cands[0].content.parts[0]
-                    if hasattr(part, "inline_data") and part.inline_data:
-                        return base64.b64encode(part.inline_data.data).decode()
-                break
-            except Exception as e:
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                    wait = _parse_retry_delay(err)
-                    print(f"[TTS] 429 on {model}, waiting {wait:.1f}s (attempt {attempt+1}/{max_retries})")
-                    time.sleep(wait)
-                elif "404" in err or "NOT_FOUND" in err:
-                    break
-                else:
-                    print(f"[TTS] fatal {model}: {err}")
-                    return None
-    return None
+        
+    try:
+        async def _generate():
+            # Rate +10% to sound energetic like a football commentator
+            communicate = edge_tts.Communicate(text, voice, rate="+10%")
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as fp:
+                temp_path = fp.name
+            await communicate.save(temp_path)
+            return temp_path
+            
+        # Run async task synchronously
+        temp_path = asyncio.run(_generate())
+        
+        # Encode MP3 to base64
+        with open(temp_path, "rb") as f:
+            encoded_b64 = base64.b64encode(f.read()).decode()
+            
+        os.remove(temp_path)
+        return encoded_b64
+        
+    except Exception as e:
+        print(f"[Edge TTS Error]: {e}")
+        return None
 
+# ── Data Enrichment Helpers ───────────────────────────────────────────────────
 def _search_player_info(player_name: str, team: str) -> dict:
-    """Use Gemini + Google Search grounding to enrich player data."""
     prompt = f"""You are a football data analyst. Search for current information about {player_name} who plays for {team}.
 Return ONLY valid JSON (no markdown, no backticks) with these exact keys:
 {{
@@ -182,7 +170,6 @@ If data is unavailable, use null for numbers and "Unknown" for strings."""
         return {"full_name": player_name, "nationality": "Unknown", "transfer_news": "No recent transfer news."}
 
 def _search_manager_info(manager_name: str, team: str) -> dict:
-    """Enrich manager data via Gemini."""
     prompt = f"""Football analyst report for manager {manager_name} of {team}.
 Return ONLY valid JSON (no markdown):
 {{
@@ -265,22 +252,7 @@ Pure speech.""")
 @bp_commentary.route("/odds/match/<betradar_id>/commentary", methods=["GET"])
 def get_commentary(betradar_id: str):
     """
-    Returns full cinematic commentary JSON:
-    {
-      "scenes": [
-        {"id": "intro",    "text": "...", "audio_b64": "...", "duration": 6,  "timing": 0},
-        {"id": "h2h",      ...},
-        {"id": "form",     ...},
-        {"id": "bracket",  ...},
-        {"id": "managers", ...},
-        {"id": "players",  "players": [{...}, ...], "duration": 35, "timing": 32},
-        {"id": "closing",  ...}
-      ],
-      "home_manager": {...},
-      "away_manager": {...},
-      "enriched_players": [{...}, ...],
-      "gambling_warning": {"text": "...", "audio_b64": "..."}
-    }
+    Returns full cinematic commentary JSON.
     """
     sport = request.args.get("sport", "soccer")
 
@@ -339,10 +311,8 @@ def get_commentary(betradar_id: str):
 
     # ── 5. Parse Players ──────────────────────────────────────────────────────
     def _parse_players(node):
-        if isinstance(node, dict):
-            return node.get("players") or []
-        if isinstance(node, list):
-            return node
+        if isinstance(node, dict): return node.get("players") or []
+        if isinstance(node, list): return node
         return []
 
     home_sq = squads_raw.get("home", {}) if squads_raw else {}
@@ -388,11 +358,11 @@ def get_commentary(betradar_id: str):
         "home_cs": sum(1 for m in (hr_raw.get("matches") or [])[:5]
                        if m.get("result",{}).get(("home" if str(m.get("teams",{}).get("home",{}).get("uid",""))
                                                   == str(home_uid) else "away"),99) == 0),
-        "away_cs": 0,  # simplified
+        "away_cs": 0,  
     }
 
-    # ── 8. Parallel Gemini tasks ──────────────────────────────────────────────
-    with ThreadPoolExecutor(max_workers=2) as pool:  # Rate-limiter serialises Gemini calls
+    # ── 8. Parallel Gemini tasks (For text only now) ──────────────────────────
+    with ThreadPoolExecutor(max_workers=2) as pool:  
         f_intro    = pool.submit(_commentary_intro,    ctx)
         f_h2h_c    = pool.submit(_commentary_h2h,      ctx)
         f_form_c   = pool.submit(_commentary_form,     ctx)
@@ -401,7 +371,6 @@ def get_commentary(betradar_id: str):
         f_mgr_away = pool.submit(_search_manager_info, away_mgr_name, away_team)
         f_closing  = pool.submit(_commentary_closing,  ctx)
 
-        # Enrich top 6 players
         player_futures = {
             pool.submit(_search_player_info, p["name"], p["team"]): i
             for i, p in enumerate(players_base[:int(os.environ.get('GEMINI_MAX_PLAYERS','3'))])
@@ -419,14 +388,13 @@ def get_commentary(betradar_id: str):
         try: enriched_players[idx] = fut.result()
         except: enriched_players[idx] = {}
 
-    # Player commentary for each spotlight
     player_commentaries = []
     for i, (p, e) in enumerate(zip(players_base[:6], enriched_players[:6])):
         txt = _commentary_player(p, e)
         player_commentaries.append(txt)
 
     # ── 9. Assemble scene list ────────────────────────────────────────────────
-    SCENE_DURATIONS = [6, 7, 6, 7, 6]  # scenes 1-5; scene 6 is per-player
+    SCENE_DURATIONS = [6, 7, 6, 7, 6] 
     player_scene_dur = max(len(players_base[:11]) * 3.5 + 10, 35)
     SCENE_DURATIONS.append(int(player_scene_dur))
     closing_dur = 5
@@ -445,41 +413,45 @@ def get_commentary(betradar_id: str):
         })
         timing += dur
 
-    # Add per-player data into players scene
     players_enriched_full = []
     for p, e, ct in zip(players_base, enriched_players, player_commentaries + [""]*20):
         players_enriched_full.append({**p, **e, "commentary": ct})
 
     scenes[-1]["players"] = players_enriched_full
 
-    # Closing scene
     closing_text = f_closing.result()
     scenes.append({"id":"closing","duration":closing_dur,"timing":timing,"text":closing_text})
 
-    # Gambling warning text
     gw_text = ("Important: Gambling is only permitted for persons aged 18 and over. "
                "Please gamble responsibly. Set limits and stick to them. "
                "If gambling affects your life, seek help at gamblingtherapy.org.")
 
-    # ── 10. Generate TTS sequentially (rate-limited, 4 RPM) ─────────────────
-    tts_enabled = os.environ.get("GEMINI_TTS", "true").lower() != "false"
+    # ── 10. Generate Audio using Edge-TTS ─────────────────────────────────────
+    tts_enabled = os.environ.get("EDGE_TTS", "true").lower() != "false"
+    # Using British male voice for sports commentary
+    DEFAULT_VOICE = "en-GB-RyanNeural"
 
-    def _safe_tts(text, voice="Charon"):
+    def _safe_tts(text, voice=DEFAULT_VOICE):
         if not tts_enabled or not text or text.startswith("[Error"):
             return None
-        return _gemini_tts(text + "  " + GAMBLING_REMINDER, voice)
+        # Add the gambling reminder if required by your original logic
+        return _edge_tts(text + "  " + GAMBLING_REMINDER, voice)
 
+    # Generate scene audio
     for sc in scenes:
         sc["audio_b64"] = _safe_tts(sc.get("text", ""))
 
+    # Generate player audio
     player_audios = {i: _safe_tts(pc) for i, pc in enumerate(player_commentaries)}
-    gw_audio      = _safe_tts(gw_text, "Aoede")
+    
+    # Use a different, more serious voice for the gambling warning
+    gw_audio = _safe_tts(gw_text, "en-US-GuyNeural")
 
     if scenes[-2]["id"] == "players":
         for i, p in enumerate(scenes[-2].get("players",[])):
             p["audio_b64"] = player_audios.get(i)
 
-    # ── 11. Return ────────────────────────────────────────────────────────────
+    # ── 11. Return JSON Payload ───────────────────────────────────────────────
     return jsonify({
         "match": {
             "home": home_team, "away": away_team,
