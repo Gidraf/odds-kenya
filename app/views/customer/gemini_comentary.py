@@ -5,7 +5,7 @@ Returns JSON with per-scene commentary text + base64 MP3 audio + player/manager 
 """
 from flask import Blueprint, request, jsonify
 import requests, json, base64, os, re, time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 import asyncio
 import edge_tts
