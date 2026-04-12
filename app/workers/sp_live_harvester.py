@@ -367,7 +367,8 @@ def fetch_live_markets(
 ) -> list[dict]:
     if not event_ids:
         return []
-    ids_str = ",".join(str(i) for i in event_ids[:15])
+    # Removed the [:15] limit here because we now chunk the requests safely below!
+    ids_str = ",".join(str(i) for i in event_ids)
     data = _get("/event/markets", {
         "eventId": ids_str, "type": market_type, "sportId": sport_id,
     })
@@ -375,6 +376,58 @@ def fetch_live_markets(
         return []
     return data.get("markets") or data.get("data") or []
 
+
+def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[dict]:
+    sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
+    
+    events = fetch_live_events(sport_id, limit=100)
+    if not events:
+        return []
+
+    sp_event_ids = [ev["id"] for ev in events]
+    mkt_by_event = {}
+
+    if fetch_full_markets and sp_event_ids:
+        # 🟢 FIX: Chunk the IDs into groups of 15 to avoid 414 URI Too Long errors from SportPesa!
+        chunk_size = 15
+        chunks = [sp_event_ids[i:i + chunk_size] for i in range(0, len(sp_event_ids), chunk_size)]
+        
+        for chunk in chunks:
+            for m_type in [194, 105, 138, 147, 184]: 
+                try:
+                    res = fetch_live_markets(chunk, sport_id, m_type)
+                    if res:
+                        for m in res:
+                            eid = m.get("eventId")
+                            if eid:
+                                mkt_by_event.setdefault(eid, []).append(m)
+                except Exception as e:
+                    _D(f"Error fetching chunk for market type {m_type}: {e}", level="warning")
+
+    stream_data = []
+    for ev in events:
+        betradar_id = str(ev.get("externalId") or "")
+        sp_event_id = ev.get("id")
+        
+        state = ev.get("state") or {}
+        score = state.get("matchScore") or {}
+        
+        sp_match = {
+            "sp_match_id": sp_event_id,
+            "betradar_id": betradar_id if betradar_id and betradar_id != "0" else None,
+            "home_team": ev.get("competitors", [{},{}])[0].get("name", "Home"),
+            "away_team": ev.get("competitors", [{},{}])[1].get("name", "Away"),
+            "competition": ev.get("tournament", {}).get("name", ""),
+            "sport": sport_slug,
+            "start_time": ev.get("kickoffTimeUTC", ""),
+            "match_time": state.get("matchTime", ""),
+            "current_score": f"{score.get('home','')}-{score.get('away','')}",
+            "event_status": state.get("currentEventPhase", ""),
+            "markets": mkt_by_event.get(sp_event_id, [])
+        }
+        stream_data.append(sp_match)
+        
+    return stream_data
 
 def _get_quiet(path: str, params: dict | None = None, timeout: int = 10) -> Any:
     url = f"{API_BASE}{path}"
