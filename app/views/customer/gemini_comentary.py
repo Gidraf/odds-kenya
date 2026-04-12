@@ -6,6 +6,7 @@ Returns JSON with per-scene commentary text + base64 MP3 audio + player/manager 
 from flask import Blueprint, request, jsonify
 import requests, json, base64, os, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading as _threading
 import tempfile
 import asyncio
 import edge_tts
@@ -55,8 +56,6 @@ _TEXT_MODELS = [
     "gemini-1.5-flash",
     "gemini-1.5-flash-latest",
 ]
-
-import threading as _threading
 
 class _RateLimiter:
     """Token-bucket: max `rate` calls per `period` seconds."""
@@ -111,36 +110,35 @@ def _gemini_text(prompt, model=None, max_retries=4):
                     return f"[Error: {last_err}]"
     return f"[Error: {last_err}]"
 
-# ── NEW: Edge-TTS Engine ──────────────────────────────────────────────────────
-def _edge_tts(text, voice="en-GB-RyanNeural"):
-    """
-    Generates fast, high-quality TTS using Microsoft Edge Neural Voices.
-    Does not require API keys or suffer from strict free-tier rate limits.
-    """
+# ── NEW: Free Edge-TTS Audio Generation ───────────────────────────────────────
+def _free_commentator_tts(text, voice="en-GB-RyanNeural"):
+    """Generates free TTS using Microsoft Edge's Neural voices."""
     if not text or text.startswith("[Error"):
         return None
         
     try:
-        async def _generate():
-            # Rate +10% to sound energetic like a football commentator
-            communicate = edge_tts.Communicate(text, voice, rate="+10%")
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as fp:
-                temp_path = fp.name
-            await communicate.save(temp_path)
-            return temp_path
-            
-        # Run async task synchronously
-        temp_path = asyncio.run(_generate())
+        # Speed up the rate slightly for that fast-paced sports energy
+        communicate = edge_tts.Communicate(text, voice, rate="+15%", pitch="+5Hz")
         
-        # Encode MP3 to base64
-        with open(temp_path, "rb") as f:
-            encoded_b64 = base64.b64encode(f.read()).decode()
+        # Save to a temporary file
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as fp:
+            temp_path = fp.name
+            
+        # edge-tts is async. We run it in a new event loop to ensure thread safety in Flask
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(communicate.save(temp_path))
+        loop.close()
+        
+        # Read back as base64 for your frontend
+        with open(temp_path, "rb") as audio_file:
+            encoded_b64 = base64.b64encode(audio_file.read()).decode()
             
         os.remove(temp_path)
         return encoded_b64
         
     except Exception as e:
-        print(f"[Edge TTS Error]: {e}")
+        print(f"[Edge TTS] Fatal error: {e}")
         return None
 
 # ── Data Enrichment Helpers ───────────────────────────────────────────────────
@@ -428,24 +426,25 @@ def get_commentary(betradar_id: str):
 
     # ── 10. Generate Audio using Edge-TTS ─────────────────────────────────────
     tts_enabled = os.environ.get("EDGE_TTS", "true").lower() != "false"
-    # Using British male voice for sports commentary
-    DEFAULT_VOICE = "en-GB-RyanNeural"
+    
+    # We define the voices to use
+    DEFAULT_VOICE = "en-GB-RyanNeural"  # Main commentator
+    WARNING_VOICE = "en-US-GuyNeural"   # Serious voice for the warning
 
     def _safe_tts(text, voice=DEFAULT_VOICE):
         if not tts_enabled or not text or text.startswith("[Error"):
             return None
-        # Add the gambling reminder if required by your original logic
-        return _edge_tts(text + "  " + GAMBLING_REMINDER, voice)
+        return _free_commentator_tts(text, voice=voice)
 
-    # Generate scene audio
+    # Generate scene audio (Intro, H2H, Form, etc)
     for sc in scenes:
         sc["audio_b64"] = _safe_tts(sc.get("text", ""))
 
     # Generate player audio
     player_audios = {i: _safe_tts(pc) for i, pc in enumerate(player_commentaries)}
     
-    # Use a different, more serious voice for the gambling warning
-    gw_audio = _safe_tts(gw_text, "en-US-GuyNeural")
+    # Generate warning audio in a distinct voice
+    gw_audio = _safe_tts(gw_text, WARNING_VOICE)
 
     if scenes[-2]["id"] == "players":
         for i, p in enumerate(scenes[-2].get("players",[])):
