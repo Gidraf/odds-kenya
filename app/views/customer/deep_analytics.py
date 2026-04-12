@@ -6,34 +6,37 @@ from .utils import _sse
 
 bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
 
-DEFAULT_TOKEN = "exp=1776064004~acl=/*~data=eyJvIjoiaHR0cHM6Ly9zdGF0c2h1Yi5zcG9ydHJhZGFyLmNvbSIsImEiOiJzcG9ydHBlc2EiLCJhY3QiOiJvcmlnaW5jaGVjayIsIm9zcmMiOiJob3N0aGVhZGVyIn0~hmac=1c7b2ef7f250e867db4f35699ca70d55884e705200df665ee15860e7eb4cddd6"
+# Tokens mapped directly from your network requests
+LMT_TOKEN = "exp=1776025306~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cuYmV0aWthLmNvbSIsImEiOiI2MDAwNmI1MjM0YzMxY2NmOGIxNGYxNmYyODczZWU3MSIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=016ea9a66a30e7c493628bc5a2beb8e294aeefa76ea7582648f6e40904e395d4"
+SH_TOKEN = "exp=1776064004~acl=/*~data=eyJvIjoiaHR0cHM6Ly9zdGF0c2h1Yi5zcG9ydHJhZGFyLmNvbSIsImEiOiJzcG9ydHBlc2EiLCJhY3QiOiJvcmlnaW5jaGVjayIsIm9zcmMiOiJob3N0aGVhZGVyIn0~hmac=1c7b2ef7f250e867db4f35699ca70d55884e705200df665ee15860e7eb4cddd6"
 
-def _fetch_sr(endpoint: str, item_id: str, token: str, extra_params=""):
-    url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra_params}?T={token}"
-    headers = {
-        "accept": "application/json",
-        "origin": "https://statshub.sportradar.com",
-        "referer": "https://statshub.sportradar.com/",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+def _fetch_lmt(endpoint: str, item_id: str):
+    """Hits the Betika Live Match Tracker for realtime Lineups and Events"""
+    url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={LMT_TOKEN}"
+    headers = {"origin": "https://www.betika.com", "referer": "https://www.betika.com/", "user-agent": "Mozilla/5.0"}
     try:
         res = requests.get(url, headers=headers, timeout=6)
-        if res.status_code == 200:
-            data = res.json().get("doc", [{}])[0].get("data", {})
-            return data
-    except Exception as e:
-        pass
+        if res.status_code == 200: return res.json().get("doc", [{}])[0].get("data", {})
+    except: pass
+    return None
+
+def _fetch_sh(endpoint: str, item_id: str, extra_params=""):
+    """Hits the Sportpesa StatsHub for deep H2H and League Tables"""
+    url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra_params}?T={SH_TOKEN}"
+    headers = {"origin": "https://statshub.sportradar.com", "referer": "https://statshub.sportradar.com/", "user-agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200: return res.json().get("doc", [{}])[0].get("data", {})
+    except: pass
     return None
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
 def stream_deep_analytics(betradar_id: str):
-    token = request.args.get("token", DEFAULT_TOKEN)
-
     def generate():
         yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
 
-        # 1. Fetch Main Match Info
-        info = _fetch_sr("match_info_statshub", betradar_id, token)
+        # 1. Fetch Main Match Info via Betika LMT
+        info = _fetch_lmt("match_info", betradar_id)
         
         if not info:
             yield _sse("error", {"message": "Could not load match info."})
@@ -44,7 +47,6 @@ def stream_deep_analytics(betradar_id: str):
         away_uid = match_data.get("teams", {}).get("away", {}).get("uid")
         season_id = match_data.get("_seasonid")
 
-        # Safely extract Jersey Colors (Fall back to default if missing)
         jerseys = info.get("jerseys", {})
         home_color = f"#{jerseys.get('home', {}).get('player', {}).get('base', 'F06C6C')}"
         away_color = f"#{jerseys.get('away', {}).get('player', {}).get('base', '0DD8E8')}"
@@ -64,14 +66,14 @@ def stream_deep_analytics(betradar_id: str):
             "away_color": away_color
         })
 
-        # 3. Concurrently fetch Squads, H2H, Timeline, and Tables
+        # 2. Concurrently fetch the rest (Mixed LMT and SH)
         with ThreadPoolExecutor(max_workers=5) as pool:
-            f_squads   = pool.submit(_fetch_sr, "match_squads", betradar_id, token)
-            f_timeline = pool.submit(_fetch_sr, "match_timelinedelta", betradar_id, token)
-            f_h2h      = pool.submit(_fetch_sr, "stats_match_head2head", betradar_id, token)
-            f_table    = pool.submit(_fetch_sr, "stats_season_tables", season_id, token, "/1") if season_id else None
+            f_squads   = pool.submit(_fetch_lmt, "match_squads", betradar_id)          # Betika Endpoint for Players!
+            f_timeline = pool.submit(_fetch_lmt, "match_timelinedelta", betradar_id)   # Betika Endpoint for Events!
+            f_h2h      = pool.submit(_fetch_sh, "stats_match_head2head", betradar_id)  # StatsHub for Deep History
+            f_table    = pool.submit(_fetch_sh, "season_dynamictable", season_id, "/1") if season_id else None # StatsHub
             
-            # --- SQUADS (FIFA LINEUPS) ---
+            # --- SQUADS (UNIVERSAL MULTI-SPORT PARSING) ---
             squads_data = f_squads.result()
             if squads_data and "home" in squads_data:
                 h_lineup = squads_data.get("home", {}).get("startinglineup", {}) or squads_data.get("home", {}).get("players", [])
@@ -93,7 +95,7 @@ def stream_deep_analytics(betradar_id: str):
             else:
                 yield _sse("lineups", {"fallback": True})
 
-            # --- TIMELINE (EVENTS) ---
+            # --- TIMELINE (UNIVERSAL EVENTS) ---
             timeline_data = f_timeline.result()
             if timeline_data:
                 events = timeline_data.get("events", [])
