@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from app.views.customer.utils import _normalise_sport_slug
 
 
