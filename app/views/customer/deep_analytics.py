@@ -10,7 +10,6 @@ LMT_TOKEN = "exp=1776025306~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cuYmV0aWthLmNvbSIs
 SH_TOKEN = "exp=1776064004~acl=/*~data=eyJvIjoiaHR0cHM6Ly9zdGF0c2h1Yi5zcG9ydHJhZGFyLmNvbSIsImEiOiJzcG9ydHBlc2EiLCJhY3QiOiJvcmlnaW5jaGVjayIsIm9zcmMiOiJob3N0aGVhZGVyIn0~hmac=1c7b2ef7f250e867db4f35699ca70d55884e705200df665ee15860e7eb4cddd6"
 
 def _fetch_lmt(endpoint: str, item_id: str):
-    """Hits Sportradar Live Match Tracker (Fast Realtime Data)"""
     url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={LMT_TOKEN}"
     headers = {"origin": "https://www.betika.com", "referer": "https://www.betika.com/", "user-agent": "Mozilla/5.0"}
     try:
@@ -20,7 +19,6 @@ def _fetch_lmt(endpoint: str, item_id: str):
     return None
 
 def _fetch_sh(endpoint: str, item_id: str, extra=""):
-    """Hits Sportradar StatsHub (Deep Historical Data)"""
     url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={SH_TOKEN}"
     headers = {"origin": "https://statshub.sportradar.com", "referer": "https://statshub.sportradar.com/", "user-agent": "Mozilla/5.0"}
     try:
@@ -66,41 +64,33 @@ def stream_deep_analytics(betradar_id: str):
         })
 
         # 2. Concurrently fetch deep stats
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            f_squads   = pool.submit(_fetch_lmt, "match_squads", betradar_id)
-            f_timeline = pool.submit(_fetch_lmt, "match_timelinedelta", betradar_id)
-            f_h2h      = pool.submit(_fetch_sh, "stats_match_head2head", betradar_id)
-            f_table    = pool.submit(_fetch_sh, "season_dynamictable", season_id) if season_id else None
-            f_form     = pool.submit(_fetch_sh, "stats_formtable", season_id) if season_id else None
+        with ThreadPoolExecutor(max_workers=7) as pool:
+            f_squads      = pool.submit(_fetch_lmt, "match_squads", betradar_id)
+            f_timeline    = pool.submit(_fetch_lmt, "match_timelinedelta", betradar_id)
+            f_h2h         = pool.submit(_fetch_sh, "stats_match_head2head", betradar_id)
+            f_table       = pool.submit(_fetch_sh, "season_dynamictable", str(season_id)) if season_id else None
+            f_form        = pool.submit(_fetch_sh, "stats_formtable", str(season_id)) if season_id else None
+            f_home_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(home_uid), "/10") if home_uid else None
+            f_away_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(away_uid), "/10") if away_uid else None
 
-            # --- SQUADS (Safely handling Dicts AND Lists to prevent 500 error) ---
+            # --- SQUADS ---
             squads_data = f_squads.result()
             if squads_data and "home" in squads_data:
-                # Extract the lineup nodes
                 h_node = squads_data.get("home", {}).get("startinglineup", squads_data.get("home", {}).get("players", []))
                 a_node = squads_data.get("away", {}).get("startinglineup", squads_data.get("away", {}).get("players", []))
-                
-                # Check if it's a dict (has formation) or just a raw list of players
                 h_form = h_node.get("formation", "") if isinstance(h_node, dict) else ""
                 a_form = a_node.get("formation", "") if isinstance(a_node, dict) else ""
-                
                 h_players = h_node.get("players", []) if isinstance(h_node, dict) else (h_node if isinstance(h_node, list) else [])
                 a_players = a_node.get("players", []) if isinstance(a_node, dict) else (a_node if isinstance(a_node, list) else [])
 
                 yield _sse("lineups", {
-                    "home": {
-                        "formation": h_form,
-                        "players": [{"name": p.get("playername", p.get("name", "")).split(",")[0].strip(), "num": p.get("shirtnumber", ""), "pos": p.get("matchpos", "M")} for p in h_players]
-                    },
-                    "away": {
-                        "formation": a_form,
-                        "players": [{"name": p.get("playername", p.get("name", "")).split(",")[0].strip(), "num": p.get("shirtnumber", ""), "pos": p.get("matchpos", "M")} for p in a_players]
-                    }
+                    "home": {"formation": h_form, "players": [{"name": p.get("playername", p.get("name", "")).split(",")[0].strip(), "num": p.get("shirtnumber", ""), "pos": p.get("matchpos", "M")} for p in h_players]},
+                    "away": {"formation": a_form, "players": [{"name": p.get("playername", p.get("name", "")).split(",")[0].strip(), "num": p.get("shirtnumber", ""), "pos": p.get("matchpos", "M")} for p in a_players]}
                 })
             else:
                 yield _sse("lineups", {"fallback": True})
 
-            # --- TIMELINE (EVENTS) ---
+            # --- TIMELINE ---
             timeline_data = f_timeline.result()
             if timeline_data:
                 events = timeline_data.get("events", [])
@@ -111,16 +101,35 @@ def stream_deep_analytics(betradar_id: str):
             # --- HEAD 2 HEAD ---
             h2h_data = f_h2h.result()
             if h2h_data:
-                matches = h2h_data.get("matches", [])
                 parsed_h2h = []
-                for m in matches[:5]:
-                    dt = m.get("_dt", {}).get("date", "")
-                    ht = m.get("teams", {}).get("home", {}).get("name", "")
-                    at = m.get("teams", {}).get("away", {}).get("name", "")
-                    sh = m.get("result", {}).get("home", 0)
-                    sa = m.get("result", {}).get("away", 0)
-                    parsed_h2h.append({"date": dt, "home": ht, "away": at, "score_home": sh, "score_away": sa})
+                for m in h2h_data.get("matches", [])[:5]:
+                    parsed_h2h.append({
+                        "date": m.get("_dt", {}).get("date", ""),
+                        "home": m.get("teams", {}).get("home", {}).get("name", ""),
+                        "away": m.get("teams", {}).get("away", {}).get("name", ""),
+                        "score_home": m.get("result", {}).get("home", 0),
+                        "score_away": m.get("result", {}).get("away", 0)
+                    })
                 yield _sse("h2h", parsed_h2h)
+
+            # --- RECENT MATCHES (HOME & AWAY) ---
+            def _parse_recent(data):
+                if not data: return []
+                parsed = []
+                for m in data.get("matches", [])[:5]:
+                    parsed.append({
+                        "date": m.get("_dt", {}).get("date", ""),
+                        "home": m.get("teams", {}).get("home", {}).get("name", ""),
+                        "away": m.get("teams", {}).get("away", {}).get("name", ""),
+                        "score_home": m.get("result", {}).get("home", 0),
+                        "score_away": m.get("result", {}).get("away", 0)
+                    })
+                return parsed
+
+            yield _sse("recent", {
+                "home": _parse_recent(f_home_recent.result() if f_home_recent else None),
+                "away": _parse_recent(f_away_recent.result() if f_away_recent else None)
+            })
 
             # --- STANDINGS & FORM ---
             table_data = f_table.result() if f_table else None
@@ -132,15 +141,13 @@ def stream_deep_analytics(betradar_id: str):
                 for t in tables:
                     if t.get("name") == "Total" or len(t.get("tablerows", [])) > 0:
                         for tr in t.get("tablerows", []):
-                            is_home = str(tr.get("team", {}).get("uid")) == str(home_uid)
-                            is_away = str(tr.get("team", {}).get("uid")) == str(away_uid)
                             rows.append({
                                 "pos": tr.get("pos"),
                                 "team": tr.get("team", {}).get("name"),
                                 "played": tr.get("played", {}).get("total", tr.get("total", 0)),
                                 "gd": tr.get("goaldifference", {}).get("total", tr.get("goalDiffTotal", 0)),
                                 "pts": tr.get("points", {}).get("total", tr.get("pointsTotal", 0)),
-                                "is_target": is_home or is_away
+                                "is_target": str(tr.get("team", {}).get("uid")) in [str(home_uid), str(away_uid)]
                             })
                         break
                 yield _sse("standings", sorted(rows, key=lambda x: x["pos"]))
