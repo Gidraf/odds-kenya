@@ -47,46 +47,71 @@ def _sh(endpoint, item_id, extra=""):
 # ── Gemini helpers ────────────────────────────────────────────────────────────
 VOICES = ["Charon", "Fenrir", "Aoede", "Puck"]   # Charon = deep male, Fenrir = strong male
 
-def _gemini_text(prompt: str, model: str = "gemini-2.0-flash-exp") -> str:
-    """Generate text with Gemini."""
+# Model priority lists — first available wins
+_TEXT_MODELS = [
+    "gemini-2.5-flash",               # Best / newest
+    "gemini-2.5-flash-preview-05-20", # Preview variant
+    "gemini-2.0-flash",               # Stable 2.0
+    "gemini-1.5-flash",               # Fallback
+    "gemini-1.5-flash-latest",        # Alias fallback
+]
+_TTS_MODELS = [
+    "gemini-2.5-flash-preview-tts",   # Primary TTS
+    "gemini-2.5-flash-tts",           # Alias
+    "gemini-2.0-flash-live-001",      # Live API (supports audio)
+]
+
+def _gemini_text(prompt: str, model: str | None = None) -> str:
+    """Generate text with Gemini, trying models in priority order."""
     if not GENAI_AVAILABLE:
         return "[AI commentary unavailable – GEMINI_API_KEY not set]"
-    try:
-        resp = _genai_client.models.generate_content(
-            model=model,
-            contents=prompt
-        )
-        return resp.text.strip()
-    except Exception as e:
-        return f"[Error: {e}]"
+    candidates = [model] + _TEXT_MODELS if model else _TEXT_MODELS
+    last_err = ""
+    for m in candidates:
+        if not m:
+            continue
+        try:
+            resp = _genai_client.models.generate_content(model=m, contents=prompt)
+            return resp.text.strip()
+        except Exception as e:
+            last_err = str(e)
+            # Only retry on 404/not-found; raise on auth errors immediately
+            if "404" not in str(e) and "NOT_FOUND" not in str(e):
+                break
+    return f"[Error: {last_err}]"
 
 def _gemini_tts(text: str, voice: str = "Charon") -> str | None:
-    """Generate TTS audio (WAV bytes) via Gemini 2.5 TTS; returns base64 string or None."""
+    """Generate TTS audio via Gemini TTS models; returns base64 WAV or None."""
     if not GENAI_AVAILABLE:
         return None
-    try:
-        resp = _genai_client.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",
-            contents=_gtypes.Content(
-                role="user",
-                parts=[_gtypes.Part(text=text)]
-            ),
-            config=_gtypes.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=_gtypes.SpeechConfig(
-                    voice_config=_gtypes.VoiceConfig(
-                        prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name=voice)
+    for model in _TTS_MODELS:
+        try:
+            resp = _genai_client.models.generate_content(
+                model=model,
+                contents=_gtypes.Content(
+                    role="user",
+                    parts=[_gtypes.Part(text=text)]
+                ),
+                config=_gtypes.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=_gtypes.SpeechConfig(
+                        voice_config=_gtypes.VoiceConfig(
+                            prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name=voice)
+                        )
                     )
                 )
             )
-        )
-        cands = resp.candidates
-        if cands and cands[0].content.parts:
-            part = cands[0].content.parts[0]
-            if hasattr(part, "inline_data") and part.inline_data:
-                return base64.b64encode(part.inline_data.data).decode()
-    except Exception as e:
-        print(f"[TTS error] {e}")
+            cands = resp.candidates
+            if cands and cands[0].content.parts:
+                part = cands[0].content.parts[0]
+                if hasattr(part, "inline_data") and part.inline_data:
+                    return base64.b64encode(part.inline_data.data).decode()
+        except Exception as e:
+            err = str(e)
+            print(f"[TTS] model={model} error: {err}")
+            if "404" not in err and "NOT_FOUND" not in err:
+                break
+            continue
     return None
 
 def _search_player_info(player_name: str, team: str) -> dict:
@@ -108,7 +133,7 @@ Return ONLY valid JSON (no markdown, no backticks) with these exact keys:
 }}
 If data is unavailable, use null for numbers and "Unknown" for strings."""
 
-    raw = _gemini_text(prompt, model="gemini-2.0-flash-exp")
+    raw = _gemini_text(prompt)
     try:
         cleaned = re.sub(r"```json|```", "", raw).strip()
         return json.loads(cleaned)
@@ -132,7 +157,7 @@ Return ONLY valid JSON (no markdown):
   "career_highlights": "...",
   "pre_match_quote": "..."
 }}"""
-    raw = _gemini_text(prompt, model="gemini-2.0-flash-exp")
+    raw = _gemini_text(prompt)
     try:
         cleaned = re.sub(r"```json|```", "", raw).strip()
         return json.loads(cleaned)
