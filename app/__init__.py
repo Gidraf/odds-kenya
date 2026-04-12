@@ -98,6 +98,7 @@ def create_app() -> Flask:
     from app.views.monitor.analytics_view import bp_analytics_dash
     from app.views.customer.sportradar_tracker import bp_tracker
     from app.views.customer.deep_analytics import bp_deep_analytics
+    from app.views.customer.gemini_comentary import bp_commentary
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -129,6 +130,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_analytics_dash) 
     flask_app.register_blueprint(bp_tracker)   
     flask_app.register_blueprint(bp_deep_analytics)   
+    flask_app.register_blueprint(bp_commentary)
     # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
