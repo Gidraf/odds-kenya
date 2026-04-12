@@ -4,11 +4,55 @@ app/workers/market_normalizer.py
 Pure, import-safe market normalization utilities.
 Imported by both routes_debug.py and market_tasks.py — keeps a single
 source of truth and avoids circular imports.
+
+NOTE: _normalise_sport_slug is inlined here intentionally — avoids any
+dependency on the routes .utils module which would cause circular imports
+when Celery tasks load this module outside the Flask app context.
 """
 
 from __future__ import annotations
 import re
 from functools import lru_cache
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SPORT SLUG NORMALISER  (inlined — no external import needed)
+# ──────────────────────────────────────────────────────────────────────────────
+_SPORT_SLUG_MAP: dict[str, str] = {
+    "football":          "soccer",
+    "soccer":            "soccer",
+    "esoccer":           "esoccer",
+    "efootball":         "esoccer",
+    "e-football":        "esoccer",
+    "virtual-football":  "esoccer",
+    "basketball":        "basketball",
+    "tennis":            "tennis",
+    "ice hockey":        "ice-hockey",
+    "icehockey":         "ice-hockey",
+    "ice-hockey":        "ice-hockey",
+    "volleyball":        "volleyball",
+    "cricket":           "cricket",
+    "rugby":             "rugby",
+    "rugby league":      "rugby",
+    "rugby union":       "rugby",
+    "boxing":            "boxing",
+    "handball":          "handball",
+    "table tennis":      "table-tennis",
+    "tabletennis":       "table-tennis",
+    "table-tennis":      "table-tennis",
+    "mma":               "mma",
+    "ufc":               "mma",
+    "darts":             "darts",
+    "american football": "american-football",
+    "americanfootball":  "american-football",
+    "american-football": "american-football",
+    "nfl":               "american-football",
+    "baseball":          "baseball",
+}
+
+def _normalise_sport_slug(raw: str) -> str:
+    """Normalise any bookmaker sport string to a canonical slug."""
+    key = raw.lower().strip()
+    return _SPORT_SLUG_MAP.get(key, key.replace(" ", "-"))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # COMPILED REGEX  (module-level → compiled once at import, never again)
@@ -111,11 +155,10 @@ def unify_match_payload(
     h_clean = _RE_NON_ALPHANUM.sub("_", h_team.lower()).strip("_")
     a_clean = _RE_NON_ALPHANUM.sub("_", a_team.lower()).strip("_")
 
-    from app.utils.sport_utils import normalise_sport_slug  # avoid circular at module level
     sport_val = raw_match.get("sport") or raw_match.get("sport_name") or "soccer"
     if isinstance(sport_val, dict):
         sport_val = sport_val.get("name", "soccer")
-    sport_slug_out = normalise_sport_slug(str(sport_val))
+    sport_slug_out = _normalise_sport_slug(str(sport_val))
 
     best_mock: dict = {}
     bk_markets: dict = {}
