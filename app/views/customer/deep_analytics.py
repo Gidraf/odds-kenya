@@ -22,7 +22,7 @@ def _fetch_sr(endpoint: str, item_id: str, token: str, extra_params=""):
             data = res.json().get("doc", [{}])[0].get("data", {})
             return data
     except Exception as e:
-        print(f"SR Fetch Error ({endpoint}):", e)
+        pass
     return None
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
@@ -71,10 +71,9 @@ def stream_deep_analytics(betradar_id: str):
             f_h2h      = pool.submit(_fetch_sr, "stats_match_head2head", betradar_id, token)
             f_table    = pool.submit(_fetch_sr, "stats_season_tables", season_id, token, "/1") if season_id else None
             
-            # --- SQUADS (UNIVERSAL LINEUPS) ---
+            # --- SQUADS (FIFA LINEUPS) ---
             squads_data = f_squads.result()
             if squads_data and "home" in squads_data:
-                # Handle varying JSON structures across sports
                 h_lineup = squads_data.get("home", {}).get("startinglineup", {}) or squads_data.get("home", {}).get("players", [])
                 a_lineup = squads_data.get("away", {}).get("startinglineup", {}) or squads_data.get("away", {}).get("players", [])
                 
@@ -94,11 +93,10 @@ def stream_deep_analytics(betradar_id: str):
             else:
                 yield _sse("lineups", {"fallback": True})
 
-            # --- TIMELINE (UNIVERSAL EVENTS) ---
+            # --- TIMELINE (EVENTS) ---
             timeline_data = f_timeline.result()
             if timeline_data:
                 events = timeline_data.get("events", [])
-                # Ignore spammy data packets that aren't actual events
                 ignored = ["possession", "matchsituation", "ballcoordinates", "possible_event", "pitch coordinates"]
                 comments = [{"time": ev.get("time", ""), "team": ev.get("team"), "type": ev.get("type"), "name": ev.get("name", "")} for ev in reversed(events) if ev.get("type") not in ignored]
                 yield _sse("comments", comments[:20])
