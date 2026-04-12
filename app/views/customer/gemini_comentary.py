@@ -45,73 +45,114 @@ def _sh(endpoint, item_id, extra=""):
     return {}
 
 # ── Gemini helpers ────────────────────────────────────────────────────────────
-VOICES = ["Charon", "Fenrir", "Aoede", "Puck"]   # Charon = deep male, Fenrir = strong male
+VOICES = ["Charon", "Fenrir", "Aoede", "Puck"]
 
-# Model priority lists — first available wins
 _TEXT_MODELS = [
-    "gemini-2.5-flash",               # Best / newest
-    "gemini-2.5-flash-preview-05-20", # Preview variant
-    "gemini-2.0-flash",               # Stable 2.0
-    "gemini-1.5-flash",               # Fallback
-    "gemini-1.5-flash-latest",        # Alias fallback
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
 ]
 _TTS_MODELS = [
-    "gemini-2.5-flash-preview-tts",   # Primary TTS
-    "gemini-2.5-flash-tts",           # Alias
-    "gemini-2.0-flash-live-001",      # Live API (supports audio)
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-flash-tts",
+    "gemini-2.0-flash-live-001",
 ]
 
-def _gemini_text(prompt: str, model: str | None = None) -> str:
-    """Generate text with Gemini, trying models in priority order."""
+import threading as _threading, re as _re
+
+class _RateLimiter:
+    """Token-bucket: max `rate` calls per `period` seconds."""
+    def __init__(self, rate=4, period=62.0):
+        self._rate, self._period = rate, period
+        self._lock  = _threading.Lock()
+        self._calls = []
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.time()
+                self._calls = [t for t in self._calls if now - t < self._period]
+                if len(self._calls) < self._rate:
+                    self._calls.append(now)
+                    return
+                wait = self._period - (now - self._calls[0]) + 0.5
+            print(f"[RateLimit] free-tier 4 RPM cap — sleeping {wait:.1f}s")
+            time.sleep(max(wait, 1.0))
+
+_rl = _RateLimiter(rate=4, period=62.0)
+
+def _parse_retry_delay(err_str, default=17.0):
+    """Pull the retryDelay seconds out of a 429 error message."""
+    m = _re.search(r"retry in ([0-9.]+)s", err_str, _re.I)
+    if m: return float(m.group(1)) + 1.0
+    m = _re.search(r"retryDelay.*?([0-9.]+)s", err_str, _re.I)
+    if m: return float(m.group(1)) + 1.0
+    return default
+
+def _gemini_text(prompt, model=None, max_retries=4):
     if not GENAI_AVAILABLE:
         return "[AI commentary unavailable – GEMINI_API_KEY not set]"
-    candidates = [model] + _TEXT_MODELS if model else _TEXT_MODELS
+    candidates = ([model] + _TEXT_MODELS) if model else _TEXT_MODELS
     last_err = ""
     for m in candidates:
         if not m:
             continue
-        try:
-            resp = _genai_client.models.generate_content(model=m, contents=prompt)
-            return resp.text.strip()
-        except Exception as e:
-            last_err = str(e)
-            # Only retry on 404/not-found; raise on auth errors immediately
-            if "404" not in str(e) and "NOT_FOUND" not in str(e):
-                break
+        for attempt in range(max_retries):
+            try:
+                _rl.acquire()
+                resp = _genai_client.models.generate_content(model=m, contents=prompt)
+                return resp.text.strip()
+            except Exception as e:
+                last_err = str(e)
+                if "429" in last_err or "RESOURCE_EXHAUSTED" in last_err:
+                    wait = _parse_retry_delay(last_err)
+                    print(f"[Gemini] 429 on {m}, waiting {wait:.1f}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                elif "404" in last_err or "NOT_FOUND" in last_err:
+                    break   # model gone, try next
+                else:
+                    return f"[Error: {last_err}]"
     return f"[Error: {last_err}]"
 
-def _gemini_tts(text: str, voice: str = "Charon") -> str | None:
-    """Generate TTS audio via Gemini TTS models; returns base64 WAV or None."""
+def _gemini_tts(text, voice="Charon", max_retries=4):
+    """TTS via Gemini. Rate-limited + retries 429 with server-supplied delay."""
     if not GENAI_AVAILABLE:
         return None
     for model in _TTS_MODELS:
-        try:
-            resp = _genai_client.models.generate_content(
-                model=model,
-                contents=_gtypes.Content(
-                    role="user",
-                    parts=[_gtypes.Part(text=text)]
-                ),
-                config=_gtypes.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=_gtypes.SpeechConfig(
-                        voice_config=_gtypes.VoiceConfig(
-                            prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name=voice)
+        for attempt in range(max_retries):
+            try:
+                _rl.acquire()
+                resp = _genai_client.models.generate_content(
+                    model=model,
+                    contents=_gtypes.Content(role="user", parts=[_gtypes.Part(text=text)]),
+                    config=_gtypes.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=_gtypes.SpeechConfig(
+                            voice_config=_gtypes.VoiceConfig(
+                                prebuilt_voice_config=_gtypes.PrebuiltVoiceConfig(voice_name=voice)
+                            )
                         )
                     )
                 )
-            )
-            cands = resp.candidates
-            if cands and cands[0].content.parts:
-                part = cands[0].content.parts[0]
-                if hasattr(part, "inline_data") and part.inline_data:
-                    return base64.b64encode(part.inline_data.data).decode()
-        except Exception as e:
-            err = str(e)
-            print(f"[TTS] model={model} error: {err}")
-            if "404" not in err and "NOT_FOUND" not in err:
+                cands = resp.candidates
+                if cands and cands[0].content.parts:
+                    part = cands[0].content.parts[0]
+                    if hasattr(part, "inline_data") and part.inline_data:
+                        return base64.b64encode(part.inline_data.data).decode()
                 break
-            continue
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    wait = _parse_retry_delay(err)
+                    print(f"[TTS] 429 on {model}, waiting {wait:.1f}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                elif "404" in err or "NOT_FOUND" in err:
+                    break
+                else:
+                    print(f"[TTS] fatal {model}: {err}")
+                    return None
     return None
 
 def _search_player_info(player_name: str, team: str) -> dict:
@@ -351,7 +392,7 @@ def get_commentary(betradar_id: str):
     }
 
     # ── 8. Parallel Gemini tasks ──────────────────────────────────────────────
-    with ThreadPoolExecutor(max_workers=12) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:  # Rate-limiter serialises Gemini calls
         f_intro    = pool.submit(_commentary_intro,    ctx)
         f_h2h_c    = pool.submit(_commentary_h2h,      ctx)
         f_form_c   = pool.submit(_commentary_form,     ctx)
@@ -363,7 +404,7 @@ def get_commentary(betradar_id: str):
         # Enrich top 6 players
         player_futures = {
             pool.submit(_search_player_info, p["name"], p["team"]): i
-            for i, p in enumerate(players_base[:6])
+            for i, p in enumerate(players_base[:int(os.environ.get('GEMINI_MAX_PLAYERS','3'))])
         }
 
     mgr_home_data = f_mgr_home.result()
@@ -420,31 +461,19 @@ def get_commentary(betradar_id: str):
                "Please gamble responsibly. Set limits and stick to them. "
                "If gambling affects your life, seek help at gamblingtherapy.org.")
 
-    # ── 10. Generate TTS for all scenes ──────────────────────────────────────
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        audio_futures = {}
-        for sc in scenes:
-            if sc["text"]:
-                audio_futures[sc["id"]] = pool.submit(_gemini_tts, sc["text"] + GAMBLING_REMINDER, "Charon")
+    # ── 10. Generate TTS sequentially (rate-limited, 4 RPM) ─────────────────
+    tts_enabled = os.environ.get("GEMINI_TTS", "true").lower() != "false"
 
-        # Player spotlight audios
-        player_audio_futures = {}
-        for i, pc_txt in enumerate(player_commentaries):
-            player_audio_futures[i] = pool.submit(_gemini_tts, pc_txt, "Charon")
+    def _safe_tts(text, voice="Charon"):
+        if not tts_enabled or not text or text.startswith("[Error"):
+            return None
+        return _gemini_tts(text + "  " + GAMBLING_REMINDER, voice)
 
-        gw_future = pool.submit(_gemini_tts, gw_text, "Aoede")
-
-    # Assign audio
     for sc in scenes:
-        if sc["id"] in audio_futures:
-            sc["audio_b64"] = audio_futures[sc["id"]].result()
-        else:
-            sc["audio_b64"] = None
+        sc["audio_b64"] = _safe_tts(sc.get("text", ""))
 
-    # Assign player audios
-    player_audios = {}
-    for i, fut in player_audio_futures.items():
-        player_audios[i] = fut.result()
+    player_audios = {i: _safe_tts(pc) for i, pc in enumerate(player_commentaries)}
+    gw_audio      = _safe_tts(gw_text, "Aoede")
 
     if scenes[-2]["id"] == "players":
         for i, p in enumerate(scenes[-2].get("players",[])):
@@ -470,6 +499,6 @@ def get_commentary(betradar_id: str):
         "total_duration": timing + closing_dur,
         "gambling_warning": {
             "text": gw_text,
-            "audio_b64": gw_future.result()
+            "audio_b64": gw_audio
         }
     })
