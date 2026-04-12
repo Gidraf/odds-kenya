@@ -3,11 +3,11 @@ app/workers/sp_live_harvester.py
 =================================
 Sportpesa Live WebSocket harvester.
 
-CHANGES v5 — Nested Array Fix
+CHANGES v6 — Multi-Sport Complete Mapping
 ─────────────────────────────────────────────────────────────────────────────
-Fixed the bulk `fetch_live_stream` market extractor to properly unnest the 
-inner "markets" array from the SportPesa API response, preventing empty "{}"
-markets in the UI batch payloads.
+Added deep mappings for Basketball (149, 156, 161, 315, 316) and 
+Tennis (112, 141, 195, 163, 170) to ensure SportPesa data bridges perfectly
+with Betika and OdiBets in the Unified UI.
 """
 
 from __future__ import annotations
@@ -76,19 +76,31 @@ SPORT_SLUG_MAP = {
     8: "rugby", 9: "cricket", 10: "volleyball", 13: "table-tennis",
 }
 
+# 🟢 NEW: Complete Multi-Sport Mapping Dictionary
 LIVE_MARKET_MAP: dict[int, tuple[str, bool]] = {
-    194: ("1x2", False), 149: ("match_winner", False), 147: ("double_chance", False),
-    138: ("btts", False), 140: ("first_half_btts", False), 145: ("odd_even", False),
-    166: ("draw_no_bet", False), 151: ("european_handicap", True), 184: ("asian_handicap", True),
-    105: ("__ou__", True), 183: ("correct_score", False), 154: ("exact_goals", False),
-    129: ("first_team_to_score", False), 155: ("highest_scoring_half", False),
-    135: ("first_half_1x2", False), 303: ("match_winner", False), 304: ("match_winner", False),
+    # Soccer
+    194: ("1x2", False), 147: ("double_chance", False), 138: ("btts", False), 
+    140: ("first_half_btts", False), 145: ("odd_even", False), 166: ("draw_no_bet", False), 
+    151: ("european_handicap", True), 184: ("asian_handicap", True), 105: ("__ou__", True), 
+    183: ("correct_score", False), 154: ("exact_goals", False), 129: ("first_team_to_score", False), 
+    155: ("highest_scoring_half", False), 135: ("first_half_1x2", False), 
+    303: ("match_winner", False), 304: ("match_winner", False),
+    
+    # Basketball
+    149: ("match_winner", False), 156: ("asian_handicap", True), 161: ("__ou__", True),
+    315: ("1x2", False), 316: ("__ou__", True), 116: ("odd_even", False),
+    
+    # Tennis
+    112: ("match_winner", False), 141: ("__ou__", True), 195: ("asian_handicap", True),
+    163: ("odd_even", False), 170: ("tiebreak", False),
+    
+    # Volleyball & Ice Hockey (Fallbacks)
     123: ("match_winner", False)
 }
 
 LIVE_OU_SLUG: dict[int, str] = {
-    1: "over_under_goals", 5: "over_under_goals", 2: "total_points", 8: "total_points",
-    4: "total_games", 13: "total_games", 10: "total_sets", 9: "total_runs",
+    1: "over_under_goals", 5: "over_under_goals", 2: "over_under", 8: "total_points",
+    4: "over_under", 13: "total_games", 10: "total_sets", 9: "total_runs",
 }
 
 def live_market_slug(mkt_type: int, handicap: Any, sport_id: int) -> str:
@@ -299,7 +311,13 @@ class SpLiveHarvester:
             try:
                 events = fetch_live_events(sport_id, limit=100)
                 pipe = r.pipeline()
-                core_markets = [194, 105, 138, 147, 184, 123] 
+                
+                # 🟢 NEW: Master subscription list for WebSockets
+                core_markets = [
+                    194, 105, 138, 147, 184, 123, # Soccer & Volley
+                    149, 156, 161, 315, 316,      # Basketball
+                    112, 141, 195                 # Tennis
+                ] 
                 
                 for ev in events:
                     ev_id = ev['id']
@@ -441,7 +459,6 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     SpLiveHarvester().run_forever()
 
-
 def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[dict]:
     sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
     events = fetch_live_events(sport_id, limit=100)
@@ -454,12 +471,18 @@ def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[
         chunk_size = 15
         chunks = [sp_event_ids[i:i + chunk_size] for i in range(0, len(sp_event_ids), chunk_size)]
         
+        # 🟢 NEW: Master HTTP Request List
+        request_markets = [
+            194, 105, 138, 147, 184, 123, 154, 145, 151, 166, 196, 124, # Core
+            149, 156, 161, 315, 316,                                    # Basketball
+            112, 141, 195, 163, 170                                     # Tennis
+        ]
+        
         for chunk in chunks:
-            for m_type in [194, 105, 138, 147, 184, 123, 154, 145, 151, 166, 196, 124, 303, 304]: 
+            for m_type in request_markets: 
                 try:
                     res = fetch_live_markets(chunk, sport_id, m_type)
                     if res:
-                        # 🟢 THE FIX: Extract inner `markets` array properly
                         for m in res:
                             eid = m.get("eventId")
                             inner_mkts = m.get("markets") or []
