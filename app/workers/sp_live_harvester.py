@@ -3,12 +3,11 @@ app/workers/sp_live_harvester.py
 =================================
 Sportpesa Live WebSocket harvester.
 
-CHANGES v4 — Dynamic Buffered-Event Subscriptions
+CHANGES v5 — Nested Array Fix
 ─────────────────────────────────────────────────────────────────────────────
-Fixes the "missing live markets" issue by mimicking the official Web UI. 
-Instead of relying solely on the global sport channel, the harvester now explicitly 
-sends `42["subscribe","buffered-event-{id}-{type}-0.00"]` for every live match, 
-forcing the SP servers to stream the BUFFERED_MARKET_UPDATE payloads.
+Fixed the bulk `fetch_live_stream` market extractor to properly unnest the 
+inner "markets" array from the SportPesa API response, preventing empty "{}"
+markets in the UI batch payloads.
 """
 
 from __future__ import annotations
@@ -84,7 +83,7 @@ LIVE_MARKET_MAP: dict[int, tuple[str, bool]] = {
     105: ("__ou__", True), 183: ("correct_score", False), 154: ("exact_goals", False),
     129: ("first_team_to_score", False), 155: ("highest_scoring_half", False),
     135: ("first_half_1x2", False), 303: ("match_winner", False), 304: ("match_winner", False),
-    123: ("match_winner", False) # Added 123 for Volleyball Winner
+    123: ("match_winner", False)
 }
 
 LIVE_OU_SLUG: dict[int, str] = {
@@ -181,6 +180,51 @@ def fetch_live_markets(event_ids: list[int], sport_id: int, market_type: int = D
     data = _get("/event/markets", {"eventId": ids_str, "type": market_type, "sportId": sport_id})
     return data.get("markets") or data.get("data") or [] if data else []
 
+def _get_quiet(path: str, params: dict | None = None, timeout: int = 10) -> Any:
+    url = f"{API_BASE}{path}"
+    try:
+        r = _session().get(url, params=params, timeout=timeout)
+        if r.status_code == 404: return None
+        if not r.ok: return None
+        return r.json()
+    except Exception:
+        return None
+
+def fetch_event_details(event_id: int) -> dict | None:
+    data = _get_quiet(f"/events/{event_id}/details")
+    if isinstance(data, dict): return data
+    if isinstance(data, list) and data and isinstance(data[0], dict): return data[0]
+    return None
+
+def snapshot_all_sports() -> dict[int, list[dict]]:
+    _D_section("snapshot_all_sports")
+    r      = _get_redis()
+    sports = fetch_live_sports()
+    result: dict[int, list[dict]] = {}
+    if not sports: return result
+    for sport in sports:
+        sport_id   = sport["id"]
+        sport_slug = SPORT_SLUG_MAP.get(sport_id, f"sport_{sport_id}")
+        events = fetch_live_events(sport_id, limit=100)
+        if not events:
+            result[sport_id] = []
+            continue
+        pipe = r.pipeline()
+        for ev in events:
+            pipe.setex(f"sp:live:event_sport:{ev['id']}", TTL_EVENTS, sport_id)
+            pipe.setex(f"sp:live:event_slug:{ev['id']}",  TTL_EVENTS, sport_slug)
+        pipe.execute()
+        default_mkts = fetch_live_default_markets(sport_id)
+        snapshot = {
+            "sport_id": sport_id, "sport_slug": sport_slug, "sport_name": sport.get("name", sport_slug),
+            "event_count": sport.get("eventNumber", len(events)), "events": events,
+            "markets": default_mkts, "fetched_at": _now_iso(),
+        }
+        r.setex(f"sp:live:snapshot:{sport_id}", TTL_SNAPSHOT, json.dumps(snapshot))
+        result[sport_id] = events
+    r.setex("sp:live:sports", TTL_EVENTS, json.dumps(sports))
+    return result
+
 # ═════════════════════════════════════════════════════════════════════════════
 # WEBSOCKET HARVESTER
 # ═════════════════════════════════════════════════════════════════════════════
@@ -225,7 +269,6 @@ class SpLiveHarvester:
                 name = parts[0]
                 data = parts[1] if len(parts) > 1 else {}
                 
-                # 🟢 NEW: Handle BUFFERED_MARKET_UPDATE exactly as the UI receives it
                 if name in ("MARKET_UPDATE", "BUFFERED_MARKET_UPDATE"):
                     self._handle_market_update(data)
                 elif name == "EVENT_UPDATE":
@@ -234,11 +277,10 @@ class SpLiveHarvester:
                 _D("WS MESSAGE parse error: %s", exc, level="error")
 
     def _on_error(self, ws, error) -> None:
-        _D("WS ERROR: %s", error, level="error")
+        pass
 
     def _on_close(self, ws, status, msg) -> None:
         self._connected = False
-        _D("WS CLOSED", level="warning")
 
     def _send(self, msg: str) -> None:
         with self._lock:
@@ -252,32 +294,23 @@ class SpLiveHarvester:
         threading.Thread(target=self._warm_and_subscribe_events, daemon=True, name="sp-live-warm").start()
 
     def _warm_and_subscribe_events(self) -> None:
-        """
-        🟢 THE CRITICAL FIX: Fetches all active events and actively subscribes to their 
-        specific buffered markets over the WebSocket, just like the Official UI does!
-        """
         r = _get_redis()
         for sport_id in LIVE_SPORT_IDS:
             try:
                 events = fetch_live_events(sport_id, limit=100)
                 pipe = r.pipeline()
-                
-                # Core market types we want real-time buffered updates for
                 core_markets = [194, 105, 138, 147, 184, 123] 
                 
                 for ev in events:
                     ev_id = ev['id']
                     pipe.setex(f"sp:live:event_sport:{ev_id}", TTL_EVENTS, sport_id)
                     pipe.setex(f"sp:live:event_slug:{ev_id}", TTL_EVENTS, SPORT_SLUG_MAP.get(sport_id, ""))
-                    
-                    # 🟢 Send explicit buffered-event subscriptions
                     for m_type in core_markets:
                         self._send(f'42["subscribe","buffered-event-{ev_id}-{m_type}-0.00"]')
                         
                 pipe.execute()
                 time.sleep(0.3)
-            except Exception as exc:
-                _D("warm_cache sport=%d FAILED: %s", sport_id, exc, level="error")
+            except Exception as exc: pass
 
     def _ping_loop(self) -> None:
         while not self._stop.is_set() and self._connected:
@@ -307,8 +340,6 @@ class SpLiveHarvester:
         if self._ws:
             try: self._ws.close()
             except Exception: pass
-
-    # ── EVENT HANDLERS (Moved inside class for scope) ─────────────────────────
     
     def _handle_market_update(self, data: dict) -> None:
         event_id = data.get("eventId")
@@ -339,12 +370,10 @@ class SpLiveHarvester:
 
         if not norm_sels: return
 
-        # Try to resolve Betradar ID
         betradar_id = str(event_id)
         br_cached = r.get(f"sp:live:event_br:{event_id}")
         if br_cached: betradar_id = br_cached
         
-        # 🟢 DIRECT STREAM BROADCAST
         sport_slug = SPORT_SLUG_MAP.get(sport_id)
         outcomes = {s["outcome_key"]: {"price": float(s["odds"])} for s in norm_sels}
         update_payload = {
@@ -359,10 +388,8 @@ class SpLiveHarvester:
             if sport_slug: p.publish(f"live:matches:{sport_slug}", msg)
             p.publish("live:all", msg)
             p.execute()
-        except Exception as e:
-            _D("Broadcast Error: %s", e)
+        except Exception: pass
 
-        # Trigger Cross-BK enrichment
         try:
             from app.workers.live_cross_bk_updater import get_updater
             get_updater().trigger(betradar_id=betradar_id, sp_payload=data, sport_id=sport_id, kind="market_update")
@@ -414,6 +441,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     SpLiveHarvester().run_forever()
 
+
 def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[dict]:
     sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
     events = fetch_live_events(sport_id, limit=100)
@@ -426,15 +454,17 @@ def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[
         chunk_size = 15
         chunks = [sp_event_ids[i:i + chunk_size] for i in range(0, len(sp_event_ids), chunk_size)]
         
-        # Added 123 to initial chunk loader to capture Volleyball
         for chunk in chunks:
-            for m_type in [194, 105, 138, 147, 184, 123]: 
+            for m_type in [194, 105, 138, 147, 184, 123, 154, 145, 151, 166, 196, 124, 303, 304]: 
                 try:
                     res = fetch_live_markets(chunk, sport_id, m_type)
                     if res:
+                        # 🟢 THE FIX: Extract inner `markets` array properly
                         for m in res:
                             eid = m.get("eventId")
-                            if eid: mkt_by_event.setdefault(eid, []).append(m)
+                            inner_mkts = m.get("markets") or []
+                            if eid and inner_mkts:
+                                mkt_by_event.setdefault(eid, []).extend(inner_mkts)
                 except Exception: pass
 
     stream_data = []
