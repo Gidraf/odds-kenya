@@ -63,8 +63,8 @@ def stream_deep_analytics(betradar_id: str):
             "away_color": away_color
         })
 
-        # 2. Concurrently fetch deep stats
-        with ThreadPoolExecutor(max_workers=7) as pool:
+        # 2. Concurrently fetch deep stats (Bumped max_workers to 9 to handle upcoming matches)
+        with ThreadPoolExecutor(max_workers=9) as pool:
             f_squads      = pool.submit(_fetch_lmt, "match_squads", betradar_id)
             f_timeline    = pool.submit(_fetch_lmt, "match_timelinedelta", betradar_id)
             f_h2h         = pool.submit(_fetch_sh, "stats_match_head2head", betradar_id)
@@ -72,6 +72,8 @@ def stream_deep_analytics(betradar_id: str):
             f_form        = pool.submit(_fetch_sh, "stats_formtable", str(season_id)) if season_id else None
             f_home_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(home_uid), "/10") if home_uid else None
             f_away_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(away_uid), "/10") if away_uid else None
+            f_home_next   = pool.submit(_fetch_sh, "stats_team_fixtures", str(home_uid), "/10") if home_uid else None
+            f_away_next   = pool.submit(_fetch_sh, "stats_team_fixtures", str(away_uid), "/10") if away_uid else None
 
             # --- SQUADS ---
             squads_data = f_squads.result()
@@ -129,6 +131,24 @@ def stream_deep_analytics(betradar_id: str):
             yield _sse("recent", {
                 "home": _parse_recent(f_home_recent.result() if f_home_recent else None),
                 "away": _parse_recent(f_away_recent.result() if f_away_recent else None)
+            })
+
+            # --- UPCOMING MATCHES (HOME & AWAY) ---
+            def _parse_upcoming(data):
+                if not data: return []
+                parsed = []
+                for m in data.get("matches", [])[:3]: # Limit to next 3 to save UI space
+                    parsed.append({
+                        "date": m.get("_dt", {}).get("date", ""),
+                        "time": m.get("_dt", {}).get("time", ""),
+                        "home": m.get("teams", {}).get("home", {}).get("name", ""),
+                        "away": m.get("teams", {}).get("away", {}).get("name", "")
+                    })
+                return parsed
+
+            yield _sse("upcoming", {
+                "home": _parse_upcoming(f_home_next.result() if f_home_next else None),
+                "away": _parse_upcoming(f_away_next.result() if f_away_next else None)
             })
 
             # --- STANDINGS & FORM ---
