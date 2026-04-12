@@ -418,17 +418,16 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     yield _keepalive()
 
 
-            # ── UPCOMING BATCH INITIALIZATION (WITH REDIS CACHING) ───────────
+            # ── UPCOMING BATCH INITIALIZATION (PROGRESSIVE HYDRATION) ────────
             else:
                 import redis
                 r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
                 cache_key = f"unified:upcoming:{sport_slug}:{max_m}:{fetch_full}"
                 
-                # Check Redis Cache First
+                # 1. Check Redis Cache First
                 cached_data = r.get(cache_key)
                 if cached_data:
                     matches = json.loads(cached_data)
-                    # Yield cached matches in fast chunks
                     for i in range(0, len(matches), 15):
                         chunk = matches[i:i+15]
                         yield _sse("batch", {
@@ -439,82 +438,96 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     yield _sse("done", {"status": "finished", "total_sent": len(matches)})
                     return
 
-                # Cache Miss - Rebuild the Payload
+                # 2. Cache Miss - FAST BASE LOAD
                 from app.workers.sp_harvester  import fetch_upcoming_stream
                 from app.workers.bt_harvester  import get_full_markets
                 from app.workers.od_harvester  import fetch_event_detail, slug_to_od_sport_id
 
                 od_sport_id = slug_to_od_sport_id(sport_slug)
                 sp_matches_raw = list(fetch_upcoming_stream(sport_slug, max_matches=max_m, fetch_full_markets=fetch_full))
+                
+                all_completed_matches = {}
+                base_matches = []
 
-                def _get_bt(brid):
-                    try: return brid, get_full_markets(brid, sport_slug)
-                    except: return brid, {}
+                # Parse and yield base matches so the UI paints IMMEDIATELY
+                for sp_match in sp_matches_raw:
+                    if not isinstance(sp_match, dict): continue
+                    count += 1
+                    sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
+                    sp_clean["market_slugs"] = list(sp_clean["best"].keys())
+                    sp_clean["market_count"] = len(sp_clean["best"])
+                    
+                    brid = str(sp_clean.get("parent_match_id") or sp_clean.get("match_id") or "")
+                    if brid:
+                        all_completed_matches[brid] = sp_clean
+                        base_matches.append(sp_clean)
 
-                def _get_od(brid):
-                    try: return brid, fetch_event_detail(brid, od_sport_id)[0]
-                    except: return brid, {}
+                for i in range(0, len(base_matches), 15):
+                    chunk = base_matches[i:i+15]
+                    yield _sse("batch", {
+                        "matches": chunk, "batch": min(i + 15, len(base_matches)),
+                        "of": "unknown", "offset": i
+                    })
+                    yield _keepalive()
 
-                n_workers = min(len(sp_matches_raw) * 2 + 4, 60)
-                all_completed_matches = []
+                # 3. BACKGROUND PROGRESSIVE ENRICHMENT
+                def _get_deep_markets(brid):
+                    bt_mkts, od_mkts = {}, {}
+                    try: bt_mkts = get_full_markets(brid, sport_slug)
+                    except: pass
+                    try: od_mkts = fetch_event_detail(brid, od_sport_id)[0]
+                    except: pass
+                    return brid, bt_mkts, od_mkts
 
+                n_workers = min(len(base_matches) * 2 + 4, 60)
                 with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                    pending: dict[str, tuple] = {}
-                    for sp_match in sp_matches_raw:
-                        if not isinstance(sp_match, dict): continue
-                        brid = str(sp_match.get("betradar_id") or "")
+                    futs = []
+                    for brid in all_completed_matches.keys():
                         if brid and brid != "None":
-                            f_bt = pool.submit(_get_bt, brid)
-                            f_od = pool.submit(_get_od, brid)
-                            pending[brid] = (f_bt, f_od, sp_match)
-                        else:
-                            count += 1
-                            sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
-                            sp_clean["market_slugs"] = list(sp_clean["best"].keys())
-                            sp_clean["market_count"] = len(sp_clean["best"])
-                            all_completed_matches.append(sp_clean)
-                            yield _sse("batch", {"matches": [sp_clean], "batch": count, "of": "unknown", "offset": count - 1})
-                            yield _keepalive()
+                            futs.append(pool.submit(_get_deep_markets, brid))
 
-                    remaining = dict(pending)
-                    while remaining:
-                        ready_brids = [brid for brid, (f_bt, f_od, _) in remaining.items() if f_bt.done() and f_od.done()]
-
-                        if not ready_brids:
-                            all_futs = [f for f_bt, f_od, _ in remaining.values() for f in (f_bt, f_od)]
-                            wait(all_futs, return_when=FIRST_COMPLETED)
+                    for fut in as_completed(futs):
+                        brid, bt_markets, od_markets = fut.result()
+                        if not bt_markets and not od_markets:
                             continue
 
-                        for brid in ready_brids:
-                            f_bt, f_od, sp_match = remaining.pop(brid)
-                            count += 1
-                            _, bt_markets = f_bt.result()
-                            _, od_markets = f_od.result()
+                        update_payload = {
+                            "parent_match_id": brid,
+                            "home_team": "dummy",
+                            "bookmakers": {},
+                            "markets_by_bk": {}
+                        }
 
-                            sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
+                        if bt_markets:
+                            b_clean = _unify_match_payload({
+                                "markets": bt_markets, "betradar_id": brid, "home_team": "", "away_team": "", "sport": sport_slug
+                            }, 0, mode, "bt", "BETIKA")
+                            update_payload["bookmakers"]["bt"] = b_clean["bookmakers"]["bt"]
+                            update_payload["markets_by_bk"]["bt"] = b_clean["markets_by_bk"]["bt"]
+                            all_completed_matches[brid]["bookmakers"]["bt"] = b_clean["bookmakers"]["bt"]
+                            all_completed_matches[brid]["markets_by_bk"]["bt"] = b_clean["markets_by_bk"]["bt"]
 
-                            if bt_markets:
-                                bt_clean = _unify_match_payload({"markets": bt_markets, "betradar_id": brid, "home_team": sp_clean.get("home_team", ""), "away_team": sp_clean.get("away_team", "")}, count, mode, "bt", "BETIKA")
-                                sp_clean["bookmakers"]["bt"] = bt_clean["bookmakers"]["bt"]
-                                sp_clean["markets_by_bk"]["bt"] = bt_clean["markets_by_bk"]["bt"]
+                        if od_markets:
+                            o_clean = _unify_match_payload({
+                                "markets": od_markets, "betradar_id": brid, "home_team": "", "away_team": "", "sport": sport_slug
+                            }, 0, mode, "od", "ODIBETS")
+                            update_payload["bookmakers"]["od"] = o_clean["bookmakers"]["od"]
+                            update_payload["markets_by_bk"]["od"] = o_clean["markets_by_bk"]["od"]
+                            all_completed_matches[brid]["bookmakers"]["od"] = o_clean["bookmakers"]["od"]
+                            all_completed_matches[brid]["markets_by_bk"]["od"] = o_clean["markets_by_bk"]["od"]
 
-                            if od_markets:
-                                od_clean = _unify_match_payload({"markets": od_markets, "betradar_id": brid, "home_team": sp_clean.get("home_team", ""), "away_team": sp_clean.get("away_team", "")}, count, mode, "od", "ODIBETS")
-                                sp_clean["bookmakers"]["od"] = od_clean["bookmakers"]["od"]
-                                sp_clean["markets_by_bk"]["od"] = od_clean["markets_by_bk"]["od"]
+                        if update_payload["bookmakers"]:
+                            _merge_best(all_completed_matches[brid]["best"], all_completed_matches[brid]["markets_by_bk"])
+                            all_completed_matches[brid]["market_slugs"] = list(all_completed_matches[brid]["best"].keys())
+                            all_completed_matches[brid]["market_count"] = len(all_completed_matches[brid]["best"])
+                            all_completed_matches[brid]["bk_count"] = len(all_completed_matches[brid]["bookmakers"])
 
-                            sp_clean["bk_count"] = len(sp_clean["bookmakers"])
-                            _merge_best(sp_clean["best"], sp_clean["markets_by_bk"])
-                            sp_clean["market_slugs"] = list(sp_clean["best"].keys())
-                            sp_clean["market_count"] = len(sp_clean["best"])
-
-                            all_completed_matches.append(sp_clean)
-                            yield _sse("batch", {"matches": [sp_clean], "batch": count, "of": "unknown", "offset": count - 1})
+                            yield _sse("live_update", update_payload)
                             yield _keepalive()
 
-                # Cache the fully assembled payload in Redis for 5 minutes
+                # 4. Cache the fully assembled payload for 5 minutes
                 if all_completed_matches:
-                    r.setex(cache_key, 300, json.dumps(all_completed_matches))
+                    r.setex(cache_key, 300, json.dumps(list(all_completed_matches.values())))
 
                 yield _sse("list_done", {"total_sent": count})
                 yield _sse("done", {"status": "finished", "total_sent": count})
