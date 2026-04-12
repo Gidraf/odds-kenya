@@ -3,26 +3,11 @@ app/workers/sp_live_harvester.py
 =================================
 Sportpesa Live WebSocket harvester.
 
-CHANGES v2 — Cross-bookmaker live enrichment
+CHANGES v3 — Direct SP Broadcasting
 ─────────────────────────────────────────────────────────────────────────────
 Every SP WS event (MARKET_UPDATE or EVENT_UPDATE) now triggers:
-  1. LiveCrossBkUpdater.trigger()  — immediately fetches BT + OD in parallel
-     then retries 5× at 1 s intervals (only re-publishes if data changed).
-  2. All bookmaker data is written to BookmakerMatchOdds + LiveRawSnapshot.
-  3. Published to Redis pub/sub channels keyed by internal match_id:
-       live:match:{id}:markets   — odds changes
-       live:match:{id}:events    — score / phase changes
-       live:match:{id}:all       — merged feed
-       live:matches:{sport_slug} — list-level refresh hint
-       live:sports               — sport count updates
-       live:all                  — global broadcast
-
-BUGS FIXED (original)
-─────────────────────────────────────────────────────────────────────────────
-1. CRITICAL: was listening for "BUFFERED_MARKET_UPDATE" — actual event name
-   from SP is "MARKET_UPDATE".
-2. Live market type IDs differ from upcoming /api/games/markets IDs.
-3. Live selection names are FULL names, not shortNames.
+  1. Direct Broadcast to Redis Stream (guaranteeing SP reaches the UI)
+  2. LiveCrossBkUpdater.trigger()  — immediately fetches BT + OD in parallel
 """
 
 from __future__ import annotations
@@ -70,7 +55,7 @@ def _setup_diag_logger() -> logging.Logger:
     sh.setFormatter(logging.Formatter("[sp_live] %(message)s"))
     diag.addHandler(sh)
     diag.info("=" * 70)
-    diag.info("sp_live_harvester v2 — log: %s", log_path)
+    diag.info("sp_live_harvester v3 — log: %s", log_path)
     diag.info("=" * 70)
     return diag
 
@@ -272,6 +257,66 @@ def _get(path: str, params: dict | None = None, timeout: int = 10) -> Any:
     except Exception as exc:
         _D("HTTP EXCEPTION %s: %s", url, exc, level="error")
         return None
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DIRECT UI STREAM BROADCASTERS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _publish_sp_live_update(betradar_id: str, sport_slug: str, market_slug: str, norm_sels: list[dict]):
+    """Bypasses cross-bk dropping by pushing SP data directly to the UI stream"""
+    if not betradar_id or not market_slug or not norm_sels: return
+    
+    outcomes = {sel["outcome_key"]: {"price": float(sel["odds"])} for sel in norm_sels}
+    
+    update_payload = {
+        "parent_match_id": betradar_id,
+        "bookmakers": {
+            "sp": {
+                "bookmaker": "SPORTPESA",
+                "slug": "sp",
+                "markets": { market_slug: outcomes },
+                "market_count": 1
+            }
+        },
+        "markets_by_bk": {
+            "sp": { market_slug: outcomes }
+        }
+    }
+    
+    try:
+        r = _get_redis()
+        msg = json.dumps(update_payload)
+        pipe = r.pipeline()
+        pipe.publish(f"live:match:{betradar_id}:all", msg)
+        if sport_slug:
+            pipe.publish(f"live:matches:{sport_slug}", msg)
+        pipe.publish("live:all", msg)
+        pipe.execute()
+    except Exception as e:
+        _D("Failed to publish direct SP update: %s", e)
+
+
+def _publish_sp_state_update(betradar_id: str, sport_slug: str, new_time: str, new_home: str, new_away: str, new_phase: str):
+    """Pushes SP clock and score directly to the UI stream"""
+    if not betradar_id: return
+    
+    update_payload = {"parent_match_id": betradar_id}
+    if new_time is not None: update_payload["match_time"] = str(new_time)
+    if new_home is not None: update_payload["score_home"] = str(new_home)
+    if new_away is not None: update_payload["score_away"] = str(new_away)
+    if new_phase is not None: update_payload["status"] = str(new_phase)
+    
+    try:
+        r = _get_redis()
+        msg = json.dumps(update_payload)
+        pipe = r.pipeline()
+        pipe.publish(f"live:match:{betradar_id}:all", msg)
+        if sport_slug:
+            pipe.publish(f"live:matches:{sport_slug}", msg)
+        pipe.publish("live:all", msg)
+        pipe.execute()
+    except Exception as e:
+        _D("Failed to publish direct SP state update: %s", e)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PUBLIC HTTP HELPERS
@@ -558,12 +603,15 @@ def _handle_market_update(data: dict) -> None:
         "ts":                    _now_iso(),
     }
 
-    # ── Legacy SP-internal pub/sub (kept for existing consumers) ─────────────
+    # ── Legacy SP-internal pub/sub
     _sp_publish(sport_id, event_id, payload)
 
-    # ── Cross-BK enrichment  ──────────────────────────────────────────────────
-    # Resolve betradar_id so we can fetch BT + OD by the same key
+    # ── DIRECT STREAM BROADCAST & Cross-BK enrichment
     betradar_id = _event_betradar_id(event_id) or str(event_id)
+    
+    # 🟢 FORCE SportPesa directly into the UI stream!
+    _publish_sp_live_update(betradar_id, SPORT_SLUG_MAP.get(sport_id), slug, normalised_sels)
+
     try:
         from app.workers.live_cross_bk_updater import get_updater
         get_updater().trigger(
@@ -572,10 +620,6 @@ def _handle_market_update(data: dict) -> None:
             sport_id    = sport_id,
             kind        = "market_update",
         )
-        from app.workers.live_broadcaster import broadcast_market_odds
-        # Format the outcomes into a simple { "1": 2.50, "X": 3.10 } dictionary
-        formatted_outcomes = {sel["outcome_key"]: float(sel["odds"]) for sel in normalised_sels}
-        broadcast_market_odds(betradar_id, "sp", slug, formatted_outcomes)
     except Exception as exc:
         _D("cross_bk trigger market_update: %s", exc, level="warning")
 
@@ -619,11 +663,13 @@ def _handle_event_update(data: dict) -> None:
         "ts":            _now_iso(),
     }
 
-    # ── Legacy SP-internal pub/sub ────────────────────────────────────────────
     _sp_publish(sport_id, event_id, payload)
 
-    # ── Cross-BK enrichment ───────────────────────────────────────────────────
     betradar_id = _event_betradar_id(event_id) or str(event_id)
+    
+    # 🟢 DIRECT STREAM BROADCAST for State Updates
+    _publish_sp_state_update(betradar_id, SPORT_SLUG_MAP.get(sport_id), state.get("matchTime"), score.get("home"), score.get("away"), phase)
+
     try:
         from app.workers.live_cross_bk_updater import get_updater
         get_updater().trigger(
@@ -926,8 +972,11 @@ class LivePoller:
                 }
                 _sp_publish(sport_id, event_id, poll_payload)
 
-                # Also trigger cross-BK enrichment from poll events
                 betradar_id = _event_betradar_id(event_id) or str(event_id)
+                
+                # 🟢 FORCE SportPesa directly into UI stream
+                _publish_sp_live_update(betradar_id, SPORT_SLUG_MAP.get(sport_id), slug, norm_sels)
+
                 try:
                     from app.workers.live_cross_bk_updater import get_updater
                     get_updater().trigger(
@@ -1009,7 +1058,10 @@ class LivePoller:
                 "ts":                    _now_iso(),
             }
             _sp_publish(sport_id, event_id, poll_payload)
-            # Cross-BK trigger from detail poll
+            
+            # 🟢 FORCE SportPesa directly into UI stream
+            _publish_sp_live_update(betradar_id, SPORT_SLUG_MAP.get(sport_id), slug, norm_sels)
+
             try:
                 from app.workers.live_cross_bk_updater import get_updater
                 get_updater().trigger(
@@ -1055,13 +1107,6 @@ class LivePoller:
         )
         if not state_changed:
             return
-        
-        # ---- INJECT LIVE BROADCASTER HERE ----
-        from app.workers.live_broadcaster import broadcast_event_state
-        old_state_dict = {"score": f"{prev.get('scoreHome', '')}-{prev.get('scoreAway', '')}", "phase": prev.get("phase", "")}
-        new_state_dict = {"score": f"{new_home}-{new_away}", "phase": new_phase, "match_time": new_time}
-        broadcast_event_state(betradar_id, "sp", old_state_dict, new_state_dict)
-        # --------------------------------------
 
         r.setex(state_key, TTL_STATE, json.dumps({
             "phase": new_phase, "matchTime": new_time,
@@ -1087,6 +1132,10 @@ class LivePoller:
             "ts":            _now_iso(),
         }
         _sp_publish(sport_id, event_id, ev_payload)
+        
+        # 🟢 FORCE SportPesa directly into UI stream
+        _publish_sp_state_update(betradar_id, SPORT_SLUG_MAP.get(sport_id), new_time, new_home, new_away, new_phase)
+
         try:
             from app.workers.live_cross_bk_updater import get_updater
             get_updater().trigger(
@@ -1115,7 +1164,6 @@ def start_harvester_thread() -> threading.Thread:
 
     _D_section("start_harvester_thread")
 
-    # Pre-warm the cross-BK updater so the thread pool is ready
     try:
         from app.workers.live_cross_bk_updater import get_updater
         get_updater()
@@ -1164,13 +1212,8 @@ if __name__ == "__main__":
 
 
 def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[dict]:
-    """
-    Ultra-fast bulk fetcher for SportPesa live games. 
-    Grabs all live events for a given sport and their markets in just 2 API calls.
-    """
     sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
     
-    # 1. Fetch all live events
     events = fetch_live_events(sport_id, limit=100)
     if not events:
         return []
@@ -1178,9 +1221,7 @@ def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[
     sp_event_ids = [ev["id"] for ev in events]
     mkt_by_event = {}
 
-    # 2. Bulk fetch core markets (1X2, Total, BTTS, Double Chance, Handicap)
     if fetch_full_markets and sp_event_ids:
-        # 194=1X2, 105=Total, 138=BTTS, 147=DC, 184=Handicap
         for m_type in [194, 105, 138, 147, 184]: 
             try:
                 res = fetch_live_markets(sp_event_ids, sport_id, m_type)
@@ -1197,7 +1238,6 @@ def fetch_live_stream(sport_slug: str, fetch_full_markets: bool = True) -> list[
         betradar_id = str(ev.get("externalId") or "")
         sp_event_id = ev.get("id")
         
-        # 🟢 FIXED: Force explicit nulls to become empty dictionaries
         state = ev.get("state") or {}
         score = state.get("matchScore") or {}
         
