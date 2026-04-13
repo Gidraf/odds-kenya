@@ -16,7 +16,8 @@ try:
     import openai
     _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
     OPENAI_AVAILABLE = bool(os.environ.get("OPENAI_API_KEY"))
-except ImportError:
+except ImportError as err:
+    print(f"[OpenAI] SDK not available: {err}")
     OPENAI_AVAILABLE = False
 
 # ── Blueprint ─────────────────────────────────────────────────────────────────
