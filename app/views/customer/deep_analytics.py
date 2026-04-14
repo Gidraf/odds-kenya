@@ -100,6 +100,7 @@ def _fetch_sh(endpoint: str, item_id: str, extra=""):
 
 
 # --- THE PLAYWRIGHT FALLBACK ---
+# --- THE PLAYWRIGHT FALLBACK (NOW WITH EXTREME LOGGING) ---
 async def _scrape_betika_fallback(match_id: str):
     """
     Spins up a headless browser to intercept network calls natively if Sportradar endpoints fail.
@@ -120,30 +121,50 @@ async def _scrape_betika_fallback(match_id: str):
             if "sportradar.com" in response.url and response.status == 200:
                 if response.request.method == "OPTIONS": return
                 try:
+                    # 1. Grab the raw JSON
                     json_payload = await response.json()
-                    data = json_payload.get("doc", [{}])[0].get("data", {})
                     
-                    # We grab ANY of the info endpoints as they all contain the core 'match' object
-                    if "match_timelinedelta" in response.url or "match_info" in response.url or "match_info_statshub" in response.url:
-                        if not captured_data["match_data"]:
-                            captured_data["match_data"] = data
-                            logger.info(f"[Scraper] [+] Captured Match Info via Playwright")
-                except Exception:
-                    pass 
+                    if "match_info" in response.url or "match_timelinedelta" in response.url:
+                        logger.info(f"[Scraper] Intercepted 200 OK from: {response.url.split('?')[0]}")
+                        
+                        # 2. Log a snippet of the raw payload so we can see the actual schema
+                        payload_str = json.dumps(json_payload)
+                        logger.info(f"[Scraper] RAW PAYLOAD SNIPPET: {payload_str[:500]}...")
+
+                        # 3. Attempt extraction with detailed error checks
+                        doc_list = json_payload.get("doc", [])
+                        if not doc_list:
+                            logger.warning("[Scraper] Payload missing 'doc' array!")
+                            return
+                            
+                        data = doc_list[0].get("data", {})
+                        if not data:
+                            logger.warning("[Scraper] Payload missing 'data' object inside 'doc[0]'!")
+                            return
+
+                        if "match" in data:
+                            if not captured_data["match_data"]:
+                                captured_data["match_data"] = data
+                                logger.info(f"[Scraper] [+] SUCCESS: Captured Match Info via Playwright")
+                        else:
+                            logger.warning("[Scraper] 'match' key is missing from the 'data' object! Schema mismatch.")
+                            
+                except Exception as e:
+                    logger.error(f"[Scraper] Crash while parsing {response.url}: {e}")
+                    logger.error(traceback.format_exc())
 
         page.on("response", handle_response)
 
         try:
+            logger.info(f"[Scraper] Navigating to {url}")
             await page.goto(url, wait_until="networkidle", timeout=15000)
-            # Give it a tiny bit of extra time to ensure AJAX calls finish
-            await asyncio.sleep(2)
+            await asyncio.sleep(3) # Extra wait for React/AJAX to fire
         except Exception as e:
-            logger.warning(f"[Scraper] Timeout or navigation error: {e}")
+            logger.warning(f"[Scraper] Timeout or navigation warning: {e}")
 
         await browser.close()
         
     return captured_data
-
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
 def stream_deep_analytics(betradar_id: str):
