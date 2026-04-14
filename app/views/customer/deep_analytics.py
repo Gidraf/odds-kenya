@@ -84,9 +84,14 @@ def _fetch_sh(endpoint: str, item_id: str, extra=""):
         logger.error(f"[SH] Exception for {endpoint}/{item_id}: {e}")
     return {}
 
-# --- PLAYWRIGHT FALLBACK ---
-async def _scrape_betika_fallback(match_id: str):
-    url = f"https://www.betika.com/en-ke/m/{match_id}"
+# --- PLAYWRIGHT FALLBACK WITH PROPER ROUTING ---
+async def _scrape_betika_fallback(match_id: str, is_live: bool):
+    # Route to the correct Betika page depending on match status
+    if is_live:
+        url = f"https://www.betika.com/en-ke/live/m/{match_id}"
+    else:
+        url = f"https://www.betika.com/en-ke/m/{match_id}"
+        
     logger.info(f"[Scraper] Launching Playwright fallback for {match_id} at {url}...")
     
     captured_data = {"match_data": None}
@@ -129,9 +134,12 @@ async def _scrape_betika_fallback(match_id: str):
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
 def stream_deep_analytics(betradar_id: str):
+    # Extract the is_live parameter from the frontend URL
+    is_live = request.args.get("is_live", "false").lower() == "true"
+    
     def generate():
         yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
-        logger.info(f"--- Starting stream for Match ID: {betradar_id} ---")
+        logger.info(f"--- Starting stream for Match ID: {betradar_id} | Live: {is_live} ---")
 
         timeline_data = _fetch_lmt("match_timelinedelta", betradar_id) or {}
         info_data = _fetch_lmt("match_info", betradar_id) or {}
@@ -145,7 +153,8 @@ def stream_deep_analytics(betradar_id: str):
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            fallback_data = loop.run_until_complete(_scrape_betika_fallback(betradar_id))
+            # Pass the is_live boolean to the scraper
+            fallback_data = loop.run_until_complete(_scrape_betika_fallback(betradar_id, is_live))
             
             scraped_match = fallback_data.get("match_data", {})
             if scraped_match and "match" in scraped_match:
