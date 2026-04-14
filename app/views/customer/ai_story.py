@@ -8,9 +8,9 @@ from openai import OpenAI
 bp_story = Blueprint("ai_story", __name__, url_prefix="/api")
 
 # Configuration (Ensure these are set in your environment)
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_ENDPOINT = os.getenv("STORAGE_ENDPOINT", "http://localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("STORAGE_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("STORAGE_SECRET_KEY", "minioadmin")
 BUCKET_NAME = "match-stories"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
