@@ -4,12 +4,11 @@ import re
 import asyncio
 import nest_asyncio
 from concurrent.futures import ThreadPoolExecutor
-from flask import Blueprint, Response, stream_with_context
+from flask import Blueprint, Response, stream_with_context, request
 import requests
 import json
 from playwright.async_api import async_playwright
 
-# Required to run async Playwright inside a synchronous Flask route
 nest_asyncio.apply()
 
 # Set up logging
@@ -24,18 +23,15 @@ _HEADERS = {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# Global token cache
 ACTIVE_TOKENS = {
     "LMT_TOKEN": "",
     "SH_TOKEN": ""
 }
 
 def _get_fresh_tokens():
-    """Scrapes Betika's widget loader to find the active Sportradar HMAC tokens."""
     try:
         url = "https://widgets.sir.sportradar.com/60006b5234c31ccf8b14f16f2873ee71/widgetloader"
         res = requests.get(url, headers=_HEADERS, timeout=5)
-        
         if res.status_code == 200:
             tokens = re.findall(r'(exp=\d+~acl=/\*~data=[a-zA-Z0-9_]+~hmac=[a-f0-9]+)', res.text)
             if tokens:
@@ -43,8 +39,6 @@ def _get_fresh_tokens():
                 ACTIVE_TOKENS["SH_TOKEN"] = tokens[0]
                 logger.info(f"Successfully scraped fresh Sportradar Tokens.")
                 return True
-        else:
-            logger.warning(f"Failed to fetch widget loader. HTTP {res.status_code}")
     except Exception as e:
         logger.error(f"Exception while scraping tokens: {e}")
     return False
@@ -55,7 +49,6 @@ def _sse(event: str, data: dict) -> str:
 def _fetch_lmt(endpoint: str, item_id: str):
     if not ACTIVE_TOKENS["LMT_TOKEN"]:
         _get_fresh_tokens()
-
     url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={ACTIVE_TOKENS['LMT_TOKEN']}"
     try:
         logger.info(f"[LMT] Fetching: {endpoint} for {item_id}")
@@ -63,14 +56,11 @@ def _fetch_lmt(endpoint: str, item_id: str):
         if res.status_code == 200: 
             return res.json().get("doc", [{}])[0].get("data", {})
         elif res.status_code == 403:
-            logger.warning(f"[LMT] 403 Forbidden. Token likely expired. Refreshing...")
             if _get_fresh_tokens():
                 url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={ACTIVE_TOKENS['LMT_TOKEN']}"
                 retry_res = requests.get(url, headers=_HEADERS, timeout=5)
                 if retry_res.status_code == 200:
                     return retry_res.json().get("doc", [{}])[0].get("data", {})
-        else:
-            logger.warning(f"[LMT] Error {res.status_code} for {endpoint}/{item_id}")
     except Exception as e:
         logger.error(f"[LMT] Exception for {endpoint}/{item_id}: {e}")
     return {}
@@ -78,7 +68,6 @@ def _fetch_lmt(endpoint: str, item_id: str):
 def _fetch_sh(endpoint: str, item_id: str, extra=""):
     if not ACTIVE_TOKENS["SH_TOKEN"]:
         _get_fresh_tokens()
-
     url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={ACTIVE_TOKENS['SH_TOKEN']}"
     try:
         logger.info(f"[SH] Fetching: {endpoint} for {item_id}")
@@ -86,27 +75,19 @@ def _fetch_sh(endpoint: str, item_id: str, extra=""):
         if res.status_code == 200: 
             return res.json().get("doc", [{}])[0].get("data", {})
         elif res.status_code == 403:
-            logger.warning(f"[SH] 403 Forbidden. Token likely expired. Refreshing...")
             if _get_fresh_tokens():
                 url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={ACTIVE_TOKENS['SH_TOKEN']}"
                 retry_res = requests.get(url, headers=_HEADERS, timeout=5)
                 if retry_res.status_code == 200:
                     return retry_res.json().get("doc", [{}])[0].get("data", {})
-        else:
-            logger.warning(f"[SH] Error {res.status_code} for {endpoint}/{item_id}")
     except Exception as e:
         logger.error(f"[SH] Exception for {endpoint}/{item_id}: {e}")
     return {}
 
-
-# --- THE PLAYWRIGHT FALLBACK ---
-# --- THE PLAYWRIGHT FALLBACK (NOW WITH EXTREME LOGGING) ---
+# --- PLAYWRIGHT FALLBACK ---
 async def _scrape_betika_fallback(match_id: str):
-    """
-    Spins up a headless browser to intercept network calls natively if Sportradar endpoints fail.
-    """
     url = f"https://www.betika.com/en-ke/m/{match_id}"
-    logger.info(f"[Scraper] Launching Playwright fallback for {match_id}...")
+    logger.info(f"[Scraper] Launching Playwright fallback for {match_id} at {url}...")
     
     captured_data = {"match_data": None}
 
@@ -121,44 +102,23 @@ async def _scrape_betika_fallback(match_id: str):
             if "sportradar.com" in response.url and response.status == 200:
                 if response.request.method == "OPTIONS": return
                 try:
-                    # 1. Grab the raw JSON
                     json_payload = await response.json()
-                    
                     if "match_info" in response.url or "match_timelinedelta" in response.url:
-                        logger.info(f"[Scraper] Intercepted 200 OK from: {response.url.split('?')[0]}")
-                        
-                        # 2. Log a snippet of the raw payload so we can see the actual schema
-                        payload_str = json.dumps(json_payload)
-                        logger.info(f"[Scraper] RAW PAYLOAD SNIPPET: {payload_str[:500]}...")
-
-                        # 3. Attempt extraction with detailed error checks
                         doc_list = json_payload.get("doc", [])
-                        if not doc_list:
-                            logger.warning("[Scraper] Payload missing 'doc' array!")
-                            return
-                            
-                        data = doc_list[0].get("data", {})
-                        if not data:
-                            logger.warning("[Scraper] Payload missing 'data' object inside 'doc[0]'!")
-                            return
-
-                        if "match" in data:
-                            if not captured_data["match_data"]:
+                        if doc_list:
+                            data = doc_list[0].get("data", {})
+                            if "match" in data and not captured_data["match_data"]:
                                 captured_data["match_data"] = data
                                 logger.info(f"[Scraper] [+] SUCCESS: Captured Match Info via Playwright")
-                        else:
-                            logger.warning("[Scraper] 'match' key is missing from the 'data' object! Schema mismatch.")
-                            
-                except Exception as e:
-                    logger.error(f"[Scraper] Crash while parsing {response.url}: {e}")
-                    logger.error(traceback.format_exc())
+                except Exception:
+                    pass
 
         page.on("response", handle_response)
 
         try:
             logger.info(f"[Scraper] Navigating to {url}")
             await page.goto(url, wait_until="networkidle", timeout=15000)
-            await asyncio.sleep(3) # Extra wait for React/AJAX to fire
+            await asyncio.sleep(3)
         except Exception as e:
             logger.warning(f"[Scraper] Timeout or navigation warning: {e}")
 
@@ -166,26 +126,23 @@ async def _scrape_betika_fallback(match_id: str):
         
     return captured_data
 
+
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
 def stream_deep_analytics(betradar_id: str):
     def generate():
         yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
-
         logger.info(f"--- Starting stream for Match ID: {betradar_id} ---")
 
-        # 1. Standard Fast Fetching
         timeline_data = _fetch_lmt("match_timelinedelta", betradar_id) or {}
         info_data = _fetch_lmt("match_info", betradar_id) or {}
         sh_info_data = _fetch_sh("match_info_statshub", betradar_id) or {}
         
         match_data = timeline_data.get("match") or info_data.get("match") or sh_info_data.get("match") or {}
 
-        # 2. Playwright Fallback trigger
         if not match_data:
             logger.warning(f"Standard endpoints failed for {betradar_id}. Engaging Playwright fallback...")
             yield _sse("status", {"step": "Fallback", "message": "Bypassing restrictions..."})
             
-            # Run the async scraper synchronously inside the Flask thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             fallback_data = loop.run_until_complete(_scrape_betika_fallback(betradar_id))
@@ -193,15 +150,13 @@ def stream_deep_analytics(betradar_id: str):
             scraped_match = fallback_data.get("match_data", {})
             if scraped_match and "match" in scraped_match:
                 match_data = scraped_match["match"]
-                # We also want to assign this to timeline_data so the events parser below works
                 timeline_data = scraped_match 
                 info_data = scraped_match
             else:
-                logger.error(f"FATAL: Playwright fallback also failed to find match data for {betradar_id}.")
-                yield _sse("error", {"message": f"Could not load match data for {betradar_id}."})
+                logger.error(f"FATAL: Playwright fallback failed for {betradar_id}.")
+                yield _sse("error", {"message": "Could not load match data."})
                 return
 
-        # Extract strict UIDs and Team Names
         teams = match_data.get("teams", {})
         home_uid = teams.get("home", {}).get("uid")
         away_uid = teams.get("away", {}).get("uid")
@@ -235,7 +190,6 @@ def stream_deep_analytics(betradar_id: str):
         else:
             yield _sse("comments", []) 
 
-        # 3. Concurrently fetch deep stats (Only if we have the IDs)
         if home_uid and away_uid:
             with ThreadPoolExecutor(max_workers=10) as pool:
                 f_squads      = pool.submit(_fetch_lmt, "match_squads", betradar_id)
