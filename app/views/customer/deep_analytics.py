@@ -84,14 +84,9 @@ def _fetch_sh(endpoint: str, item_id: str, extra=""):
         logger.error(f"[SH] Exception for {endpoint}/{item_id}: {e}")
     return {}
 
-# --- PLAYWRIGHT FALLBACK WITH PROPER ROUTING ---
+
 async def _scrape_betika_fallback(match_id: str, is_live: bool):
-    # Route to the correct Betika page depending on match status
-    if is_live:
-        url = f"https://www.betika.com/en-ke/live/m/{match_id}"
-    else:
-        url = f"https://www.betika.com/en-ke/m/{match_id}"
-        
+    url = f"https://www.betika.com/en-ke/live/m/{match_id}" if is_live else f"https://www.betika.com/en-ke/m/{match_id}"
     logger.info(f"[Scraper] Launching Playwright fallback for {match_id} at {url}...")
     
     captured_data = {"match_data": None}
@@ -123,7 +118,15 @@ async def _scrape_betika_fallback(match_id: str, is_live: bool):
         try:
             logger.info(f"[Scraper] Navigating to {url}")
             await page.goto(url, wait_until="networkidle", timeout=15000)
-            await asyncio.sleep(3)
+            
+            # Click the Statistics tab to force the widget to mount and fire requests
+            try:
+                logger.info("[Scraper] Attempting to click 'Statistics' tab...")
+                await page.get_by_text("Statistics", exact=True).first.click(timeout=3000)
+            except Exception:
+                logger.info("[Scraper] 'Statistics' tab not found, waiting anyway...")
+
+            await asyncio.sleep(4)
         except Exception as e:
             logger.warning(f"[Scraper] Timeout or navigation warning: {e}")
 
@@ -134,8 +137,11 @@ async def _scrape_betika_fallback(match_id: str, is_live: bool):
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
 def stream_deep_analytics(betradar_id: str):
-    # Extract the is_live parameter from the frontend URL
     is_live = request.args.get("is_live", "false").lower() == "true"
+    
+    # Grab the fallback names from the frontend incase ALL endpoints fail
+    home_fallback = request.args.get("home", "Home Team")
+    away_fallback = request.args.get("away", "Away Team")
     
     def generate():
         yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
@@ -153,7 +159,6 @@ def stream_deep_analytics(betradar_id: str):
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            # Pass the is_live boolean to the scraper
             fallback_data = loop.run_until_complete(_scrape_betika_fallback(betradar_id, is_live))
             
             scraped_match = fallback_data.get("match_data", {})
@@ -162,8 +167,30 @@ def stream_deep_analytics(betradar_id: str):
                 timeline_data = scraped_match 
                 info_data = scraped_match
             else:
-                logger.error(f"FATAL: Playwright fallback failed for {betradar_id}.")
-                yield _sse("error", {"message": "Could not load match data."})
+                logger.warning(f"Playwright found no data. Match is likely unsupported by Sportradar. Engaging Soft Fallback.")
+                
+                # --- SOFT FALLBACK: Keeps UI Alive and allows AI Story to work ---
+                yield _sse("meta", {
+                    "home_team": home_fallback,
+                    "away_team": away_fallback,
+                    "status": "N/A",
+                    "match_time": "0",
+                    "score_home": 0,
+                    "score_away": 0,
+                    "stadium": "Unknown",
+                    "distance_km": "N/A",
+                    "home_manager": "TBA",
+                    "away_manager": "TBA"
+                })
+                yield _sse("comments", [])
+                yield _sse("lineups", {"fallback": True})
+                yield _sse("h2h", [])
+                yield _sse("recent", {"home": [], "away": []})
+                yield _sse("upcoming", {"home": [], "away": []})
+                yield _sse("standings", [])
+                yield _sse("top_scorers", None)
+                yield _sse("team_stats", None)
+                yield _sse("done", {"status": "complete"})
                 return
 
         teams = match_data.get("teams", {})
@@ -179,8 +206,8 @@ def stream_deep_analytics(betradar_id: str):
         managers = info_data.get("manager") or sh_info_data.get("manager") or {}
 
         yield _sse("meta", {
-            "home_team": teams.get("home", {}).get("name", "Home"),
-            "away_team": teams.get("away", {}).get("name", "Away"),
+            "home_team": teams.get("home", {}).get("name", home_fallback),
+            "away_team": teams.get("away", {}).get("name", away_fallback),
             "status": live_status,
             "match_time": str(match_time) if match_time else "0",
             "score_home": match_data.get("result", {}).get("home", 0),
@@ -213,7 +240,6 @@ def stream_deep_analytics(betradar_id: str):
                 f_top_h       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{home_uid}") if season_id else None
                 f_top_a       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{away_uid}") if season_id else None
 
-                # --- SQUADS ---
                 squads_data = f_squads.result()
                 if squads_data and "home" in squads_data:
                     h_node = squads_data.get("home", {}).get("startinglineup", squads_data.get("home", {}).get("players", []))
@@ -230,7 +256,6 @@ def stream_deep_analytics(betradar_id: str):
                 else:
                     yield _sse("lineups", {"fallback": True})
 
-                # --- H2H ---
                 h2h_data = f_h2h.result() if f_h2h else None
                 if h2h_data:
                     parsed_h2h = []
@@ -246,7 +271,6 @@ def stream_deep_analytics(betradar_id: str):
                 else:
                     yield _sse("h2h", [])
 
-                # --- RECENT / UPCOMING ---
                 def _parse_recent(data):
                     if not data: return []
                     return [{
@@ -267,7 +291,6 @@ def stream_deep_analytics(betradar_id: str):
                     "away": _parse_recent(f_away_next.result() if f_away_next else None)[:3]
                 })
 
-                # --- FORM ---
                 form_data = f_form.result() if f_form else None
                 if form_data:
                     target_form = {"home": [], "away": []}
@@ -278,7 +301,6 @@ def stream_deep_analytics(betradar_id: str):
                         if uid == str(away_uid): target_form["away"] = form_list
                     yield _sse("form", target_form)
 
-                # --- STANDINGS ---
                 table_data = f_table.result() if f_table else None
                 if table_data:
                     rows = []
@@ -296,7 +318,6 @@ def stream_deep_analytics(betradar_id: str):
                         break 
                     yield _sse("standings", sorted(rows, key=lambda x: x["pos"]))
 
-                # --- TOP SCORERS ---
                 top_h_data = f_top_h.result() if f_top_h else {}
                 top_a_data = f_top_a.result() if f_top_a else {}
                 def extract_scorers(data):
@@ -307,7 +328,6 @@ def stream_deep_analytics(betradar_id: str):
                     "away": extract_scorers(top_a_data)
                 })
 
-                # --- TEAM STATS ---
                 t_stats = f_team_stats.result() if f_team_stats else None
                 if t_stats:
                     h_stats = t_stats.get("stats", {}).get("uniqueteams", {}).get(str(home_uid), {})
