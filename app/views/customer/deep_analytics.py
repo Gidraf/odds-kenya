@@ -1,356 +1,361 @@
-import logging
-import traceback
-import re
-import asyncio
-import nest_asyncio
+"""
+deep_analytics.py — Full Sportradar SSE Stream
+Emits: status, meta, stadium, lineups, comments, h2h, form,
+       standings, top_scorers, team_stats, recent, upcoming, done
+"""
+import os, json, logging
 from concurrent.futures import ThreadPoolExecutor
-from flask import Blueprint, Response, stream_with_context, request
+from flask import Blueprint, Response, stream_with_context
 import requests
-import json
-from playwright.async_api import async_playwright
 
-nest_asyncio.apply()
+log = logging.getLogger("deep_analytics")
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+LMT_TOKEN = os.environ.get("LMT_TOKEN",
+    "exp=1776025306~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cuYmV0aWthLmNvbSIsImEiOiI2MDAwNmI1MjM0YzMxY2NmOGIxNGYxNmYyODczZWU3MSIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=016ea9a66a30e7c493628bc5a2beb8e294aeefa76ea7582648f6e40904e395d4")
+SH_TOKEN = os.environ.get("SH_TOKEN",
+    "exp=1776064004~acl=/*~data=eyJvIjoiaHR0cHM6Ly9zdGF0c2h1Yi5zcG9ydHJhZGFyLmNvbSIsImEiOiJzcG9ydHBlc2EiLCJhY3QiOiJvcmlnaW5jaGVjayIsIm9zcmMiOiJob3N0aGVhZGVyIn0~hmac=1c7b2ef7f250e867db4f35699ca70d55884e705200df665ee15860e7eb4cddd6")
+
+_LMT_H = {"origin":"https://www.betika.com","referer":"https://www.betika.com/","user-agent":"Mozilla/5.0"}
+_SH_H  = {"origin":"https://statshub.sportradar.com","referer":"https://statshub.sportradar.com/","user-agent":"Mozilla/5.0"}
 
 bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
 
-_HEADERS = {
-    "origin": "https://www.betika.com", 
-    "referer": "https://www.betika.com/", 
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+def _sse(event, data):
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
-ACTIVE_TOKENS = {
-    "LMT_TOKEN": "",
-    "SH_TOKEN": ""
-}
-
-def _get_fresh_tokens():
+def _lmt(endpoint, item_id, extra=""):
+    url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={LMT_TOKEN}"
     try:
-        url = "https://widgets.sir.sportradar.com/60006b5234c31ccf8b14f16f2873ee71/widgetloader"
-        res = requests.get(url, headers=_HEADERS, timeout=5)
-        if res.status_code == 200:
-            tokens = re.findall(r'(exp=\d+~acl=/\*~data=[a-zA-Z0-9_]+~hmac=[a-f0-9]+)', res.text)
-            if tokens:
-                ACTIVE_TOKENS["LMT_TOKEN"] = tokens[0]
-                ACTIVE_TOKENS["SH_TOKEN"] = tokens[0]
-                logger.info(f"Successfully scraped fresh Sportradar Tokens.")
-                return True
-    except Exception as e:
-        logger.error(f"Exception while scraping tokens: {e}")
-    return False
-
-def _sse(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-def _fetch_lmt(endpoint: str, item_id: str):
-    if not ACTIVE_TOKENS["LMT_TOKEN"]:
-        _get_fresh_tokens()
-    url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={ACTIVE_TOKENS['LMT_TOKEN']}"
-    try:
-        logger.info(f"[LMT] Fetching: {endpoint} for {item_id}")
-        res = requests.get(url, headers=_HEADERS, timeout=5)
-        if res.status_code == 200: 
-            return res.json().get("doc", [{}])[0].get("data", {})
-        elif res.status_code == 403:
-            if _get_fresh_tokens():
-                url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={ACTIVE_TOKENS['LMT_TOKEN']}"
-                retry_res = requests.get(url, headers=_HEADERS, timeout=5)
-                if retry_res.status_code == 200:
-                    return retry_res.json().get("doc", [{}])[0].get("data", {})
-    except Exception as e:
-        logger.error(f"[LMT] Exception for {endpoint}/{item_id}: {e}")
+        r = requests.get(url, headers=_LMT_H, timeout=8)
+        if r.ok: return r.json().get("doc",[{}])[0].get("data",{}) or {}
+    except Exception as e: log.warning(f"LMT {endpoint}/{item_id}: {e}")
     return {}
 
-def _fetch_sh(endpoint: str, item_id: str, extra=""):
-    if not ACTIVE_TOKENS["SH_TOKEN"]:
-        _get_fresh_tokens()
-    url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={ACTIVE_TOKENS['SH_TOKEN']}"
+def _sh(endpoint, item_id, extra=""):
+    url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={SH_TOKEN}"
     try:
-        logger.info(f"[SH] Fetching: {endpoint} for {item_id}")
-        res = requests.get(url, headers=_HEADERS, timeout=5)
-        if res.status_code == 200: 
-            return res.json().get("doc", [{}])[0].get("data", {})
-        elif res.status_code == 403:
-            if _get_fresh_tokens():
-                url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={ACTIVE_TOKENS['SH_TOKEN']}"
-                retry_res = requests.get(url, headers=_HEADERS, timeout=5)
-                if retry_res.status_code == 200:
-                    return retry_res.json().get("doc", [{}])[0].get("data", {})
-    except Exception as e:
-        logger.error(f"[SH] Exception for {endpoint}/{item_id}: {e}")
+        r = requests.get(url, headers=_SH_H, timeout=8)
+        if r.ok: return r.json().get("doc",[{}])[0].get("data",{}) or {}
+    except Exception as e: log.warning(f"SH {endpoint}/{item_id}: {e}")
     return {}
 
+def _clean(raw):
+    if not raw: return ""
+    if "," in raw:
+        p = raw.split(",",1); return f"{p[1].strip()} {p[0].strip()}"
+    return raw.strip()
 
-async def _scrape_betika_fallback(match_id: str, is_live: bool):
-    url = f"https://www.betika.com/en-ke/live/m/{match_id}" if is_live else f"https://www.betika.com/en-ke/m/{match_id}"
-    logger.info(f"[Scraper] Launching Playwright fallback for {match_id} at {url}...")
-    
-    captured_data = {"match_data": None}
+def _parse_player(p):
+    raw = p.get("playername", p.get("name",""))
+    return {"name": raw.split(",")[0].strip() if "," in raw else raw.strip(),
+            "num": p.get("shirtnumber",""), "pos": p.get("matchpos","M"), "id": p.get("_id")}
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
+def _parse_recent(data):
+    if not data: return []
+    return [{"date": m.get("_dt",{}).get("date",""), "time": m.get("_dt",{}).get("time",""),
+             "home": m.get("teams",{}).get("home",{}).get("name",""),
+             "away": m.get("teams",{}).get("away",{}).get("name",""),
+             "score_home": m.get("result",{}).get("home",0),
+             "score_away": m.get("result",{}).get("away",0)}
+            for m in (data.get("matches") or [])[:5]]
 
-        async def handle_response(response):
-            if "sportradar.com" in response.url and response.status == 200:
-                if response.request.method == "OPTIONS": return
-                try:
-                    json_payload = await response.json()
-                    if "match_info" in response.url or "match_timelinedelta" in response.url:
-                        doc_list = json_payload.get("doc", [])
-                        if doc_list:
-                            data = doc_list[0].get("data", {})
-                            if "match" in data and not captured_data["match_data"]:
-                                captured_data["match_data"] = data
-                                logger.info(f"[Scraper] [+] SUCCESS: Captured Match Info via Playwright")
-                except Exception:
-                    pass
+def _parse_upcoming(data):
+    if not data: return []
+    return [{"date": m.get("_dt",{}).get("date",""), "time": m.get("_dt",{}).get("time",""),
+             "home": m.get("teams",{}).get("home",{}).get("name",""),
+             "away": m.get("teams",{}).get("away",{}).get("name","")}
+            for m in (data.get("matches") or [])[:3]]
 
-        page.on("response", handle_response)
+def _detect_comp_type(info):
+    t = info.get("tournament",{})
+    name = t.get("name","").lower()
+    if t.get("friendly"): return "friendly"
+    if str(t.get("seasontype",""))=="26" or any(k in name for k in ["cup","champions","europa","coupe"]): return "cup"
+    return "league"
 
-        try:
-            logger.info(f"[Scraper] Navigating to {url}")
-            await page.goto(url, wait_until="networkidle", timeout=15000)
-            
-            # Click the specific Statistics button to trigger the network requests
-            try:
-                logger.info("[Scraper] Attempting to click 'Statistics' button...")
-                stat_btn = page.locator("button.markets-header__action").filter(has_text="Statistics").first
-                await stat_btn.wait_for(state="visible", timeout=5000)
-                await stat_btn.click()
-                logger.info("[Scraper] Successfully clicked 'Statistics' button.")
-            except Exception as e:
-                logger.info(f"[Scraper] 'Statistics' button not found or not clickable: {e}")
-
-            await asyncio.sleep(4)
-        except Exception as e:
-            logger.warning(f"[Scraper] Timeout or navigation warning: {e}")
-
-        await browser.close()
-        
-    return captured_data
+def _format_stadium(s):
+    if not s: return {}
+    coords = s.get("googlecoords",""); lat=lng=None
+    if coords:
+        try: lat,lng=[float(x.strip()) for x in coords.split(",")]
+        except: pass
+    return {"id":s.get("_id",""),"name":s.get("name",""),"city":s.get("city",""),
+            "country":s.get("country",""),"capacity":s.get("capacity",""),
+            "built":s.get("constryear",""),"pitch":s.get("pitchsize",{}),
+            "coordinates":{"lat":lat,"lng":lng} if lat else None}
 
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
-def stream_deep_analytics(betradar_id: str):
-    is_live = request.args.get("is_live", "false").lower() == "true"
-    
-    home_fallback = request.args.get("home", "Home Team")
-    away_fallback = request.args.get("away", "Away Team")
-    
+def stream_deep_analytics(betradar_id):
     def generate():
-        yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
-        logger.info(f"--- Starting stream for Match ID: {betradar_id} | Live: {is_live} ---")
+        yield _sse("status",{"step":"init","message":"Connecting to Sportradar..."})
 
-        timeline_data = _fetch_lmt("match_timelinedelta", betradar_id) or {}
-        info_data = _fetch_lmt("match_info", betradar_id) or {}
-        sh_info_data = _fetch_sh("match_info_statshub", betradar_id) or {}
-        
-        match_data = timeline_data.get("match") or info_data.get("match") or sh_info_data.get("match") or {}
+        # ── Core match info ────────────────────────────────────────────────────
+        info = _lmt("match_info", betradar_id) or _sh("match_info_statshub", betradar_id)
+        if not info:
+            yield _sse("error",{"message":"Could not load match info."}); return
 
-        if not match_data:
-            logger.warning(f"Standard endpoints failed for {betradar_id}. Engaging Playwright fallback...")
-            yield _sse("status", {"step": "Fallback", "message": "Bypassing restrictions..."})
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            fallback_data = loop.run_until_complete(_scrape_betika_fallback(betradar_id, is_live))
-            
-            scraped_match = fallback_data.get("match_data", {})
-            if scraped_match and "match" in scraped_match:
-                match_data = scraped_match["match"]
-                timeline_data = scraped_match 
-                info_data = scraped_match
-            else:
-                logger.warning(f"Playwright found no data. Match is likely unsupported by Sportradar. Engaging Soft Fallback.")
-                
-                yield _sse("meta", {
-                    "home_team": home_fallback,
-                    "away_team": away_fallback,
-                    "status": "N/A",
-                    "match_time": "0",
-                    "score_home": 0,
-                    "score_away": 0,
-                    "stadium": "Unknown",
-                    "distance_km": "N/A",
-                    "home_manager": "TBA",
-                    "away_manager": "TBA"
-                })
-                yield _sse("comments", [])
-                yield _sse("lineups", {"fallback": True})
-                yield _sse("h2h", [])
-                yield _sse("recent", {"home": [], "away": []})
-                yield _sse("upcoming", {"home": [], "away": []})
-                yield _sse("standings", [])
-                yield _sse("top_scorers", None)
-                yield _sse("team_stats", None)
-                yield _sse("done", {"status": "complete"})
-                return
+        md    = info.get("match",{})
+        teams = md.get("teams",{})
+        h_uid = str(teams.get("home",{}).get("uid",""))
+        a_uid = str(teams.get("away",{}).get("uid",""))
+        s_id  = str(md.get("_seasonid",""))
 
-        teams = match_data.get("teams", {})
-        home_uid = teams.get("home", {}).get("uid")
-        away_uid = teams.get("away", {}).get("uid")
-        season_id = match_data.get("_seasonid")
+        jerseys    = info.get("jerseys",{})
+        home_color = f"#{jerseys.get('home',{}).get('player',{}).get('base','ea0000')}"
+        away_color = f"#{jerseys.get('away',{}).get('player',{}).get('base','0099ff')}"
 
-        match_time = match_data.get("timeinfo", {}).get("played", "0")
-        live_status = match_data.get("status", {}).get("name", "Upcoming")
+        mt = (md.get("timeinfo") or {}).get("played") or md.get("p") or (md.get("status") or {}).get("shortName","")
 
-        stadium = info_data.get("stadium") or sh_info_data.get("stadium") or {}
-        distance = info_data.get("distance") or sh_info_data.get("distance") or "N/A"
-        managers = info_data.get("manager") or sh_info_data.get("manager") or {}
+        comp_type = _detect_comp_type(info)
+        tourn     = info.get("tournament",{})
+        mgr_raw   = info.get("manager",{})
+        stadium   = _format_stadium(info.get("stadium",{}))
 
-        yield _sse("meta", {
-            "home_team": teams.get("home", {}).get("name", home_fallback),
-            "away_team": teams.get("away", {}).get("name", away_fallback),
-            "status": live_status,
-            "match_time": str(match_time) if match_time else "0",
-            "score_home": match_data.get("result", {}).get("home", 0),
-            "score_away": match_data.get("result", {}).get("away", 0),
-            "stadium": stadium.get("name", "Unknown Stadium"),
-            "distance_km": distance,
-            "home_manager": managers.get("home", {}).get("name", "TBA"),
-            "away_manager": managers.get("away", {}).get("name", "TBA")
+        yield _sse("meta",{
+            "home_team":        teams.get("home",{}).get("name","Home"),
+            "away_team":        teams.get("away",{}).get("name","Away"),
+            "home_abbr":        teams.get("home",{}).get("abbr",""),
+            "away_abbr":        teams.get("away",{}).get("abbr",""),
+            "home_uid":         h_uid, "away_uid": a_uid, "season_id": s_id,
+            "status":           (md.get("status") or {}).get("name","Upcoming"),
+            "status_short":     (md.get("status") or {}).get("shortName","NS"),
+            "match_time":       str(mt) if mt else "",
+            "score_home":       (md.get("result") or {}).get("home"),
+            "score_away":       (md.get("result") or {}).get("away"),
+            "home_color":       home_color, "away_color": away_color,
+            "competition":      tourn.get("name",""),
+            "competition_type": comp_type,
+            "is_league":        comp_type == "league",
+            "is_cup":           comp_type == "cup",
+            "round":            md.get("round"),
+            "round_name":       str((md.get("roundname") or {}).get("name","")),
+            "date":             (md.get("_dt") or {}).get("date",""),
+            "time":             (md.get("_dt") or {}).get("time",""),
+            "kickoff_uts":      (md.get("_dt") or {}).get("uts"),
+            "venue":            stadium.get("name",""),
+            "distance_km":      md.get("distance"),
+            "home_manager":     _clean((mgr_raw.get("home") or {}).get("name","")),
+            "away_manager":     _clean((mgr_raw.get("away") or {}).get("name","")),
+            "referee":          _clean((info.get("referee") or {}).get("name","")),
+            "season_name":      (info.get("season") or {}).get("name",""),
         })
 
-        if timeline_data and "events" in timeline_data:
-            events = timeline_data.get("events", [])
-            ignored = ["possession", "matchsituation", "ballcoordinates", "possible_event", "pitch coordinates"]
-            comments = [{"time": ev.get("time", ""), "team": ev.get("team"), "type": ev.get("type"), "name": ev.get("name", "")} for ev in reversed(events) if ev.get("type") not in ignored]
-            yield _sse("comments", comments[:20])
-        else:
-            yield _sse("comments", []) 
+        yield _sse("stadium", stadium)
+        yield _sse("status",{"step":"fetching","message":"Loading match stats..."})
 
-        if home_uid and away_uid:
-            with ThreadPoolExecutor(max_workers=10) as pool:
-                f_squads      = pool.submit(_fetch_lmt, "match_squads", betradar_id)
-                f_h2h         = pool.submit(_fetch_sh, "stats_team_versusrecent", f"{home_uid}/{away_uid}")
-                f_home_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(home_uid), "/10")
-                f_away_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(away_uid), "/10")
-                f_home_next   = pool.submit(_fetch_sh, "stats_team_fixtures", str(home_uid), "/10")
-                f_away_next   = pool.submit(_fetch_sh, "stats_team_fixtures", str(away_uid), "/10")
-                f_form        = pool.submit(_fetch_sh, "stats_formtable", str(season_id)) if season_id else None
-                f_table       = pool.submit(_fetch_sh, "stats_season_tables", str(season_id)) if season_id else None
-                f_team_stats  = pool.submit(_fetch_sh, "stats_season_uniqueteamstats", str(season_id)) if season_id else None
-                f_top_h       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{home_uid}") if season_id else None
-                f_top_a       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{away_uid}") if season_id else None
+        # ── Parallel fetches ──────────────────────────────────────────────────
+        with ThreadPoolExecutor(max_workers=14) as pool:
+            f_squads      = pool.submit(_lmt,"match_squads",betradar_id)
+            f_timeline    = pool.submit(_lmt,"match_timelinedelta",betradar_id)
+            f_h2h_simple  = pool.submit(_sh, "stats_match_head2head",betradar_id)
+            f_h2h_full    = pool.submit(_lmt,"stats_team_versusrecent",f"{h_uid}/{a_uid}") if h_uid and a_uid else None
+            f_table       = pool.submit(_sh, "season_dynamictable",s_id) if s_id else None
+            f_form        = pool.submit(_sh, "stats_formtable",s_id) if s_id else None
+            f_team_stats  = pool.submit(_sh, "stats_season_uniqueteamstats",s_id) if s_id else None
+            f_home_recent = pool.submit(_sh, "stats_team_lastx",h_uid,"/10") if h_uid else None
+            f_away_recent = pool.submit(_sh, "stats_team_lastx",a_uid,"/10") if a_uid else None
+            f_home_next   = pool.submit(_sh, "stats_team_fixtures",h_uid,"/10") if h_uid else None
+            f_away_next   = pool.submit(_sh, "stats_team_fixtures",a_uid,"/10") if a_uid else None
+            f_top_h       = pool.submit(_lmt,"stats_season_topgoals",f"{s_id}/{h_uid}") if s_id and h_uid else None
+            f_top_a       = pool.submit(_lmt,"stats_season_topgoals",f"{s_id}/{a_uid}") if s_id and a_uid else None
 
-                squads_data = f_squads.result()
-                if squads_data and "home" in squads_data:
-                    h_node = squads_data.get("home", {}).get("startinglineup", squads_data.get("home", {}).get("players", []))
-                    a_node = squads_data.get("away", {}).get("startinglineup", squads_data.get("away", {}).get("players", []))
-                    h_form = h_node.get("formation", "") if isinstance(h_node, dict) else ""
-                    a_form = a_node.get("formation", "") if isinstance(a_node, dict) else ""
-                    h_players = h_node.get("players", []) if isinstance(h_node, dict) else (h_node if isinstance(h_node, list) else [])
-                    a_players = a_node.get("players", []) if isinstance(a_node, dict) else (a_node if isinstance(a_node, list) else [])
+            # SQUADS ─────────────────────────────────────────────────────────
+            sq = f_squads.result()
+            if sq and ("home" in sq or "away" in sq):
+                def _squad(side):
+                    node  = sq.get(side,{})
+                    lu    = node.get("startinglineup") or node.get("players") or []
+                    form  = lu.get("formation","") if isinstance(lu,dict) else ""
+                    pls   = lu.get("players",[]) if isinstance(lu,dict) else (lu if isinstance(lu,list) else [])
+                    coach = node.get("coach") or {}
+                    return {"formation":form,"players":[_parse_player(p) for p in pls],
+                            "coach":{"name":_clean(coach.get("name","")),"id":coach.get("_id")}}
+                yield _sse("lineups",{"home":_squad("home"),"away":_squad("away")})
+            else:
+                yield _sse("lineups",{"fallback":True})
 
-                    yield _sse("lineups", {
-                        "home": {"formation": h_form, "players": [{"name": p.get("playername", p.get("name", "")).split(",")[0].strip(), "num": p.get("shirtnumber", ""), "pos": p.get("matchpos", "M")} for p in h_players]},
-                        "away": {"formation": a_form, "players": [{"name": p.get("playername", p.get("name", "")).split(",")[0].strip(), "num": p.get("shirtnumber", ""), "pos": p.get("matchpos", "M")} for p in a_players]}
-                    })
-                else:
-                    yield _sse("lineups", {"fallback": True})
+            # TIMELINE ───────────────────────────────────────────────────────
+            tl = f_timeline.result()
+            if tl:
+                IGNORED = {"possession","matchsituation","ballcoordinates","possible_event","pitch coordinates"}
+                events = [{"time":ev.get("time",""),"team":ev.get("team"),
+                           "type":ev.get("type"),"name":ev.get("name","")}
+                          for ev in reversed(tl.get("events",[]))
+                          if ev.get("type") not in IGNORED]
+                yield _sse("comments", events[:25])
 
-                h2h_data = f_h2h.result() if f_h2h else None
-                if h2h_data:
-                    parsed_h2h = []
-                    for m in h2h_data.get("matches", [])[:5]:
-                        parsed_h2h.append({
-                            "date": m.get("_dt", {}).get("date", ""),
-                            "home": m.get("teams", {}).get("home", {}).get("name", ""),
-                            "away": m.get("teams", {}).get("away", {}).get("name", ""),
-                            "score_home": m.get("result", {}).get("home", 0),
-                            "score_away": m.get("result", {}).get("away", 0)
-                        })
-                    yield _sse("h2h", parsed_h2h)
-                else:
-                    yield _sse("h2h", [])
+            # H2H SIMPLE ─────────────────────────────────────────────────────
+            h2h_s = f_h2h_simple.result()
+            if h2h_s:
+                yield _sse("h2h",[{
+                    "date":(m.get("_dt") or {}).get("date",""),
+                    "home":(m.get("teams") or {}).get("home",{}).get("name",""),
+                    "away":(m.get("teams") or {}).get("away",{}).get("name",""),
+                    "score_home":(m.get("result") or {}).get("home",0),
+                    "score_away":(m.get("result") or {}).get("away",0)}
+                    for m in (h2h_s.get("matches") or [])[:5]])
 
-                def _parse_recent(data):
-                    if not data: return []
-                    return [{
-                        "date": m.get("_dt", {}).get("date", ""),
-                        "time": m.get("_dt", {}).get("time", ""),
-                        "home": m.get("teams", {}).get("home", {}).get("name", ""),
-                        "away": m.get("teams", {}).get("away", {}).get("name", ""),
-                        "score_home": m.get("result", {}).get("home", 0),
-                        "score_away": m.get("result", {}).get("away", 0)
-                    } for m in data.get("matches", [])[:5]]
+            # H2H FULL (versusrecent — 30 matches, goal timing) ───────────────
+            h2h_f = f_h2h_full.result() if f_h2h_full else None
+            if h2h_f:
+                import re
+                def _goal_mins(comment):
+                    if not comment: return []
+                    out=[]
+                    for m in re.finditer(r'\((\d+)(?:\+(\d+))?\.\)',comment):
+                        t=int(m.group(1))+(int(m.group(2)) if m.group(2) else 0)
+                        if t<=130: out.append(t)
+                    return out
 
-                yield _sse("recent", {
-                    "home": _parse_recent(f_home_recent.result() if f_home_recent else None),
-                    "away": _parse_recent(f_away_recent.result() if f_away_recent else None)
+                raw_m = h2h_f.get("matches",[])
+                parsed=[]; hw=dr=aw=0; total_g=btts=ov25=0
+                for m in raw_m[:30]:
+                    res=m.get("result",{}); sh=res.get("home") or 0; sa=res.get("away") or 0
+                    winner=res.get("winner")
+                    h_uid_m=str((m.get("teams") or {}).get("home",{}).get("uid",""))
+                    is_hh = h_uid_m == h_uid
+                    if winner=="home":
+                        if is_hh: hw+=1
+                        else: aw+=1
+                    elif winner=="away":
+                        if is_hh: aw+=1
+                        else: hw+=1
+                    elif sh+sa>0: dr+=1
+                    g=sh+sa; total_g+=g
+                    if sh>0 and sa>0: btts+=1
+                    if g>2: ov25+=1
+                    teams_m=m.get("teams",{})
+                    parsed.append({
+                        "id":m.get("_id"),"date":(m.get("time") or {}).get("date",""),
+                        "home":teams_m.get("home",{}).get("name",""),
+                        "away":teams_m.get("away",{}).get("name",""),
+                        "score_home":sh,"score_away":sa,"winner":winner,
+                        "comment":m.get("comment",""),"attendance":m.get("attendance"),
+                        "goal_minutes":_goal_mins(m.get("comment",""))})
+                n=len(parsed)
+
+                # Goal timing buckets
+                all_mins=[mi for m in raw_m[:20] for mi in _goal_mins(m.get("comment",""))]
+                b={"0-15":0,"16-30":0,"31-45":0,"46-60":0,"61-75":0,"76-90":0,"90+":0}
+                for mi in all_mins:
+                    if   mi<=15: b["0-15"]+=1
+                    elif mi<=30: b["16-30"]+=1
+                    elif mi<=45: b["31-45"]+=1
+                    elif mi<=60: b["46-60"]+=1
+                    elif mi<=75: b["61-75"]+=1
+                    elif mi<=90: b["76-90"]+=1
+                    else: b["90+"]+=1
+
+                yield _sse("versus_history",{
+                    "matches":parsed,
+                    "summary":{"total":n,"home_wins":hw,"draws":dr,"away_wins":aw,
+                               "avg_goals_pg":round(total_g/n,2) if n else 0,
+                               "btts_pct":round(btts/n*100,1) if n else 0,
+                               "over_2_5_pct":round(ov25/n*100,1) if n else 0},
+                    "goal_timing":{"buckets":b,
+                                   "most_dangerous":max(b,key=b.get) if all_mins else None,
+                                   "avg_minute":round(sum(all_mins)/len(all_mins),1) if all_mins else None,
+                                   "first_half_pct":round(sum(1 for m in all_mins if m<=45)/max(len(all_mins),1)*100,1)}
                 })
-                yield _sse("upcoming", {
-                    "home": _parse_recent(f_home_next.result() if f_home_next else None)[:3],
-                    "away": _parse_recent(f_away_next.result() if f_away_next else None)[:3]
-                })
 
-                form_data = f_form.result() if f_form else None
-                if form_data:
-                    target_form = {"home": [], "away": []}
-                    for t in form_data.get("teams", []):
-                        uid = str(t.get("team", {}).get("uid"))
-                        form_list = [f.get("value") for f in t.get("form", {}).get("total", [])]
-                        if uid == str(home_uid): target_form["home"] = form_list
-                        if uid == str(away_uid): target_form["away"] = form_list
-                    yield _sse("form", target_form)
+                # Managers from versusrecent currentmanagers block
+                cm = h2h_f.get("currentmanagers",{})
+                def _mgr(uid):
+                    lst=cm.get(uid) or cm.get(str(uid)) or []
+                    if not lst: return {}
+                    m=lst[0]
+                    ms=m.get("membersince") or {}
+                    return {"id":m.get("_id"),"name":_clean(m.get("name","")),"nationality":(m.get("nationality") or {}).get("name",""),
+                            "membersince":ms.get("date","") if isinstance(ms,dict) else ""}
+                yield _sse("managers",{"home":_mgr(h_uid),"away":_mgr(a_uid)})
 
-                table_data = f_table.result() if f_table else None
-                if table_data:
-                    rows = []
-                    tables = table_data.get("tables", [])
-                    for t in tables:
-                        for row in t.get("tablerows", []):
+                # Better stadium from next match block
+                next_m = h2h_f.get("next",{})
+                if next_m.get("stadium"):
+                    yield _sse("stadium",_format_stadium(next_m["stadium"]))
+                if next_m.get("matchdifficultyrating"):
+                    yield _sse("difficulty",next_m["matchdifficultyrating"])
+
+            # TOP SCORERS ─────────────────────────────────────────────────────
+            def _scorers(data):
+                if not data: return []
+                out=[]
+                for e in (data.get("players") or [])[:5]:
+                    pl=e.get("player",{}); g=e.get("total",{}).get("goals",0)
+                    if g: out.append({"id":pl.get("_id"),"name":_clean(pl.get("name","")),"goals":g,
+                                      "matches":e.get("total",{}).get("matches",0),
+                                      "nationality":(pl.get("nationality") or {}).get("name",""),
+                                      "position":(pl.get("position") or {}).get("shortname",""),
+                                      "jersey":pl.get("jerseynumber",""),
+                                      "home_goals":(e.get("home") or {}).get("goals",0),
+                                      "away_goals":(e.get("away") or {}).get("goals",0),
+                                      "first_half":(e.get("firsthalf") or {}).get("goals",0),
+                                      "second_half":(e.get("secondhalf") or {}).get("goals",0)})
+                return out
+            h_sc = f_top_h.result() if f_top_h else {}
+            a_sc = f_top_a.result() if f_top_a else {}
+            if h_sc or a_sc:
+                yield _sse("top_scorers",{"home":_scorers(h_sc),"away":_scorers(a_sc)})
+
+            # TEAM STATS ──────────────────────────────────────────────────────
+            ts = f_team_stats.result() if f_team_stats else None
+            if ts:
+                def _ts(uid):
+                    d=(ts.get("stats") or {}).get("uniqueteams",{}).get(str(uid),{})
+                    return {"possession":(d.get("ball_possession") or {}).get("average",50),
+                            "shots":     (d.get("goal_attempts") or {}).get("average",0),
+                            "corners":   (d.get("corner_kicks") or {}).get("average",0),
+                            "clean_sheets":(d.get("clean_sheet") or {}).get("total",0),
+                            "goals_scored":(d.get("goals_scored") or {}).get("average",0),
+                            "goals_conceded":(d.get("goals_conceded") or {}).get("average",0)}
+                yield _sse("team_stats",{"home":_ts(h_uid),"away":_ts(a_uid)})
+
+            # RECENT & UPCOMING ───────────────────────────────────────────────
+            yield _sse("recent",{
+                "home":_parse_recent(f_home_recent.result() if f_home_recent else None),
+                "away":_parse_recent(f_away_recent.result() if f_away_recent else None)})
+            yield _sse("upcoming",{
+                "home":_parse_upcoming(f_home_next.result() if f_home_next else None),
+                "away":_parse_upcoming(f_away_next.result() if f_away_next else None)})
+
+            # STANDINGS ───────────────────────────────────────────────────────
+            table = f_table.result() if f_table else None
+            if table:
+                rows=[]
+                tables=(table.get("tables") or (table.get("season") or {}).get("tables") or [])
+                for t in (tables or []):
+                    if t.get("name")=="Total" or t.get("tablerows"):
+                        for tr in t.get("tablerows",[]):
+                            uid=str((tr.get("team") or {}).get("uid",""))
                             rows.append({
-                                "pos": row.get("pos"),
-                                "team": row.get("team", {}).get("name"),
-                                "played": row.get("total"),
-                                "gd": row.get("goalDiffTotal"),
-                                "pts": row.get("pointsTotal"),
-                                "is_target": str(row.get("team", {}).get("uid")) in [str(home_uid), str(away_uid)]
-                            })
-                        break 
-                    yield _sse("standings", sorted(rows, key=lambda x: x["pos"]))
+                                "pos":   tr.get("pos"),
+                                "team":  (tr.get("team") or {}).get("name"),
+                                "team_uid": uid,
+                                "played":(tr.get("played") or {}).get("total",0),
+                                "won":   (tr.get("won") or {}).get("total",0),
+                                "drawn": (tr.get("drawn") or {}).get("total",0),
+                                "lost":  (tr.get("lost") or {}).get("total",0),
+                                "gf":    (tr.get("goalsfor") or {}).get("total",0),
+                                "ga":    (tr.get("goalsagainst") or {}).get("total",0),
+                                "gd":    (tr.get("goaldifference") or {}).get("total",0),
+                                "pts":   (tr.get("points") or {}).get("total",0),
+                                "is_target": uid in [h_uid,a_uid]})
+                        break
+                yield _sse("standings",sorted(rows,key=lambda x:x.get("pos") or 99))
 
-                top_h_data = f_top_h.result() if f_top_h else {}
-                top_a_data = f_top_a.result() if f_top_a else {}
-                def extract_scorers(data):
-                    return [{"name": p.get("player", {}).get("name", "Unknown").split(",")[0], 
-                             "goals": p.get("total", {}).get("goals", 0)} for p in data.get("players", [])[:3]]
-                yield _sse("top_scorers", {
-                    "home": extract_scorers(top_h_data),
-                    "away": extract_scorers(top_a_data)
-                })
+            # FORM ────────────────────────────────────────────────────────────
+            form_d = f_form.result() if f_form else None
+            if form_d:
+                fo={"home":[],"away":[]}
+                for t in (form_d.get("teams") or []):
+                    uid=str((t.get("team") or {}).get("uid",""))
+                    fl=[f.get("value") for f in (t.get("form") or {}).get("total",[])]
+                    if uid==h_uid: fo["home"]=fl
+                    if uid==a_uid: fo["away"]=fl
+                yield _sse("form",fo)
 
-                t_stats = f_team_stats.result() if f_team_stats else None
-                if t_stats:
-                    h_stats = t_stats.get("stats", {}).get("uniqueteams", {}).get(str(home_uid), {})
-                    a_stats = t_stats.get("stats", {}).get("uniqueteams", {}).get(str(away_uid), {})
-                    yield _sse("team_stats", {
-                        "home": {
-                            "possession": h_stats.get("ball_possession", {}).get("average", 50),
-                            "shots": h_stats.get("goal_attempts", {}).get("average", 0),
-                            "corners": h_stats.get("corner_kicks", {}).get("average", 0),
-                            "clean_sheets": h_stats.get("clean_sheet", {}).get("total", 0)
-                        },
-                        "away": {
-                            "possession": a_stats.get("ball_possession", {}).get("average", 50),
-                            "shots": a_stats.get("goal_attempts", {}).get("average", 0),
-                            "corners": a_stats.get("corner_kicks", {}).get("average", 0),
-                            "clean_sheets": a_stats.get("clean_sheet", {}).get("total", 0)
-                        }
-                    })
+        yield _sse("done",{"status":"complete"})
 
-        logger.info(f"--- Stream complete for Match ID: {betradar_id} ---")
-        yield _sse("done", {"status": "complete"})
-
-    return Response(stream_with_context(generate()), mimetype="text/event-stream", headers={
-        "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"
-    })
+    return Response(stream_with_context(generate()),mimetype="text/event-stream",
+        headers={"Cache-Control":"no-cache","Connection":"keep-alive","X-Accel-Buffering":"no"})
