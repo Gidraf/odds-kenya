@@ -119,12 +119,15 @@ async def _scrape_betika_fallback(match_id: str, is_live: bool):
             logger.info(f"[Scraper] Navigating to {url}")
             await page.goto(url, wait_until="networkidle", timeout=15000)
             
-            # Click the Statistics tab to force the widget to mount and fire requests
+            # Click the specific Statistics button to trigger the network requests
             try:
-                logger.info("[Scraper] Attempting to click 'Statistics' tab...")
-                await page.get_by_text("Statistics", exact=True).first.click(timeout=3000)
-            except Exception:
-                logger.info("[Scraper] 'Statistics' tab not found, waiting anyway...")
+                logger.info("[Scraper] Attempting to click 'Statistics' button...")
+                stat_btn = page.locator("button.markets-header__action").filter(has_text="Statistics").first
+                await stat_btn.wait_for(state="visible", timeout=5000)
+                await stat_btn.click()
+                logger.info("[Scraper] Successfully clicked 'Statistics' button.")
+            except Exception as e:
+                logger.info(f"[Scraper] 'Statistics' button not found or not clickable: {e}")
 
             await asyncio.sleep(4)
         except Exception as e:
@@ -139,7 +142,6 @@ async def _scrape_betika_fallback(match_id: str, is_live: bool):
 def stream_deep_analytics(betradar_id: str):
     is_live = request.args.get("is_live", "false").lower() == "true"
     
-    # Grab the fallback names from the frontend incase ALL endpoints fail
     home_fallback = request.args.get("home", "Home Team")
     away_fallback = request.args.get("away", "Away Team")
     
@@ -169,7 +171,6 @@ def stream_deep_analytics(betradar_id: str):
             else:
                 logger.warning(f"Playwright found no data. Match is likely unsupported by Sportradar. Engaging Soft Fallback.")
                 
-                # --- SOFT FALLBACK: Keeps UI Alive and allows AI Story to work ---
                 yield _sse("meta", {
                     "home_team": home_fallback,
                     "away_team": away_fallback,
