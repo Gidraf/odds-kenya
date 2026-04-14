@@ -116,6 +116,9 @@ def stream_deep_analytics(betradar_id: str):
 
         if not match_data:
             logger.error(f"FATAL: All core endpoints failed for {betradar_id}. Timeline: {bool(timeline_data)}, LMT Info: {bool(info_data)}, SH Info: {bool(sh_info_data)}")
+            logger.error(f"FATAL: Missing 'match' key for {betradar_id}.")
+            logger.error(f"Timeline Dump: {json.dumps(timeline_data)}")
+            logger.error(f"Info Dump: {json.dumps(info_data)}")
             yield _sse("error", {"message": f"Could not load match data for {betradar_id}."})
             return
 
