@@ -1,28 +1,31 @@
-from flask import Blueprint, request, Response, stream_with_context
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from flask import Blueprint, Response, stream_with_context, request
 import requests
 import json
-from concurrent.futures import ThreadPoolExecutor
-from .utils import _sse 
 
 bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
 
 LMT_TOKEN = "exp=1776025306~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cuYmV0aWthLmNvbSIsImEiOiI2MDAwNmI1MjM0YzMxY2NmOGIxNGYxNmYyODczZWU3MSIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=016ea9a66a30e7c493628bc5a2beb8e294aeefa76ea7582648f6e40904e395d4"
 SH_TOKEN = "exp=1776064004~acl=/*~data=eyJvIjoiaHR0cHM6Ly9zdGF0c2h1Yi5zcG9ydHJhZGFyLmNvbSIsImEiOiJzcG9ydHBlc2EiLCJhY3QiOiJvcmlnaW5jaGVjayIsIm9zcmMiOiJob3N0aGVhZGVyIn0~hmac=1c7b2ef7f250e867db4f35699ca70d55884e705200df665ee15860e7eb4cddd6"
 
+_HEADERS = {"origin": "https://www.betika.com", "referer": "https://www.betika.com/", "user-agent": "Mozilla/5.0"}
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
 def _fetch_lmt(endpoint: str, item_id: str):
     url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={LMT_TOKEN}"
-    headers = {"origin": "https://www.betika.com", "referer": "https://www.betika.com/", "user-agent": "Mozilla/5.0"}
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=_HEADERS, timeout=5)
         if res.status_code == 200: return res.json().get("doc", [{}])[0].get("data", {})
     except: pass
     return None
 
 def _fetch_sh(endpoint: str, item_id: str, extra=""):
     url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={SH_TOKEN}"
-    headers = {"origin": "https://statshub.sportradar.com", "referer": "https://statshub.sportradar.com/", "user-agent": "Mozilla/5.0"}
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=_HEADERS, timeout=5)
         if res.status_code == 200: return res.json().get("doc", [{}])[0].get("data", {})
     except: pass
     return None
@@ -52,6 +55,12 @@ def stream_deep_analytics(betradar_id: str):
         if not match_time: match_time = match_data.get("p")
         if not match_time: match_time = match_data.get("status", {}).get("shortName", "")
 
+        # Extract New Meta Data
+        stadium = info.get("stadium", {})
+        distance = info.get("distance", "N/A")
+        managers = info.get("manager", {})
+        win_probs = match_data.get("best", {}).get("match_winner", {}) # Adjust based on actual API location for odds if available
+
         yield _sse("meta", {
             "home_team": match_data.get("teams", {}).get("home", {}).get("name", "Home"),
             "away_team": match_data.get("teams", {}).get("away", {}).get("name", "Away"),
@@ -60,22 +69,30 @@ def stream_deep_analytics(betradar_id: str):
             "score_home": match_data.get("result", {}).get("home", 0),
             "score_away": match_data.get("result", {}).get("away", 0),
             "home_color": home_color,
-            "away_color": away_color
+            "away_color": away_color,
+            "stadium": stadium.get("name", "Unknown Stadium"),
+            "distance_km": distance,
+            "home_manager": managers.get("home", {}).get("name", "TBA"),
+            "away_manager": managers.get("away", {}).get("name", "TBA"),
+            "competition": info.get("tournament", {}).get("name", ""),
+            "stage": match_data.get("roundname", {}).get("name", "")
         })
 
-        # 2. Concurrently fetch deep stats (Bumped max_workers to 9 to handle upcoming matches)
-        with ThreadPoolExecutor(max_workers=9) as pool:
+        # 2. Concurrently fetch deep stats
+        with ThreadPoolExecutor(max_workers=10) as pool:
             f_squads      = pool.submit(_fetch_lmt, "match_squads", betradar_id)
             f_timeline    = pool.submit(_fetch_lmt, "match_timelinedelta", betradar_id)
-            f_h2h         = pool.submit(_fetch_sh, "stats_match_head2head", betradar_id)
+            f_h2h         = pool.submit(_fetch_sh, "stats_team_versusrecent", f"{home_uid}/{away_uid}") if home_uid and away_uid else None
             f_table       = pool.submit(_fetch_sh, "season_dynamictable", str(season_id)) if season_id else None
             f_form        = pool.submit(_fetch_sh, "stats_formtable", str(season_id)) if season_id else None
             f_home_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(home_uid), "/10") if home_uid else None
             f_away_recent = pool.submit(_fetch_sh, "stats_team_lastx", str(away_uid), "/10") if away_uid else None
             f_home_next   = pool.submit(_fetch_sh, "stats_team_fixtures", str(home_uid), "/10") if home_uid else None
             f_away_next   = pool.submit(_fetch_sh, "stats_team_fixtures", str(away_uid), "/10") if away_uid else None
+            f_top_h       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{home_uid}") if season_id and home_uid else None
+            f_top_a       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{away_uid}") if season_id and away_uid else None
 
-            # --- SQUADS ---
+            # --- SQUADS & FORMATIONS ---
             squads_data = f_squads.result()
             if squads_data and "home" in squads_data:
                 h_node = squads_data.get("home", {}).get("startinglineup", squads_data.get("home", {}).get("players", []))
@@ -100,8 +117,16 @@ def stream_deep_analytics(betradar_id: str):
                 comments = [{"time": ev.get("time", ""), "team": ev.get("team"), "type": ev.get("type"), "name": ev.get("name", "")} for ev in reversed(events) if ev.get("type") not in ignored]
                 yield _sse("comments", comments[:20])
 
+            # --- TOP SCORERS ---
+            top_h_data = f_top_h.result() if f_top_h else {}
+            top_a_data = f_top_a.result() if f_top_a else {}
+            yield _sse("top_scorers", {
+                "home": [{"name": p.get("player", {}).get("name", "Unknown"), "goals": p.get("total", {}).get("goals", 0)} for p in top_h_data.get("players", [])[:3]],
+                "away": [{"name": p.get("player", {}).get("name", "Unknown"), "goals": p.get("total", {}).get("goals", 0)} for p in top_a_data.get("players", [])[:3]]
+            })
+
             # --- HEAD 2 HEAD ---
-            h2h_data = f_h2h.result()
+            h2h_data = f_h2h.result() if f_h2h else None
             if h2h_data:
                 parsed_h2h = []
                 for m in h2h_data.get("matches", [])[:5]:
@@ -114,13 +139,14 @@ def stream_deep_analytics(betradar_id: str):
                     })
                 yield _sse("h2h", parsed_h2h)
 
-            # --- RECENT MATCHES (HOME & AWAY) ---
+            # --- RECENT & UPCOMING ---
             def _parse_recent(data):
                 if not data: return []
                 parsed = []
                 for m in data.get("matches", [])[:5]:
                     parsed.append({
                         "date": m.get("_dt", {}).get("date", ""),
+                        "time": m.get("_dt", {}).get("time", ""),
                         "home": m.get("teams", {}).get("home", {}).get("name", ""),
                         "away": m.get("teams", {}).get("away", {}).get("name", ""),
                         "score_home": m.get("result", {}).get("home", 0),
@@ -132,23 +158,9 @@ def stream_deep_analytics(betradar_id: str):
                 "home": _parse_recent(f_home_recent.result() if f_home_recent else None),
                 "away": _parse_recent(f_away_recent.result() if f_away_recent else None)
             })
-
-            # --- UPCOMING MATCHES (HOME & AWAY) ---
-            def _parse_upcoming(data):
-                if not data: return []
-                parsed = []
-                for m in data.get("matches", [])[:3]: # Limit to next 3 to save UI space
-                    parsed.append({
-                        "date": m.get("_dt", {}).get("date", ""),
-                        "time": m.get("_dt", {}).get("time", ""),
-                        "home": m.get("teams", {}).get("home", {}).get("name", ""),
-                        "away": m.get("teams", {}).get("away", {}).get("name", "")
-                    })
-                return parsed
-
             yield _sse("upcoming", {
-                "home": _parse_upcoming(f_home_next.result() if f_home_next else None),
-                "away": _parse_upcoming(f_away_next.result() if f_away_next else None)
+                "home": _parse_recent(f_home_next.result() if f_home_next else None)[:3],
+                "away": _parse_recent(f_away_next.result() if f_away_next else None)[:3]
             })
 
             # --- STANDINGS & FORM ---
