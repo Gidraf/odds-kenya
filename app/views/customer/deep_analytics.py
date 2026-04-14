@@ -35,15 +35,19 @@ def stream_deep_analytics(betradar_id: str):
     def generate():
         yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
 
-        timeline_data = _fetch_lmt("match_timelinedelta", betradar_id)
-        info_data = _fetch_lmt("match_info", betradar_id)
+        # 1. Bulletproof Fetching (Check LMT first, fallback to Statshub)
+        timeline_data = _fetch_lmt("match_timelinedelta", betradar_id) or {}
+        info_data = _fetch_lmt("match_info", betradar_id) or {}
+        sh_info_data = _fetch_sh("match_info_statshub", betradar_id) or {}
         
-        match_data = timeline_data.get("match") or info_data.get("match") or {}
+        # Grab match object from whichever endpoint actually returned it
+        match_data = timeline_data.get("match") or info_data.get("match") or sh_info_data.get("match") or {}
 
         if not match_data:
-            yield _sse("error", {"message": "Could not load match data."})
+            yield _sse("error", {"message": f"Could not load match data for {betradar_id}."})
             return
 
+        # Extract strict UIDs and Team Names
         teams = match_data.get("teams", {})
         home_uid = teams.get("home", {}).get("uid")
         away_uid = teams.get("away", {}).get("uid")
@@ -52,15 +56,16 @@ def stream_deep_analytics(betradar_id: str):
         match_time = match_data.get("timeinfo", {}).get("played", "0")
         live_status = match_data.get("status", {}).get("name", "Upcoming")
 
-        stadium = info_data.get("stadium", {})
-        distance = info_data.get("distance", "N/A")
-        managers = info_data.get("manager", {})
+        # Grab meta info from either info endpoint
+        stadium = info_data.get("stadium") or sh_info_data.get("stadium") or {}
+        distance = info_data.get("distance") or sh_info_data.get("distance") or "N/A"
+        managers = info_data.get("manager") or sh_info_data.get("manager") or {}
 
         yield _sse("meta", {
             "home_team": teams.get("home", {}).get("name", "Home"),
             "away_team": teams.get("away", {}).get("name", "Away"),
             "status": live_status,
-            "match_time": str(match_time),
+            "match_time": str(match_time) if match_time else "0",
             "score_home": match_data.get("result", {}).get("home", 0),
             "score_away": match_data.get("result", {}).get("away", 0),
             "stadium": stadium.get("name", "Unknown Stadium"),
@@ -69,12 +74,16 @@ def stream_deep_analytics(betradar_id: str):
             "away_manager": managers.get("away", {}).get("name", "TBA")
         })
 
-        if timeline_data:
+        # Process events if they exist
+        if timeline_data and "events" in timeline_data:
             events = timeline_data.get("events", [])
             ignored = ["possession", "matchsituation", "ballcoordinates", "possible_event", "pitch coordinates"]
             comments = [{"time": ev.get("time", ""), "team": ev.get("team"), "type": ev.get("type"), "name": ev.get("name", "")} for ev in reversed(events) if ev.get("type") not in ignored]
             yield _sse("comments", comments[:20])
+        else:
+            yield _sse("comments", []) # Send empty if no timeline
 
+        # 2. Concurrently fetch deep stats
         with ThreadPoolExecutor(max_workers=10) as pool:
             f_squads      = pool.submit(_fetch_lmt, "match_squads", betradar_id)
             f_h2h         = pool.submit(_fetch_sh, "stats_team_versusrecent", f"{home_uid}/{away_uid}") if home_uid and away_uid else None
@@ -88,6 +97,7 @@ def stream_deep_analytics(betradar_id: str):
             f_top_h       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{home_uid}") if season_id and home_uid else None
             f_top_a       = pool.submit(_fetch_sh, "stats_season_topgoals", f"{season_id}/{away_uid}") if season_id and away_uid else None
 
+            # --- SQUADS ---
             squads_data = f_squads.result()
             if squads_data and "home" in squads_data:
                 h_node = squads_data.get("home", {}).get("startinglineup", squads_data.get("home", {}).get("players", []))
@@ -104,6 +114,7 @@ def stream_deep_analytics(betradar_id: str):
             else:
                 yield _sse("lineups", {"fallback": True})
 
+            # --- H2H ---
             h2h_data = f_h2h.result() if f_h2h else None
             if h2h_data:
                 parsed_h2h = []
@@ -116,7 +127,10 @@ def stream_deep_analytics(betradar_id: str):
                         "score_away": m.get("result", {}).get("away", 0)
                     })
                 yield _sse("h2h", parsed_h2h)
+            else:
+                yield _sse("h2h", [])
 
+            # --- RECENT / UPCOMING ---
             def _parse_recent(data):
                 if not data: return []
                 return [{
@@ -132,12 +146,12 @@ def stream_deep_analytics(betradar_id: str):
                 "home": _parse_recent(f_home_recent.result() if f_home_recent else None),
                 "away": _parse_recent(f_away_recent.result() if f_away_recent else None)
             })
-            
             yield _sse("upcoming", {
                 "home": _parse_recent(f_home_next.result() if f_home_next else None)[:3],
                 "away": _parse_recent(f_away_next.result() if f_away_next else None)[:3]
             })
 
+            # --- FORM ---
             form_data = f_form.result() if f_form else None
             if form_data:
                 target_form = {"home": [], "away": []}
@@ -148,6 +162,7 @@ def stream_deep_analytics(betradar_id: str):
                     if uid == str(away_uid): target_form["away"] = form_list
                 yield _sse("form", target_form)
 
+            # --- STANDINGS ---
             table_data = f_table.result() if f_table else None
             if table_data:
                 rows = []
@@ -165,6 +180,7 @@ def stream_deep_analytics(betradar_id: str):
                     break 
                 yield _sse("standings", sorted(rows, key=lambda x: x["pos"]))
 
+            # --- TOP SCORERS ---
             top_h_data = f_top_h.result() if f_top_h else {}
             top_a_data = f_top_a.result() if f_top_a else {}
             def extract_scorers(data):
@@ -175,6 +191,7 @@ def stream_deep_analytics(betradar_id: str):
                 "away": extract_scorers(top_a_data)
             })
 
+            # --- TEAM STATS ---
             t_stats = f_team_stats.result() if f_team_stats else None
             if t_stats:
                 h_stats = t_stats.get("stats", {}).get("uniqueteams", {}).get(str(home_uid), {})
