@@ -1,8 +1,13 @@
 import logging
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, Response, stream_with_context
 import requests
 import json
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
 
@@ -17,23 +22,35 @@ def _sse(event: str, data: dict) -> str:
 def _fetch_lmt(endpoint: str, item_id: str):
     url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={LMT_TOKEN}"
     try:
+        logger.info(f"[LMT] Fetching: {endpoint} for {item_id}")
         res = requests.get(url, headers=_HEADERS, timeout=5)
-        if res.status_code == 200: return res.json().get("doc", [{}])[0].get("data", {})
-    except: pass
+        if res.status_code == 200: 
+            return res.json().get("doc", [{}])[0].get("data", {})
+        else:
+            logger.warning(f"[LMT] Error {res.status_code} for {endpoint}/{item_id}")
+    except Exception as e:
+        logger.error(f"[LMT] Exception for {endpoint}/{item_id}: {e}")
     return {}
 
 def _fetch_sh(endpoint: str, item_id: str, extra=""):
     url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={SH_TOKEN}"
     try:
+        logger.info(f"[SH] Fetching: {endpoint} for {item_id}")
         res = requests.get(url, headers=_HEADERS, timeout=5)
-        if res.status_code == 200: return res.json().get("doc", [{}])[0].get("data", {})
-    except: pass
+        if res.status_code == 200: 
+            return res.json().get("doc", [{}])[0].get("data", {})
+        else:
+            logger.warning(f"[SH] Error {res.status_code} for {endpoint}/{item_id}")
+    except Exception as e:
+        logger.error(f"[SH] Exception for {endpoint}/{item_id}: {e}")
     return {}
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
 def stream_deep_analytics(betradar_id: str):
     def generate():
         yield _sse("status", {"step": "Initializing", "message": "Connecting to Sportradar..."})
+
+        logger.info(f"--- Starting stream for Match ID: {betradar_id} ---")
 
         # 1. Bulletproof Fetching (Check LMT first, fallback to Statshub)
         timeline_data = _fetch_lmt("match_timelinedelta", betradar_id) or {}
@@ -44,6 +61,7 @@ def stream_deep_analytics(betradar_id: str):
         match_data = timeline_data.get("match") or info_data.get("match") or sh_info_data.get("match") or {}
 
         if not match_data:
+            logger.error(f"FATAL: All core endpoints failed for {betradar_id}. Timeline: {bool(timeline_data)}, LMT Info: {bool(info_data)}, SH Info: {bool(sh_info_data)}")
             yield _sse("error", {"message": f"Could not load match data for {betradar_id}."})
             return
 
@@ -211,6 +229,7 @@ def stream_deep_analytics(betradar_id: str):
                     }
                 })
 
+        logger.info(f"--- Stream complete for Match ID: {betradar_id} ---")
         yield _sse("done", {"status": "complete"})
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream", headers={
