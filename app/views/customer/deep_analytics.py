@@ -1,5 +1,6 @@
 import logging
 import traceback
+import re
 from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, Response, stream_with_context
 import requests
@@ -11,21 +12,64 @@ logger = logging.getLogger(__name__)
 
 bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
 
-LMT_TOKEN = "exp=1776025306~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cuYmV0aWthLmNvbSIsImEiOiI2MDAwNmI1MjM0YzMxY2NmOGIxNGYxNmYyODczZWU3MSIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=016ea9a66a30e7c493628bc5a2beb8e294aeefa76ea7582648f6e40904e395d4"
-SH_TOKEN = "exp=1776064004~acl=/*~data=eyJvIjoiaHR0cHM6Ly9zdGF0c2h1Yi5zcG9ydHJhZGFyLmNvbSIsImEiOiJzcG9ydHBlc2EiLCJhY3QiOiJvcmlnaW5jaGVjayIsIm9zcmMiOiJob3N0aGVhZGVyIn0~hmac=1c7b2ef7f250e867db4f35699ca70d55884e705200df665ee15860e7eb4cddd6"
+_HEADERS = {
+    "origin": "https://www.betika.com", 
+    "referer": "https://www.betika.com/", 
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
-_HEADERS = {"origin": "https://www.betika.com", "referer": "https://www.betika.com/", "user-agent": "Mozilla/5.0"}
+# Global token cache
+ACTIVE_TOKENS = {
+    "LMT_TOKEN": "",
+    "SH_TOKEN": ""
+}
+
+def _get_fresh_tokens():
+    """Scrapes Betika's widget loader to find the active Sportradar HMAC tokens."""
+    try:
+        # This is the entrypoint script that Betika uses to boot the widgets
+        url = "https://widgets.sir.sportradar.com/60006b5234c31ccf8b14f16f2873ee71/widgetloader"
+        res = requests.get(url, headers=_HEADERS, timeout=5)
+        
+        if res.status_code == 200:
+            # We are looking for strings that match the token format: exp=...~acl=/*~data=...~hmac=...
+            tokens = re.findall(r'(exp=\d+~acl=/\*~data=[a-zA-Z0-9_]+~hmac=[a-f0-9]+)', res.text)
+            
+            if tokens:
+                # Usually the LMT and SH tokens share the same root or are passed interchangeably.
+                # We grab the most recent valid token found.
+                ACTIVE_TOKENS["LMT_TOKEN"] = tokens[0]
+                ACTIVE_TOKENS["SH_TOKEN"] = tokens[0]
+                logger.info(f"Successfully scraped fresh Sportradar Tokens.")
+                return True
+        else:
+            logger.warning(f"Failed to fetch widget loader. HTTP {res.status_code}")
+    except Exception as e:
+        logger.error(f"Exception while scraping tokens: {e}")
+    
+    return False
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 def _fetch_lmt(endpoint: str, item_id: str):
-    url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={LMT_TOKEN}"
+    if not ACTIVE_TOKENS["LMT_TOKEN"]:
+        _get_fresh_tokens()
+
+    url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={ACTIVE_TOKENS['LMT_TOKEN']}"
     try:
         logger.info(f"[LMT] Fetching: {endpoint} for {item_id}")
         res = requests.get(url, headers=_HEADERS, timeout=5)
         if res.status_code == 200: 
             return res.json().get("doc", [{}])[0].get("data", {})
+        elif res.status_code == 403:
+            # Token expired! Refresh and retry once.
+            logger.warning(f"[LMT] 403 Forbidden. Token likely expired. Refreshing...")
+            if _get_fresh_tokens():
+                url = f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{endpoint}/{item_id}?T={ACTIVE_TOKENS['LMT_TOKEN']}"
+                retry_res = requests.get(url, headers=_HEADERS, timeout=5)
+                if retry_res.status_code == 200:
+                    return retry_res.json().get("doc", [{}])[0].get("data", {})
         else:
             logger.warning(f"[LMT] Error {res.status_code} for {endpoint}/{item_id}")
     except Exception as e:
@@ -33,12 +77,23 @@ def _fetch_lmt(endpoint: str, item_id: str):
     return {}
 
 def _fetch_sh(endpoint: str, item_id: str, extra=""):
-    url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={SH_TOKEN}"
+    if not ACTIVE_TOKENS["SH_TOKEN"]:
+        _get_fresh_tokens()
+
+    url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={ACTIVE_TOKENS['SH_TOKEN']}"
     try:
         logger.info(f"[SH] Fetching: {endpoint} for {item_id}")
         res = requests.get(url, headers=_HEADERS, timeout=5)
         if res.status_code == 200: 
             return res.json().get("doc", [{}])[0].get("data", {})
+        elif res.status_code == 403:
+            # Token expired! Refresh and retry once.
+            logger.warning(f"[SH] 403 Forbidden. Token likely expired. Refreshing...")
+            if _get_fresh_tokens():
+                url = f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{endpoint}/{item_id}{extra}?T={ACTIVE_TOKENS['SH_TOKEN']}"
+                retry_res = requests.get(url, headers=_HEADERS, timeout=5)
+                if retry_res.status_code == 200:
+                    return retry_res.json().get("doc", [{}])[0].get("data", {})
         else:
             logger.warning(f"[SH] Error {res.status_code} for {endpoint}/{item_id}")
     except Exception as e:
@@ -52,12 +107,11 @@ def stream_deep_analytics(betradar_id: str):
 
         logger.info(f"--- Starting stream for Match ID: {betradar_id} ---")
 
-        # 1. Bulletproof Fetching (Check LMT first, fallback to Statshub)
+        # 1. Fetch Timeline Delta & Info
         timeline_data = _fetch_lmt("match_timelinedelta", betradar_id) or {}
         info_data = _fetch_lmt("match_info", betradar_id) or {}
         sh_info_data = _fetch_sh("match_info_statshub", betradar_id) or {}
         
-        # Grab match object from whichever endpoint actually returned it
         match_data = timeline_data.get("match") or info_data.get("match") or sh_info_data.get("match") or {}
 
         if not match_data:
@@ -65,7 +119,6 @@ def stream_deep_analytics(betradar_id: str):
             yield _sse("error", {"message": f"Could not load match data for {betradar_id}."})
             return
 
-        # Extract strict UIDs and Team Names
         teams = match_data.get("teams", {})
         home_uid = teams.get("home", {}).get("uid")
         away_uid = teams.get("away", {}).get("uid")
@@ -74,7 +127,6 @@ def stream_deep_analytics(betradar_id: str):
         match_time = match_data.get("timeinfo", {}).get("played", "0")
         live_status = match_data.get("status", {}).get("name", "Upcoming")
 
-        # Grab meta info from either info endpoint
         stadium = info_data.get("stadium") or sh_info_data.get("stadium") or {}
         distance = info_data.get("distance") or sh_info_data.get("distance") or "N/A"
         managers = info_data.get("manager") or sh_info_data.get("manager") or {}
@@ -92,14 +144,13 @@ def stream_deep_analytics(betradar_id: str):
             "away_manager": managers.get("away", {}).get("name", "TBA")
         })
 
-        # Process events if they exist
         if timeline_data and "events" in timeline_data:
             events = timeline_data.get("events", [])
             ignored = ["possession", "matchsituation", "ballcoordinates", "possible_event", "pitch coordinates"]
             comments = [{"time": ev.get("time", ""), "team": ev.get("team"), "type": ev.get("type"), "name": ev.get("name", "")} for ev in reversed(events) if ev.get("type") not in ignored]
             yield _sse("comments", comments[:20])
         else:
-            yield _sse("comments", []) # Send empty if no timeline
+            yield _sse("comments", []) 
 
         # 2. Concurrently fetch deep stats
         with ThreadPoolExecutor(max_workers=10) as pool:
