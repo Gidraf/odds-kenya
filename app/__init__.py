@@ -99,7 +99,7 @@ def create_app() -> Flask:
     from app.views.customer.sportradar_tracker import bp_tracker
     from app.views.customer.deep_analytics import bp_deep_analytics
     from app.views.customer.gemini_comentary import bp_commentary
-    from app.views.customer.ai_story import bp_commentary
+    from app.views.customer.ai_story import bp_story
     from app.views.customer.analytic_debug import bp_raw_stream
 
     flask_app.register_blueprint(bp_search)
@@ -114,7 +114,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
-    flask_app.register_blueprint(bp_commentary)
+    flask_app.register_blueprint(bp_story)
     flask_app.register_blueprint(bp_raw_stream)
     flask_app.register_blueprint(bp_interceptor)
     # flask_app.register_blueprint(bp_sp)
