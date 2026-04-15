@@ -61,7 +61,7 @@ services:
   #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
   #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
 
-  redis6381:
+  redis6382:
     image: redis:7
     container_name: redis6382
     restart: always
