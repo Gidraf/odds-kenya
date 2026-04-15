@@ -18,7 +18,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - REDIS_HOST=redis6381
-      - REDIS_PORT=6381
+      - REDIS_PORT=6382
       - REDIS_AUTH=@Winners1127
       # External DB Variables
       - DB_NAME=oddkenya
@@ -68,7 +68,7 @@ services:
     command: >
       sh -c "redis-server --port 6381 --requirepass '@Winners1127'"
     ports:
-      - "6381:6382"
+      - "6382:6382"
     networks:
       - app-network
     healthcheck:
