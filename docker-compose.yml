@@ -5,7 +5,7 @@ services:
     build: .
     restart: always
     # NO PORT MAPPING HERE! Nginx handles the outside world on port 5050.
-    command: gunicorn -k gevent -w 4 -b 0.0.0.0:5000 run:app
+    command: gunicorn -k gevent -w 4 -b 0.0.0.0:5000 run:flask_app
     env_file: .env
     networks:
       - app-network
