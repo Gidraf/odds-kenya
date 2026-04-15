@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("commentary")
 
-bp_story = Blueprint("commentary", __name__, url_prefix="/api")
+bp_commentary = Blueprint("commentary", __name__, url_prefix="/api")
 _openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "edge").lower()
 
