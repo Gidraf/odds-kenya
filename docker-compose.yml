@@ -63,12 +63,12 @@ services:
 
   redis6381:
     image: redis:7
-    container_name: redis6381
+    container_name: redis6382
     restart: always
     command: >
       sh -c "redis-server --port 6381 --requirepass '@Winners1127'"
     ports:
-      - "6381:6381"
+      - "6381:6382"
     networks:
       - app-network
     healthcheck:
