@@ -38,6 +38,23 @@ bp_commentary = Blueprint("commentary", __name__, url_prefix="/api")
 _openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "edge").lower()
 
+
+# ── MinIO ─────────────────────────────────────────────────────────────────────
+MINIO_OK = False; _minio = None; BUCKET = "sport"
+try:
+    from minio import Minio
+    import urllib3
+    _minio = Minio(
+        os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
+        access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
+        secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
+        http_client=urllib3.PoolManager(timeout=urllib3.Timeout(connect=3, read=10)),
+    )
+    if not _minio.bucket_exists(BUCKET): _minio.make_bucket(BUCKET)
+    MINIO_OK = True; log.info("MinIO connected ✓")
+except Exception as e: log.warning(f"MinIO unavailable: {e}")
+
 # ── MinIO ─────────────────────────────────────────────────────────────────────
 # MinIO removed — commentary uses SQLite for caching
 
@@ -68,7 +85,7 @@ except ImportError: log.warning("duckduckgo_search not installed")
 
 # ── Playwright scraper (shared collector — no hardcoded tokens) ───────────────
 try:
-    from playwright_scraper import collect_match_data as _playwright_collect, get as _pget
+    from app.utils.playwright_scraper import collect_match_data as _playwright_collect, get as _pget
     PLAYWRIGHT_OK = True
     log.info("playwright_scraper loaded ✓")
 except ImportError as e:
