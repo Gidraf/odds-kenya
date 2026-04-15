@@ -44,9 +44,9 @@ try:
     from minio import Minio
     import urllib3
     _minio = Minio(
-        os.environ.get("STORAGE_ENDPOINT", "localhost:9000"),
-        access_key=os.environ.get("STORAGE_ACCESS_KEY", "minioadmin"),
-        secret_key=os.environ.get("STORAGE_SECRET_KEY", "minioadmin"),
+        os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
+        access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
+        secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
         secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
         http_client=urllib3.PoolManager(timeout=urllib3.Timeout(connect=3, read=10)),
     )
@@ -63,7 +63,7 @@ except ImportError: log.warning("duckduckgo_search not installed")
 
 # ── Playwright scraper (shared collector — no hardcoded tokens) ───────────────
 try:
-    from app.utils.playwright_scraper import collect_match_data as _playwright_collect, get as _pget
+    from playwright_scraper import collect_match_data as _playwright_collect, get as _pget
     PLAYWRIGHT_OK = True
     log.info("playwright_scraper loaded ✓")
 except ImportError as e:
@@ -262,9 +262,15 @@ def _search(q: str, n: int = 3) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 BROADCAST_SYSTEM = """You are scripting a live TV sports broadcast.
-ALEX: Lead male commentator — authoritative, dramatic, passionate, encyclopaedic.
-SARAH: Female analyst — warm, statistically sharp, great storyteller.
-Rules: natural broadcast dialogue, references previous scenes, no stage directions, pure speech."""
+ALEX: Lead male commentator — authoritative, dramatic, encyclopaedic. Opens most segments.
+SARAH: Female analyst — sharp, statistically precise, often contrarian, tells stories data supports.
+
+STRICT RULES — violating any of these ruins the broadcast:
+1. Output ONLY the words the speaker says. NO name prefix — never write "ALEX:" or "SARAH:".
+2. NEVER repeat, paraphrase, or echo what the other speaker said. Build on it with NEW information.
+3. Each turn must add something the listener hasn't heard yet: a stat, a story angle, a tactical insight.
+4. Maximum 45 words per turn. Tight. Punchy. Broadcast rhythm.
+5. Natural spoken English — contractions, no bullet points, no stage directions."""
 
 def _chat(prompt: str, history: list = None, system: str = None) -> str:
     msgs = []
@@ -276,6 +282,11 @@ def _chat(prompt: str, history: list = None, system: str = None) -> str:
         return r.choices[0].message.content.strip()
     except Exception as e:
         log.error(f"Chat: {e}"); return f"[Error: {e}]"
+
+def _sp(text: str) -> str:
+    """Strip any speaker prefix (ALEX:, SARAH:, Alex:, Sarah:) the model may have added."""
+    return re.sub(r"^(ALEX|SARAH|Alex|Sarah)\s*:\s*", "", text.strip())
+
 
 def _history(scenes: list) -> list:
     h = []
@@ -307,160 +318,253 @@ JSON only: {{"full_name":"","nationality":"","age":0,"current_team":"{team}","te
 
 
 # ── Scene generators ──────────────────────────────────────────────────────────
+# Rules enforced here:
+# - Every _chat return is wrapped in _sp() to strip any "ALEX:"/"SARAH:" prefixes
+# - The second speaker always gets a DIFFERENT angle prompt — never "Continues: ..."
+# - Web search used to verify factual claims before writing them into scripts
+
 def _s_intro(ctx, hist):
-    h,a = ctx["home"],ctx["away"]
-    comp = f"{ctx.get('competition','')} {ctx.get('stage','')}".strip()
-    cup  = "It's a cup tie — winner takes all!" if ctx.get("competition_type")=="cup" else ""
-    alex = _chat(f"""ALEX opens the show. {h} vs {a} | {comp} | {ctx.get('venue','')} | {ctx.get('date','')}. {cup}
-~35 words. Start "LADIES AND GENTLEMEN". End "...what a night this promises to be!" """, hist, BROADCAST_SYSTEM)
-    sarah = _chat(f"""SARAH responds — ONE sharp insight about {h} vs {a} ~20 words. Continues: "{alex[:80]}..." """,
-                  hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+    h, a = ctx["home"], ctx["away"]
+    comp  = f"{ctx.get('competition', '')} {ctx.get('stage', '')}".strip()
+    venue = ctx.get("venue", "")
+    date  = ctx.get("date", "")
+    cup   = "Winner takes all — this is knockout football." if ctx.get("competition_type") == "cup" else ""
+    # Web search for any breaking team news
+    news  = _search(f"{h} vs {a} {comp} preview team news 2025") if SEARCH_OK else ""
+
+    alex = _sp(_chat(
+        f"""Open the broadcast. {h} vs {a} | {comp} | {venue} | {date}. {cup}
+Latest context: {news[:200] if news else 'N/A'}
+Start: "Ladies and gentlemen..." End with genuine excitement. ~35 words.""",
+        hist, BROADCAST_SYSTEM))
+
+    sarah = _sp(_chat(
+        f"""Alex just opened the show for {h} vs {a}. Your turn.
+Give ONE stat or narrative angle Alex has NOT mentioned. ~20 words.
+Do NOT repeat anything Alex said.""",
+        hist + [{"role": "assistant", "content": alex}], BROADCAST_SYSTEM))
     return alex, sarah
+
 
 def _s_h2h(ctx, hist):
-    h,a = ctx["home"],ctx["away"]
-    hw,dr,aw = ctx.get("home_wins",0),ctx.get("draws",0),ctx.get("away_wins",0)
-    snip = " | ".join(f"{m['home']} {m['score_home']}-{m['score_away']} {m['away']} ({m.get('date','')})"
-                      for m in (ctx.get("h2h_matches") or [])[:3]) or "No recent meetings"
-    gt = ctx.get("goal_timing",{})
-    tn = f"Most goals in {gt.get('most_dangerous_period','')} period." if gt.get("most_dangerous_period") else ""
-    sarah = _chat(f"""SARAH presents H2H — picking up from intro.
-{h} wins:{hw}, Draws:{dr}, {a} wins:{aw}. Recent: {snip}. {tn}
-~40 words. Pure broadcast speech.""", hist, BROADCAST_SYSTEM)
-    alex = _chat(f"""ALEX reacts ~20 words. What does history say for TONIGHT?
-Continues: "{sarah[:80]}..." """, hist+[{"role":"assistant","content":f"SARAH: {sarah}"}], BROADCAST_SYSTEM)
+    h, a    = ctx["home"], ctx["away"]
+    hw, dr, aw = ctx.get("home_wins", 0), ctx.get("draws", 0), ctx.get("away_wins", 0)
+    matches = ctx.get("h2h_matches") or []
+    snip    = " | ".join(
+        f"{m['home']} {m['score_home']}-{m['score_away']} {m['away']} ({m.get('date', '')})"
+        for m in matches[:4]) or "No recent meetings recorded"
+    gt  = ctx.get("goal_timing", {})
+    dn  = f"Most goals historically come in the {gt.get('most_dangerous_period', '')} period." if gt.get("most_dangerous_period") else ""
+    # Verify H2H facts with a search
+    web = _search(f"{h} vs {a} head to head record all time") if SEARCH_OK else ""
+
+    sarah = _sp(_chat(
+        f"""Present the head-to-head record.
+Record: {h} {hw} wins, {dr} draws, {a} {aw} wins.
+Last meetings: {snip}.
+{dn}
+Extra context from web: {web[:250] if web else 'N/A'}
+~40 words. Mention one surprising detail from the history.""",
+        hist, BROADCAST_SYSTEM))
+
+    alex = _sp(_chat(
+        f"""Sarah just presented the H2H record ({h} {hw}W / {dr}D / {a} {aw}W).
+Add a DIFFERENT angle: what psychological edge or momentum factor does tonight carry? ~20 words.
+Do NOT recap the numbers Sarah already gave.""",
+        hist + [{"role": "assistant", "content": sarah}], BROADCAST_SYSTEM))
     return sarah, alex
+
 
 def _s_form(ctx, hist):
-    h,a = ctx["home"],ctx["away"]
-    hf=" ".join(ctx.get("home_form") or []) or "unknown"
-    af=" ".join(ctx.get("away_form") or []) or "unknown"
-    hs=ctx.get("home_top_scorer",""); as_=ctx.get("away_top_scorer","")
-    sn=(f" {h}'s {hs} is red-hot." if hs else "")+(f" {a}'s {as_} leads their attack." if as_ else "")
-    alex = _chat(f"""ALEX breaks down form — continuing naturally.
-{h} last 5: {hf} ({ctx.get('home_gpg',0):.1f} goals/game) | {a} last 5: {af} ({ctx.get('away_gpg',0):.1f}). {sn}
-~40 words. Build narrative tension.""", hist, BROADCAST_SYSTEM)
-    sarah = _chat(f"""SARAH adds analysis ~25 words. Which momentum wins tonight?
-Natural response: "{alex[:80]}..." """, hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+    h, a  = ctx["home"], ctx["away"]
+    hf    = " ".join(ctx.get("home_form") or []) or "form unknown"
+    af    = " ".join(ctx.get("away_form") or []) or "form unknown"
+    hgpg  = ctx.get("home_gpg", 0)
+    agpg  = ctx.get("away_gpg", 0)
+    h_top = ctx.get("home_top_scorer", "")
+    a_top = ctx.get("away_top_scorer", "")
+    # Verify form with web search
+    web   = _search(f"{h} {a} recent results form 2025") if SEARCH_OK else ""
+
+    alex = _sp(_chat(
+        f"""{h} last 5 results: {hf} ({hgpg:.1f} goals/game).
+{a} last 5 results: {af} ({agpg:.1f} goals/game).
+{h_top and f"{h}'s top scorer is {h_top}." or ""}
+Web context: {web[:200] if web else "N/A"}
+~40 words. Tell the STORY of both teams' form — build tension toward tonight.""",
+        hist, BROADCAST_SYSTEM))
+
+    # Sarah gets the OPPOSITE angle — the underdog's chance or the danger in the stats
+    underdog = a if "L" * 3 in af else h if "L" * 3 in hf else ""
+    sarah = _sp(_chat(
+        f"""Alex described the form stats. Your angle: {f"How can {underdog} overcome their slump?" if underdog else "What tactical shift could change the narrative tonight?"}
+~25 words. Bring a FRESH insight — not the win/loss numbers Alex already covered.""",
+        hist + [{"role": "assistant", "content": alex}], BROADCAST_SYSTEM))
     return alex, sarah
 
-def _s_stage(ctx, hist):
-    h,a = ctx["home"],ctx["away"]
-    dist = ctx.get("distance_km"); dn = f"Only {dist}km separates these cities." if dist else ""
-    cup  = "One team goes out — the stakes are everything." if ctx.get("competition_type")=="cup" else ""
-    sarah = _chat(f"""SARAH sets the scene — continuing the broadcast.
-{h} vs {a} in {ctx.get('competition','')} {ctx.get('stage','')}. {dn} {cup}
-~40 words, passionate. Reference earlier conversation.""", hist, BROADCAST_SYSTEM)
-    alex = _chat(f"""ALEX adds dramatic weight ~20 words. What does victory mean for each club?
-Continues: "{sarah[:80]}..." """, hist+[{"role":"assistant","content":f"SARAH: {sarah}"}], BROADCAST_SYSTEM)
-    return sarah, alex
 
 def _s_scorers(ctx, hist):
-    h,a = ctx["home"],ctx["away"]
+    h, a = ctx["home"], ctx["away"]
     def _sc_str(sc, team):
-        if not sc: return f"{team}: scorer data unavailable."
-        return ", ".join(f"{s['name']} ({s['goals']} goals)" for s in sc[:3])
-    alex = _chat(f"""ALEX spotlights the top scorers.
-{h}: {_sc_str(ctx.get('home_top_scorers',[]),h)}
-{a}: {_sc_str(ctx.get('away_top_scorers',[]),a)}
-~40 words. Who is the biggest danger tonight?""", hist, BROADCAST_SYSTEM)
-    sarah = _chat(f"""SARAH adds ONE tactical note about the goal threat ~20 words.
-Continues: "{alex[:80]}..." """, hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+        if not sc: return f"no scorer data for {team}"
+        return ", ".join(f"{s['name']} ({s['goals']} goals in {s.get('matches', '?')} games)" for s in sc[:3])
+    h_str = _sc_str(ctx.get("home_top_scorers", []), h)
+    a_str = _sc_str(ctx.get("away_top_scorers", []), a)
+    # Search for tonight's goal-scorer tips
+    web   = _search(f"{h} {a} predicted goalscorer anytime goal tip tonight") if SEARCH_OK else ""
+
+    alex = _sp(_chat(
+        f"""Name the biggest goal threats.
+{h}: {h_str}.
+{a}: {a_str}.
+Web tips: {web[:200] if web else "N/A"}
+~40 words. Pick ONE player from each side and explain WHY they're dangerous tonight.""",
+        hist, BROADCAST_SYSTEM))
+
+    # Sarah brings the defender's perspective or an underrated threat
+    sarah = _sp(_chat(
+        f"""Alex highlighted the obvious threats. Bring the counter-argument:
+Which defender could shut them down, OR which under-the-radar player could be the surprise scorer? ~25 words.
+Do NOT name the same players Alex mentioned.""",
+        hist + [{"role": "assistant", "content": alex}], BROADCAST_SYSTEM))
     return alex, sarah
+
 
 def _s_managers(ctx, hist):
-    hm=ctx.get("home_manager",{}); am=ctx.get("away_manager",{})
-    h,a = ctx["home"],ctx["away"]
-    alex = _chat(f"""ALEX spotlights the managers — flowing from previous topics.
-{hm.get('full_name',h+' coach')}: {hm.get('tactical_style','pressing')}, {hm.get('win_rate_pct','?')}% win rate, {hm.get('preferred_formation','?')}.
-{am.get('full_name',a+' coach')}: {am.get('tactical_style','counter')}, {am.get('win_rate_pct','?')}% win rate, {am.get('preferred_formation','?')}.
-~40 words. Tactical chess-match angle.""", hist, BROADCAST_SYSTEM)
-    sarah = _chat(f"""SARAH names ONE decisive tactical edge tonight ~25 words.
-Continues: "{alex[:80]}..." """, hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+    hm = ctx.get("home_manager", {})
+    am = ctx.get("away_manager", {})
+    h, a = ctx["home"], ctx["away"]
+    hm_name = hm.get("full_name", f"{h} coach")
+    am_name = am.get("full_name", f"{a} coach")
+    # Search for pre-match manager quotes
+    web = _search(f'{hm_name} pre-match press conference {h} vs {a} 2025') if SEARCH_OK else ""
+
+    alex = _sp(_chat(
+        f"""Set up the tactical battle between the managers.
+{hm_name} ({h}): {hm.get('tactical_style', 'organized')} system, {hm.get('preferred_formation', 'flexible')}, {hm.get('win_rate_pct', '?')}% win rate.
+{am_name} ({a}): {am.get('tactical_style', 'counter-attack')}, {am.get('preferred_formation', 'flexible')}, {am.get('win_rate_pct', '?')}% win rate.
+Pre-match context: {web[:200] if web else "N/A"}
+~40 words. Frame this as a chess match — who has the edge in the dugout?""",
+        hist, BROADCAST_SYSTEM))
+
+    # Sarah brings a personal story about one of the managers
+    sarah = _sp(_chat(
+        f"""Alex described both managers' stats. Add a HUMAN angle:
+What personal milestone, rivalry history, or tactical gamble could define {hm_name} or {am_name} tonight? ~25 words.
+No repeated stats.""",
+        hist + [{"role": "assistant", "content": alex}], BROADCAST_SYSTEM))
     return alex, sarah
 
+
 def _s_player(player: dict, enriched: dict, is_home: bool) -> str:
-    speaker = "ALEX" if is_home else "SARAH"
-    name = player.get("name","")
-    return _chat(f"""{speaker} spotlights {name} ({player.get('pos','')}, {enriched.get('nationality','?')}).
-Season: {enriched.get('appearances_this_season','?')} apps, {enriched.get('goals_this_season','?')} goals.
-Strength: {enriched.get('key_strength','technically gifted')}. {('Fun fact: '+enriched.get('fun_fact','')) if enriched.get('fun_fact') else ''}
-~25 words, energetic spotlight.""", system=BROADCAST_SYSTEM)
+    name = player.get("name", "")
+    pos  = player.get("pos", "")
+    nat  = enriched.get("nationality", "")
+    web  = _search(f"{name} football 2025 form goals stats") if SEARCH_OK else ""
+    return _sp(_chat(
+        f"""Spotlight {name} ({pos}{', ' + nat if nat else ''}).
+Season: {enriched.get('appearances_this_season', '?')} appearances, {enriched.get('goals_this_season', '?')} goals.
+Key strength: {enriched.get('key_strength', 'quality in tight spaces')}.
+{('Fun fact: ' + enriched.get('fun_fact', '')) if enriched.get('fun_fact') else ''}
+Recent web: {web[:150] if web else 'N/A'}
+~25 words. One vivid sentence that makes the listener excited to watch this player.""",
+        system=BROADCAST_SYSTEM))
+
 
 def _s_lineups(ctx, hist):
-    """Announces both starting XIs, reading player names."""
-    h, a = ctx["home"], ctx["away"]
-    h_names = ctx.get("home_players_list", "")
-    a_names = ctx.get("away_players_list", "")
-    h_form  = ctx.get("home_formation", "unknown formation")
-    a_form  = ctx.get("away_formation", "unknown formation")
+    h, a      = ctx["home"], ctx["away"]
+    h_names   = ctx.get("home_players_list", "")
+    a_names   = ctx.get("away_players_list", "")
+    h_form    = ctx.get("home_formation", "")
+    a_form    = ctx.get("away_formation", "")
 
     if not h_names and not a_names:
-        alex = _chat(f"""ALEX announces lineups for {h} vs {a}.
-Lineups have not been officially confirmed yet — ~30 words, dramatic anticipation.""",
-                     hist, BROADCAST_SYSTEM)
-        sarah = _chat(f"""SARAH responds with tactical curiosity ~20 words.
-Continues: "{alex[:80]}..." """,
-                      hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+        alex  = _sp(_chat(
+            f"""The starting lineups for {h} vs {a} have not yet been confirmed.
+Build dramatic anticipation — what selection decisions could swing the game? ~30 words.""",
+            hist, BROADCAST_SYSTEM))
+        sarah = _sp(_chat(
+            f"""Alex noted the lineups aren't out yet for {h} vs {a}.
+Give a DIFFERENT tactical curiosity — a specific position battle or injury doubt to watch. ~20 words.""",
+            hist + [{"role": "assistant", "content": alex}], BROADCAST_SYSTEM))
         return alex, sarah
 
-    alex = _chat(f"""ALEX announces the confirmed starting XIs.
-{h} line up in a {h_form}: {h_names or 'squad to be confirmed'}.
-{a} line up in a {a_form}: {a_names or 'squad to be confirmed'}.
-~45 words. Read key player names naturally, commentator broadcast style.""",
-                 hist, BROADCAST_SYSTEM)
-    sarah = _chat(f"""SARAH highlights ONE key tactical match-up based on these lineups ~25 words.
-Continues: "{alex[:80]}..." """,
-                  hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+    alex = _sp(_chat(
+        f"""Announce both confirmed starting XIs.
+{h}{(' (' + h_form + ')') if h_form else ''}: {h_names}.
+{a}{(' (' + a_form + ')') if a_form else ''}: {a_names}.
+~45 words. Read the starting players naturally, highlight 2-3 names that stand out tonight.""",
+        hist, BROADCAST_SYSTEM))
+
+    sarah = _sp(_chat(
+        f"""Alex read out the lineups. Your job: identify ONE specific positional match-up
+(e.g., a striker vs. a centre-back, a winger vs. a full-back) that will decide the game. ~25 words.
+Do NOT repeat player names Alex already mentioned unless comparing match-ups.""",
+        hist + [{"role": "assistant", "content": alex}], BROADCAST_SYSTEM))
     return alex, sarah
 
 
 def _s_standings(ctx, hist):
-    """Discusses current league/group stage standings for both teams."""
-    h, a = ctx["home"], ctx["away"]
+    h, a   = ctx["home"], ctx["away"]
     h_pos  = ctx.get("home_standing")
     a_pos  = ctx.get("away_standing")
     comp   = ctx.get("competition", "the competition")
     is_cup = ctx.get("competition_type") == "cup"
 
     if is_cup or (not h_pos and not a_pos):
-        # Cup / knockout — discuss what's at stake
-        sarah = _chat(f"""SARAH discusses what is at stake in this {comp} {ctx.get('stage','match')}.
-{h} vs {a} — knockout, one chance, everything on the line. ~35 words.""",
-                      hist, BROADCAST_SYSTEM)
-        alex = _chat(f"""ALEX adds the pressure angle ~20 words. Continues: "{sarah[:80]}..." """,
-                     hist+[{"role":"assistant","content":f"SARAH: {sarah}"}], BROADCAST_SYSTEM)
+        sarah = _sp(_chat(
+            f"""Describe what is at stake in this {comp} {ctx.get('stage', 'match')}.
+{h} vs {a} — one shot, everything on the line. ~35 words. Stakes, not statistics.""",
+            hist, BROADCAST_SYSTEM))
+        alex = _sp(_chat(
+            f"""Sarah set up the stakes. Add the EMOTIONAL weight — what does winning or losing mean for each club's season? ~20 words.
+No repeated facts.""",
+            hist + [{"role": "assistant", "content": sarah}], BROADCAST_SYSTEM))
         return sarah, alex
 
-    h_str = f"{h} sit {_ordinal(h_pos['pos'])} in {comp} with {h_pos['pts']} points from {h_pos['played']} games" if h_pos else f"{h}'s league position"
-    a_str = f"{a} are {_ordinal(a_pos['pos'])} with {a_pos['pts']} points" if a_pos else f"{a}'s position"
-    sarah = _chat(f"""SARAH breaks down where both teams stand.
-{h_str}. {a_str}. ~40 words. What does this result mean for their season?""",
-                  hist, BROADCAST_SYSTEM)
-    alex = _chat(f"""ALEX adds one pressure point ~20 words. Continues: "{sarah[:80]}..." """,
-                 hist+[{"role":"assistant","content":f"SARAH: {sarah}"}], BROADCAST_SYSTEM)
+    h_str = f"{h} are {_ordinal(h_pos['pos'])} with {h_pos['pts']} pts from {h_pos['played']} games" if h_pos else f"{h}"
+    a_str = f"{a} are {_ordinal(a_pos['pos'])} with {a_pos['pts']} pts" if a_pos else f"{a}"
+    web   = _search(f"{h} {a} {comp} table standings 2025") if SEARCH_OK else ""
+
+    sarah = _sp(_chat(
+        f"""{h_str}. {a_str}.
+Web context: {web[:200] if web else 'N/A'}
+~40 words. Explain what tonight's result means in the context of the title race or relegation battle.""",
+        hist, BROADCAST_SYSTEM))
+
+    alex = _sp(_chat(
+        f"""Sarah covered the points tally. Add the TACTICAL pressure angle: which team HAS to win today and why that changes how they'll play? ~20 words.
+New information only — not the positions Sarah already gave.""",
+        hist + [{"role": "assistant", "content": sarah}], BROADCAST_SYSTEM))
     return sarah, alex
 
 
 def _s_upcoming(ctx, hist):
-    """Previews the next fixtures for both teams after this match."""
-    h, a = ctx["home"], ctx["away"]
+    h, a  = ctx["home"], ctx["away"]
     h_fix = ctx.get("home_upcoming", [])
     a_fix = ctx.get("away_upcoming", [])
 
     def _fix_str(fixtures, team):
-        if not fixtures:
-            return f"{team}'s schedule to be confirmed"
-        top = fixtures[:3]
-        return " | ".join(f"vs {f['away'] if f.get('home','').lower().startswith(team[:4].lower()) else f['home']} ({f.get('date','')[:5]})" for f in top)
+        if not fixtures: return f"{team}'s schedule TBC"
+        return " | ".join(
+            f"vs {f['away'] if (f.get('home','') or '').lower().startswith(team[:4].lower()) else f['home']} ({(f.get('date','') or '')[:5]})"
+            for f in fixtures[:3])
 
-    alex = _chat(f"""ALEX looks ahead at what awaits both sides after this match.
-{h} upcoming: {_fix_str(h_fix, h)}.
-{a} upcoming: {_fix_str(a_fix, a)}.
-~40 words. Context of fixture congestion / big games ahead.""",
-                 hist, BROADCAST_SYSTEM)
-    sarah = _chat(f"""SARAH adds one strategic implication ~20 words. Continues: "{alex[:80]}..." """,
-                  hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+    h_str = _fix_str(h_fix, h)
+    a_str = _fix_str(a_fix, a)
+
+    alex = _sp(_chat(
+        f"""Look beyond tonight's match — what comes next?
+{h} fixtures: {h_str}.
+{a} fixtures: {a_str}.
+~40 words. Focus on ONE team whose upcoming schedule is particularly brutal or favourable.""",
+        hist, BROADCAST_SYSTEM))
+
+    sarah = _sp(_chat(
+        f"""Alex previewed the upcoming fixtures. Add a different dimension:
+How does today's result affect squad rotation, injury risk, or psychological momentum going into those games? ~25 words.
+New angle only.""",
+        hist + [{"role": "assistant", "content": alex}], BROADCAST_SYSTEM))
     return alex, sarah
 
 
@@ -471,12 +575,15 @@ def _ordinal(n: int) -> str:
 
 
 def _s_closing(ctx) -> str:
-    h,a = ctx["home"],ctx["away"]
-    return _chat(f"""SARAH closes the pre-match show — the natural finale.
-{h} vs {a} — build excitement for kickoff (~20 words).
-Then EXACTLY: "Before we kick off — a reminder: this is strictly for adults aged 18 and over. Gambling can become addictive. Please know your limits."
-Then: "For live win probabilities tap the Insights tab in your app."
-Then: "Enjoy the match!" — warm, sincere.""", system=BROADCAST_SYSTEM)
+    h, a = ctx["home"], ctx["away"]
+    return _sp(_chat(
+        f"""Close the pre-match broadcast. Build genuine excitement for {h} vs {a} in ~20 words.
+Then say EXACTLY this — word for word:
+"Before we kick off — a reminder: this is strictly for adults aged 18 and over. Gambling can become addictive. Please know your limits."
+Then: "For live win probabilities, tap the Insights tab in your app."
+Then: "Enjoy the match!" 
+Warm and sincere. Output only the spoken words.""",
+        system=BROADCAST_SYSTEM))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -892,10 +999,21 @@ def player_audio(betradar_id: str, player_idx: int):
 
 @bp_commentary.route("/audio/<path:key>")
 def serve_audio(key: str):
-    data=_mget(f"commentary/{key}")
-    if not data: return jsonify({"error":"Not found","key":key}),404
-    return Response(data,mimetype="audio/mpeg",headers={
-        "Content-Length":str(len(data)),"Cache-Control":"public, max-age=3600","Accept-Ranges":"bytes"})
+    # URL: /api/audio/commentary/MATCHID/scene_X_a.mp3
+    # Flask key = "commentary/MATCHID/scene_X_a.mp3" — already has the prefix
+    # MinIO stores at "commentary/MATCHID/scene_X_a.mp3"
+    # So use key directly; do NOT re-add commentary/ prefix
+    data = _mget(key)
+    if not data:
+        data = _mget(f"commentary/{key}")  # legacy fallback
+    if not data:
+        log.warning(f"Audio not found: {key}")
+        return jsonify({"error": "Not found", "key": key}), 404
+    return Response(data, mimetype="audio/mpeg", headers={
+        "Content-Length": str(len(data)),
+        "Cache-Control": "public, max-age=3600",
+        "Accept-Ranges": "bytes",
+    })
 
 
 @bp_commentary.route("/audio/status")
