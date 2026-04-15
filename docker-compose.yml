@@ -7,6 +7,8 @@ services:
     # NO PORT MAPPING HERE! Nginx handles the outside world on port 5050.
     command: gunicorn -k gevent -w 4 -b 0.0.0.0:5000 run:app
     env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - app-network
     depends_on:
@@ -71,6 +73,8 @@ services:
       - "6382:6382"
     networks:
       - app-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -p 6382 -a '@Winners1127' ping | grep PONG"]
       interval: 3s
