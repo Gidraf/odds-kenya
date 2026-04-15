@@ -204,18 +204,54 @@ def _mput(key: str, data: bytes) -> bool:
         log.error(f"MinIO put {key}: {e}"); return False
 
 def _mdel(key: str) -> bool:
-    if not MINIO_OK: return False
-    try: _minio.remove_object(BUCKET, key); log.info(f"MinIO DEL: {key}"); return True
-    except Exception as e: log.warning(f"MinIO del {key}: {e}"); return False
+    deleted = False
+    if MINIO_OK:
+        try: _minio.remove_object(BUCKET, key); deleted = True
+        except Exception as e: log.warning(f"MinIO del {key}: {e}")
+    try:
+        lp = _local_path(key)
+        if os.path.exists(lp): os.remove(lp); log.info(f"Local DEL: {lp}")
+    except Exception as e: log.warning(f"Local del {key}: {e}")
+    return deleted
+
+def _audio_store(minio_key: str, data: bytes) -> bool:
+    """Write audio to MinIO AND local disk. Returns True if stored anywhere."""
+    stored = _mput(minio_key, data)
+    try:
+        lp = _local_path(minio_key)
+        with open(lp, "wb") as f: f.write(data)
+        log.info(f"Local WRITE: {lp} ({len(data)} bytes)")
+        stored = True
+    except Exception as e:
+        log.error(f"Local write {minio_key}: {e}")
+    return stored
+
+def _audio_fetch(minio_key: str) -> bytes | None:
+    """Read audio from MinIO, fall back to local disk."""
+    data = _mget(minio_key)
+    if data: return data
+    try:
+        lp = _local_path(minio_key)
+        if os.path.exists(lp):
+            with open(lp, "rb") as f: data = f.read()
+            log.info(f"Local HIT: {lp} ({len(data)} bytes)")
+            if MINIO_OK and data: _mput(minio_key, data)   # back-fill MinIO
+            return data
+    except Exception as e:
+        log.debug(f"Local read {minio_key}: {e}")
+    return None
 
 def _tts_cached(text: str, voice: str, cache_key: str) -> str | None:
+    """Return cached audio (MinIO → local → generate) as base64. Always stores to both."""
     if not text or text.startswith("[Error"): return None
-    path = f"commentary/{cache_key}.mp3"
-    cached = _mget(path)
-    if cached: log.info(f"TTS CACHE HIT: {path}"); return base64.b64encode(cached).decode()
+    minio_key = f"commentary/{cache_key}.mp3"
+    cached = _audio_fetch(minio_key)
+    if cached:
+        log.info(f"TTS CACHE HIT: {minio_key}")
+        return base64.b64encode(cached).decode()
     mp3 = _generate_mp3(text, voice)
     if not mp3: return None
-    _mput(path, mp3)
+    _audio_store(minio_key, mp3)
     return base64.b64encode(mp3).decode()
 
 def _audio_url(ckey: str) -> str:
@@ -999,16 +1035,19 @@ def player_audio(betradar_id: str, player_idx: int):
 
 @bp_commentary.route("/audio/<path:key>")
 def serve_audio(key: str):
-    # URL: /api/audio/commentary/MATCHID/scene_X_a.mp3
-    # Flask key = "commentary/MATCHID/scene_X_a.mp3" — already has the prefix
-    # MinIO stores at "commentary/MATCHID/scene_X_a.mp3"
-    # So use key directly; do NOT re-add commentary/ prefix
-    data = _mget(key)
+    """
+    URL: /api/audio/commentary/MATCHID/scene_intro_a.mp3
+    Flask gives key = "commentary/MATCHID/scene_intro_a.mp3"
+    _audio_store saves to exactly that path → _audio_fetch finds it.
+    Falls back to legacy "commentary/commentary/..." key for old cache entries.
+    """
+    data = _audio_fetch(key)
     if not data:
-        data = _mget(f"commentary/{key}")  # legacy fallback
+        data = _audio_fetch(f"commentary/{key}")   # legacy fallback
     if not data:
-        log.warning(f"Audio not found: {key}")
-        return jsonify({"error": "Not found", "key": key}), 404
+        log.warning(f"Audio 404 — key={key} minio_ok={MINIO_OK} cache={_LOCAL_CACHE}")
+        return jsonify({"error": "Not found", "key": key,
+                        "minio_ok": MINIO_OK, "local_cache": _LOCAL_CACHE}), 404
     return Response(data, mimetype="audio/mpeg", headers={
         "Content-Length": str(len(data)),
         "Cache-Control": "public, max-age=3600",
@@ -1018,10 +1057,22 @@ def serve_audio(key: str):
 
 @bp_commentary.route("/audio/status")
 def audio_status():
-    return jsonify({"minio_ok":MINIO_OK,"search_ok":SEARCH_OK,"tts_provider":TTS_PROVIDER,
-        "openai_key":bool(os.environ.get("OPENAI_API_KEY")),"bucket":BUCKET if MINIO_OK else None,
-        "default_male":DEFAULT_MALE,"default_female":DEFAULT_FEMALE,
-        "total_voices":len(EDGE_TTS_VOICES)})
+    local_files = 0; local_mb = 0
+    try:
+        for root, _, files in os.walk(_LOCAL_CACHE):
+            for f in files:
+                local_files += 1
+                local_mb += os.path.getsize(os.path.join(root, f))
+        local_mb = round(local_mb / 1024 / 1024, 2)
+    except Exception: pass
+    return jsonify({
+        "minio_ok": MINIO_OK, "minio_bucket": BUCKET if MINIO_OK else None,
+        "local_cache_dir": _LOCAL_CACHE, "local_files": local_files, "local_mb": local_mb,
+        "search_ok": SEARCH_OK, "tts_provider": TTS_PROVIDER,
+        "openai_key": bool(os.environ.get("OPENAI_API_KEY")),
+        "default_male": DEFAULT_MALE, "default_female": DEFAULT_FEMALE,
+        "total_voices": len(EDGE_TTS_VOICES),
+    })
 
 
 @bp_commentary.route("/odds/match/<betradar_id>/commentary/delete", methods=["DELETE"])
