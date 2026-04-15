@@ -29,6 +29,52 @@ from app.utils.decorators_ import log_event
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 import re, json, time, os, traceback
+from urllib.parse import quote
+
+
+def _redis_url() -> str:
+    """
+    Build the Redis connection URL from environment variables.
+
+    Priority order:
+      1. REDIS_URL      — full URL already set (e.g. by a managed service)
+      2. REDIS_HOST / REDIS_PORT / REDIS_AUTH — individual vars (docker-compose)
+      3. Fallback       — redis://localhost:6379/0
+
+    The password may start with '@' (e.g. @Winners1127) so we percent-encode it.
+    """
+    full = os.getenv("REDIS_URL", "").strip()
+    if full:
+        return full
+
+    host = os.getenv("REDIS_HOST", "localhost")
+    port = os.getenv("REDIS_PORT", "6379")
+    auth = os.getenv("REDIS_AUTH", os.getenv("REDIS_PASSWORD", ""))
+    db   = os.getenv("REDIS_DB",   "0")
+
+    if auth:
+        return f"redis://:{quote(auth, safe='')}@{host}:{port}/{db}"
+    return f"redis://{host}:{port}/{db}"
+
+
+def _get_redis(timeout: int = 2):
+    """
+    Return a connected Redis client or None if Redis is unavailable.
+    Uses a 2-second connect/read timeout so failures are fast.
+    """
+    try:
+        import redis as _rm
+        r = _rm.from_url(
+            _redis_url(),
+            decode_responses=True,
+            socket_connect_timeout=timeout,
+            socket_timeout=timeout,
+        )
+        r.ping()
+        return r
+    except Exception as e:
+        print(f"[redis] unavailable ({e.__class__.__name__}: {e})")
+        return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPILED PATTERNS  (unchanged)
@@ -333,11 +379,19 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
                 yield _sse("list_done", {"total_sent":count})
 
-                # Live pub/sub background loop (unchanged from original)
-                import redis
-                r = redis.from_url(os.getenv("REDIS_URL","redis://localhost:6379/0"), decode_responses=True)
-                pubsub = r.pubsub(ignore_subscribe_messages=True)
-                pubsub.subscribe(f"sp:live:sport:{sport_id}")
+                # Live pub/sub background loop — Redis optional
+                _r_live = _get_redis()
+                pubsub  = None
+                if _r_live:
+                    try:
+                        pubsub = _r_live.pubsub(ignore_subscribe_messages=True)
+                        pubsub.subscribe(f"sp:live:sport:{sport_id}")
+                    except Exception as _rle:
+                        print(f"[unified:live] pubsub subscribe failed: {_rle}")
+                        pubsub = None
+                else:
+                    print("[unified:live] Redis unavailable — pub/sub disabled")
+                r = _r_live  # keep `r` alias used in the polling loop
                 last_poll = time.time()
                 bg_pool   = ThreadPoolExecutor(max_workers=2)
                 bg_future = None
@@ -348,7 +402,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     except: return [],[]
 
                 while True:
-                    msg = pubsub.get_message(timeout=0.2)
+                    msg = pubsub.get_message(timeout=0.2) if pubsub else None
                     if msg and msg["type"]=="message":
                         try:
                             payload  = json.loads(msg["data"])
@@ -409,22 +463,28 @@ def debug_stream_unified(mode: str, sport_slug: str):
             # UPCOMING MODE — SP streams first, BT+OD enrichment follows
             # ══════════════════════════════════════════════════════════════════
             else:
-                import redis
-                r = redis.from_url(os.getenv("REDIS_URL","redis://localhost:6379/0"), decode_responses=True)
+                # ── Redis is optional — gracefully skip cache when unavailable ─
                 cache_key = f"unified:upcoming:{sport_slug}:{max_m}:{fetch_full}"
+                _redis = _get_redis()
+                if _redis is None:
+                    print("[unified] Redis unavailable — fetching fresh data")
 
                 # ── Cache hit — stream in small chunks for progressive reveal ─
-                cached_data = r.get(cache_key)
-                if cached_data:
-                    matches = json.loads(cached_data)
-                    for i in range(0, len(matches), 15):
-                        chunk = matches[i:i+15]
-                        yield _sse("batch", {"matches":chunk,"batch":min(i+15,len(matches)),
-                                             "of":len(matches),"offset":i})
-                        yield _keepalive()
-                    yield _sse("list_done", {"total_sent":len(matches)})
-                    yield _sse("done",      {"status":"finished","total_sent":len(matches),"cached":True})
-                    return
+                if _redis:
+                    try:
+                        cached_data = _redis.get(cache_key)
+                        if cached_data:
+                            matches = json.loads(cached_data)
+                            for i in range(0, len(matches), 15):
+                                chunk = matches[i:i+15]
+                                yield _sse("batch", {"matches":chunk,"batch":min(i+15,len(matches)),
+                                                     "of":len(matches),"offset":i})
+                                yield _keepalive()
+                            yield _sse("list_done", {"total_sent":len(matches)})
+                            yield _sse("done",      {"status":"finished","total_sent":len(matches),"cached":True})
+                            return
+                    except Exception as _ce:
+                        print(f"[unified] Redis cache read failed: {_ce} — fetching fresh")
 
                 # ── Cache miss — fetch SP first ───────────────────────────────
                 from app.workers.sp_harvester  import fetch_upcoming_stream
@@ -513,9 +573,12 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         yield _sse("live_update", update)
                         yield _keepalive()
 
-                # ── Cache fully assembled payload ─────────────────────────────
-                if all_sp_matches:
-                    r.setex(cache_key, 300, json.dumps(list(all_sp_matches.values())))
+                # ── Cache fully assembled payload (skip if Redis unavailable) ──────
+                if _redis and all_sp_matches:
+                    try:
+                        _redis.setex(cache_key, 300, json.dumps(list(all_sp_matches.values())))
+                    except Exception as _we:
+                        print(f"[unified] Redis cache write failed: {_we}")
 
                 yield _sse("done", {"status":"finished","total_sent":count})
 

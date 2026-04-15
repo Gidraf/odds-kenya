@@ -1,10 +1,32 @@
 version: "3.9"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Build the Redis URL once here so every service uses the same string.
+# Password @Winners1127 is percent-encoded (%40Winners1127) in the URL.
+# ─────────────────────────────────────────────────────────────────────────────
+x-redis-url: &redis-url "redis://:%40Winners1127@redis6382:6382/0"
+
+x-common-env: &common-env
+  REDIS_URL: *redis-url          # full URL — picked up by _redis_url() helper
+  REDIS_HOST: redis6382
+  REDIS_PORT: "6382"
+  REDIS_AUTH: "@Winners1127"
+  DB_NAME: oddkenya
+  DB_HOST: ${DB_HOST:-host.docker.internal}
+  DB_PORT: ${DB_PORT:-5432}
+  DB_USER: ${DB_USER}
+  DB_PASSWORD: ${DB_PASSWORD}
+  STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-host.docker.internal:9000}
+  STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY}
+  STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY}
+
 services:
+
+  # ── API ───────────────────────────────────────────────────────────────────
   web:
     build: .
     restart: always
-    # NO PORT MAPPING HERE! Nginx handles the outside world on port 5050.
+    # Port mapping is handled by Nginx — do NOT expose 5000 directly.
     command: gunicorn -k gevent -w 4 -b 0.0.0.0:5000 run:flask_app
     env_file: .env
     networks:
@@ -17,22 +39,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - REDIS_HOST=redis6382
-      - REDIS_PORT=6382
-      - REDIS_AUTH=@Winners1127
-      # External DB Variables
-      - DB_NAME=oddkenya
-      - DB_HOST=${DB_HOST:-host.docker.internal} # Points outside docker
-      - DB_PORT=${DB_PORT:-5432}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      # External MinIO Variables
-      - STORAGE_ENDPOINT=${STORAGE_ENDPOINT:-host.docker.internal:9000}
-      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY}
-      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY}
-    deploy:
-      replicas: 8 # Automatically boots 8 instances of your API
+      <<: *common-env
+    # deploy: replicas only works in Docker Swarm.
+    # For regular Compose use:  docker compose up --scale web=8
+    # (or uncomment the block below to pin a count without Swarm)
+    # -------------------------------------------------------------------------
+    # deploy:
+    #   replicas: 8   # ← Swarm-only; ignored by plain docker compose
+    # -------------------------------------------------------------------------
 
+  # ── Celery worker (commented out until needed) ────────────────────────────
   # celery:
   #   build: .
   #   restart: always
@@ -49,36 +65,35 @@ services:
   #   extra_hosts:
   #     - "host.docker.internal:host-gateway"
   #   environment:
-  #     - REDIS_HOST=redis6382
-  #     - REDIS_PORT=6382
-  #     - REDIS_AUTH=@Winners1127
-  #     - DB_NAME=oddkenya
-  #     - DB_HOST=${DB_HOST:-host.docker.internal}
-  #     - DB_PORT=${DB_PORT:-5432}
-  #     - DB_USER=${DB_USER}
-  #     - DB_PASSWORD=${DB_PASSWORD}
-  #     - STORAGE_ENDPOINT=${MINIO_ENDPOINT:-host.docker.internal:9000}
-  #     - STORAGE_ACCESS_KEY=${MINIO_ACCESS_KEY}
-  #     - STORAGE_SECRET_KEY=${MINIO_SECRET_KEY}
+  #     <<: *common-env
 
+  # ── Redis ─────────────────────────────────────────────────────────────────
   redis6382:
     image: redis:7
     container_name: redis6382
     restart: always
     command: >
-      sh -c "redis-server --port 6382 --requirepass '@Winners1127'"
+      redis-server
+        --port 6382
+        --requirepass "@Winners1127"
+        --save 60 1
+        --loglevel warning
     ports:
       - "6382:6382"
     networks:
       - app-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -p 6382 -a '@Winners1127' ping | grep PONG"]
-      interval: 3s
-      timeout: 10s
+      test: ["CMD-SHELL", "redis-cli -p 6382 -a '@Winners1127' ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
       retries: 10
+      start_period: 5s
 
+  # ── Nginx load-balancer ───────────────────────────────────────────────────
   nginx:
     image: nginx:alpine
     container_name: nginx_lb
@@ -95,3 +110,6 @@ services:
 networks:
   app-network:
     driver: bridge
+
+volumes:
+  redis-data:        # persist Redis data across restarts
