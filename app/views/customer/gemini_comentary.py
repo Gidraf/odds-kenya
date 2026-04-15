@@ -54,6 +54,24 @@ try:
     MINIO_OK = True; log.info("MinIO connected ✓")
 except Exception as e: log.warning(f"MinIO unavailable: {e}")
 
+# ── Local filesystem audio cache — always available, primary fallback when MinIO is down
+_LOCAL_CACHE: str = os.path.join(
+    os.environ.get("AUDIO_CACHE_DIR", "/tmp/kinetic_audio"), "commentary"
+)
+os.makedirs(_LOCAL_CACHE, exist_ok=True)
+log.info(f"Local audio cache: {_LOCAL_CACHE}")
+
+
+def _local_path(minio_key: str) -> str:
+    """Map a MinIO key to its local mirror path, e.g.
+    'commentary/12345/scene_intro_a.mp3' -> '/tmp/kinetic_audio/commentary/12345/scene_intro_a.mp3'
+    """
+    rel = minio_key[len("commentary/"):] if minio_key.startswith("commentary/") else minio_key
+    full = os.path.join(_LOCAL_CACHE, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    return full
+
+
 # ── DuckDuckGo ────────────────────────────────────────────────────────────────
 SEARCH_OK = False
 try:
@@ -123,8 +141,12 @@ EDGE_TTS_VOICES = [
     {"id":"alloy", "name":"Alloy (OpenAI)","gender":"neutral","locale":"en-US","tag":"openai",      "provider":"openai"},
 ]
 
-DEFAULT_MALE   = "en-GB-RyanNeural"
-DEFAULT_FEMALE = "en-GB-SoniaNeural"
+# Best sports voices:
+# en-US-GuyNeural   → supports "sports-commentary-excited" SSML style — top pick for Alex
+# en-US-AriaNeural  → supports "excited" style — top pick for Sarah
+# en-GB-RyanNeural  → no style support but sounds authoritative at +40% rate
+DEFAULT_MALE   = "en-US-GuyNeural"
+DEFAULT_FEMALE = "en-US-AriaNeural"
 
 # Scene voice assignments: (lead_gender, response_gender)
 SCENE_LEADS = {
@@ -141,17 +163,75 @@ SCENE_LEADS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TTS ENGINE
+# TTS ENGINE — sports-optimised: fast rate + SSML express-as styles
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# Talking faster = more energy. +40% is aggressive but natural for live sport.
+_SPORTS_RATE  = os.environ.get("TTS_RATE",  "+40%")
+_SPORTS_PITCH = os.environ.get("TTS_PITCH", "+3Hz")
+
+# Azure Neural TTS mstts:express-as styles — only these voices support SSML styles.
+# "sports-commentary-excited" is literally designed for this use case.
+_STYLE_MAP: dict = {
+    "en-US-GuyNeural":         "sports-commentary-excited",   # best for sport
+    "en-US-JasonNeural":       "excited",
+    "en-US-ChristopherNeural": "excited",
+    "en-US-EricNeural":        "excited",
+    "en-US-SteffanNeural":     "excited",
+    "en-US-AndrewNeural":      "excited",
+    "en-US-BrianNeural":       "excited",
+    "en-US-AriaNeural":        "excited",
+    "en-US-JennyNeural":       "excited",
+    "en-US-MonicaNeural":      "cheerful",
+    "en-US-MichelleNeural":    "cheerful",
+    "en-US-ElizabethNeural":   "cheerful",
+    "en-KE-ChilembaNeural":    "cheerful",
+    "en-NG-AbeoNeural":        "excited",
+}
+
 
 async def _edge_async(text: str, voice: str) -> bytes:
     import edge_tts
-    c = edge_tts.Communicate(text, voice)
+
+    style = _STYLE_MAP.get(voice)
+
+    if style:
+        # Full SSML — express-as style wraps prosody for maximum energy
+        lang = "en-GB" if "en-GB" in voice else "en-AU" if "en-AU" in voice else "en-US"
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        ssml = (
+            f'<speak version="1.0" '
+            f'xmlns="http://www.w3.org/2001/10/synthesis" '
+            f'xmlns:mstts="https://www.w3.org/2001/mstts" '
+            f'xml:lang="{lang}">'
+            f'<voice name="{voice}">'
+            f'<mstts:express-as style="{style}">'
+            f'<prosody rate="{_SPORTS_RATE}" pitch="{_SPORTS_PITCH}">{safe}</prosody>'
+            f'</mstts:express-as>'
+            f'</voice></speak>'
+        )
+        try:
+            c = edge_tts.Communicate(ssml, voice)
+            chunks = []
+            async for chunk in c.stream():
+                if chunk["type"] == "audio":
+                    chunks.append(chunk["data"])
+            data = b"".join(chunks)
+            if data:
+                return data
+            log.warning(f"SSML returned empty audio for {voice} — falling back")
+        except Exception as e:
+            log.warning(f"SSML style failed for {voice}: {e} — falling back to plain")
+
+    # All other voices (GB, AU, KE, ZA…): use rate+pitch without SSML styles
+    # These voices don't support express-as but prosody rate alone is very effective
+    c = edge_tts.Communicate(text, voice, rate=_SPORTS_RATE, pitch=_SPORTS_PITCH)
     chunks = []
     async for chunk in c.stream():
         if chunk["type"] == "audio":
             chunks.append(chunk["data"])
     return b"".join(chunks)
+
 
 def _tts_edge(text: str, voice: str) -> bytes | None:
     try:
@@ -159,8 +239,11 @@ def _tts_edge(text: str, voice: str) -> bytes | None:
         asyncio.set_event_loop(loop)
         data = loop.run_until_complete(_edge_async(text, voice))
         loop.close()
-        log.info(f"edge-tts OK voice={voice} bytes={len(data)}")
-        return data
+        if data:
+            log.info(f"edge-tts OK voice={voice} rate={_SPORTS_RATE} bytes={len(data)}")
+            return data
+        log.error(f"edge-tts empty output voice={voice}")
+        return None
     except Exception as e:
         log.error(f"edge-tts FAIL voice={voice}: {e}")
         return None
@@ -297,16 +380,20 @@ def _search(q: str, n: int = 3) -> str:
 # TEXT GENERATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-BROADCAST_SYSTEM = """You are scripting a live TV sports broadcast.
-ALEX: Lead male commentator — authoritative, dramatic, encyclopaedic. Opens most segments.
-SARAH: Female analyst — sharp, statistically precise, often contrarian, tells stories data supports.
+BROADCAST_SYSTEM = """You are scripting a LIVE, HIGH-ENERGY televised sports broadcast.
+The delivery will be TEXT-TO-SPEECH at fast rate — write for SPOKEN performance, not reading.
 
-STRICT RULES — violating any of these ruins the broadcast:
-1. Output ONLY the words the speaker says. NO name prefix — never write "ALEX:" or "SARAH:".
-2. NEVER repeat, paraphrase, or echo what the other speaker said. Build on it with NEW information.
-3. Each turn must add something the listener hasn't heard yet: a stat, a story angle, a tactical insight.
-4. Maximum 45 words per turn. Tight. Punchy. Broadcast rhythm.
-5. Natural spoken English — contractions, no bullet points, no stage directions."""
+ALEX: Lead commentator. Booming voice. Dramatic. Short punchy sentences. Stadium roar energy.
+SARAH: Analyst. Sharp. Witty. Challenges with data. Warm but electric.
+
+STRICT RULES:
+1. NO name prefix ever — never write "ALEX:" or "SARAH:" anywhere.
+2. NEVER repeat what the other speaker said. Each line = fresh information or angle.
+3. SHORT sentences. Punchy. Like this. No sub-clauses. Spoken rhythm only.
+4. Maximum 35 words per turn. Quality over length — TTS sounds better short.
+5. Use exclamations naturally. Rhetorical questions. Build urgency.
+6. Real football language: "clinical finish", "high press", "battle in the middle third".
+7. No stage directions, no bullet points, pure spoken words only."""
 
 def _chat(prompt: str, history: list = None, system: str = None) -> str:
     msgs = []
