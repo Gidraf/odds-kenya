@@ -10,14 +10,14 @@ services:
     networks:
       - app-network
     depends_on:
-      redis6381:
+      redis6382:
         condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - REDIS_HOST=redis6381
+      - REDIS_HOST=redis6382
       - REDIS_PORT=6382
       - REDIS_AUTH=@Winners1127
       # External DB Variables
@@ -49,8 +49,8 @@ services:
   #   extra_hosts:
   #     - "host.docker.internal:host-gateway"
   #   environment:
-  #     - REDIS_HOST=redis6381
-  #     - REDIS_PORT=6381
+  #     - REDIS_HOST=redis6382
+  #     - REDIS_PORT=6382
   #     - REDIS_AUTH=@Winners1127
   #     - DB_NAME=oddkenya
   #     - DB_HOST=${DB_HOST:-host.docker.internal}
@@ -72,7 +72,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -p 6381 -a '@Winners1127' ping | grep PONG"]
+      test: ["CMD-SHELL", "redis-cli -p 6382 -a '@Winners1127' ping | grep PONG"]
       interval: 3s
       timeout: 10s
       retries: 10
