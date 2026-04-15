@@ -297,19 +297,44 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
                 sport_id = {v:k for k,v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
 
-                with ThreadPoolExecutor(max_workers=3) as pool:
-                    f_bt = pool.submit(bt_fetch_live, slug_to_bt_sport_id(sport_slug))
-                    f_od = pool.submit(od_fetch_live, sport_slug)
-                    f_sp = pool.submit(lambda: list(fetch_live_stream(sport_slug, fetch_full_markets=True)))
-                    bt_data, od_data, stream = f_bt.result() or [], f_od.result() or [], f_sp.result() or []
+                # ── Fire BT + OD fetches in background threads BEFORE touching SP.
+                #    SP is a generator — we iterate it immediately without list().
+                #    BT/OD results arrive while we are already streaming SP cards.
+                _bg_pool = ThreadPoolExecutor(max_workers=2)
+                _f_bt    = _bg_pool.submit(lambda: bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or [])
+                _f_od    = _bg_pool.submit(lambda: od_fetch_live(sport_slug) or [])
 
-                bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m for m in bt_data if isinstance(m,dict)}
-                od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m for m in od_data if isinstance(m,dict)}
+                # SP generator — yields one match at a time, no list() conversion
+                sp_stream = fetch_live_stream(sport_slug, fetch_full_markets=True)
+
+                # Lazy BT/OD map — built from futures only once they complete
+                _bt_done = _od_done = False
+                bt_map: dict = {}
+                od_map: dict = {}
+
+                def _refresh_bk_maps():
+                    nonlocal _bt_done, _od_done, bt_map, od_map
+                    if not _bt_done and _f_bt.done():
+                        try:
+                            bt_data = _f_bt.result() or []
+                            bt_map  = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
+                                       for m in bt_data if isinstance(m, dict)}
+                        except Exception as _e:
+                            print(f"[live] BT fetch failed: {_e}")
+                        _bt_done = True
+                    if not _od_done and _f_od.done():
+                        try:
+                            od_data = _f_od.result() or []
+                            od_map  = {str(m.get("betradar_id") or m.get("od_parent_id")): m
+                                       for m in od_data if isinstance(m, dict)}
+                        except Exception as _e:
+                            print(f"[live] OD fetch failed: {_e}")
+                        _od_done = True
 
                 sp_event_map, active_live_br_ids, seen_br_ids = {}, [], set()
 
-                # ── SP matches — yield ONE AT A TIME ─────────────────────────
-                for sp_match in stream:
+                # ── SP matches — yield ONE AT A TIME as the generator produces them ──
+                for sp_match in sp_stream:
                     if not isinstance(sp_match,dict): continue
                     count += 1
                     betradar_id = str(sp_match.get("betradar_id") or "")
@@ -318,10 +343,13 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         seen_br_ids.add(betradar_id)
                         sp_event_map[betradar_id] = str(sp_match.get("sp_match_id") or sp_match.get("match_id") or "")
 
+                    # Refresh BT/OD maps if their futures completed while we were iterating SP
+                    _refresh_bk_maps()
+
                     sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
                     sp_clean["is_live"] = True
 
-                    # eagerly attach any BT/OD data already in memory
+                    # Eagerly attach BT/OD data if already available in memory
                     if betradar_id:
                         bt_match = bt_map.get(betradar_id)
                         if bt_match and bt_match.get("markets"):
@@ -344,7 +372,44 @@ def debug_stream_unified(mode: str, sport_slug: str):
                                          "of":"unknown","offset":count-1})
                     yield _keepalive()
 
-                # BT/OD-only events
+                # ── Ensure BT/OD futures are resolved before the enrichment pass ──
+                if not _bt_done:
+                    try:
+                        bt_data = _f_bt.result(timeout=15) or []
+                        bt_map  = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
+                                   for m in bt_data if isinstance(m, dict)}
+                    except Exception as _e:
+                        print(f"[live] BT result timeout: {_e}")
+                    _bt_done = True
+                if not _od_done:
+                    try:
+                        od_data = _f_od.result(timeout=15) or []
+                        od_map  = {str(m.get("betradar_id") or m.get("od_parent_id")): m
+                                   for m in od_data if isinstance(m, dict)}
+                    except Exception as _e:
+                        print(f"[live] OD result timeout: {_e}")
+                    _od_done = True
+                _bg_pool.shutdown(wait=False)
+
+                # ── Send BT/OD enrichments for already-streamed SP cards ─────
+                for br_id in list(seen_br_ids):
+                    update = {"parent_match_id": br_id, "home_team":"dummy",
+                              "bookmakers": {}, "markets_by_bk": {}}
+                    bt_match = bt_map.get(br_id)
+                    if bt_match and bt_match.get("markets"):
+                        b_c = _unify_match_payload(bt_match, 0, mode, "bt", "BETIKA")
+                        update["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                        update["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                    od_match = od_map.get(br_id)
+                    if od_match and od_match.get("markets"):
+                        o_c = _unify_match_payload(od_match, 0, mode, "od", "ODIBETS")
+                        update["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                        update["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                    if update["bookmakers"]:
+                        yield _sse("live_update", update)
+                        yield _keepalive()
+
+                # BT/OD-only events (matches SP didn't have)
                 for br_id, bt_match in bt_map.items():
                     if br_id not in seen_br_ids and br_id and br_id!="None":
                         count += 1

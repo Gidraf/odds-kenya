@@ -144,13 +144,27 @@ def normalize_live_outcome(slug: str, sel_name: str, sel_index: int, all_sels: l
     if len(all_sels) == 3: return {0: "1", 1: "X", 2: "2"}.get(sel_index, kl[:8])
     return re.sub(r"[^a-z0-9_:+./\-]+", "_", kl).strip("_") or f"sel_{sel_index}"
 
+from urllib.parse import quote as _urlquote
+ 
+def _build_redis_url() -> str:
+    full = os.getenv("REDIS_URL", "").strip()
+    if full: return full
+    host = os.getenv("REDIS_HOST", "localhost")
+    port = os.getenv("REDIS_PORT", "6379")
+    auth = os.getenv("REDIS_AUTH", os.getenv("REDIS_PASSWORD", ""))
+    db   = os.getenv("REDIS_DB", "0")
+    if auth: return f"redis://:{_urlquote(auth, safe='')}@{host}:{port}/{db}"
+    return f"redis://{host}:{port}/{db}"
+ 
 _redis_client = None
 def _get_redis():
     global _redis_client
     if _redis_client is None:
         import redis
-        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        _redis_client = redis.from_url(url, decode_responses=True)
+        _redis_client = redis.from_url(
+            _build_redis_url(), decode_responses=True,
+            socket_connect_timeout=3, socket_timeout=3,
+        )
     return _redis_client
 
 # ═════════════════════════════════════════════════════════════════════════════
