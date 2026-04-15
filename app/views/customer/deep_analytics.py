@@ -16,7 +16,7 @@ from threading import Thread, Event
 
 from flask import Blueprint, Response, stream_with_context
 
-from app.utils.playwright_scraper import collect_match_data, get as _get
+from playwright_scraper import collect_match_data, get as _get
 
 log = logging.getLogger("deep_analytics")
 
@@ -383,11 +383,13 @@ def stream_deep_analytics(betradar_id):
                 },
             })
 
-            cm = h2h_f.get("currentmanagers", {})
-            def _mgr(uid):
-                lst = cm.get(uid) or cm.get(str(uid)) or []
-                if not lst:
-                    return {}
+        # ── MANAGERS — emit always, versusrecent enriches, meta is fallback ────
+        # currentmanagers comes from versusrecent; manager names from match_info
+        cm = h2h_f.get("currentmanagers", {}) if h2h_f else {}
+
+        def _mgr(uid, fallback_name=""):
+            lst = cm.get(uid) or cm.get(str(uid)) or []
+            if lst:
                 m  = lst[0]
                 ms = m.get("membersince") or {}
                 return {
@@ -396,7 +398,15 @@ def stream_deep_analytics(betradar_id):
                     "nationality": (m.get("nationality") or {}).get("name", ""),
                     "membersince": ms.get("date", "") if isinstance(ms, dict) else "",
                 }
-            yield _sse("managers", {"home": _mgr(h_uid), "away": _mgr(a_uid)})
+            # Fall back to the name we already have from match_info
+            return {"name": fallback_name} if fallback_name else {}
+
+        h_mgr_name = _clean(((mgr_raw or {}).get("home") or {}).get("name", ""))
+        a_mgr_name = _clean(((mgr_raw or {}).get("away") or {}).get("name", ""))
+        h_mgr = _mgr(h_uid, h_mgr_name)
+        a_mgr = _mgr(a_uid, a_mgr_name)
+        if h_mgr or a_mgr:
+            yield _sse("managers", {"home": h_mgr, "away": a_mgr})
 
         # ── TOP SCORERS ───────────────────────────────────────────────────────
         def _scorers(data):
