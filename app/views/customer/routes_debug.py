@@ -493,75 +493,63 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     })
                     yield _keepalive()
 
-                # ── PHASE 3: BT + OD enrichments ──────────────────────────────────────
-                if not _bt_done:
+                # ── PHASE 3: BT + OD — yield each the moment it resolves ─────────────
+                # as_completed() means whichever of BT / OD finishes first is sent
+                # immediately — we never wait for the slower one before sending the faster.
+                _bk_futures = {}
+                if not _bt_done: _bk_futures[_f_bt] = ("bt", "BETIKA")
+                if not _od_done: _bk_futures[_f_od] = ("od", "ODIBETS")
+
+                for fut in as_completed(_bk_futures, timeout=12):
+                    bk_slug, bk_name = _bk_futures[fut]
                     try:
-                        bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
-                                  for m in (_f_bt.result(timeout=15) or []) if isinstance(m, dict)}
+                        raw_list = fut.result() or []
                     except Exception as _e:
-                        print(f"[live] BT timeout: {_e}")
-                    _bt_done = True
-                if not _od_done:
-                    try:
-                        od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m
-                                  for m in (_f_od.result(timeout=15) or []) if isinstance(m, dict)}
-                    except Exception as _e:
-                        print(f"[live] OD timeout: {_e}")
-                    _od_done = True
+                        print(f"[live] {bk_name} timeout/error: {_e}")
+                        raw_list = []
+
+                    if bk_slug == "bt":
+                        bt_map  = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
+                                   for m in raw_list if isinstance(m, dict)}
+                        _bt_done = True
+                    else:
+                        od_map  = {str(m.get("betradar_id") or m.get("od_parent_id")): m
+                                   for m in raw_list if isinstance(m, dict)}
+                        _od_done = True
+
+                    if not raw_list:
+                        continue
+
+                    # Send enrichment for every SP card we already streamed
+                    for br_id in list(seen_br_ids):
+                        match_raw = bt_map.get(br_id) if bk_slug == "bt" else od_map.get(br_id)
+                        if not match_raw or not match_raw.get("markets"):
+                            continue
+                        c = _unify_match_payload(match_raw, 0, mode, bk_slug, bk_name)
+                        yield _sse("live_update", {
+                            "parent_match_id": br_id,
+                            "home_team":       "dummy",
+                            "bookmakers":      {bk_slug: c["bookmakers"][bk_slug]},
+                            "markets_by_bk":   {bk_slug: c["markets_by_bk"][bk_slug]},
+                        })
+                        yield _keepalive()
+
+                    # New cards this bk has that SP didn't
+                    for br_id, raw_m in (bt_map if bk_slug=="bt" else od_map).items():
+                        if br_id in seen_br_ids or not br_id or br_id == "None":
+                            continue
+                        count += 1
+                        c = _unify_match_payload(raw_m, count, mode, bk_slug, bk_name)
+                        c["is_live"] = True
+                        _merge_best(c["best"], c["markets_by_bk"])
+                        c["market_slugs"] = list(c["best"].keys())
+                        c["market_count"] = len(c["best"])
+                        yield _sse("batch", {"matches": [c], "batch": count,
+                                             "of": "unknown", "offset": count - 1})
+                        yield _keepalive()
+                        seen_br_ids.add(br_id)
+
                 _bg_pool.shutdown(wait=False)
-
-                # Send BT/OD enrichments for all SP cards
-                for br_id in list(seen_br_ids):
-                    update = {"parent_match_id": br_id, "home_team": "dummy",
-                              "bookmakers": {}, "markets_by_bk": {}}
-                    bt_match = bt_map.get(br_id)
-                    if bt_match and bt_match.get("markets"):
-                        b_c = _unify_match_payload(bt_match, 0, mode, "bt", "BETIKA")
-                        update["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
-                        update["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
-                    od_match = od_map.get(br_id)
-                    if od_match and od_match.get("markets"):
-                        o_c = _unify_match_payload(od_match, 0, mode, "od", "ODIBETS")
-                        update["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
-                        update["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
-                    if update["bookmakers"]:
-                        yield _sse("live_update", update)
-                        yield _keepalive()
-
-                # BT/OD-only events SP didn't have
-                for br_id, bt_match in bt_map.items():
-                    if br_id not in seen_br_ids and br_id and br_id != "None":
-                        count += 1
-                        bt_clean = _unify_match_payload(bt_match, count, mode, "bt", "BETIKA")
-                        bt_clean["is_live"] = True
-                        od_match = od_map.get(br_id)
-                        if od_match and od_match.get("markets"):
-                            o_c = _unify_match_payload(od_match, count, mode, "od", "ODIBETS")
-                            bt_clean["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
-                            bt_clean["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
-                            seen_br_ids.add(br_id)
-                        _merge_best(bt_clean["best"], bt_clean["markets_by_bk"])
-                        bt_clean["market_slugs"] = list(bt_clean["best"].keys())
-                        bt_clean["market_count"] = len(bt_clean["best"])
-                        bt_clean["bk_count"]     = len(bt_clean["bookmakers"])
-                        yield _sse("batch", {"matches": [bt_clean], "batch": count,
-                                             "of": "unknown", "offset": count - 1})
-                        yield _keepalive()
-                        seen_br_ids.add(br_id)
-
-                for br_id, od_match in od_map.items():
-                    if br_id not in seen_br_ids and br_id and br_id != "None":
-                        count += 1
-                        od_clean = _unify_match_payload(od_match, count, mode, "od", "ODIBETS")
-                        od_clean["is_live"] = True
-                        _merge_best(od_clean["best"], od_clean["markets_by_bk"])
-                        od_clean["market_slugs"] = list(od_clean["best"].keys())
-                        od_clean["market_count"] = len(od_clean["best"])
-                        yield _sse("batch", {"matches": [od_clean], "batch": count,
-                                             "of": "unknown", "offset": count - 1})
-                        yield _keepalive()
-                        seen_br_ids.add(br_id)
-
                 yield _sse("list_done", {"total_sent": count})
 
                 # ── PHASE 4: pub/sub loop for continuous real-time updates ──────────
