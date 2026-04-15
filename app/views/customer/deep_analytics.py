@@ -16,7 +16,7 @@ from threading import Thread, Event
 
 from flask import Blueprint, Response, stream_with_context
 
-from playwright_scraper import collect_match_data, get as _get
+from app.utils.playwright_scraper import collect_match_data, get as _get
 
 log = logging.getLogger("deep_analytics")
 
