@@ -7,8 +7,6 @@ services:
     # NO PORT MAPPING HERE! Nginx handles the outside world on port 5050.
     command: gunicorn -k gevent -w 4 -b 0.0.0.0:5000 run:app
     env_file: .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - app-network
     depends_on:
