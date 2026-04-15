@@ -32,4 +32,4 @@ COPY . .
 EXPOSE 5000
 
 # 8. Default command
-CMD ["gunicorn", "-k", "gevent", "-w", "4", "-b", "0.0.0.0:5000", "run:app"]
+CMD ["gunicorn", "-k", "gevent", "-w", "4", "-b", "0.0.0.0:5000", "run:flask_app"]
