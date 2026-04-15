@@ -61,13 +61,16 @@ try:
     SEARCH_OK = True; log.info("DuckDuckGo ready ✓")
 except ImportError: log.warning("duckduckgo_search not installed")
 
-# ── Sportradar tokens ─────────────────────────────────────────────────────────
-LMT_TOKEN = os.environ.get("LMT_TOKEN",
-    "exp=1776025306~acl=/*~data=eyJvIjoiaHR0cHM6Ly93d3cuYmV0aWthLmNvbSIsImEiOiI2MDAwNmI1MjM0YzMxY2NmOGIxNGYxNmYyODczZWU3MSIsImFjdCI6Im9yaWdpbmNoZWNrIiwib3NyYyI6Im9yaWdpbiJ9~hmac=016ea9a66a30e7c493628bc5a2beb8e294aeefa76ea7582648f6e40904e395d4")
-SH_TOKEN = os.environ.get("SH_TOKEN",
-    "exp=1776064004~acl=/*~data=eyJvIjoiaHR0cHM6Ly9zdGF0c2h1Yi5zcG9ydHJhZGFyLmNvbSIsImEiOiJzcG9ydHBlc2EiLCJhY3QiOiJvcmlnaW5jaGVjayIsIm9zcmMiOiJob3N0aGVhZGVyIn0~hmac=1c7b2ef7f250e867db4f35699ca70d55884e705200df665ee15860e7eb4cddd6")
-_LMT_H = {"origin":"https://www.betika.com","referer":"https://www.betika.com/","user-agent":"Mozilla/5.0"}
-_SH_H  = {"origin":"https://statshub.sportradar.com","referer":"https://statshub.sportradar.com/","user-agent":"Mozilla/5.0"}
+# ── Playwright scraper (shared collector — no hardcoded tokens) ───────────────
+try:
+    from app.utils.playwright_scraper import collect_match_data as _playwright_collect, get as _pget
+    PLAYWRIGHT_OK = True
+    log.info("playwright_scraper loaded ✓")
+except ImportError as e:
+    PLAYWRIGHT_OK = False
+    log.warning(f"playwright_scraper not available: {e}")
+    def _playwright_collect(mid): return {}
+    def _pget(c, *keys): return {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -125,13 +128,15 @@ DEFAULT_FEMALE = "en-GB-SoniaNeural"
 
 # Scene voice assignments: (lead_gender, response_gender)
 SCENE_LEADS = {
-    "intro":    ("alex",  "sarah"),
-    "h2h":      ("sarah", "alex"),
-    "form":     ("alex",  "sarah"),
-    "bracket":  ("sarah", "alex"),
-    "scorers":  ("alex",  "sarah"),
-    "managers": ("alex",  "sarah"),
-    "closing":  ("sarah", None),
+    "intro":     ("alex",  "sarah"),
+    "lineups":   ("alex",  "sarah"),
+    "h2h":       ("sarah", "alex"),
+    "form":      ("alex",  "sarah"),
+    "standings": ("sarah", "alex"),
+    "scorers":   ("alex",  "sarah"),
+    "managers":  ("alex",  "sarah"),
+    "upcoming":  ("alex",  "sarah"),
+    "closing":   ("sarah", None),
 }
 
 
@@ -220,20 +225,6 @@ def _audio_url(ckey: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 # SPORTRADAR HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _lmt(ep, mid):
-    try:
-        r = requests.get(f"https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo/{ep}/{mid}?T={LMT_TOKEN}", headers=_LMT_H, timeout=8)
-        if r.ok: return r.json().get("doc",[{}])[0].get("data",{})
-    except Exception as e: log.warning(f"LMT {ep}/{mid}: {e}")
-    return {}
-
-def _sh(ep, mid, extra=""):
-    try:
-        r = requests.get(f"https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo/{ep}/{mid}{extra}?T={SH_TOKEN}", headers=_SH_H, timeout=8)
-        if r.ok: return r.json().get("doc",[{}])[0].get("data",{})
-    except Exception as e: log.warning(f"SH {ep}/{mid}: {e}")
-    return {}
 
 def _clean(raw: str) -> str:
     if not raw: return ""
@@ -396,6 +387,89 @@ Season: {enriched.get('appearances_this_season','?')} apps, {enriched.get('goals
 Strength: {enriched.get('key_strength','technically gifted')}. {('Fun fact: '+enriched.get('fun_fact','')) if enriched.get('fun_fact') else ''}
 ~25 words, energetic spotlight.""", system=BROADCAST_SYSTEM)
 
+def _s_lineups(ctx, hist):
+    """Announces both starting XIs, reading player names."""
+    h, a = ctx["home"], ctx["away"]
+    h_names = ctx.get("home_players_list", "")
+    a_names = ctx.get("away_players_list", "")
+    h_form  = ctx.get("home_formation", "unknown formation")
+    a_form  = ctx.get("away_formation", "unknown formation")
+
+    if not h_names and not a_names:
+        alex = _chat(f"""ALEX announces lineups for {h} vs {a}.
+Lineups have not been officially confirmed yet — ~30 words, dramatic anticipation.""",
+                     hist, BROADCAST_SYSTEM)
+        sarah = _chat(f"""SARAH responds with tactical curiosity ~20 words.
+Continues: "{alex[:80]}..." """,
+                      hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+        return alex, sarah
+
+    alex = _chat(f"""ALEX announces the confirmed starting XIs.
+{h} line up in a {h_form}: {h_names or 'squad to be confirmed'}.
+{a} line up in a {a_form}: {a_names or 'squad to be confirmed'}.
+~45 words. Read key player names naturally, commentator broadcast style.""",
+                 hist, BROADCAST_SYSTEM)
+    sarah = _chat(f"""SARAH highlights ONE key tactical match-up based on these lineups ~25 words.
+Continues: "{alex[:80]}..." """,
+                  hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+    return alex, sarah
+
+
+def _s_standings(ctx, hist):
+    """Discusses current league/group stage standings for both teams."""
+    h, a = ctx["home"], ctx["away"]
+    h_pos  = ctx.get("home_standing")
+    a_pos  = ctx.get("away_standing")
+    comp   = ctx.get("competition", "the competition")
+    is_cup = ctx.get("competition_type") == "cup"
+
+    if is_cup or (not h_pos and not a_pos):
+        # Cup / knockout — discuss what's at stake
+        sarah = _chat(f"""SARAH discusses what is at stake in this {comp} {ctx.get('stage','match')}.
+{h} vs {a} — knockout, one chance, everything on the line. ~35 words.""",
+                      hist, BROADCAST_SYSTEM)
+        alex = _chat(f"""ALEX adds the pressure angle ~20 words. Continues: "{sarah[:80]}..." """,
+                     hist+[{"role":"assistant","content":f"SARAH: {sarah}"}], BROADCAST_SYSTEM)
+        return sarah, alex
+
+    h_str = f"{h} sit {_ordinal(h_pos['pos'])} in {comp} with {h_pos['pts']} points from {h_pos['played']} games" if h_pos else f"{h}'s league position"
+    a_str = f"{a} are {_ordinal(a_pos['pos'])} with {a_pos['pts']} points" if a_pos else f"{a}'s position"
+    sarah = _chat(f"""SARAH breaks down where both teams stand.
+{h_str}. {a_str}. ~40 words. What does this result mean for their season?""",
+                  hist, BROADCAST_SYSTEM)
+    alex = _chat(f"""ALEX adds one pressure point ~20 words. Continues: "{sarah[:80]}..." """,
+                 hist+[{"role":"assistant","content":f"SARAH: {sarah}"}], BROADCAST_SYSTEM)
+    return sarah, alex
+
+
+def _s_upcoming(ctx, hist):
+    """Previews the next fixtures for both teams after this match."""
+    h, a = ctx["home"], ctx["away"]
+    h_fix = ctx.get("home_upcoming", [])
+    a_fix = ctx.get("away_upcoming", [])
+
+    def _fix_str(fixtures, team):
+        if not fixtures:
+            return f"{team}'s schedule to be confirmed"
+        top = fixtures[:3]
+        return " | ".join(f"vs {f['away'] if f.get('home','').lower().startswith(team[:4].lower()) else f['home']} ({f.get('date','')[:5]})" for f in top)
+
+    alex = _chat(f"""ALEX looks ahead at what awaits both sides after this match.
+{h} upcoming: {_fix_str(h_fix, h)}.
+{a} upcoming: {_fix_str(a_fix, a)}.
+~40 words. Context of fixture congestion / big games ahead.""",
+                 hist, BROADCAST_SYSTEM)
+    sarah = _chat(f"""SARAH adds one strategic implication ~20 words. Continues: "{alex[:80]}..." """,
+                  hist+[{"role":"assistant","content":f"ALEX: {alex}"}], BROADCAST_SYSTEM)
+    return alex, sarah
+
+
+def _ordinal(n: int) -> str:
+    if not n: return "?"
+    s = ["th","st","nd","rd"]; v = n % 100
+    return f"{n}{s[(v-20)%10] if (v-20)%10 < 4 else s[v] if v < 4 else s[0]}"
+
+
 def _s_closing(ctx) -> str:
     h,a = ctx["home"],ctx["away"]
     return _chat(f"""SARAH closes the pre-match show — the natural finale.
@@ -409,39 +483,63 @@ Then: "Enjoy the match!" — warm, sincere.""", system=BROADCAST_SYSTEM)
 # MATCH CONTEXT FETCHER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _fetch_ctx(betradar_id: str) -> dict:
-    info = _lmt("match_info", betradar_id) or _sh("match_info_statshub", betradar_id)
-    md   = (info.get("match") if info else None) or {}
-    teams = md.get("teams",{})
-    h_uid = str(teams.get("home",{}).get("uid",""))
-    a_uid = str(teams.get("away",{}).get("uid",""))
-    s_id  = str(md.get("_seasonid",""))
-    jerseys = info.get("jerseys",{}) if info else {}
-    home_color = f"#{jerseys.get('home',{}).get('player',{}).get('base','ea0000')}"
-    away_color = f"#{jerseys.get('away',{}).get('player',{}).get('base','ffffff')}"
-    home = teams.get("home",{}).get("name","Home")
-    away = teams.get("away",{}).get("name","Away")
-    tourn = info.get("tournament",{}) if info else {}
-    is_cup = str(tourn.get("seasontype",""))=="26" or any(k in tourn.get("name","").lower() for k in ["cup","champions","europa"])
+def _fetch_ctx(betradar_id: str, hints: dict = None) -> dict:
+    """
+    Collect match context via Playwright scraper.
+    `hints` is a dict of pre-known values from the frontend query params
+    (home, away, competition, home_players, away_players, etc.) —
+    used as fallbacks when the scraper hasn't collected a given endpoint yet.
+    """
+    hints = hints or {}
+    log.info(f"[{betradar_id}] Playwright collecting match data for commentary...")
+    raw = _playwright_collect(betradar_id)
+    log.info(f"[{betradar_id}] Playwright done — {len(raw)} endpoints collected")
+
+    # Core match info
+    info = _pget(raw, f"match_info_statshub/{betradar_id}", f"match_info/{betradar_id}")
+    md   = info.get("match", {}) if info else {}
+    teams = md.get("teams", {})
+    h_uid = str((teams.get("home") or {}).get("uid", ""))
+    a_uid = str((teams.get("away") or {}).get("uid", ""))
+    s_id  = str(md.get("_seasonid", ""))
+    jerseys   = info.get("jerseys", {}) if info else {}
+    home_color = f"#{(jerseys.get('home') or {}).get('player', {}).get('base', 'ea0000')}"
+    away_color = f"#{(jerseys.get('away') or {}).get('player', {}).get('base', 'ffffff')}"
+
+    # Use hints as fallbacks for team names / competition when info is empty
+    home  = (teams.get("home") or {}).get("name") or hints.get("home") or "Home"
+    away  = (teams.get("away") or {}).get("name") or hints.get("away") or "Away"
+    tourn = info.get("tournament", {}) if info else {}
+    comp  = tourn.get("name", "") or hints.get("competition", "")
+    is_cup = str(tourn.get("seasontype",""))=="26" or any(k in comp.lower() for k in ["cup","champions","europa"])
     comp_type = "cup" if is_cup else ("friendly" if tourn.get("friendly") else "league")
 
-    with ThreadPoolExecutor(max_workers=9) as pool:
-        f_sq  = pool.submit(_lmt,"match_squads",betradar_id)
-        f_h2h = pool.submit(_sh,"stats_match_head2head",betradar_id)
-        f_vs  = pool.submit(_lmt,"stats_team_versusrecent",f"{h_uid}/{a_uid}") if h_uid and a_uid else None
-        f_frm = pool.submit(_sh,"stats_formtable",s_id) if s_id else None
-        f_hr  = pool.submit(_sh,"stats_team_lastx",h_uid,"/10") if h_uid else None
-        f_ar  = pool.submit(_sh,"stats_team_lastx",a_uid,"/10") if a_uid else None
-        f_hg  = pool.submit(_lmt,"stats_season_topgoals",f"{s_id}/{h_uid}") if s_id and h_uid else None
-        f_ag  = pool.submit(_lmt,"stats_season_topgoals",f"{s_id}/{a_uid}") if s_id and a_uid else None
+    # Pull collected endpoints
+    sq       = _pget(raw, f"match_squads/{betradar_id}")
+    h2h_raw  = _pget(raw, f"stats_match_head2head/{betradar_id}")
+    versus   = _pget(raw, f"stats_team_versusrecent/{h_uid}/{a_uid}") if h_uid and a_uid else {}
+    form_raw = _pget(raw, f"stats_formtable/{s_id}") if s_id else {}
+    hr       = _pget(raw, f"stats_team_lastx/{h_uid}/20", f"stats_team_lastx/{h_uid}/10", f"stats_team_lastx/{h_uid}/5") if h_uid else {}
+    ar       = _pget(raw, f"stats_team_lastx/{a_uid}/20", f"stats_team_lastx/{a_uid}/10", f"stats_team_lastx/{a_uid}/5") if a_uid else {}
+    h_sc_raw = _pget(raw, f"stats_season_topgoals/{s_id}/{h_uid}") if s_id and h_uid else {}
+    a_sc_raw = _pget(raw, f"stats_season_topgoals/{s_id}/{a_uid}") if s_id and a_uid else {}
 
-    sq = f_sq.result() or {}
-    h2h_raw = f_h2h.result() or {}
-    versus  = f_vs.result() if f_vs else {}
-    form_raw= f_frm.result() or {}
-    hr = f_hr.result() or {}; ar = f_ar.result() or {}
-    h_sc_raw= f_hg.result() if f_hg else {}
-    a_sc_raw= f_ag.result() if f_ag else {}
+    # Standings — find both teams' rows
+    table_raw = _pget(raw, f"season_dynamictable/{s_id}", f"stats_season_tables/{s_id}/1") if s_id else {}
+    h_standing = a_standing = None
+    for t in (table_raw.get("tables") or (table_raw.get("season") or {}).get("tables") or []):
+        for row in t.get("tablerows", []):
+            uid = str((row.get("team") or {}).get("uid", ""))
+            entry = {"pos": row.get("pos"), "pts": row.get("pointsTotal", 0), "played": row.get("total", 0), "gd": row.get("goalDiffTotal", 0)}
+            if uid == h_uid: h_standing = entry
+            if uid == a_uid: a_standing = entry
+        break
+
+    # Upcoming fixtures
+    h_upcoming_raw = _pget(raw, f"stats_team_fixtures/{h_uid}/10", f"stats_team_fixtures/{h_uid}/5") if h_uid else {}
+    a_upcoming_raw = _pget(raw, f"stats_team_fixtures/{a_uid}/10", f"stats_team_fixtures/{a_uid}/5") if a_uid else {}
+    def _parse_upcoming(data):
+        return [{"home": (m.get("teams",{}).get("home") or {}).get("name",""), "away": (m.get("teams",{}).get("away") or {}).get("name",""), "date": (m.get("time") or m.get("_dt") or {}).get("date","")} for m in (data.get("matches") or [])[:3]]
 
     # H2H
     h2h_list=[]; hw=dr=aw=0
@@ -513,6 +611,15 @@ def _fetch_ctx(betradar_id: str) -> dict:
         "home_top_scorer":h_scorers[0]["name"] if h_scorers else "",
         "away_top_scorer":a_scorers[0]["name"] if a_scorers else "",
         "h_pl":h_pl,"a_pl":a_pl,"h_mgr_name":h_mgr_n,"a_mgr_name":a_mgr_n,
+        # New fields for new scenes
+        "home_formation": (h_sq.get("formation") or ""),
+        "away_formation": (a_sq.get("formation") or ""),
+        "home_players_list": hints.get("home_players") or ", ".join((p.get("playername", p.get("name","")).split(",")[0].strip() for p in h_pl[:11] if p.get("playername") or p.get("name"))),
+        "away_players_list": hints.get("away_players") or ", ".join((p.get("playername", p.get("name","")).split(",")[0].strip() for p in a_pl[:11] if p.get("playername") or p.get("name"))),
+        "home_standing": h_standing,
+        "away_standing": a_standing,
+        "home_upcoming": _parse_upcoming(h_upcoming_raw),
+        "away_upcoming": _parse_upcoming(a_upcoming_raw),
     }
 
 
@@ -564,8 +671,14 @@ def _build(betradar_id: str, ctx: dict,
         scenes_text.append(s); _p("dialogue",f"Scene '{sid}' written"); return s
 
     scene_defs=[
-        ("intro",9,_s_intro),("h2h",10,_s_h2h),("form",9,_s_form),
-        ("bracket",9,_s_stage),("scorers",9,_s_scorers),("managers",9,_s_managers),
+        ("intro",     8,  _s_intro),
+        ("lineups",  11,  _s_lineups),
+        ("h2h",      10,  _s_h2h),
+        ("form",      9,  _s_form),
+        ("scorers",   9,  _s_scorers),
+        ("standings", 9,  _s_standings),
+        ("managers",  9,  _s_managers),
+        ("upcoming",  7,  _s_upcoming),
     ]
     scenes=[_make(sid,dur,fn) for sid,dur,fn in scene_defs]
 
@@ -655,13 +768,25 @@ def list_voices():
 
 @bp_commentary.route("/odds/match/<betradar_id>/commentary", methods=["GET"])
 def get_commentary(betradar_id: str):
-    t0=time.time()
-    va = request.args.get("voice_alex",  DEFAULT_MALE)
-    vs = request.args.get("voice_sarah", DEFAULT_FEMALE)
-    tts_on = request.args.get("tts","true").lower()!="false"
-    log.info(f"Commentary: {betradar_id} va={va} vs={vs} tts={tts_on}")
-    ctx = _fetch_ctx(betradar_id)
-    max_pl = int(os.environ.get("MAX_PLAYERS","3"))
+    t0 = time.time()
+    va     = request.args.get("voice_alex",   DEFAULT_MALE)
+    vs     = request.args.get("voice_sarah",  DEFAULT_FEMALE)
+    tts_on = request.args.get("tts", "true").lower() != "false"
+
+    # Hints passed from the CinematicMatchPlayer frontend (real team/player data)
+    hints = {
+        "home":         request.args.get("home", ""),
+        "away":         request.args.get("away", ""),
+        "competition":  request.args.get("competition", ""),
+        "stage":        request.args.get("stage", ""),
+        "venue":        request.args.get("venue", ""),
+        "home_players": request.args.get("home_players", ""),
+        "away_players": request.args.get("away_players", ""),
+    }
+
+    log.info(f"Commentary: {betradar_id} va={va} vs={vs} hints_home={hints['home']} hints_away={hints['away']}")
+    ctx    = _fetch_ctx(betradar_id, hints=hints)
+    max_pl = int(os.environ.get("MAX_PLAYERS", "3"))
     result = _build(betradar_id, ctx, va, vs, tts_on, max_pl=max_pl)
     log.info(f"Commentary done {time.time()-t0:.1f}s for {ctx['home']} vs {ctx['away']}")
     return jsonify(result)
