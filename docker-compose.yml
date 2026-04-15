@@ -41,7 +41,7 @@ services:
   #   networks:
   #     - app-network
   #   depends_on:
-  #     redis6381:
+  #     redis6382:
   #       condition: service_healthy
   #   volumes:
   #     - /var/run/docker.sock:/var/run/docker.sock
@@ -66,7 +66,7 @@ services:
     container_name: redis6382
     restart: always
     command: >
-      sh -c "redis-server --port 6381 --requirepass '@Winners1127'"
+      sh -c "redis-server --port 6382 --requirepass '@Winners1127'"
     ports:
       - "6382:6382"
     networks:
