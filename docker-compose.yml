@@ -27,9 +27,9 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       # External MinIO Variables
-      - STORAGE_ENDPOINT=${MINIO_ENDPOINT:-host.docker.internal:9000}
-      - STORAGE_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - STORAGE_SECRET_KEY=${MINIO_SECRET_KEY}
+      - STORAGE_ENDPOINT=${STORAGE_ENDPOINT:-host.docker.internal:9000}
+      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY}
+      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY}
     deploy:
       replicas: 8 # Automatically boots 8 instances of your API
 
@@ -57,9 +57,9 @@ services:
   #     - DB_PORT=${DB_PORT:-5432}
   #     - DB_USER=${DB_USER}
   #     - DB_PASSWORD=${DB_PASSWORD}
-  #     - MINIO_ENDPOINT=${MINIO_ENDPOINT:-host.docker.internal:9000}
-  #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-  #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+  #     - STORAGE_ENDPOINT=${MINIO_ENDPOINT:-host.docker.internal:9000}
+  #     - STORAGE_ACCESS_KEY=${MINIO_ACCESS_KEY}
+  #     - STORAGE_SECRET_KEY=${MINIO_SECRET_KEY}
 
   redis6382:
     image: redis:7
