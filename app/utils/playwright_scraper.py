@@ -1,13 +1,11 @@
 """
-playwright_scraper.py — Shared Sportradar data collector via Playwright.
+playwright_scraper.py — Sportradar data collector via Playwright.
 
-Navigates statshub.sportradar.com match pages, intercepts every
-fn.sportradar.com/gismo/* response, and returns a dict keyed by
-queryUrl (e.g. "match_timeline/70807446" → {data dict}).
+Phase 1: Navigate match page tabs → intercept all gismo API responses.
+Phase 2: Extract the auth token from any intercepted URL → directly fetch
+         any critical endpoints the page navigation didn't trigger.
 
-No tokens needed — the browser session handles auth automatically.
-The same stealth setup as bp_raw_stream.py so bot detection stays
-consistent across both code paths.
+No hardcoded tokens — they're harvested live from Phase 1 responses.
 """
 import asyncio
 import random
@@ -16,7 +14,6 @@ from playwright.async_api import async_playwright
 
 log = logging.getLogger("playwright_scraper")
 
-# ── Browser launch args (same as bp_raw_stream) ──────────────────────────────
 _LAUNCH_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--disable-dev-shm-usage",
@@ -30,7 +27,6 @@ _LAUNCH_ARGS = [
     "--disable-features=IsolateOrigins,site-per-process",
 ]
 
-# ── Stealth init script (same as bp_raw_stream) ───────────────────────────────
 _STEALTH = """
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     Object.defineProperty(navigator, 'plugins',   { get: () => [1,2,3,4,5] });
@@ -54,35 +50,34 @@ _STEALTH = """
     delete window.playwright;
 """
 
-# ── Tabs to visit for a match — each triggers a different set of API calls ────
-# Statshub loads different gismo endpoints per tab:
-#   /match/{id}             → match_info, match_timeline, match_squads, match_timelinedelta
-#   /match/{id}/report      → match_timeline (richer), match_timelinedelta
-#   /match/{id}/statistics  → stats_match_situation, stats_season_uniqueteamstats,
-#                             stats_season_teamscoringconceding, stats_team_lastx
-#   /match/{id}/head-to-head → stats_match_head2head, stats_team_versusrecent
-#   /match/{id}/table        → season_dynamictable, stats_formtable,
-#                              stats_season_tables, stats_season_topgoals
+# Statshub tabs — each triggers a different subset of API calls
 _TABS = [
-    "",                 # overview
-    "/report",
-    "/statistics",
-    "/head-to-head",
-    "/table",
+    "",              # overview  → match_info, match_squads, match_timeline
+    "/report",       # report    → match_timeline (full), timelinedelta
+    "/statistics",   # stats     → stats_match_situation, stats_season_uniqueteamstats,
+                     #             stats_season_teamscoringconceding, stats_team_lastx
+    "/head-to-head", # h2h       → stats_match_head2head, stats_team_versusrecent
+    "/table",        # table     → season_dynamictable, stats_formtable,
+                     #             stats_season_tables, stats_season_topgoals
 ]
+
+# API base URLs — sh hosts most stats, lmt hosts match events / h2h
+_SH  = "https://sh.fn.sportradar.com/sportpesa/en/Etc:UTC/gismo"
+_LMT = "https://lmt.fn.sportradar.com/common/en/Etc:UTC/gismo"
+_SH_HEADERS  = {"origin": "https://statshub.sportradar.com",
+                "referer": "https://statshub.sportradar.com/",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+_LMT_HEADERS = {"origin": "https://www.betika.com",
+                "referer": "https://www.betika.com/",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 
 async def _collect_async(match_id: str, idle_timeout: int = 12000) -> dict:
-    """
-    Navigate all match page tabs and collect every intercepted gismo response.
-    Returns {queryUrl: data_dict}.
-    idle_timeout: ms to wait for network idle after each tab navigation.
-    """
     collected: dict = {}
+    tokens: dict = {}   # {"sh": "exp=...", "lmt": "exp=..."}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=_LAUNCH_ARGS)
-
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -97,78 +92,160 @@ async def _collect_async(match_id: str, idle_timeout: int = 12000) -> dict:
             color_scheme="light",
             extra_http_headers={
                 "Accept-Language": "en-US,en;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
                 "sec-ch-ua": '"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"',
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"Windows"',
                 "Upgrade-Insecure-Requests": "1",
             },
         )
-
         await context.add_init_script(_STEALTH)
         page = await context.new_page()
 
-        # ── Intercept every fn.sportradar.com gismo response ─────────────────
+        # ── Phase 1 response handler ──────────────────────────────────────────
         async def handle_response(response):
             url = response.url
             if "fn.sportradar.com" not in url or "gismo" not in url:
                 return
             if response.request.method == "OPTIONS":
                 return
+            # Harvest token from the URL on first sight of each domain
+            if "?T=" in url:
+                tok = url.split("?T=")[1].split("&")[0]
+                if "sh.fn." in url and "sh" not in tokens:
+                    tokens["sh"] = tok
+                elif "lmt.fn." in url and "lmt" not in tokens:
+                    tokens["lmt"] = tok
             try:
-                raw = await response.json()
+                raw  = await response.json()
                 docs = raw.get("doc", [])
                 if not docs:
                     return
-                doc = docs[0]
-                # Use queryUrl from the doc when available — it's the canonical key
+                doc       = docs[0]
                 query_url = doc.get("queryUrl")
                 if not query_url:
-                    # Fallback: extract the path after /gismo/ and strip token
                     parts = url.split("?")[0].split("/gismo/")
                     if len(parts) > 1:
                         query_url = parts[1].strip("/")
                 if query_url:
-                    data = doc.get("data") or {}
-                    collected[query_url] = data
+                    collected[query_url] = doc.get("data") or {}
                     log.debug(f"intercepted → {query_url}")
             except Exception as e:
-                log.debug(f"response parse failed ({url[:80]}): {e}")
+                log.debug(f"parse failed ({url[:80]}): {e}")
 
         page.on("response", handle_response)
 
-        # ── Navigate each tab ─────────────────────────────────────────────────
+        # ── Phase 1: navigate tabs ────────────────────────────────────────────
         base = f"https://statshub.sportradar.com/sportpesa/en/match/{match_id}"
-
         for tab in _TABS:
             target = f"{base}{tab}"
             try:
-                await page.goto(
-                    target,
-                    wait_until="networkidle",
-                    timeout=idle_timeout,
-                )
-                # Short human-like pause between tabs so requests settle
-                await asyncio.sleep(random.uniform(1.0, 2.0))
+                await page.goto(target, wait_until="networkidle", timeout=idle_timeout)
+                await asyncio.sleep(random.uniform(1.5, 2.5))
             except Exception as e:
-                # networkidle timeout is common on slower matches — data is still collected
                 log.debug(f"goto {target}: {e}")
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.5)
+
+        log.info(f"Phase 1 done — {len(collected)} endpoints, tokens: {list(tokens.keys())}")
+
+        # ── Phase 2: direct-fetch anything still missing ──────────────────────
+        # Derive team/season IDs from whatever match_info we collected
+        info  = (collected.get(f"match_info_statshub/{match_id}")
+                 or collected.get(f"match_info/{match_id}") or {})
+        md    = info.get("match", {})
+        teams = md.get("teams", {})
+        h_uid = str((teams.get("home") or {}).get("uid", ""))
+        a_uid = str((teams.get("away") or {}).get("uid", ""))
+        s_id  = str(md.get("_seasonid", ""))
+
+        def _missing(*keys):
+            """True if none of the given queryUrl keys are in collected."""
+            return not any(k in collected for k in keys)
+
+        # Build list of (path, base_url, token, headers) to fetch
+        to_fetch = []
+
+        sh  = tokens.get("sh")
+        lmt = tokens.get("lmt") or tokens.get("sh")  # lmt sometimes shares sh token
+
+        # H2H / managers — from versusrecent (lmt endpoint)
+        if h_uid and a_uid and lmt and _missing(f"stats_team_versusrecent/{h_uid}/{a_uid}"):
+            to_fetch.append((f"stats_team_versusrecent/{h_uid}/{a_uid}", _LMT, lmt, _LMT_HEADERS))
+
+        # Upcoming fixtures for both teams (sh endpoint)
+        if h_uid and sh and _missing(f"stats_team_fixtures/{h_uid}/10",
+                                      f"stats_team_fixtures/{h_uid}/5"):
+            to_fetch.append((f"stats_team_fixtures/{h_uid}/10", _SH, sh, _SH_HEADERS))
+
+        if a_uid and sh and _missing(f"stats_team_fixtures/{a_uid}/10",
+                                      f"stats_team_fixtures/{a_uid}/5"):
+            to_fetch.append((f"stats_team_fixtures/{a_uid}/10", _SH, sh, _SH_HEADERS))
+
+        # Season team stats aggregate (sh endpoint)
+        if s_id and sh and _missing(f"stats_season_uniqueteamstats/{s_id}"):
+            to_fetch.append((f"stats_season_uniqueteamstats/{s_id}", _SH, sh, _SH_HEADERS))
+
+        # Top scorers per team if not already collected
+        if s_id and h_uid and sh and _missing(f"stats_season_topgoals/{s_id}/{h_uid}"):
+            to_fetch.append((f"stats_season_topgoals/{s_id}/{h_uid}", _LMT, lmt or sh, _LMT_HEADERS))
+        if s_id and a_uid and sh and _missing(f"stats_season_topgoals/{s_id}/{a_uid}"):
+            to_fetch.append((f"stats_season_topgoals/{s_id}/{a_uid}", _LMT, lmt or sh, _LMT_HEADERS))
+
+        # Recent last-x if not loaded by statistics tab
+        if h_uid and sh and _missing(
+            f"stats_team_lastx/{h_uid}/20",
+            f"stats_team_lastx/{h_uid}/10",
+            f"stats_team_lastx/{h_uid}/5",
+        ):
+            to_fetch.append((f"stats_team_lastx/{h_uid}/10", _SH, sh, _SH_HEADERS))
+
+        if a_uid and sh and _missing(
+            f"stats_team_lastx/{a_uid}/20",
+            f"stats_team_lastx/{a_uid}/10",
+            f"stats_team_lastx/{a_uid}/5",
+        ):
+            to_fetch.append((f"stats_team_lastx/{a_uid}/10", _SH, sh, _SH_HEADERS))
+
+        # Form table and season table if still missing
+        if s_id and sh and _missing(f"stats_formtable/{s_id}"):
+            to_fetch.append((f"stats_formtable/{s_id}", _SH, sh, _SH_HEADERS))
+        if s_id and sh and _missing(f"season_dynamictable/{s_id}", f"stats_season_tables/{s_id}/1"):
+            to_fetch.append((f"season_dynamictable/{s_id}", _SH, sh, _SH_HEADERS))
+
+        # ── Fire all direct fetches in parallel ───────────────────────────────
+        async def direct_fetch(path, base_url, token, headers):
+            url = f"{base_url}/{path}?T={token}"
+            try:
+                resp = await context.request.get(url, headers=headers, timeout=10000)
+                if not resp.ok:
+                    log.debug(f"direct fetch {path}: HTTP {resp.status}")
+                    return
+                raw  = await resp.json()
+                docs = raw.get("doc", [])
+                if not docs:
+                    return
+                doc       = docs[0]
+                query_url = doc.get("queryUrl") or path
+                data      = doc.get("data") or {}
+                if query_url and data:
+                    collected[query_url] = data
+                    log.info(f"Phase 2 ✓ {query_url}")
+            except Exception as e:
+                log.debug(f"direct fetch failed {path}: {e}")
+
+        if to_fetch:
+            log.info(f"Phase 2: fetching {len(to_fetch)} missing endpoints")
+            await asyncio.gather(*[direct_fetch(p, b, t, h) for p, b, t, h in to_fetch])
 
         await browser.close()
 
-    log.info(f"match {match_id}: collected {len(collected)} endpoints → {list(collected.keys())}")
+    log.info(f"match {match_id}: total {len(collected)} endpoints collected")
     return collected
 
 
-def collect_match_data(match_id: str, timeout: int = 90) -> dict:
-    """
-    Synchronous wrapper around _collect_async.
-    Blocks until all tabs have been navigated or timeout is reached.
-    Returns {queryUrl: data_dict} or {} on failure.
-    """
+def collect_match_data(match_id: str) -> dict:
+    """Synchronous wrapper. Returns {queryUrl: data_dict} or {} on failure."""
     try:
-        # asyncio.run() creates a fresh event loop — safe in threads
         return asyncio.run(_collect_async(match_id))
     except Exception as e:
         log.error(f"collect_match_data({match_id}) failed: {e}")
@@ -177,13 +254,8 @@ def collect_match_data(match_id: str, timeout: int = 90) -> dict:
 
 def get(collected: dict, *query_url_variants) -> dict:
     """
-    Look up data from the collected dict, trying multiple queryUrl variants.
-    Returns the first match found, or {}.
-
-    Examples:
-        get(c, "match_info_statshub/123", "match_info/123")
-        get(c, "season_dynamictable/999", "stats_season_tables/999/1")
-        get(c, "stats_team_lastx/456/20", "stats_team_lastx/456/10", "stats_team_lastx/456/5")
+    Try multiple queryUrl keys, return first match or {}.
+    Handles variant naming (e.g. /5 vs /10 vs /20).
     """
     for key in query_url_variants:
         val = collected.get(key)
