@@ -39,20 +39,7 @@ _openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "edge").lower()
 
 # ── MinIO ─────────────────────────────────────────────────────────────────────
-MINIO_OK = False; _minio = None; BUCKET = "sport"
-try:
-    from minio import Minio
-    import urllib3
-    _minio = Minio(
-        os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
-        access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
-        secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-        http_client=urllib3.PoolManager(timeout=urllib3.Timeout(connect=3, read=10)),
-    )
-    if not _minio.bucket_exists(BUCKET): _minio.make_bucket(BUCKET)
-    MINIO_OK = True; log.info("MinIO connected ✓")
-except Exception as e: log.warning(f"MinIO unavailable: {e}")
+# MinIO removed — commentary uses SQLite for caching
 
 # ── Local filesystem audio cache — always available, primary fallback when MinIO is down
 _LOCAL_CACHE: str = os.path.join(
@@ -163,206 +150,48 @@ SCENE_LEADS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TTS ENGINE — sports-optimised: fast rate + SSML express-as styles
+# SQLITE CACHE — persist commentary to avoid regenerating for same match
 # ═══════════════════════════════════════════════════════════════════════════════
+import sqlite3, time as _time
 
-# Talking faster = more energy. +40% is aggressive but natural for live sport.
-_SPORTS_RATE  = os.environ.get("TTS_RATE",  "+20%")
-_SPORTS_PITCH = os.environ.get("TTS_PITCH", "+3Hz")
+_DB_PATH = os.environ.get("COMMENTARY_DB", "kinetic_commentary.db")
 
-# Azure Neural TTS mstts:express-as styles — only these voices support SSML styles.
-# "sports-commentary-excited" is literally designed for this use case.
-_STYLE_MAP: dict = {
-    "en-US-GuyNeural":         "sports-commentary-excited",   # best for sport
-    "en-US-JasonNeural":       "excited",
-    "en-US-ChristopherNeural": "excited",
-    "en-US-EricNeural":        "excited",
-    "en-US-SteffanNeural":     "excited",
-    "en-US-AndrewNeural":      "excited",
-    "en-US-BrianNeural":       "excited",
-    "en-US-AriaNeural":        "excited",
-    "en-US-JennyNeural":       "excited",
-    "en-US-MonicaNeural":      "cheerful",
-    "en-US-MichelleNeural":    "cheerful",
-    "en-US-ElizabethNeural":   "cheerful",
-    "en-KE-ChilembaNeural":    "cheerful",
-    "en-NG-AbeoNeural":        "excited",
-}
+def _db():
+    conn = sqlite3.connect(_DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS commentary_cache (
+        match_id  TEXT PRIMARY KEY,
+        data      TEXT NOT NULL,
+        created   REAL NOT NULL,
+        home      TEXT,
+        away      TEXT
+    )""")
+    conn.commit()
+    return conn
 
+def _cache_get(match_id: str) -> dict | None:
+    try:
+        conn = _db()
+        row = conn.execute("SELECT data, created FROM commentary_cache WHERE match_id=?", (match_id,)).fetchone()
+        conn.close()
+        if not row: return None
+        age_h = (_time.time() - row[1]) / 3600
+        if age_h > 24: return None   # expire after 24 h
+        return json.loads(row[0])
+    except Exception as e:
+        log.warning(f"Cache get {match_id}: {e}")
+        return None
 
-async def _edge_async(text: str, voice: str) -> bytes:
-    import edge_tts
-
-    style = _STYLE_MAP.get(voice)
-
-    if style:
-        # Full SSML — express-as style wraps prosody for maximum energy
-        lang = "en-GB" if "en-GB" in voice else "en-AU" if "en-AU" in voice else "en-US"
-        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        ssml = (
-            f'<speak version="1.0" '
-            f'xmlns="http://www.w3.org/2001/10/synthesis" '
-            f'xmlns:mstts="https://www.w3.org/2001/mstts" '
-            f'xml:lang="{lang}">'
-            f'<voice name="{voice}">'
-            f'<mstts:express-as style="{style}">'
-            f'<prosody rate="{_SPORTS_RATE}" pitch="{_SPORTS_PITCH}">{safe}</prosody>'
-            f'</mstts:express-as>'
-            f'</voice></speak>'
+def _cache_put(match_id: str, data: dict, home="", away=""):
+    try:
+        conn = _db()
+        conn.execute(
+            "INSERT OR REPLACE INTO commentary_cache VALUES (?,?,?,?,?)",
+            (match_id, json.dumps(data, default=str), _time.time(), home, away)
         )
-        try:
-            c = edge_tts.Communicate(ssml, voice)
-            chunks = []
-            async for chunk in c.stream():
-                if chunk["type"] == "audio":
-                    chunks.append(chunk["data"])
-            data = b"".join(chunks)
-            if data:
-                return data
-            log.warning(f"SSML returned empty audio for {voice} — falling back")
-        except Exception as e:
-            log.warning(f"SSML style failed for {voice}: {e} — falling back to plain")
-
-    # All other voices (GB, AU, KE, ZA…): use rate+pitch without SSML styles
-    # These voices don't support express-as but prosody rate alone is very effective
-    c = edge_tts.Communicate(text, voice, rate=_SPORTS_RATE, pitch=_SPORTS_PITCH)
-    chunks = []
-    async for chunk in c.stream():
-        if chunk["type"] == "audio":
-            chunks.append(chunk["data"])
-    return b"".join(chunks)
-
-
-def _tts_edge(text: str, voice: str) -> bytes | None:
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        data = loop.run_until_complete(_edge_async(text, voice))
-        loop.close()
-        if data:
-            log.info(f"edge-tts OK voice={voice} rate={_SPORTS_RATE} bytes={len(data)}")
-            return data
-        log.error(f"edge-tts empty output voice={voice}")
-        return None
+        conn.commit(); conn.close()
+        log.info(f"Commentary cached: {match_id}")
     except Exception as e:
-        log.error(f"edge-tts FAIL voice={voice}: {e}")
-        return None
-
-def _tts_openai(text: str, voice: str) -> bytes | None:
-    try:
-        r = _openai.audio.speech.create(model="tts-1", voice=voice, input=text, response_format="mp3")
-        log.info(f"OpenAI TTS OK voice={voice}")
-        return r.content
-    except Exception as e:
-        log.error(f"OpenAI TTS FAIL voice={voice}: {e}")
-        return None
-
-def _generate_mp3(text: str, voice: str) -> bytes | None:
-    if not text or text.startswith("[Error"): return None
-    is_openai = voice in ("onyx","nova","echo","alloy","fable","shimmer")
-    if TTS_PROVIDER == "openai" or is_openai:
-        data = _tts_openai(text, voice)
-        if data: return data
-        log.warning("OpenAI TTS failed, falling back to edge-tts")
-        voice = DEFAULT_MALE
-    return _tts_edge(text, voice)
-
-
-# ── MinIO helpers ─────────────────────────────────────────────────────────────
-def _mget(key: str) -> bytes | None:
-    if not MINIO_OK: return None
-    try:
-        r = _minio.get_object(BUCKET, key); data = r.read(); r.close(); r.release_conn()
-        log.debug(f"MinIO HIT: {key}"); return data
-    except Exception as e:
-        if hasattr(e, "code") and e.code == "NoSuchKey": return None
-        log.warning(f"MinIO get {key}: {e}"); return None
-
-def _mput(key: str, data: bytes) -> bool:
-    if not MINIO_OK or not data: return False
-    try:
-        _minio.put_object(BUCKET, key, io.BytesIO(data), len(data), content_type="audio/mpeg")
-        log.info(f"MinIO PUT: {key} ({len(data)} bytes)"); return True
-    except Exception as e:
-        log.error(f"MinIO put {key}: {e}"); return False
-
-def _mdel(key: str) -> bool:
-    deleted = False
-    if MINIO_OK:
-        try: _minio.remove_object(BUCKET, key); deleted = True
-        except Exception as e: log.warning(f"MinIO del {key}: {e}")
-    try:
-        lp = _local_path(key)
-        if os.path.exists(lp): os.remove(lp); log.info(f"Local DEL: {lp}")
-    except Exception as e: log.warning(f"Local del {key}: {e}")
-    return deleted
-
-def _audio_store(minio_key: str, data: bytes) -> bool:
-    """Write audio to MinIO AND local disk. Returns True if stored anywhere."""
-    stored = _mput(minio_key, data)
-    try:
-        lp = _local_path(minio_key)
-        with open(lp, "wb") as f: f.write(data)
-        log.info(f"Local WRITE: {lp} ({len(data)} bytes)")
-        stored = True
-    except Exception as e:
-        log.error(f"Local write {minio_key}: {e}")
-    return stored
-
-def _audio_fetch(minio_key: str) -> bytes | None:
-    """Read audio from MinIO, fall back to local disk."""
-    data = _mget(minio_key)
-    if data: return data
-    try:
-        lp = _local_path(minio_key)
-        if os.path.exists(lp):
-            with open(lp, "rb") as f: data = f.read()
-            log.info(f"Local HIT: {lp} ({len(data)} bytes)")
-            if MINIO_OK and data: _mput(minio_key, data)   # back-fill MinIO
-            return data
-    except Exception as e:
-        log.debug(f"Local read {minio_key}: {e}")
-    return None
-
-def _tts_cached(text: str, voice: str, cache_key: str) -> str | None:
-    """Return cached audio (MinIO → local → generate) as base64. Always stores to both."""
-    if not text or text.startswith("[Error"): return None
-    minio_key = f"commentary/{cache_key}.mp3"
-    cached = _audio_fetch(minio_key)
-    if cached:
-        log.info(f"TTS CACHE HIT: {minio_key}")
-        return base64.b64encode(cached).decode()
-    mp3 = _generate_mp3(text, voice)
-    if not mp3: return None
-    _audio_store(minio_key, mp3)
-    return base64.b64encode(mp3).decode()
-
-def _audio_url(ckey: str) -> str:
-    return f"/api/audio/commentary/{ckey}.mp3"
-
-
-def _combine_audio(a: bytes, b: bytes, pause_ms: int = 700) -> bytes:
-    """
-    Concatenate two MP3 clips with a pause between them into one file.
-    Uses pydub for clean combination; raw byte concat as fallback.
-    """
-    try:
-        from pydub import AudioSegment
-        seg_a   = AudioSegment.from_mp3(io.BytesIO(a))
-        silence = AudioSegment.silent(duration=pause_ms)
-        seg_b   = AudioSegment.from_mp3(io.BytesIO(b))
-        out = io.BytesIO()
-        (seg_a + silence + seg_b).export(out, format="mp3", bitrate="128k")
-        data = out.getvalue()
-        log.debug(f"pydub combine: {len(a)}+{len(b)} -> {len(data)} bytes (pause={pause_ms}ms)")
-        return data
-    except ImportError:
-        log.debug("pydub not installed — raw MP3 concat")
-    except Exception as e:
-        log.warning(f"pydub combine failed: {e} — raw concat")
-    # Raw concat — browsers handle MP3 concatenation natively
-    return a + b
-
+        log.warning(f"Cache put {match_id}: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SPORTRADAR HELPERS
@@ -880,9 +709,7 @@ def _fetch_ctx(betradar_id: str, hints: dict = None) -> dict:
 # CORE BUILD FUNCTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _build(betradar_id: str, ctx: dict,
-           voice_alex: str = DEFAULT_MALE, voice_sarah: str = DEFAULT_FEMALE,
-           tts_on: bool = True, progress_cb=None, max_pl: int = 3) -> dict:
+def _build(betradar_id: str, ctx: dict, progress_cb=None, max_pl: int = 3) -> dict:
 
     home=ctx["home"]; away=ctx["away"]
     def _p(step, msg):
@@ -919,9 +746,7 @@ def _build(betradar_id: str, ctx: dict,
 
     def _make(sid, dur, fn):
         hist=_history(scenes_text); ta,tb=fn(ctx,hist)
-        s={"id":sid,"duration":dur,"timing":0,"text":ta,"text_b":tb,
-           "audio_a":None,"audio_b":None,"audio_url_a":None,"audio_url_b":None,
-           "audio_combined":None,"audio_url_combined":None}
+        s={"id":sid,"duration":dur,"timing":0,"text":ta,"text_b":tb}
         scenes_text.append(s); _p("dialogue",f"Scene '{sid}' written"); return s
 
     scene_defs=[
@@ -955,63 +780,13 @@ def _build(betradar_id: str, ctx: dict,
 
     closing=_s_closing(ctx)
     scenes.append({"id":"closing","duration":7,"timing":0,"text":closing,"text_b":"",
-                   "audio_a":None,"audio_b":None,"audio_url_a":None,"audio_url_b":None,
-                   "audio_combined":None,"audio_url_combined":None})
+                   })
 
     t=0
     for sc in scenes: sc["timing"]=t; t+=sc["duration"]
 
-    if tts_on:
-        _p("tts","Generating audio…")
-        mk = betradar_id
-        for sc in scenes:
-            if sc["id"]=="players":
-                for j,p in enumerate(sc.get("players",[])):
-                    if not p.get("commentary"): continue
-                    ckey=f"{mk}/player_{j}_{p.get('name','x').replace(' ','_')[:18]}"
-                    b64=_tts_cached(p["commentary"],p.get("voice",voice_alex),ckey)
-                    p["audio_b64"]=b64
-                    if b64: p["audio_url"]=_audio_url(ckey)
-                _p("tts","Players done")
-            else:
-                la,lb=SCENE_LEADS.get(sc["id"],("alex","sarah"))
-                va=voice_alex if la=="alex" else voice_sarah
-                vb=(voice_sarah if lb=="sarah" else voice_alex) if lb else None
 
-                if sc.get("text"):
-                    ca=f"{mk}/scene_{sc['id']}_a"
-                    b=_tts_cached(sc["text"],va,ca)
-                    sc["audio_a"]=b; sc["audio_url_a"]=_audio_url(ca) if b else None
-
-                if sc.get("text_b") and vb:
-                    cb=f"{mk}/scene_{sc['id']}_b"
-                    b=_tts_cached(sc["text_b"],vb,cb)
-                    sc["audio_b"]=b; sc["audio_url_b"]=_audio_url(cb) if b else None
-
-                # Combine A + B into one file — frontend loads one audio, no chaining
-                ck_c = f"{mk}/scene_{sc['id']}_combined"
-                if sc.get("audio_a") and sc.get("audio_b"):
-                    try:
-                        raw_a = base64.b64decode(sc["audio_a"])
-                        raw_b = base64.b64decode(sc["audio_b"])
-                        combined = _combine_audio(raw_a, raw_b)
-                        _audio_store(f"commentary/{ck_c}.mp3", combined)
-                        sc["audio_combined"]     = base64.b64encode(combined).decode()
-                        sc["audio_url_combined"] = _audio_url(ck_c)
-                    except Exception as e:
-                        log.warning(f"Combine failed for {sc['id']}: {e}")
-                        sc["audio_combined"]     = sc["audio_a"]
-                        sc["audio_url_combined"] = sc["audio_url_a"]
-                elif sc.get("audio_a"):
-                    # Single speaker — reuse as combined
-                    sc["audio_combined"]     = sc["audio_a"]
-                    sc["audio_url_combined"] = sc["audio_url_a"]
-
-                _p("tts",f"Scene '{sc['id']}' done (combined={bool(sc.get('audio_combined'))})")
-
-    gw="Gambling is strictly for persons aged 18 and over. Please gamble responsibly. Help: gamblingtherapy.org"
-    gw_ck=f"{betradar_id}/gambling_warning"
-    gw_b=_tts_cached(gw,voice_sarah,gw_ck) if tts_on else None
+    gw="Gambling is strictly for persons aged 18 and over. Please gamble responsibly."
 
     return {
         "match":{"home":home,"away":away,"home_color":ctx["home_color"],"away_color":ctx["away_color"],
@@ -1025,8 +800,8 @@ def _build(betradar_id: str, ctx: dict,
         "home_manager":mgr_h,"away_manager":mgr_a,
         "enriched_players":players_scene.get("players",[]),
         "scenes":scenes,"total_duration":t,
-        "voice_alex":voice_alex,"voice_sarah":voice_sarah,
-        "gambling_warning":{"text":gw,"audio_b64":gw_b,"audio_url":_audio_url(gw_ck) if gw_b else None},
+
+        "gambling_warning":{"text":gw},
     }
 
 
@@ -1071,7 +846,7 @@ def get_commentary(betradar_id: str):
     log.info(f"Commentary: {betradar_id} va={va} vs={vs} hints_home={hints['home']} hints_away={hints['away']}")
     ctx    = _fetch_ctx(betradar_id, hints=hints)
     max_pl = int(os.environ.get("MAX_PLAYERS", "3"))
-    result = _build(betradar_id, ctx, va, vs, tts_on, max_pl=max_pl)
+    result = _build(betradar_id, ctx, max_pl=max_pl)
     log.info(f"Commentary done {time.time()-t0:.1f}s for {ctx['home']} vs {ctx['away']}")
     return jsonify(result)
 
@@ -1096,8 +871,7 @@ def stream_commentary(betradar_id: str):
             result_holder={}; error_holder={}
             def _run():
                 try:
-                    result_holder["data"]=_build(betradar_id,ctx,va,vs,tts_on,progress_cb=_cb,
-                                                  max_pl=int(os.environ.get("MAX_PLAYERS","3")))
+                    result_holder["data"]=_build(betradar_id,ctx,progress_cb=_cb,max_pl=int(os.environ.get("MAX_PLAYERS","3")))
                 except Exception as e: error_holder["err"]=str(e)
 
             t=threading.Thread(target=_run,daemon=True); t.start()
@@ -1172,48 +946,6 @@ def player_audio(betradar_id: str, player_idx: int):
     _mdel(f"commentary/{ck}.mp3")
     b=_tts_cached(text,voice,ck)
     return jsonify({"status":"ok","audio_b64":b,"audio_url":_audio_url(ck) if b else None})
-
-
-@bp_commentary.route("/audio/<path:key>")
-def serve_audio(key: str):
-    """
-    URL: /api/audio/commentary/MATCHID/scene_intro_a.mp3
-    Flask gives key = "commentary/MATCHID/scene_intro_a.mp3"
-    _audio_store saves to exactly that path → _audio_fetch finds it.
-    Falls back to legacy "commentary/commentary/..." key for old cache entries.
-    """
-    data = _audio_fetch(key)
-    if not data:
-        data = _audio_fetch(f"commentary/{key}")   # legacy fallback
-    if not data:
-        log.warning(f"Audio 404 — key={key} minio_ok={MINIO_OK} cache={_LOCAL_CACHE}")
-        return jsonify({"error": "Not found", "key": key,
-                        "minio_ok": MINIO_OK, "local_cache": _LOCAL_CACHE}), 404
-    return Response(data, mimetype="audio/mpeg", headers={
-        "Content-Length": str(len(data)),
-        "Cache-Control": "public, max-age=3600",
-        "Accept-Ranges": "bytes",
-    })
-
-
-@bp_commentary.route("/audio/status")
-def audio_status():
-    local_files = 0; local_mb = 0
-    try:
-        for root, _, files in os.walk(_LOCAL_CACHE):
-            for f in files:
-                local_files += 1
-                local_mb += os.path.getsize(os.path.join(root, f))
-        local_mb = round(local_mb / 1024 / 1024, 2)
-    except Exception: pass
-    return jsonify({
-        "minio_ok": MINIO_OK, "minio_bucket": BUCKET if MINIO_OK else None,
-        "local_cache_dir": _LOCAL_CACHE, "local_files": local_files, "local_mb": local_mb,
-        "search_ok": SEARCH_OK, "tts_provider": TTS_PROVIDER,
-        "openai_key": bool(os.environ.get("OPENAI_API_KEY")),
-        "default_male": DEFAULT_MALE, "default_female": DEFAULT_FEMALE,
-        "total_voices": len(EDGE_TTS_VOICES),
-    })
 
 
 @bp_commentary.route("/odds/match/<betradar_id>/commentary/delete", methods=["DELETE"])

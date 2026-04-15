@@ -10,17 +10,62 @@ SSE events emitted:
   goal_timing, managers, top_scorers, team_stats, recent, upcoming,
   standings, form, pressure, done
 """
-import json
+import json, os, sqlite3, time as _time
 import logging
 from threading import Thread, Event
 
-from flask import Blueprint, Response, stream_with_context
+from flask import Blueprint, Response, stream_with_context, request
 
-from app.utils.playwright_scraper import collect_match_data, get as _get
+from playwright_scraper import collect_match_data, get as _get
 
 log = logging.getLogger("deep_analytics")
 
 bp_deep_analytics = Blueprint("deep_analytics", __name__, url_prefix="/api")
+
+# ── SQLite analytics cache ─────────────────────────────────────────────────────
+_DB_PATH = os.environ.get("ANALYTICS_DB", "kinetic_analytics.db")
+
+def _db():
+    conn = sqlite3.connect(_DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS analytics_cache (
+        match_id TEXT PRIMARY KEY,
+        data     TEXT NOT NULL,
+        created  REAL NOT NULL,
+        status   TEXT
+    )""")
+    conn.commit()
+    return conn
+
+def _cache_get(match_id: str, max_age_min: int = 5) -> dict | None:
+    """Return cached analytics if fresher than max_age_min minutes."""
+    try:
+        conn = _db()
+        row = conn.execute(
+            "SELECT data, created, status FROM analytics_cache WHERE match_id=?",
+            (match_id,)
+        ).fetchone()
+        conn.close()
+        if not row: return None
+        age_min = (_time.time() - row[1]) / 60
+        # Live/in-progress: expire in 5 min. Finished: keep 24 h.
+        limit = max_age_min if row[2] not in ("Finished","FT","AET","AP") else 24*60
+        if age_min > limit: return None
+        return json.loads(row[0])
+    except Exception as e:
+        log.warning(f"Analytics cache get {match_id}: {e}")
+        return None
+
+def _cache_put(match_id: str, data: dict, status: str = ""):
+    try:
+        conn = _db()
+        conn.execute(
+            "INSERT OR REPLACE INTO analytics_cache VALUES (?,?,?,?)",
+            (match_id, json.dumps(data, default=str), _time.time(), status)
+        )
+        conn.commit(); conn.close()
+        log.info(f"Analytics cached: {match_id} status={status}")
+    except Exception as e:
+        log.warning(f"Analytics cache put {match_id}: {e}")
 
 
 def _sse(event, data):
@@ -116,6 +161,20 @@ def _parse_upcoming(data):
             "away": (m.get("teams", {}).get("away") or {}).get("name", ""),
         })
     return out
+
+
+@bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics")
+def get_analytics(betradar_id):
+    """Return cached analytics JSON without streaming (instant if cached)."""
+    force = request.args.get("force","false").lower()=="true"
+    if not force:
+        cached = _cache_get(betradar_id)
+        if cached:
+            log.info(f"Analytics CACHE HIT: {betradar_id}")
+            from flask import jsonify
+            return jsonify({**cached, "cached": True})
+    from flask import jsonify
+    return jsonify({"error": "Not cached. Use the SSE stream endpoint to fetch fresh data."}), 404
 
 
 @bp_deep_analytics.route("/odds/match/<betradar_id>/deep_analytics/stream")
@@ -555,6 +614,13 @@ def stream_deep_analytics(betradar_id):
                     })
             if pressure:
                 yield _sse("pressure", pressure)
+
+        # ── Persist to SQLite so next request is instant ────────────────────────
+        try:
+            match_status = (md.get("status") or {}).get("name", "") if "md" in dir() else ""
+            _cache_put(betradar_id, dict(collected), status=match_status)
+        except Exception as _ce:
+            log.warning(f"Analytics cache write failed: {_ce}")
 
         yield _sse("done", {"status": "complete", "endpoints_collected": len(collected)})
 
