@@ -45,10 +45,10 @@ try:
     from minio import Minio
     import urllib3
     _minio = Minio(
-        os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
-        access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
-        secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
+        os.environ.get("STORAGE_ENDPOINT", "localhost:9000"),
+        access_key=os.environ.get("STORAGE_ACCESS_KEY", "minioadmin"),
+        secret_key=os.environ.get("STORAGE_SECRET_KEY", "minioadmin"),
+        secure=os.environ.get("STORAGE_SECURE", "false").lower() == "true",
         http_client=urllib3.PoolManager(timeout=urllib3.Timeout(connect=3, read=10)),
     )
     if not _minio.bucket_exists(BUCKET): _minio.make_bucket(BUCKET)

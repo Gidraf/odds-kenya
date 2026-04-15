@@ -61,11 +61,11 @@ from flask import Blueprint, request as flask_request, jsonify, make_response
 # Config  (override via env)
 # ─────────────────────────────────────────────────────────────────────────────
 
-MINIO_ENDPOINT   = os.environ.get("MINIO_ENDPOINT",   "localhost:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET     = os.environ.get("MINIO_BUCKET",     "fetcher")
-MINIO_SECURE     = os.environ.get("MINIO_SECURE",     "false").lower() == "true"
+MINIO_ENDPOINT   = os.environ.get("STORAGE_ENDPOINT",   "localhost:9000")
+MINIO_ACCESS_KEY = os.environ.get("STORAGE_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.environ.get("STORAGE_SECRET_KEY", "minioadmin")
+MINIO_BUCKET     = os.environ.get("STORAGE_BUCKET",     "fetcher")
+MINIO_SECURE     = os.environ.get("STORAGE_SECURE",     "false").lower() == "true"
 
 _CDP_PORT_BASE = int(os.environ.get("CDP_PORT_BASE", "9222"))
 
