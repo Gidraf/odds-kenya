@@ -167,7 +167,7 @@ SCENE_LEADS = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Talking faster = more energy. +40% is aggressive but natural for live sport.
-_SPORTS_RATE  = os.environ.get("TTS_RATE",  "+40%")
+_SPORTS_RATE  = os.environ.get("TTS_RATE",  "+20%")
 _SPORTS_PITCH = os.environ.get("TTS_PITCH", "+3Hz")
 
 # Azure Neural TTS mstts:express-as styles — only these voices support SSML styles.
@@ -339,6 +339,29 @@ def _tts_cached(text: str, voice: str, cache_key: str) -> str | None:
 
 def _audio_url(ckey: str) -> str:
     return f"/api/audio/commentary/{ckey}.mp3"
+
+
+def _combine_audio(a: bytes, b: bytes, pause_ms: int = 700) -> bytes:
+    """
+    Concatenate two MP3 clips with a pause between them into one file.
+    Uses pydub for clean combination; raw byte concat as fallback.
+    """
+    try:
+        from pydub import AudioSegment
+        seg_a   = AudioSegment.from_mp3(io.BytesIO(a))
+        silence = AudioSegment.silent(duration=pause_ms)
+        seg_b   = AudioSegment.from_mp3(io.BytesIO(b))
+        out = io.BytesIO()
+        (seg_a + silence + seg_b).export(out, format="mp3", bitrate="128k")
+        data = out.getvalue()
+        log.debug(f"pydub combine: {len(a)}+{len(b)} -> {len(data)} bytes (pause={pause_ms}ms)")
+        return data
+    except ImportError:
+        log.debug("pydub not installed — raw MP3 concat")
+    except Exception as e:
+        log.warning(f"pydub combine failed: {e} — raw concat")
+    # Raw concat — browsers handle MP3 concatenation natively
+    return a + b
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -897,7 +920,8 @@ def _build(betradar_id: str, ctx: dict,
     def _make(sid, dur, fn):
         hist=_history(scenes_text); ta,tb=fn(ctx,hist)
         s={"id":sid,"duration":dur,"timing":0,"text":ta,"text_b":tb,
-           "audio_a":None,"audio_b":None,"audio_url_a":None,"audio_url_b":None}
+           "audio_a":None,"audio_b":None,"audio_url_a":None,"audio_url_b":None,
+           "audio_combined":None,"audio_url_combined":None}
         scenes_text.append(s); _p("dialogue",f"Scene '{sid}' written"); return s
 
     scene_defs=[
@@ -931,7 +955,8 @@ def _build(betradar_id: str, ctx: dict,
 
     closing=_s_closing(ctx)
     scenes.append({"id":"closing","duration":7,"timing":0,"text":closing,"text_b":"",
-                   "audio_a":None,"audio_b":None,"audio_url_a":None,"audio_url_b":None})
+                   "audio_a":None,"audio_b":None,"audio_url_a":None,"audio_url_b":None,
+                   "audio_combined":None,"audio_url_combined":None})
 
     t=0
     for sc in scenes: sc["timing"]=t; t+=sc["duration"]
@@ -952,15 +977,37 @@ def _build(betradar_id: str, ctx: dict,
                 la,lb=SCENE_LEADS.get(sc["id"],("alex","sarah"))
                 va=voice_alex if la=="alex" else voice_sarah
                 vb=(voice_sarah if lb=="sarah" else voice_alex) if lb else None
+
                 if sc.get("text"):
                     ca=f"{mk}/scene_{sc['id']}_a"
                     b=_tts_cached(sc["text"],va,ca)
                     sc["audio_a"]=b; sc["audio_url_a"]=_audio_url(ca) if b else None
+
                 if sc.get("text_b") and vb:
                     cb=f"{mk}/scene_{sc['id']}_b"
                     b=_tts_cached(sc["text_b"],vb,cb)
                     sc["audio_b"]=b; sc["audio_url_b"]=_audio_url(cb) if b else None
-                _p("tts",f"Scene '{sc['id']}' audio done")
+
+                # Combine A + B into one file — frontend loads one audio, no chaining
+                ck_c = f"{mk}/scene_{sc['id']}_combined"
+                if sc.get("audio_a") and sc.get("audio_b"):
+                    try:
+                        raw_a = base64.b64decode(sc["audio_a"])
+                        raw_b = base64.b64decode(sc["audio_b"])
+                        combined = _combine_audio(raw_a, raw_b)
+                        _audio_store(f"commentary/{ck_c}.mp3", combined)
+                        sc["audio_combined"]     = base64.b64encode(combined).decode()
+                        sc["audio_url_combined"] = _audio_url(ck_c)
+                    except Exception as e:
+                        log.warning(f"Combine failed for {sc['id']}: {e}")
+                        sc["audio_combined"]     = sc["audio_a"]
+                        sc["audio_url_combined"] = sc["audio_url_a"]
+                elif sc.get("audio_a"):
+                    # Single speaker — reuse as combined
+                    sc["audio_combined"]     = sc["audio_a"]
+                    sc["audio_url_combined"] = sc["audio_url_a"]
+
+                _p("tts",f"Scene '{sc['id']}' done (combined={bool(sc.get('audio_combined'))})")
 
     gw="Gambling is strictly for persons aged 18 and over. Please gamble responsibly. Help: gamblingtherapy.org"
     gw_ck=f"{betradar_id}/gambling_warning"
@@ -1013,6 +1060,13 @@ def get_commentary(betradar_id: str):
         "home_players": request.args.get("home_players", ""),
         "away_players": request.args.get("away_players", ""),
     }
+
+    # Allow per-request rate override — useful for regeneration with different speed
+    rate_override = request.args.get("rate", "")
+    if rate_override:
+        import commentary as _self
+        _self._SPORTS_RATE = rate_override   # module-level override for this request
+        log.info(f"Rate override: {rate_override}")
 
     log.info(f"Commentary: {betradar_id} va={va} vs={vs} hints_home={hints['home']} hints_away={hints['away']}")
     ctx    = _fetch_ctx(betradar_id, hints=hints)
