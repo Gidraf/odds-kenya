@@ -33,33 +33,33 @@ services:
     deploy:
       replicas: 8 # Automatically boots 8 instances of your API
 
-  celery:
-    build: .
-    restart: always
-    command: celery -A app.services.message_services worker -c 8 -l debug
-    env_file: .env
-    networks:
-      - app-network
-    depends_on:
-      redis6381:
-        condition: service_healthy
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./chroma_db:/app/chroma_db
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - REDIS_HOST=redis6381
-      - REDIS_PORT=6381
-      - REDIS_AUTH=@Winners1127
-      - DB_NAME=oddkenya
-      - DB_HOST=${DB_HOST:-host.docker.internal}
-      - DB_PORT=${DB_PORT:-5432}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-host.docker.internal:9000}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+  # celery:
+  #   build: .
+  #   restart: always
+  #   command: celery -A app.services.message_services worker -c 8 -l debug
+  #   env_file: .env
+  #   networks:
+  #     - app-network
+  #   depends_on:
+  #     redis6381:
+  #       condition: service_healthy
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - ./chroma_db:/app/chroma_db
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   environment:
+  #     - REDIS_HOST=redis6381
+  #     - REDIS_PORT=6381
+  #     - REDIS_AUTH=@Winners1127
+  #     - DB_NAME=oddkenya
+  #     - DB_HOST=${DB_HOST:-host.docker.internal}
+  #     - DB_PORT=${DB_PORT:-5432}
+  #     - DB_USER=${DB_USER}
+  #     - DB_PASSWORD=${DB_PASSWORD}
+  #     - MINIO_ENDPOINT=${MINIO_ENDPOINT:-host.docker.internal:9000}
+  #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+  #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
 
   redis6381:
     image: redis:7
