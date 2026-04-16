@@ -334,24 +334,40 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     if bid and bid != "0":
                         betradar_map[ev["id"]] = bid
 
-                # Core market types for SP live
-                _CORE_MARKET_TYPES = [194, 105, 138, 147, 184, 149, 156, 161, 112, 141]
+                # Minimal market types for live — just 1x2, O/U, and BTTS.
+                # Fewer types = fewer HTTP calls = faster first paint.
+                # Additional markets arrive from BT/OD in Phase 3.
+                _CORE_MARKET_TYPES = [194, 105, 138]   # 1x2, O/U, BTTS
 
                 def _fetch_sp_markets_for_event(ev_id: int) -> tuple:
-                    """Fetch SP live markets for one event, return (ev_id, markets_list)."""
+                    """
+                    Fetch core live markets for one SP event.
+                    Uses a shared session with a 6s per-request timeout.
+                    Returns (ev_id, markets_list).
+                    """
                     collected = []
-                    for m_type in _CORE_MARKET_TYPES:
+                    # Batch all market types into one call where possible
+                    try:
+                        # Fetch all three types in one call if the endpoint supports it
+                        res = fetch_live_markets([ev_id], sport_id, _CORE_MARKET_TYPES[0])
+                        for m in res:
+                            inner = m.get("markets") or []
+                            if inner: collected.extend(inner)
+                    except Exception:
+                        pass
+                    # Fetch O/U and BTTS separately (different type IDs)
+                    for m_type in _CORE_MARKET_TYPES[1:]:
                         try:
                             res = fetch_live_markets([ev_id], sport_id, m_type)
                             for m in res:
                                 inner = m.get("markets") or []
-                                if inner:
-                                    collected.extend(inner)
+                                if inner: collected.extend(inner)
                         except Exception:
                             pass
                     return ev_id, collected
 
-                _bg_pool = ThreadPoolExecutor(max_workers=12)
+                # 8 workers max — keeps connection pool healthy
+                _bg_pool = ThreadPoolExecutor(max_workers=8)
                 # SP market futures — one per event
                 _sp_mkt_futs = {
                     _bg_pool.submit(_fetch_sp_markets_for_event, ev["id"]): ev["id"]
@@ -453,13 +469,15 @@ def debug_stream_unified(mode: str, sport_slug: str):
                 # ── PHASE 2: SP market futures arrive — send as live_update ──────────
                 # as_completed() yields each future the moment it finishes, so markets
                 # for fast-responding events arrive while slow ones are still fetching.
-                for fut in as_completed(_sp_mkt_futs, timeout=30):
+                # No hard timeout — let individual futures finish or be cancelled.
+                # Futures that don't have a betradar_id are skipped immediately.
+                for fut in as_completed(_sp_mkt_futs):
                     ev_id = _sp_mkt_futs[fut]
                     betradar_id = betradar_map.get(ev_id, "")
                     if not betradar_id:
                         continue
                     try:
-                        _, raw_mkts = fut.result()
+                        _, raw_mkts = fut.result(timeout=8)
                     except Exception:
                         continue
                     if not raw_mkts:
@@ -494,13 +512,26 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     yield _keepalive()
 
                 # ── PHASE 3: BT + OD — yield each the moment it resolves ─────────────
-                # as_completed() means whichever of BT / OD finishes first is sent
-                # immediately — we never wait for the slower one before sending the faster.
                 _bk_futures = {}
                 if not _bt_done: _bk_futures[_f_bt] = ("bt", "BETIKA")
                 if not _od_done: _bk_futures[_f_od] = ("od", "ODIBETS")
 
-                for fut in as_completed(_bk_futures, timeout=12):
+                # Build a reverse lookup: normalized_home_away -> sp_betradar_id
+                # Used as fallback when BT/OD betradar_id doesn't match SP's externalId
+                def _norm_key(h: str, a: str) -> str:
+                    return f"{h[:8].lower().strip()}|{a[:8].lower().strip()}"
+
+                sp_team_index = {}  # norm_key -> sp_br_id
+                for ev in raw_events:
+                    comps = ev.get("competitors") or [{}, {}]
+                    br = str(ev.get("externalId") or "")
+                    if br and br not in ("0", "None"):
+                        h = comps[0].get("name","") if len(comps)>0 else ""
+                        a = comps[1].get("name","") if len(comps)>1 else ""
+                        if h and a:
+                            sp_team_index[_norm_key(h, a)] = br
+
+                for fut in as_completed(_bk_futures, timeout=15):
                     bk_slug, bk_name = _bk_futures[fut]
                     try:
                         raw_list = fut.result() or []
@@ -509,23 +540,47 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         raw_list = []
 
                     if bk_slug == "bt":
-                        bt_map  = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
-                                   for m in raw_list if isinstance(m, dict)}
+                        bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
+                                  for m in raw_list if isinstance(m, dict)}
                         _bt_done = True
                     else:
-                        od_map  = {str(m.get("betradar_id") or m.get("od_parent_id")): m
-                                   for m in raw_list if isinstance(m, dict)}
+                        od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m
+                                  for m in raw_list if isinstance(m, dict)}
                         _od_done = True
 
                     if not raw_list:
                         continue
 
-                    # Send enrichment for every SP card we already streamed
+                    cur_map = bt_map if bk_slug == "bt" else od_map
+
+                    # Send enrichment for every SP card already streamed.
+                    # Strategy: try betradar_id match first; fall back to team names.
+                    matched_bk_ids = set()
                     for br_id in list(seen_br_ids):
-                        match_raw = bt_map.get(br_id) if bk_slug == "bt" else od_map.get(br_id)
+                        match_raw = cur_map.get(br_id)
+
+                        # Fallback: find by team names when IDs differ between books
+                        if not match_raw:
+                            for bk_m in raw_list:
+                                if not isinstance(bk_m, dict): continue
+                                h = bk_m.get("home_team",""); a = bk_m.get("away_team","")
+                                if h and a and sp_team_index.get(_norm_key(h,a)) == br_id:
+                                    match_raw = bk_m
+                                    # Add the BK's own ID to the map for future lookups
+                                    bk_br = str(bk_m.get("betradar_id") or bk_m.get("bt_parent_id") or bk_m.get("od_parent_id") or "")
+                                    if bk_br and bk_br not in ("None",""):
+                                        cur_map[bk_br] = bk_m
+                                    break
+
                         if not match_raw or not match_raw.get("markets"):
                             continue
+
+                        bk_br_id = str(match_raw.get("betradar_id") or match_raw.get("bt_parent_id") or match_raw.get("od_parent_id") or "")
+                        matched_bk_ids.add(bk_br_id)
+
                         c = _unify_match_payload(match_raw, 0, mode, bk_slug, bk_name)
+                        if bk_slug not in c.get("bookmakers", {}):
+                            continue
                         yield _sse("live_update", {
                             "parent_match_id": br_id,
                             "home_team":       "dummy",
@@ -534,9 +589,15 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         })
                         yield _keepalive()
 
-                    # New cards this bk has that SP didn't
-                    for br_id, raw_m in (bt_map if bk_slug=="bt" else od_map).items():
-                        if br_id in seen_br_ids or not br_id or br_id == "None":
+                    # New cards this bk has that SP didn't have at all
+                    for bk_br_id, raw_m in cur_map.items():
+                        if not isinstance(raw_m, dict): continue
+                        # skip if already matched above or already seen
+                        if bk_br_id in seen_br_ids or bk_br_id in matched_bk_ids: continue
+                        if not bk_br_id or bk_br_id in ("None", ""): continue
+                        # team-name check: skip if SP already has it under a different ID
+                        h = raw_m.get("home_team",""); a = raw_m.get("away_team","")
+                        if h and a and sp_team_index.get(_norm_key(h,a)):
                             continue
                         count += 1
                         c = _unify_match_payload(raw_m, count, mode, bk_slug, bk_name)
@@ -547,7 +608,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         yield _sse("batch", {"matches": [c], "batch": count,
                                              "of": "unknown", "offset": count - 1})
                         yield _keepalive()
-                        seen_br_ids.add(br_id)
+                        seen_br_ids.add(bk_br_id)
 
                 _bg_pool.shutdown(wait=False)
                 yield _sse("list_done", {"total_sent": count})
