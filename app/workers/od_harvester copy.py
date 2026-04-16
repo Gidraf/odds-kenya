@@ -5,8 +5,14 @@ OdiBets upcoming + live harvester.
 
 CHANGES in this version
 ────────────────────────
-• Added stream generators fetch_live_stream and fetch_upcoming_stream
-• Maintained ALL background thread polling logic, Celery tasks, and cache logic
+• _get() throttle is now opt-in (_throttle=False by default).
+  Live calls are fast; upcoming bulk-scrape passes _throttle=True.
+• _LIVE_SUB_TYPE_IDS — slim list for live fetches (5 core types).
+  _BROAD_SUB_TYPE_IDS kept for upcoming/event-detail calls.
+• _parse_all_markets, _translate_team_names — universal Sportradar mapper.
+• Smart Batching in fetch_event_detail — one chunked request instead of
+  N individual sub_type requests.
+• betradar_id fallback: uses parent_match_id when sr_id is absent.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ import random
 import threading
 import time
 from datetime import date as _date
-from typing import Any, Generator
+from typing import Any
 
 import httpx
 
@@ -144,12 +150,16 @@ _UPC_DATA_KEY    = "od:upcoming:{sport_slug}:data"
 _UPC_HASH_KEY    = "od:upcoming:{sport_slug}:hash"
 _UPC_CHAN_KEY    = "od:upcoming:{sport_slug}:updates"
 
+# Full list for upcoming / event-detail (market discovery)
 _BROAD_SUB_TYPE_IDS = (
     "1,2,3,4,5,8,10,11,14,15,16,18,19,20,29,37,47,60,63,66,68,"
     "186,187,188,189,199,202,204,219,225,230,234,237,251,256,258,"
     "264,274,309,310,340,406,432"
 )
-_LIVE_SUB_TYPE_IDS = "1,2,8,10,11"
+
+# Slim list for live fetches — only the 5 most important markets.
+# Keeps live response time low; BT/SP cover the rest.
+_LIVE_SUB_TYPE_IDS = "1,2,8,10,11"   # 1x2, moneyline, O/U, DC, BTTS
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -160,8 +170,15 @@ def _get(
     url:       str,
     params:    dict | None = None,
     timeout:   float       = 15.0,
-    _throttle: bool        = False,   
+    _throttle: bool        = False,   # True only for upcoming bulk scrape
 ) -> dict | list | None:
+    """
+    GET with optional polite throttle.
+
+    _throttle=False (default) — no sleep, used for live and event-detail calls
+    _throttle=True            — adds 50–150 ms sleep, used for upcoming scraping
+                                to avoid rate-limiting during bulk page fetches
+    """
     if _throttle:
         time.sleep(random.uniform(0.05, 0.15))
     for attempt in range(2):
@@ -374,6 +391,7 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         parent_id   = str(raw.get("parent_match_id") or raw.get("parent_id") or match_id)
         betradar_id = str(raw.get("betradar_id") or raw.get("sr_id") or "") or None
 
+        # Fallback: use parent_match_id as betradar_id when sr_id is absent
         if not betradar_id and parent_id:
             betradar_id = parent_id
 
@@ -413,6 +431,7 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         else:
             markets = {}
 
+        # Fallback: inline home/away/draw odds
         if "1x2" not in markets:
             try:
                 ho = float(raw.get("home_odd") or raw.get("h_odd") or 0)
@@ -456,59 +475,7 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NEW: GENERATORS / STREAMS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def fetch_live_stream(sport_slug: str | None = None) -> Generator[dict, None, None]:
-    """Yields LIVE OdiBets matches one at a time the moment they are parsed."""
-    params: dict[str, Any] = {
-        "resource":    "live",
-        "sportsbook":  "sportsbook",
-        "ua":          HEADERS["user-agent"],
-        "sub_type_id": _LIVE_SUB_TYPE_IDS,
-        "sport_id":    slug_to_od_sport_id(sport_slug) if sport_slug else "",
-    }
-    data = _get(SBOOK_V1, params=params, timeout=10.0)
-    if not data: return
-    
-    for raw in _unwrap_live_response(data):
-        if not isinstance(raw, dict): continue
-        try:
-            raw_sport_id = int(raw.get("sport_id") or 1)
-        except (TypeError, ValueError):
-            raw_sport_id = 1
-            
-        m = _normalise_match(raw, raw_sport_id, is_live=True)
-        if m: 
-            yield m
-
-def fetch_upcoming_stream(sport_slug: str = "soccer", max_matches: int | None = None, **kwargs) -> Generator[dict, None, None]:
-    """Yields UPCOMING OdiBets matches one at a time."""
-    od_sport_id = slug_to_od_sport_id(sport_slug)
-    params: dict[str, Any] = {
-        "resource":    "sportevents",
-        "platform":    "mobile",
-        "mode":        1,
-        "sport_id":    od_sport_id,
-        "sub_type_id": _BROAD_SUB_TYPE_IDS,
-        "day":         _date.today().isoformat(),
-    }
-    data = _get(SBOOK_ODI, params=params, _throttle=False)
-    if not data: return
-    
-    count = 0
-    for raw in _unwrap_upcoming_response(data, od_sport_id):
-        if not isinstance(raw, dict): continue
-        if max_matches and count >= max_matches: break
-            
-        m = _normalise_match(raw, od_sport_id, is_live=False)
-        if m:
-            count += 1
-            yield m
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING (List Returns - preserved)
+# UPCOMING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
@@ -536,6 +503,7 @@ def fetch_upcoming_matches(
     if competition_id:
         params["competition_id"] = competition_id
 
+    # _throttle=True for bulk upcoming scrape — polite rate limiting
     data = _get(SBOOK_ODI, params=params, _throttle=True)
     if not data:
         logger.warning("OD upcoming %s %s: no response", sport_slug, day)
@@ -577,20 +545,26 @@ def fetch_upcoming_all_sports(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE (List Returns - preserved)
+# LIVE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
+    """
+    Fetch live matches from OdiBets.
+    Uses _LIVE_SUB_TYPE_IDS (5 core types) to keep response fast.
+    No throttle — live data must be as fresh as possible.
+    """
     params: dict[str, Any] = {
         "resource":    "live",
         "sportsbook":  "sportsbook",
         "ua":          HEADERS["user-agent"],
-        "sub_type_id": _LIVE_SUB_TYPE_IDS,   
+        "sub_type_id": _LIVE_SUB_TYPE_IDS,   # slim list for speed
         "sport_id":    "",
     }
     if sport_slug:
         params["sport_id"] = slug_to_od_sport_id(sport_slug)
 
+    # No throttle for live
     data = _get(SBOOK_V1, params=params, timeout=10.0)
     if not data:
         return []
@@ -613,13 +587,18 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EVENT DETAIL  
+# EVENT DETAIL  (used by upcoming enrichment — still uses broad sub_type_ids)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_event_detail(
     event_id:    str | int,
     od_sport_id: int = 1,
 ) -> tuple[dict[str, dict[str, float]], dict]:
+    """
+    Fetch full markets for one OD event using its Sportradar/betradar ID.
+    Smart Batching: fetches missing sub_types in chunks of 20 to get full
+    market coverage without flooding the server with individual requests.
+    """
     params: dict[str, Any] = {
         "resource":    "sportevent",
         "id":          str(event_id),
@@ -663,6 +642,7 @@ def fetch_event_detail(
     markets_raw: list[dict] = list(inner.get("markets") or [])
     markets_list = inner.get("markets_list") or []
 
+    # Smart Batching: fetch missing sub_types in one chunked request
     if isinstance(markets_list, list):
         fetched_sub_types = {
             str(m.get("sub_type_id")) for m in markets_raw if m.get("sub_type_id")
@@ -896,19 +876,3 @@ def fetch_live(
     **kwargs,
 ) -> list[dict]:
     return fetch_live_matches(sport_slug)
-
-__all__ = [
-    "fetch_upcoming_matches",
-    "fetch_live_matches",
-    "fetch_upcoming_all_sports",
-    "fetch_event_detail",
-    "fetch_upcoming_stream",
-    "fetch_live_stream",
-    "init_live_poller",
-    "get_live_poller",
-    "get_cached_upcoming",
-    "cache_upcoming",
-    "get_cached_live",
-    "fetch_upcoming",
-    "fetch_live"
-]
