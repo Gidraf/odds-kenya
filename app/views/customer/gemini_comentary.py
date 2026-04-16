@@ -45,7 +45,7 @@ try:
     from minio import Minio
     import urllib3
     _minio = Minio(
-        os.environ.get("STORAGE_ENDPOINT", "localhost:9000"),
+        os.environ.get("STORAGE_ENDPOINT", "5.78.137.59:6500"),
         access_key=os.environ.get("STORAGE_ACCESS_KEY", "minioadmin"),
         secret_key=os.environ.get("STORAGE_SECRET_KEY", "minioadmin"),
         secure=os.environ.get("STORAGE_SECURE", "false").lower() == "true",

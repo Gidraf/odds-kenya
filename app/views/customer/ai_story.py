@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 bp_story = Blueprint("ai_story", __name__, url_prefix="/api")
 
 # Configuration 
-MINIO_ENDPOINT = os.getenv("STORAGE_ENDPOINT", "localhost:9000") # Format: "127.0.0.1:9000" (No http://)
-MINIO_ACCESS_KEY = os.getenv("STORAGE_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("STORAGE_SECRET_KEY", "minioadmin")
+MINIO_ENDPOINT = os.getenv("STORAGE_ENDPOINT", "5.78.137.59:6500")
+MINIO_ACCESS_KEY = os.getenv("STORAGE_ACCESS_KEY", "gidraf")
+MINIO_SECRET_KEY = os.getenv("STORAGE_SECRET_KEY", "Winners1127")
 BUCKET_NAME = "match-stories"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
