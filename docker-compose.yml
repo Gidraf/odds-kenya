@@ -7,16 +7,19 @@ version: "3.9"
 x-redis-url: &redis-url "redis://:%40Winners1127@redis6382:6382/0"
 
 x-common-env: &common-env
-  REDIS_URL: *redis-url          # full URL — picked up by _redis_url() helper
+  REDIS_URL: *redis-url
   REDIS_HOST: redis6382
   REDIS_PORT: "6382"
   REDIS_AUTH: "@Winners1127"
   DB_NAME: oddkenya
-  DB_HOST: ${DB_HOST:-host.docker.internal}
-  DB_PORT: ${DB_PORT:-5432}
+  # Hardcoded — never reads DB_HOST from .env (which is often "localhost").
+  # Inside Docker, "localhost" = the container itself. host.docker.internal
+  # resolves to the actual host machine via the extra_hosts entry below.
+  DB_HOST: host.docker.internal
+  DB_PORT: "5432"
   DB_USER: ${DB_USER}
   DB_PASSWORD: ${DB_PASSWORD}
-  STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-host.docker.internal:9000}
+  STORAGE_ENDPOINT: host.docker.internal:9000
   STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY}
   STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY}
 
@@ -28,6 +31,9 @@ services:
     restart: always
     # Port mapping is handled by Nginx — do NOT expose 5000 directly.
     command: gunicorn -k gevent -w 4 -b 0.0.0.0:5000 run:flask_app
+    # env_file loads first; environment: values override any conflicting keys.
+    # This means DB_HOST=localhost in .env is safely overridden by
+    # DB_HOST=host.docker.internal in the environment block below.
     env_file: .env
     networks:
       - app-network
