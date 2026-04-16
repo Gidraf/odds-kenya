@@ -1,5 +1,24 @@
 """
 unified_stream.py  —  drop-in replacement for the route in bp_odds_customer.
+
+KEY CHANGES vs original:
+  1. SP matches are yielded ONE AT A TIME the moment they are parsed.
+     The frontend sees each card appear as soon as SportPesa data arrives —
+     like ChatGPT streaming tokens.
+
+  2. A `list_done` event signals "all SP data sent; enrichment starting".
+     The frontend switches its status pill from "Receiving SportPesa data"
+     to "Adding Betika & OdiBets".
+
+  3. BT / OD enrichment is done with as_completed() — each bookmaker's odds
+     are sent as a `live_update` the instant they arrive, not after all are done.
+
+  4. LIVE mode:  SP events stream first (one per yield), then BT+OD updates
+     arrive via the background pub/sub loop — unchanged logic.
+
+  5. Redis cache: still caches the fully-assembled result for 5 minutes.
+     A cache hit streams all matches in 15-item chunks so the UI still
+     animates them in progressively (not one huge batch dump).
 """
 
 from flask import request, Response, stream_with_context
@@ -11,11 +30,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 import re, json, time, os, traceback
 from urllib.parse import quote
-import queue
-import threading
 
 
 def _redis_url() -> str:
+    """
+    Build the Redis connection URL from environment variables.
+
+    Priority order:
+      1. REDIS_URL      — full URL already set (e.g. by a managed service)
+      2. REDIS_HOST / REDIS_PORT / REDIS_AUTH — individual vars (docker-compose)
+      3. Fallback       — redis://localhost:6379/0
+
+    The password may start with '@' (e.g. @Winners1127) so we percent-encode it.
+    """
     full = os.getenv("REDIS_URL", "").strip()
     if full:
         return full
@@ -31,6 +58,10 @@ def _redis_url() -> str:
 
 
 def _get_redis(timeout: int = 2):
+    """
+    Return a connected Redis client or None if Redis is unavailable.
+    Uses a 2-second connect/read timeout so failures are fast.
+    """
     try:
         import redis as _rm
         r = _rm.from_url(
@@ -46,7 +77,7 @@ def _get_redis(timeout: int = 2):
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COMPILED PATTERNS 
+# COMPILED PATTERNS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 _RE_NON_ALPHANUM     = re.compile(r'[^a-z0-9]')
 _RE_SPORT_PREFIX     = re.compile(
@@ -59,7 +90,7 @@ _RE_MULTI_UNDERSCORE = re.compile(r"_+")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MARKET SLUG NORMALIZER
+# MARKET SLUG NORMALIZER  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 @lru_cache(maxsize=4096)
 def _normalize_market_slug(raw_slug: str, h_clean: str, a_clean: str) -> str:
@@ -94,7 +125,7 @@ def _normalize_market_slug(raw_slug: str, h_clean: str, a_clean: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BEST-ODDS MERGE HELPER
+# BEST-ODDS MERGE HELPER  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 def _merge_best(best: dict, markets_by_bk: dict) -> None:
     for _bk_slug, mkts in markets_by_bk.items():
@@ -108,7 +139,7 @@ def _merge_best(best: dict, markets_by_bk: dict) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIVERSAL MATCH NORMALIZER 
+# UNIVERSAL MATCH NORMALIZER  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 def _unify_match_payload(raw_match, count, mode, bk_slug, bk_name):
     if not raw_match: return {}
@@ -242,7 +273,7 @@ def _unify_match_payload(raw_match, count, mode, bk_slug, bk_name):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING ENDPOINT - CONCURRENT QUEUE ARCHITECTURE
+# STREAMING ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
 @bp_odds_customer.route("/odds/debug/unified/stream/<mode>/<sport_slug>")
 def debug_stream_unified(mode: str, sport_slug: str):
@@ -251,217 +282,576 @@ def debug_stream_unified(mode: str, sport_slug: str):
     log_event("debug_unified_stream", {"sport":sport_slug,"mode":mode})
 
     def _gen():
-        yield _sse("meta", {"source":"unified_direct","sport":sport_slug,"mode":mode,"now":_now_utc().isoformat()})
+        yield _sse("meta", {"source":"unified_direct","sport":sport_slug,
+                            "mode":mode,"now":_now_utc().isoformat()})
         try:
             count = 0
-            seen_br_ids = set()
-            active_live_br_ids = []
-            sp_event_map = {}
-            q = queue.Queue()
-            all_matches_cache = {}
 
-            # Worker function for the concurrent queue
-            def stream_worker(bk_slug, bk_name, fetch_func, *args, **kwargs):
-                try:
-                    for raw_match in fetch_func(*args, **kwargs):
-                        q.put({"type": "match", "bk_slug": bk_slug, "bk_name": bk_name, "data": raw_match})
-                except Exception as e:
-                    print(f"[{bk_slug}] stream error: {e}")
-                finally:
-                    q.put({"type": "done", "bk_slug": bk_slug})
-
-            # Check cache for Upcoming Mode
-            cache_key = f"unified:upcoming:{sport_slug}:{max_m}:{fetch_full}"
-            _redis = _get_redis()
-            
-            if mode != "live" and _redis:
-                try:
-                    cached_data = _redis.get(cache_key)
-                    if cached_data:
-                        matches = json.loads(cached_data)
-                        for i in range(0, len(matches), 15):
-                            chunk = matches[i:i+15]
-                            yield _sse("batch", {"matches":chunk,"batch":min(i+15,len(matches)),"of":len(matches),"offset":i})
-                            yield _keepalive()
-                        yield _sse("list_done", {"total_sent":len(matches)})
-                        yield _sse("done", {"status":"finished","total_sent":len(matches),"cached":True})
-                        return
-                except Exception as _ce:
-                    print(f"[unified] Redis cache read failed: {_ce} — fetching fresh")
-
-            # ── START CONCURRENT THREADS ──
+            # ══════════════════════════════════════════════════════════════════
+            # LIVE MODE
+            # ══════════════════════════════════════════════════════════════════
             if mode == "live":
-                from app.workers.sp_live_harvester import fetch_live_stream as sp_fetch_live_stream
-                from app.workers.bt_harvester import fetch_live_stream as bt_fetch_live_stream
-                from app.workers.od_harvester import fetch_live_stream as od_fetch_live_stream
+                # ─────────────────────────────────────────────────────────────────
+                # ROOT CAUSE FIX:
+                #   fetch_live_stream() in sp_live_harvester.py is NOT a generator.
+                #   It collects ALL events then fetches markets for every event ×
+                #   ~20 market types before returning anything (~400 HTTP calls).
+                #   That is why the UI waited 20-40s with nothing visible.
+                #
+                # NEW APPROACH — three-phase streaming:
+                #   Phase 1 (instant <1s): fetch_live_events() → raw event list
+                #                         yield each card immediately with score/time
+                #   Phase 2 (background): fetch SP markets per event concurrently
+                #                         yield each as live_update when ready
+                #   Phase 3 (background): BT + OD fetched in parallel with Phase 2
+                #                         yield each as live_update when ready
+                # ─────────────────────────────────────────────────────────────────
+                from app.workers.sp_live_harvester import (
+                    fetch_live_events,
+                    fetch_live_markets,
+                    SPORT_SLUG_MAP,
+                    live_market_slug,
+                    normalize_live_outcome,
+                )
+                from app.workers.bt_harvester import fetch_live_matches as bt_fetch_live, slug_to_bt_sport_id
+                from app.workers.od_harvester import fetch_live_matches as od_fetch_live
 
-                active_workers = 3
-                threading.Thread(target=stream_worker, args=("sp", "SPORTPESA", sp_fetch_live_stream, sport_slug, True)).start()
-                threading.Thread(target=stream_worker, args=("bt", "BETIKA", bt_fetch_live_stream, sport_slug)).start()
-                threading.Thread(target=stream_worker, args=("od", "ODIBETS", od_fetch_live_stream, sport_slug)).start()
-            else:
-                from app.workers.sp_harvester import fetch_upcoming_stream as sp_fetch_upcoming_stream
-                from app.workers.bt_harvester import fetch_upcoming_stream as bt_fetch_upcoming_stream
-                from app.workers.od_harvester import fetch_upcoming_stream as od_fetch_upcoming_stream
+                sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
 
-                active_workers = 3
-                threading.Thread(target=stream_worker, args=("sp", "SPORTPESA", sp_fetch_upcoming_stream, sport_slug, max_m, fetch_full)).start()
-                threading.Thread(target=stream_worker, args=("bt", "BETIKA", bt_fetch_upcoming_stream, sport_slug, max_m, 10, 9, fetch_full)).start()
-                threading.Thread(target=stream_worker, args=("od", "ODIBETS", od_fetch_upcoming_stream, sport_slug, max_m)).start()
+                # ── PHASE 1: get raw events — this is one fast HTTP call ──────────
+                raw_events = fetch_live_events(sport_id, limit=100)
+                if not raw_events:
+                    yield _sse("list_done", {"total_sent": 0})
+                    yield _sse("done", {"status": "no_live_events"})
+                    return
 
-            # ── PROCESS QUEUE IN REAL TIME ──
-            while active_workers > 0:
-                msg = q.get()
-                if msg["type"] == "done":
-                    active_workers -= 1
-                    continue
+                # ── Fire BT + OD + SP market fetches all in background ─────────────
+                sp_event_ids = [ev["id"] for ev in raw_events]
+                betradar_map: dict = {}  # sp_event_id -> betradar_id
 
-                raw_match = msg["data"]
-                bk_slug   = msg["bk_slug"]
-                bk_name   = msg["bk_name"]
+                for ev in raw_events:
+                    bid = str(ev.get("externalId") or "")
+                    if bid and bid != "0":
+                        betradar_map[ev["id"]] = bid
 
-                c = _unify_match_payload(raw_match, count, mode, bk_slug, bk_name)
-                br_id = str(c.get("parent_match_id") or c.get("match_id") or "")
+                # Minimal market types for live — just 1x2, O/U, and BTTS.
+                # Fewer types = fewer HTTP calls = faster first paint.
+                # Additional markets arrive from BT/OD in Phase 3.
+                _CORE_MARKET_TYPES = [194, 105, 138]   # 1x2, O/U, BTTS
 
-                if not br_id or br_id == "None": 
-                    continue
+                def _fetch_sp_markets_for_event(ev_id: int) -> tuple:
+                    """
+                    Fetch core live markets for one SP event.
+                    Uses a shared session with a 6s per-request timeout.
+                    Returns (ev_id, markets_list).
+                    """
+                    collected = []
+                    # Batch all market types into one call where possible
+                    try:
+                        # Fetch all three types in one call if the endpoint supports it
+                        res = fetch_live_markets([ev_id], sport_id, _CORE_MARKET_TYPES[0])
+                        for m in res:
+                            inner = m.get("markets") or []
+                            if inner: collected.extend(inner)
+                    except Exception:
+                        pass
+                    # Fetch O/U and BTTS separately (different type IDs)
+                    for m_type in _CORE_MARKET_TYPES[1:]:
+                        try:
+                            res = fetch_live_markets([ev_id], sport_id, m_type)
+                            for m in res:
+                                inner = m.get("markets") or []
+                                if inner: collected.extend(inner)
+                        except Exception:
+                            pass
+                    return ev_id, collected
 
-                # Build maps required for the Live Pub/Sub phase
-                if mode == "live" and bk_slug == "sp":
-                    sp_match_id = str(raw_match.get("sp_match_id") or raw_match.get("id") or "")
-                    if sp_match_id:
-                        sp_event_map[br_id] = sp_match_id
-                    active_live_br_ids.append(br_id)
+                # 8 workers max — keeps connection pool healthy
+                _bg_pool = ThreadPoolExecutor(max_workers=8)
+                # SP market futures — one per event
+                _sp_mkt_futs = {
+                    _bg_pool.submit(_fetch_sp_markets_for_event, ev["id"]): ev["id"]
+                    for ev in raw_events
+                }
+                # BT + OD futures
+                _f_bt = _bg_pool.submit(lambda: bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or [])
+                _f_od = _bg_pool.submit(lambda: od_fetch_live(sport_slug) or [])
 
-                if br_id in seen_br_ids:
-                    # Enrichment: match already exists, send UI update
-                    bk_data = c["bookmakers"].get(bk_slug, {})
-                    if bk_data:
+                # Lazy BT/OD maps — populated as futures complete
+                _bt_done = _od_done = False
+                bt_map: dict = {}
+                od_map: dict = {}
+
+                def _refresh_bk_maps():
+                    nonlocal _bt_done, _od_done, bt_map, od_map
+                    if not _bt_done and _f_bt.done():
+                        try:
+                            bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
+                                      for m in (_f_bt.result() or []) if isinstance(m, dict)}
+                        except Exception as _e:
+                            print(f"[live] BT fetch failed: {_e}")
+                        _bt_done = True
+                    if not _od_done and _f_od.done():
+                        try:
+                            od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m
+                                      for m in (_f_od.result() or []) if isinstance(m, dict)}
+                        except Exception as _e:
+                            print(f"[live] OD fetch failed: {_e}")
+                        _od_done = True
+
+                sp_event_map, active_live_br_ids, seen_br_ids = {}, [], set()
+
+                # ── PHASE 1 YIELD: stream raw events immediately, one per card ──────
+                # Each event has: competitors, state, score, tournament — enough to
+                # render the card. Markets arrive in Phase 2 as live_update events.
+                for ev in raw_events:
+                    count += 1
+                    state = ev.get("state") or {}
+                    score = state.get("matchScore") or {}
+                    comps = ev.get("competitors") or [{}, {}]
+                    betradar_id = str(ev.get("externalId") or "")
+                    sp_ev_id    = ev.get("id")
+
+                    if betradar_id and betradar_id not in ("0", "None"):
+                        active_live_br_ids.append(betradar_id)
+                        seen_br_ids.add(betradar_id)
+                        sp_event_map[betradar_id] = str(sp_ev_id or "")
+
+                    # Build a minimal SP match dict — same shape _unify_match_payload expects
+                    sp_match = {
+                        "sp_match_id":  sp_ev_id,
+                        "betradar_id":  betradar_id if betradar_id and betradar_id != "0" else None,
+                        "home_team":    comps[0].get("name", "Home") if len(comps) > 0 else "Home",
+                        "away_team":    comps[1].get("name", "Away") if len(comps) > 1 else "Away",
+                        "competition":  (ev.get("tournament") or {}).get("name", ""),
+                        "sport":        sport_slug,
+                        "start_time":   ev.get("kickoffTimeUTC", ""),
+                        "match_time":   str(state.get("matchTime", "")),
+                        "current_score": f"{score.get('home','')}-{score.get('away','')}",
+                        "score_home":   str(score.get("home", "")) or None,
+                        "score_away":   str(score.get("away", "")) or None,
+                        "event_status": state.get("currentEventPhase", ""),
+                        "markets":      [],   # empty for now — Phase 2 fills these
+                    }
+
+                    sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
+                    sp_clean["is_live"]    = True
+                    sp_clean["match_time"] = sp_match["match_time"]
+                    sp_clean["score_home"] = sp_match["score_home"]
+                    sp_clean["score_away"] = sp_match["score_away"]
+
+                    # Attach any BT/OD data that might already be available
+                    _refresh_bk_maps()
+                    if betradar_id:
+                        bt_match = bt_map.get(betradar_id)
+                        if bt_match and bt_match.get("markets"):
+                            b_c = _unify_match_payload(bt_match, count, mode, "bt", "BETIKA")
+                            sp_clean["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                            sp_clean["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                        od_match = od_map.get(betradar_id)
+                        if od_match and od_match.get("markets"):
+                            o_c = _unify_match_payload(od_match, count, mode, "od", "ODIBETS")
+                            sp_clean["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                            sp_clean["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+
+                    sp_clean["bk_count"]      = len(sp_clean["bookmakers"])
+                    _merge_best(sp_clean["best"], sp_clean["markets_by_bk"])
+                    sp_clean["market_slugs"]  = list(sp_clean["best"].keys())
+                    sp_clean["market_count"]  = len(sp_clean["best"])
+
+                    # ← Card appears on screen NOW, before any markets are fetched
+                    yield _sse("batch", {"matches": [sp_clean], "batch": count,
+                                         "of": len(raw_events), "offset": count - 1})
+                    yield _keepalive()
+
+                yield _sse("list_done", {"total_sent": count})
+
+                # ── PHASE 2: SP market futures arrive — send as live_update ──────────
+                # as_completed() yields each future the moment it finishes, so markets
+                # for fast-responding events arrive while slow ones are still fetching.
+                # No hard timeout — let individual futures finish or be cancelled.
+                # Futures that don't have a betradar_id are skipped immediately.
+                for fut in as_completed(_sp_mkt_futs):
+                    ev_id = _sp_mkt_futs[fut]
+                    betradar_id = betradar_map.get(ev_id, "")
+                    if not betradar_id:
+                        continue
+                    try:
+                        _, raw_mkts = fut.result(timeout=8)
+                    except Exception:
+                        continue
+                    if not raw_mkts:
+                        continue
+
+                    # Convert raw SP market list to the bk_markets format
+                    bk_markets: dict = {}
+                    for mkt in raw_mkts:
+                        if not isinstance(mkt, dict): continue
+                        mkt_type = mkt.get("id") or mkt.get("typeId")
+                        handicap = mkt.get("specValue") or mkt.get("handicap")
+                        slug     = live_market_slug(int(mkt_type), handicap, sport_id) if mkt_type else None
+                        if not slug: continue
+                        sels = mkt.get("selections") or []
+                        for idx, sel in enumerate(sels):
+                            if not isinstance(sel, dict): continue
+                            try: odd = float(sel.get("odds") or 0)
+                            except: odd = 0.0
+                            if odd <= 1.0: continue
+                            out_key = normalize_live_outcome(slug, sel.get("name",""), idx, sels)
+                            bk_markets.setdefault(slug, {})[out_key] = {"price": odd}
+
+                    if not bk_markets:
+                        continue
+
+                    yield _sse("live_update", {
+                        "parent_match_id": betradar_id,
+                        "home_team":       "dummy",
+                        "bookmakers":      {"sp": {"bookmaker":"SPORTPESA","slug":"sp","markets":bk_markets,"market_count":len(bk_markets)}},
+                        "markets_by_bk":   {"sp": bk_markets},
+                    })
+                    yield _keepalive()
+
+                # ── PHASE 3: BT + OD enrichment ─────────────────────────────────────────
+                #
+                # ROOT CAUSE FIX: _refresh_bk_maps() is called on every Phase 1 loop
+                # iteration. Phase 1 is pure in-memory (no network) so it completes
+                # in milliseconds. BT/OD futures often resolve *during* Phase 1, setting
+                # _bt_done=True / _od_done=True before we reach Phase 3.
+                # The old guard:
+                #   if not _bt_done: _bk_futures[_f_bt] = ...
+                # then produced an empty _bk_futures dict and the as_completed loop
+                # never ran, so no enrichment was ever sent.
+                #
+                # Fix: decouple "future is resolved" from "enrichment was sent".
+                # Step A — wait for any futures that are still running.
+                # Step B — always run the enrichment pass for ALL bk maps,
+                #          regardless of when their futures completed.
+
+                # Step A: collect any still-pending futures and wait for them
+                _pending = {}
+                if not _bt_done: _pending[_f_bt] = ("bt", "BETIKA")
+                if not _od_done: _pending[_f_od] = ("od", "ODIBETS")
+
+                for fut in as_completed(_pending, timeout=15):
+                    bk_slug_p, bk_name_p = _pending[fut]
+                    try:
+                        raw_p = fut.result() or []
+                    except Exception as _e:
+                        print(f"[live] {bk_name_p} error: {_e}")
+                        raw_p = []
+                    if bk_slug_p == "bt":
+                        bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
+                                  for m in raw_p if isinstance(m, dict)}
+                    else:
+                        od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m
+                                  for m in raw_p if isinstance(m, dict)}
+
+                _bg_pool.shutdown(wait=False)
+
+                # Build team-name reverse index for ID-mismatch fallback
+                def _norm_key(h: str, a: str) -> str:
+                    return f"{h[:8].lower().strip()}|{a[:8].lower().strip()}"
+
+                sp_team_index: dict = {}
+                for ev in raw_events:
+                    comps = ev.get("competitors") or [{}, {}]
+                    br = str(ev.get("externalId") or "")
+                    if br and br not in ("0", "None"):
+                        h = comps[0].get("name","") if len(comps)>0 else ""
+                        a = comps[1].get("name","") if len(comps)>1 else ""
+                        if h and a:
+                            sp_team_index[_norm_key(h, a)] = br
+
+                # Step B: always run enrichment for ALL bk maps,
+                # even those that completed during Phase 1 (the root-cause fix).
+                try:
+                    bt_raw_list = list(_f_bt.result()) if _f_bt.done() else []
+                except Exception: bt_raw_list = []
+                try:
+                    od_raw_list = list(_f_od.result()) if _f_od.done() else []
+                except Exception: od_raw_list = []
+
+                bt_matched: set = set()
+                od_matched: set = set()
+
+                for _bk_slug, _bk_name, _cur_map, _raw_list, _matched_set in [
+                    ("bt", "BETIKA",  bt_map, bt_raw_list, bt_matched),
+                    ("od", "ODIBETS", od_map, od_raw_list, od_matched),
+                ]:
+                    for br_id in list(seen_br_ids):
+                        match_raw = _cur_map.get(br_id)
+
+                        if not match_raw:
+                            for bk_m in _raw_list:
+                                if not isinstance(bk_m, dict): continue
+                                h = bk_m.get("home_team","")
+                                a = bk_m.get("away_team","")
+                                if h and a and sp_team_index.get(_norm_key(h, a)) == br_id:
+                                    match_raw = bk_m
+                                    bk_br = str(
+                                        bk_m.get("betradar_id") or
+                                        bk_m.get("bt_parent_id") or
+                                        bk_m.get("od_parent_id") or ""
+                                    )
+                                    if bk_br and bk_br not in ("None", ""):
+                                        _cur_map[bk_br] = bk_m
+                                    break
+
+                        if not match_raw or not match_raw.get("markets"):
+                            continue
+
+                        bk_br_id = str(
+                            match_raw.get("betradar_id") or
+                            match_raw.get("bt_parent_id") or
+                            match_raw.get("od_parent_id") or ""
+                        )
+                        _matched_set.add(bk_br_id)
+
+                        c = _unify_match_payload(match_raw, 0, mode, _bk_slug, _bk_name)
+                        if _bk_slug not in c.get("bookmakers", {}):
+                            continue
                         yield _sse("live_update", {
                             "parent_match_id": br_id,
-                            "home_team": "dummy",
-                            "bookmakers": {bk_slug: bk_data},
-                            "markets_by_bk": {bk_slug: c["markets_by_bk"].get(bk_slug, {})}
+                            "home_team":       match_raw.get("home_team", ""),
+                            "bookmakers":      {_bk_slug: c["bookmakers"][_bk_slug]},
+                            "markets_by_bk":   {_bk_slug: c["markets_by_bk"][_bk_slug]},
                         })
-                        if br_id in all_matches_cache:
-                            all_matches_cache[br_id]["bookmakers"][bk_slug] = bk_data
-                            all_matches_cache[br_id]["markets_by_bk"][bk_slug] = c["markets_by_bk"].get(bk_slug, {})
-                            all_matches_cache[br_id]["bk_count"] = len(all_matches_cache[br_id]["bookmakers"])
-                            _merge_best(all_matches_cache[br_id]["best"], all_matches_cache[br_id]["markets_by_bk"])
-                            all_matches_cache[br_id]["market_slugs"] = list(all_matches_cache[br_id]["best"].keys())
-                            all_matches_cache[br_id]["market_count"] = len(all_matches_cache[br_id]["best"])
-                else:
-                    # First time seeing this match: draw the card
-                    count += 1
-                    seen_br_ids.add(br_id)
-                    c["is_live"] = (mode == "live")
-                    _merge_best(c["best"], c["markets_by_bk"])
-                    c["market_slugs"] = list(c["best"].keys())
-                    c["market_count"] = len(c["best"])
-                    
-                    all_matches_cache[br_id] = c
-                    yield _sse("batch", {"matches": [c], "batch": count, "of": "unknown", "offset": count - 1})
+                        yield _keepalive()
 
-                yield _keepalive()
+                    # New cards this bk has that SP didn't have at all
+                    for bk_br_id, raw_m in cur_map.items():
+                        if not isinstance(raw_m, dict): continue
+                        # skip if already matched above or already seen
+                        if bk_br_id in seen_br_ids or bk_br_id in matched_bk_ids: continue
+                        if not bk_br_id or bk_br_id in ("None", ""): continue
+                        # team-name check: skip if SP already has it under a different ID
+                        h = raw_m.get("home_team",""); a = raw_m.get("away_team","")
+                        if h and a and sp_team_index.get(_norm_key(h,a)):
+                            continue
+                        count += 1
+                        c = _unify_match_payload(raw_m, count, mode, bk_slug, bk_name)
+                        c["is_live"] = True
+                        _merge_best(c["best"], c["markets_by_bk"])
+                        c["market_slugs"] = list(c["best"].keys())
+                        c["market_count"] = len(c["best"])
+                        yield _sse("batch", {"matches": [c], "batch": count,
+                                             "of": "unknown", "offset": count - 1})
+                        yield _keepalive()
+                        seen_br_ids.add(bk_br_id)
 
-            yield _sse("list_done", {"total_sent": count})
+                _bg_pool.shutdown(wait=False)
+                yield _sse("list_done", {"total_sent": count})
 
-            # ── POST-QUEUE LOGIC ──
-            if mode == "live":
-                # Fall back to Redis pub/sub for live odds ticking (exactly as in original code)
+                # ── PHASE 4: pub/sub loop for continuous real-time updates ──────────
+                # (score changes, odds ticks from the SP WebSocket harvester)
+
+
+                # Live pub/sub background loop — Redis optional
                 _r_live = _get_redis()
                 pubsub  = None
                 if _r_live:
-                    from app.workers.sp_live_harvester import SPORT_SLUG_MAP
-                    from app.workers.bt_harvester import fetch_live_matches as bt_fetch_live, slug_to_bt_sport_id
-                    from app.workers.od_harvester import fetch_live_matches as od_fetch_live
-
-                    sport_id = {v: k for k, v in SPORT_SLUG_MAP.items()}.get(sport_slug, 1)
                     try:
                         pubsub = _r_live.pubsub(ignore_subscribe_messages=True)
                         pubsub.subscribe(f"sp:live:sport:{sport_id}")
                     except Exception as _rle:
                         print(f"[unified:live] pubsub subscribe failed: {_rle}")
                         pubsub = None
+                else:
+                    print("[unified:live] Redis unavailable — pub/sub disabled")
+                r = _r_live  # keep `r` alias used in the polling loop
+                last_poll = time.time()
+                bg_pool   = ThreadPoolExecutor(max_workers=2)
+                bg_future = None
 
-                    last_poll = time.time()
-                    bg_pool   = ThreadPoolExecutor(max_workers=2)
-                    bg_future = None
-
-                    def _fetch_bg():
-                        try:
-                            return bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or [], od_fetch_live(sport_slug) or []
-                        except: return [],[]
-
-                    while True:
-                        msg = pubsub.get_message(timeout=0.2) if pubsub else None
-                        if msg and msg["type"]=="message":
-                            try:
-                                payload  = json.loads(msg["data"])
-                                msg_type = payload.get("type")
-                                ev_id    = payload.get("event_id")
-                                br_id    = next((k for k,v in sp_event_map.items() if v==ev_id), str(ev_id))
-                                if msg_type=="event_update":
-                                    state = payload.get("state",{})
-                                    yield _sse("live_update",{
-                                        "parent_match_id":br_id,"home_team":"dummy",
-                                        "match_time":state.get("matchTime",payload.get("match_time","")),
-                                        "score_home":payload.get("score_home"),
-                                        "score_away":payload.get("score_away"),
-                                        "status":payload.get("phase",state.get("currentEventPhase","")),
-                                        "is_live":True,
-                                    })
-                                elif msg_type=="market_update":
-                                    norm_sels = payload.get("normalised_selections",[])
-                                    slug      = payload.get("market_slug")
-                                    if norm_sels and slug:
-                                        outs = {s["outcome_key"]:{"price":float(s["odds"])} for s in norm_sels if float(s.get("odds",0))>1}
-                                        if outs:
-                                            yield _sse("live_update",{
-                                                "parent_match_id":br_id,"home_team":"dummy",
-                                                "bookmakers":{"sp":{"slug":"sp","markets":{slug:outs}}},
-                                                "markets_by_bk":{"sp":{slug:outs}},
-                                            })
-                            except: pass
-
-                        if time.time()-last_poll > 10.0:
-                            last_poll = time.time()
-                            if bg_future is None or bg_future.done():
-                                bg_future = bg_pool.submit(_fetch_bg)
-
-                        if bg_future and bg_future.done():
-                            try:
-                                bt_live, od_live = bg_future.result()
-                                bt_lm = {str(m.get("betradar_id") or m.get("bt_parent_id")):m for m in bt_live if isinstance(m,dict)}
-                                od_lm = {str(m.get("betradar_id") or m.get("od_parent_id")):m for m in od_live if isinstance(m,dict)}
-                                for br_id in active_live_br_ids:
-                                    up = {"parent_match_id":br_id,"home_team":"dummy","bookmakers":{},"markets_by_bk":{}}
-                                    if br_id in bt_lm:
-                                        b_c = _unify_match_payload(bt_lm[br_id],0,"live","bt","BETIKA")
-                                        up["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
-                                        up["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
-                                    if br_id in od_lm:
-                                        o_c = _unify_match_payload(od_lm[br_id],0,"live","od","ODIBETS")
-                                        up["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
-                                        up["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
-                                    if up["bookmakers"]:
-                                        yield _sse("live_update", up)
-                            except: pass
-                            bg_future = None
-
-                        yield _keepalive()
-            else:
-                # Save fully assembled upcoming cache
-                if _redis and all_matches_cache:
+                def _fetch_bg():
                     try:
-                        _redis.setex(cache_key, 300, json.dumps(list(all_matches_cache.values())))
+                        return bt_fetch_live(slug_to_bt_sport_id(sport_slug)) or [], od_fetch_live(sport_slug) or []
+                    except: return [],[]
+
+                while True:
+                    msg = pubsub.get_message(timeout=0.2) if pubsub else None
+                    if msg and msg["type"]=="message":
+                        try:
+                            payload  = json.loads(msg["data"])
+                            msg_type = payload.get("type")
+                            ev_id    = payload.get("event_id")
+                            br_id    = next((k for k,v in sp_event_map.items() if v==ev_id), str(ev_id))
+                            if msg_type=="event_update":
+                                state = payload.get("state",{})
+                                yield _sse("live_update",{
+                                    "parent_match_id":br_id,"home_team":"dummy",
+                                    "match_time":state.get("matchTime",payload.get("match_time","")),
+                                    "score_home":payload.get("score_home"),
+                                    "score_away":payload.get("score_away"),
+                                    "status":payload.get("phase",state.get("currentEventPhase","")),
+                                    "is_live":True,
+                                })
+                            elif msg_type=="market_update":
+                                norm_sels = payload.get("normalised_selections",[])
+                                slug      = payload.get("market_slug")
+                                if norm_sels and slug:
+                                    outs = {s["outcome_key"]:{"price":float(s["odds"])} for s in norm_sels if float(s.get("odds",0))>1}
+                                    if outs:
+                                        yield _sse("live_update",{
+                                            "parent_match_id":br_id,"home_team":"dummy",
+                                            "bookmakers":{"sp":{"slug":"sp","markets":{slug:outs}}},
+                                            "markets_by_bk":{"sp":{slug:outs}},
+                                        })
+                        except: pass
+
+                    if time.time()-last_poll > 10.0:
+                        last_poll = time.time()
+                        if bg_future is None or bg_future.done():
+                            bg_future = bg_pool.submit(_fetch_bg)
+
+                    if bg_future and bg_future.done():
+                        try:
+                            bt_live, od_live = bg_future.result()
+                            bt_lm = {str(m.get("betradar_id") or m.get("bt_parent_id")):m for m in bt_live if isinstance(m,dict)}
+                            od_lm = {str(m.get("betradar_id") or m.get("od_parent_id")):m for m in od_live if isinstance(m,dict)}
+                            for br_id in active_live_br_ids:
+                                up = {"parent_match_id":br_id,"home_team":"dummy","bookmakers":{},"markets_by_bk":{}}
+                                if br_id in bt_lm:
+                                    b_c = _unify_match_payload(bt_lm[br_id],0,"live","bt","BETIKA")
+                                    up["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                                    up["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                                if br_id in od_lm:
+                                    o_c = _unify_match_payload(od_lm[br_id],0,"live","od","ODIBETS")
+                                    up["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                                    up["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                                if up["bookmakers"]:
+                                    yield _sse("live_update", up)
+                        except: pass
+                        bg_future = None
+
+                    yield _keepalive()
+
+            # ══════════════════════════════════════════════════════════════════
+            # UPCOMING MODE — SP streams first, BT+OD enrichment follows
+            # ══════════════════════════════════════════════════════════════════
+            else:
+                # ── Redis is optional — gracefully skip cache when unavailable ─
+                cache_key = f"unified:upcoming:{sport_slug}:{max_m}:{fetch_full}"
+                _redis = _get_redis()
+                if _redis is None:
+                    print("[unified] Redis unavailable — fetching fresh data")
+
+                # ── Cache hit — stream in small chunks for progressive reveal ─
+                if _redis:
+                    try:
+                        cached_data = _redis.get(cache_key)
+                        if cached_data:
+                            matches = json.loads(cached_data)
+                            for i in range(0, len(matches), 15):
+                                chunk = matches[i:i+15]
+                                yield _sse("batch", {"matches":chunk,"batch":min(i+15,len(matches)),
+                                                     "of":len(matches),"offset":i})
+                                yield _keepalive()
+                            yield _sse("list_done", {"total_sent":len(matches)})
+                            yield _sse("done",      {"status":"finished","total_sent":len(matches),"cached":True})
+                            return
+                    except Exception as _ce:
+                        print(f"[unified] Redis cache read failed: {_ce} — fetching fresh")
+
+                # ── Cache miss — fetch SP first ───────────────────────────────
+                from app.workers.sp_harvester  import fetch_upcoming_stream
+                from app.workers.bt_harvester  import get_full_markets
+                from app.workers.od_harvester  import fetch_event_detail, slug_to_od_sport_id
+
+                od_sport_id    = slug_to_od_sport_id(sport_slug)
+                all_sp_matches = {}  # betradar_id → unified dict (for enrichment later)
+
+                # ── PHASE 1: Stream every SP match immediately, one at a time ─
+                for sp_match in fetch_upcoming_stream(sport_slug, max_matches=max_m,
+                                                      fetch_full_markets=fetch_full):
+                    if not isinstance(sp_match,dict): continue
+                    count += 1
+                    sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
+                    sp_clean["market_slugs"] = list(sp_clean["best"].keys())
+                    sp_clean["market_count"] = len(sp_clean["best"])
+
+                    brid = str(sp_clean.get("parent_match_id") or sp_clean.get("match_id") or "")
+                    if brid:
+                        all_sp_matches[brid] = sp_clean
+
+                    # ← client renders this card NOW, before BT/OD are fetched
+                    yield _sse("batch", {"matches":[sp_clean],"batch":count,
+                                         "of":"unknown","offset":count-1})
+                    yield _keepalive()
+
+                yield _sse("list_done", {"total_sent":count})
+
+                # ── PHASE 2: Enrich with BT + OD concurrently ─────────────────
+                def _get_deep(brid):
+                    bt_mkts, od_mkts = {}, {}
+                    try: bt_mkts = get_full_markets(brid, sport_slug)
+                    except: pass
+                    try: od_mkts = fetch_event_detail(brid, od_sport_id)[0]
+                    except: pass
+                    return brid, bt_mkts, od_mkts
+
+                n_workers = min(len(all_sp_matches)*2+4, 60)
+                with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                    futs = [
+                        pool.submit(_get_deep, brid)
+                        for brid in all_sp_matches
+                        if brid and brid!="None"
+                    ]
+
+                    for fut in as_completed(futs):
+                        brid, bt_markets, od_markets = fut.result()
+                        if not bt_markets and not od_markets:
+                            continue
+
+                        update = {
+                            "parent_match_id": brid,
+                            "home_team":       "dummy",   # merge key only
+                            "bookmakers":      {},
+                            "markets_by_bk":   {},
+                        }
+
+                        if bt_markets:
+                            b_c = _unify_match_payload(
+                                {"markets":bt_markets,"betradar_id":brid,
+                                 "home_team":"","away_team":"","sport":sport_slug},
+                                0, mode, "bt", "BETIKA")
+                            update["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                            update["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                            all_sp_matches[brid]["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                            all_sp_matches[brid]["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+
+                        if od_markets:
+                            o_c = _unify_match_payload(
+                                {"markets":od_markets,"betradar_id":brid,
+                                 "home_team":"","away_team":"","sport":sport_slug},
+                                0, mode, "od", "ODIBETS")
+                            update["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                            update["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                            all_sp_matches[brid]["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                            all_sp_matches[brid]["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+
+                        # recompute best on the stored match
+                        _merge_best(all_sp_matches[brid]["best"], all_sp_matches[brid]["markets_by_bk"])
+                        all_sp_matches[brid]["market_slugs"] = list(all_sp_matches[brid]["best"].keys())
+                        all_sp_matches[brid]["market_count"] = len(all_sp_matches[brid]["best"])
+                        all_sp_matches[brid]["bk_count"]     = len(all_sp_matches[brid]["bookmakers"])
+
+                        # ← client updates the existing card in-place (flash animation)
+                        yield _sse("live_update", update)
+                        yield _keepalive()
+
+                # ── Cache fully assembled payload (skip if Redis unavailable) ──────
+                if _redis and all_sp_matches:
+                    try:
+                        _redis.setex(cache_key, 300, json.dumps(list(all_sp_matches.values())))
                     except Exception as _we:
                         print(f"[unified] Redis cache write failed: {_we}")
-                yield _sse("done", {"status": "finished", "total_sent": count})
+
+                yield _sse("done", {"status":"finished","total_sent":count})
 
         except Exception as exc:
             tb = traceback.format_exc()
             print("=== STREAM CRASH ==="); print(tb); print("====================")
-            yield _sse("error", {"error": str(exc), "traceback": tb})
+            yield _sse("error", {"error":str(exc),"traceback":tb})
 
     return Response(stream_with_context(_gen()), headers=config._SSE_HEADERS)
