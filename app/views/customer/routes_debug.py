@@ -511,17 +511,48 @@ def debug_stream_unified(mode: str, sport_slug: str):
                     })
                     yield _keepalive()
 
-                # ── PHASE 3: BT + OD — yield each the moment it resolves ─────────────
-                _bk_futures = {}
-                if not _bt_done: _bk_futures[_f_bt] = ("bt", "BETIKA")
-                if not _od_done: _bk_futures[_f_od] = ("od", "ODIBETS")
+                # ── PHASE 3: BT + OD enrichment ─────────────────────────────────────────
+                #
+                # ROOT CAUSE FIX: _refresh_bk_maps() is called on every Phase 1 loop
+                # iteration. Phase 1 is pure in-memory (no network) so it completes
+                # in milliseconds. BT/OD futures often resolve *during* Phase 1, setting
+                # _bt_done=True / _od_done=True before we reach Phase 3.
+                # The old guard:
+                #   if not _bt_done: _bk_futures[_f_bt] = ...
+                # then produced an empty _bk_futures dict and the as_completed loop
+                # never ran, so no enrichment was ever sent.
+                #
+                # Fix: decouple "future is resolved" from "enrichment was sent".
+                # Step A — wait for any futures that are still running.
+                # Step B — always run the enrichment pass for ALL bk maps,
+                #          regardless of when their futures completed.
 
-                # Build a reverse lookup: normalized_home_away -> sp_betradar_id
-                # Used as fallback when BT/OD betradar_id doesn't match SP's externalId
+                # Step A: collect any still-pending futures and wait for them
+                _pending = {}
+                if not _bt_done: _pending[_f_bt] = ("bt", "BETIKA")
+                if not _od_done: _pending[_f_od] = ("od", "ODIBETS")
+
+                for fut in as_completed(_pending, timeout=15):
+                    bk_slug_p, bk_name_p = _pending[fut]
+                    try:
+                        raw_p = fut.result() or []
+                    except Exception as _e:
+                        print(f"[live] {bk_name_p} error: {_e}")
+                        raw_p = []
+                    if bk_slug_p == "bt":
+                        bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
+                                  for m in raw_p if isinstance(m, dict)}
+                    else:
+                        od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m
+                                  for m in raw_p if isinstance(m, dict)}
+
+                _bg_pool.shutdown(wait=False)
+
+                # Build team-name reverse index for ID-mismatch fallback
                 def _norm_key(h: str, a: str) -> str:
                     return f"{h[:8].lower().strip()}|{a[:8].lower().strip()}"
 
-                sp_team_index = {}  # norm_key -> sp_br_id
+                sp_team_index: dict = {}
                 for ev in raw_events:
                     comps = ev.get("competitors") or [{}, {}]
                     br = str(ev.get("externalId") or "")
@@ -531,61 +562,59 @@ def debug_stream_unified(mode: str, sport_slug: str):
                         if h and a:
                             sp_team_index[_norm_key(h, a)] = br
 
-                for fut in as_completed(_bk_futures, timeout=15):
-                    bk_slug, bk_name = _bk_futures[fut]
-                    try:
-                        raw_list = fut.result() or []
-                    except Exception as _e:
-                        print(f"[live] {bk_name} timeout/error: {_e}")
-                        raw_list = []
+                # Step B: always run enrichment for ALL bk maps,
+                # even those that completed during Phase 1 (the root-cause fix).
+                try:
+                    bt_raw_list = list(_f_bt.result()) if _f_bt.done() else []
+                except Exception: bt_raw_list = []
+                try:
+                    od_raw_list = list(_f_od.result()) if _f_od.done() else []
+                except Exception: od_raw_list = []
 
-                    if bk_slug == "bt":
-                        bt_map = {str(m.get("betradar_id") or m.get("bt_parent_id")): m
-                                  for m in raw_list if isinstance(m, dict)}
-                        _bt_done = True
-                    else:
-                        od_map = {str(m.get("betradar_id") or m.get("od_parent_id")): m
-                                  for m in raw_list if isinstance(m, dict)}
-                        _od_done = True
+                bt_matched: set = set()
+                od_matched: set = set()
 
-                    if not raw_list:
-                        continue
-
-                    cur_map = bt_map if bk_slug == "bt" else od_map
-
-                    # Send enrichment for every SP card already streamed.
-                    # Strategy: try betradar_id match first; fall back to team names.
-                    matched_bk_ids = set()
+                for _bk_slug, _bk_name, _cur_map, _raw_list, _matched_set in [
+                    ("bt", "BETIKA",  bt_map, bt_raw_list, bt_matched),
+                    ("od", "ODIBETS", od_map, od_raw_list, od_matched),
+                ]:
                     for br_id in list(seen_br_ids):
-                        match_raw = cur_map.get(br_id)
+                        match_raw = _cur_map.get(br_id)
 
-                        # Fallback: find by team names when IDs differ between books
                         if not match_raw:
-                            for bk_m in raw_list:
+                            for bk_m in _raw_list:
                                 if not isinstance(bk_m, dict): continue
-                                h = bk_m.get("home_team",""); a = bk_m.get("away_team","")
-                                if h and a and sp_team_index.get(_norm_key(h,a)) == br_id:
+                                h = bk_m.get("home_team","")
+                                a = bk_m.get("away_team","")
+                                if h and a and sp_team_index.get(_norm_key(h, a)) == br_id:
                                     match_raw = bk_m
-                                    # Add the BK's own ID to the map for future lookups
-                                    bk_br = str(bk_m.get("betradar_id") or bk_m.get("bt_parent_id") or bk_m.get("od_parent_id") or "")
-                                    if bk_br and bk_br not in ("None",""):
-                                        cur_map[bk_br] = bk_m
+                                    bk_br = str(
+                                        bk_m.get("betradar_id") or
+                                        bk_m.get("bt_parent_id") or
+                                        bk_m.get("od_parent_id") or ""
+                                    )
+                                    if bk_br and bk_br not in ("None", ""):
+                                        _cur_map[bk_br] = bk_m
                                     break
 
                         if not match_raw or not match_raw.get("markets"):
                             continue
 
-                        bk_br_id = str(match_raw.get("betradar_id") or match_raw.get("bt_parent_id") or match_raw.get("od_parent_id") or "")
-                        matched_bk_ids.add(bk_br_id)
+                        bk_br_id = str(
+                            match_raw.get("betradar_id") or
+                            match_raw.get("bt_parent_id") or
+                            match_raw.get("od_parent_id") or ""
+                        )
+                        _matched_set.add(bk_br_id)
 
-                        c = _unify_match_payload(match_raw, 0, mode, bk_slug, bk_name)
-                        if bk_slug not in c.get("bookmakers", {}):
+                        c = _unify_match_payload(match_raw, 0, mode, _bk_slug, _bk_name)
+                        if _bk_slug not in c.get("bookmakers", {}):
                             continue
                         yield _sse("live_update", {
                             "parent_match_id": br_id,
-                            "home_team":       "dummy",
-                            "bookmakers":      {bk_slug: c["bookmakers"][bk_slug]},
-                            "markets_by_bk":   {bk_slug: c["markets_by_bk"][bk_slug]},
+                            "home_team":       match_raw.get("home_team", ""),
+                            "bookmakers":      {_bk_slug: c["bookmakers"][_bk_slug]},
+                            "markets_by_bk":   {_bk_slug: c["markets_by_bk"][_bk_slug]},
                         })
                         yield _keepalive()
 
