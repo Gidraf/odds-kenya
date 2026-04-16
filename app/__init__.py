@@ -101,6 +101,7 @@ def create_app() -> Flask:
     from app.views.customer.gemini_comentary import bp_commentary
     from app.views.customer.ai_story import bp_story
     from app.views.customer.analytic_debug import bp_raw_stream
+    from app.views.customer.bk_streams import bp_bk_streams
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -134,6 +135,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_tracker)   
     flask_app.register_blueprint(bp_deep_analytics)   
     flask_app.register_blueprint(bp_commentary)
+    flask_app.register_blueprint(bp_bk_streams)
     # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
