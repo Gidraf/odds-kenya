@@ -206,8 +206,11 @@ def _gen_bt_live(sport_slug: str):
             if not isinstance(m, dict): continue
             count += 1
             card  = _unify_match_payload(m, count, "live", "bt", "BETIKA")
-            card["is_live"] = True
-            card["bk"]      = "bt"
+            card["is_live"]    = True
+            card["bk"]         = "bt"
+            card["match_time"] = str(m.get("match_time") or "")
+            card["score_home"] = m.get("score_home")
+            card["score_away"] = m.get("score_away")
             yield _sse("batch", {"bk": "bt", "matches": [card],
                                  "offset": count - 1, "of": len(matches)})
             yield _keepalive()
@@ -226,8 +229,15 @@ def _gen_bt_live(sport_slug: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _gen_od_live(sport_slug: str):
+    """
+    OD live: one HTTP call returns all live matches, then we stream them
+    one card at a time so the frontend renders progressively.
+    The single blocking call typically takes 2-4s — SP is already painted by then.
+    """
     yield _sse("meta", {"bk": "od", "sport": sport_slug, "mode": "live",
                         "now": _now_utc().isoformat()})
+    # Emit a status ping immediately so the frontend knows OD is loading
+    yield _sse("status", {"bk": "od", "message": "Fetching OdiBets live data..."})
     try:
         from app.workers.od_harvester import fetch_live_matches
 
@@ -238,8 +248,11 @@ def _gen_od_live(sport_slug: str):
             if not isinstance(m, dict): continue
             count += 1
             card  = _unify_match_payload(m, count, "live", "od", "ODIBETS")
-            card["is_live"] = True
-            card["bk"]      = "od"
+            card["is_live"]    = True
+            card["bk"]         = "od"
+            card["match_time"] = str(m.get("match_time") or "")
+            card["score_home"] = m.get("score_home")
+            card["score_away"] = m.get("score_away")
             yield _sse("batch", {"bk": "od", "matches": [card],
                                  "offset": count - 1, "of": len(matches)})
             yield _keepalive()
@@ -316,23 +329,40 @@ def _gen_bt_upcoming(sport_slug: str, max_m: int = 50):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _gen_od_upcoming(sport_slug: str, max_m: int = 50):
+    """
+    OD upcoming streams in two ways:
+    - Today's matches: one fast API call, yields all at once
+    - Tomorrow's matches: second call, yields when ready
+    This gives the frontend OD data within ~3s while SP/BT stream in parallel.
+    """
     yield _sse("meta", {"bk": "od", "sport": sport_slug, "mode": "upcoming",
                         "now": _now_utc().isoformat()})
     try:
         from app.workers.od_harvester import fetch_upcoming_matches
+        from datetime import date, timedelta
 
-        # OD upcoming is a blocking list call — yield each match after the call
-        matches = fetch_upcoming_matches(sport_slug, max_matches=max_m) or []
-        count   = 0
+        count = 0
+        # Fetch today + tomorrow in separate calls so we can yield sooner
+        for day_offset in range(3):
+            day = (date.today() + timedelta(days=day_offset)).isoformat()
+            try:
+                matches = fetch_upcoming_matches(sport_slug, day=day,
+                                                 max_matches=max_m) or []
+            except Exception:
+                continue
 
-        for m in matches:
-            if not isinstance(m, dict): continue
-            count += 1
-            card = _unify_match_payload(m, count, "upcoming", "od", "ODIBETS")
-            card["bk"] = "od"
-            yield _sse("batch", {"bk": "od", "matches": [card],
-                                 "offset": count - 1, "of": len(matches)})
-            yield _keepalive()
+            for m in matches:
+                if not isinstance(m, dict): continue
+                if max_m and count >= max_m: break
+                count += 1
+                card = _unify_match_payload(m, count, "upcoming", "od", "ODIBETS")
+                card["bk"] = "od"
+                yield _sse("batch", {"bk": "od", "matches": [card],
+                                     "offset": count - 1})
+                yield _keepalive()
+
+            if max_m and count >= max_m:
+                break
 
         yield _sse("list_done", {"bk": "od", "total": count})
         yield _sse("done",      {"bk": "od", "status": "finished"})
