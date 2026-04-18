@@ -149,7 +149,7 @@ class EntityResolver:
             return self._country_cache[country_name_clean]
 
         from app.models.competions_model import Country
-        from app.models.odds_model import BookmakerCountryName
+        from app.models.bookmake_competition_data import BookmakerCountryName
 
         # 1. Try mapping table for bookmaker "sp"
         mapping = BookmakerCountryName.query.filter_by(
