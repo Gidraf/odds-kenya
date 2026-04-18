@@ -7,10 +7,12 @@ Key change:
 - Removed Arbitrage and EV logic (since a single bookmaker cannot have cross-bookmaker arbitrage).
 - cm is passed as a dictionary via Celery. Uses `_val()` helper to safely extract properties.
 - _infer_sport_slug() normalises via _NAME_TO_SLUG map.
+- Added country resolution with BookmakerCountryName mapping and fuzzy matching.
 """
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 import traceback
@@ -55,11 +57,28 @@ _NAME_TO_SLUG: dict[str, str] = {
 }
 
 
+def _similarity(a: str, b: str) -> float:
+    """Return similarity ratio between two strings (0-1)."""
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _best_match(name: str, candidates: list[str], threshold: float = 0.85) -> tuple[str | None, float]:
+    """Find best candidate with similarity >= threshold."""
+    if not candidates:
+        return None, 0.0
+    best = max(candidates, key=lambda x: _similarity(name, x))
+    score = _similarity(name, best)
+    return (best, score) if score >= threshold else (None, score)
+
+
 class EntityResolver:
     def __init__(self):
         self._sport_cache:     dict[str, int]        = {}
         self._comp_cache:      dict[str, int]        = {}
         self._team_cache:      dict[str, int]        = {}
+        self._country_cache:   dict[str, int]        = {}
         self._sp_bookmaker_id: int | None            = None
 
     @staticmethod
@@ -92,7 +111,7 @@ class EntityResolver:
         self._sport_cache[slug_lower] = sport.id
         return sport.id
 
-    def resolve_competition(self, comp_name: str, sport_id: int, betradar_id: str | None = None) -> int | None:
+    def resolve_competition(self, comp_name: str, sport_id: int, country_id: int | None = None, betradar_id: str | None = None) -> int | None:
         if not comp_name or not sport_id: return None
         cache_key = f"{sport_id}|{comp_name.lower().strip()}"
         if cache_key in self._comp_cache: return self._comp_cache[cache_key]
@@ -102,11 +121,12 @@ class EntityResolver:
             if existing:
                 self._comp_cache[cache_key] = existing.id
                 return existing.id
-        comp = Competition.get_or_create(name=comp_name.strip(), sport_id=sport_id, betradar_id=betradar_id)
+        # Pass country_id to Competition.get_or_create if we have it
+        comp = Competition.get_or_create(name=comp_name.strip(), sport_id=sport_id, country_id=country_id, betradar_id=betradar_id)
         self._comp_cache[cache_key] = comp.id
         return comp.id
 
-    def resolve_team(self, team_name: str, sport_id: int, betradar_id: str | None = None) -> int | None:
+    def resolve_team(self, team_name: str, sport_id: int, country_id: int | None = None, betradar_id: str | None = None) -> int | None:
         if not team_name or not sport_id: return None
         cache_key = f"{sport_id}|{team_name.lower().strip()}"
         if cache_key in self._team_cache: return self._team_cache[cache_key]
@@ -116,9 +136,67 @@ class EntityResolver:
             if existing:
                 self._team_cache[cache_key] = existing.id
                 return existing.id
-        team = Team.get_or_create(name=team_name.strip(), sport_id=sport_id, betradar_id=betradar_id)
+        team = Team.get_or_create(name=team_name.strip(), sport_id=sport_id, country_id=country_id, betradar_id=betradar_id)
         self._team_cache[cache_key] = team.id
         return team.id
+
+    def resolve_country(self, country_name: str) -> int | None:
+        """Resolve country using BookmakerCountryName mapping, fuzzy search, and fallback creation."""
+        if not country_name:
+            return None
+        country_name_clean = country_name.strip()
+        if country_name_clean in self._country_cache:
+            return self._country_cache[country_name_clean]
+
+        from app.models.competions_model import Country
+        from app.models.odds_model import BookmakerCountryName
+
+        # 1. Try mapping table for bookmaker "sp"
+        mapping = BookmakerCountryName.query.filter_by(
+            bookmaker_key="sp",
+            bookmaker_country_name=country_name_clean
+        ).first()
+        if mapping and mapping.country_id:
+            self._country_cache[country_name_clean] = mapping.country_id
+            return mapping.country_id
+
+        # 2. Exact match
+        exact = Country.query.filter(db.func.lower(Country.name) == country_name_clean.lower()).first()
+        if exact:
+            # Create mapping for future use
+            BookmakerCountryName.get_or_create("sp", country_name_clean, exact.id)
+            db.session.commit()
+            self._country_cache[country_name_clean] = exact.id
+            return exact.id
+
+        # 3. Fuzzy match
+        all_countries = Country.query.all()
+        candidates = [(c.id, c.name) for c in all_countries]
+        if candidates:
+            best_name, best_score = _best_match(country_name_clean, [name for _, name in candidates])
+            if best_name and best_score >= 0.85:
+                best_id = next(cid for cid, name in candidates if name == best_name)
+                BookmakerCountryName.get_or_create("sp", country_name_clean, best_id)
+                db.session.commit()
+                self._country_cache[country_name_clean] = best_id
+                return best_id
+
+        # 4. Create new country
+        country = Country.get_or_create(name=country_name_clean)
+        BookmakerCountryName.get_or_create("sp", country_name_clean, country.id)
+        db.session.commit()
+        self._country_cache[country_name_clean] = country.id
+        return country.id
+
+    def _extract_country_from_competition(self, comp_name: str) -> str:
+        """Extract country from competition name like 'England: Premier League'."""
+        if not comp_name:
+            return ""
+        # Split on colon or dash
+        parts = re.split(r'[:|-]', comp_name, maxsplit=1)
+        if len(parts) > 1:
+            return parts[0].strip()
+        return ""
 
     def _map_sp_match(self, match_id, sp_game_id, betradar_id=None):
         sp_id = self._get_sp_bookmaker_id()
@@ -161,6 +239,11 @@ class EntityResolver:
         cm_sp_game_id  = self._val(cm, "sp_game_id")
         cm_start_time  = self._val(cm, "start_time")
         cm_markets     = self._val(cm, "markets") or {}
+        cm_country     = self._val(cm, "country") or self._val(cm, "country_name") or ""
+
+        # If country not explicitly provided, try to extract from competition name
+        if not cm_country and cm_competition:
+            cm_country = self._extract_country_from_competition(cm_competition)
 
         # The fallback parent ID is the SP Game ID if Betradar is missing
         parent_id = cm_betradar_id or f"sp_{cm_sp_game_id}"
@@ -169,16 +252,19 @@ class EntityResolver:
             with db.session.begin_nested():
                 sport_slug = self._infer_sport_slug(cm)
                 sport_id   = self.resolve_sport(sport_slug) if sport_slug else None
+                
+                # Resolve country
+                country_id = self.resolve_country(cm_country) if cm_country else None
                 comp_id    = None
                 
                 if sport_id and cm_competition:
-                    comp_id = self.resolve_competition(cm_competition, sport_id)
+                    comp_id = self.resolve_competition(cm_competition, sport_id, country_id=country_id)
                 home_team_id = away_team_id = None
                 if sport_id:
                     if cm_home_team:
-                        home_team_id = self.resolve_team(cm_home_team, sport_id)
+                        home_team_id = self.resolve_team(cm_home_team, sport_id, country_id=country_id)
                     if cm_away_team:
-                        away_team_id = self.resolve_team(cm_away_team, sport_id)
+                        away_team_id = self.resolve_team(cm_away_team, sport_id, country_id=country_id)
 
                 if not parent_id: return None
 
@@ -193,6 +279,7 @@ class EntityResolver:
                         away_team_name=cm_away_team, sport_name=sport_name_db,
                         competition_name=cm_competition or "", start_time=start_time,
                         competition_id=comp_id, home_team_id=home_team_id, away_team_id=away_team_id,
+                        country_id=country_id, country_name=cm_country,
                     )
                     db.session.add(um)
                     db.session.flush()
@@ -205,6 +292,8 @@ class EntityResolver:
                     if home_team_id and not um.home_team_id: um.home_team_id = home_team_id
                     if away_team_id and not um.away_team_id: um.away_team_id = away_team_id
                     if sport_name_db: um.sport_name = sport_name_db
+                    if country_id and not um.country_id: um.country_id = country_id
+                    if cm_country and not um.country_name: um.country_name = cm_country
 
                 # --- 2. MAP SPORTPESA EXTERNAL ID ---
                 if cm_sp_game_id: 
@@ -257,12 +346,14 @@ class EntityResolver:
                 f"Error: {str(exc)}\n"
                 f"Match: {cm_home_team} vs {cm_away_team}\n"
                 f"SP Game ID: {cm_sp_game_id} | Betradar ID: {cm_betradar_id}\n"
+                f"Country: {cm_country}\n"
                 f"Traceback:\n{traceback.format_exc()}\n"
                 + "="*50 + "\n"
             )
             self._comp_cache.clear()
             self._team_cache.clear()
             self._sport_cache.clear()
+            self._country_cache.clear()
             return None
 
     def persist_batch(self, sp_matches: list, commit: bool = True) -> dict:
