@@ -141,6 +141,84 @@ def on_worker_ready(sender, **kwargs):
         logger.error("[startup] Dispatch failed: %s", exc)
 
 
+# app/workers/tasks_ops.py (excerpt – full file in final answer)
+...
+LIVE_ENABLED = True   # ← Already True in your code
+
+@worker_ready.connect
+def on_worker_ready(sender, **kwargs):
+    logger.info("[startup] Worker ready — dispatching SP harvests & starting live pollers")
+    _dispatch_startup_harvests()
+    _start_live_pollers()   # ← NEW: starts BT/OD pollers and SP WebSocket harvester
+
+def _start_live_pollers():
+    """Start Betika + OdiBets live pollers and SP WebSocket harvester."""
+    from app.workers.bt_harvester import BetikaLivePoller
+    from app.workers.od_harvester import OdiBetsLivePoller
+    from app.workers.celery_tasks import _redis
+    from app.workers.sp_live_harvester import start_harvester_thread
+
+    r = _redis(db=1)
+
+    # Betika live poller (already exists in bt_harvester)
+    try:
+        bt_poller = BetikaLivePoller(redis_client=r, interval=1.5)
+        bt_poller.start()
+        logger.info("[startup] Betika live poller started")
+    except Exception as e:
+        logger.error("[startup] Betika live poller failed: %s", e)
+
+    # OdiBets live poller
+    try:
+        od_poller = OdiBetsLivePoller(redis_client=r, interval=2.0)
+        od_poller.start()
+        logger.info("[startup] OdiBets live poller started")
+    except Exception as e:
+        logger.error("[startup] OdiBets live poller failed: %s", e)
+
+    # SP WebSocket harvester
+    try:
+        start_harvester_thread()
+        logger.info("[startup] SP live WebSocket harvester started")
+    except Exception as e:
+        logger.error("[startup] SP live harvester failed: %s", e)
+
+def setup_periodic_tasks(sender, **kw):
+    from app.workers.tasks_harvest_pages import harvest_all_paged
+    from app.workers.tasks_ops import (
+        update_match_results, expire_subscriptions, health_check,
+        cleanup_old_snapshots, build_health_report,
+    )
+    from app.workers.tasks_live import (
+        live_cross_bk_refresh, live_snapshot_to_db,
+        ensure_harvester_running, sp_harvest_all_live,
+        bt_harvest_all_live, od_harvest_all_live,
+    )
+
+    # ── Full upcoming sweep every 4 hours ─────────────────────────────────
+    sender.add_periodic_task(
+        4 * 3600.0,
+        harvest_all_paged.s(),
+        name="harvest-all-paged-4h",
+    )
+
+    # ── Near‑term refresh every 15 min (optional, can be added later) ───
+    # sender.add_periodic_task(900.0, harvest_near_term.s(), name="harvest-near-term-15m")
+
+    # ── Live tasks (all lightweight, frequent) ───────────────────────────
+    sender.add_periodic_task(15.0,   live_cross_bk_refresh.s(),    name="live-cross-bk-15s")
+    sender.add_periodic_task(30.0,   live_snapshot_to_db.s(),      name="live-snapshot-30s")
+    sender.add_periodic_task(60.0,   ensure_harvester_running.s(), name="live-ensure-harvester-60s")
+    sender.add_periodic_task(60.0,   sp_harvest_all_live.s(),      name="sp-live-snapshot-60s")
+    sender.add_periodic_task(90.0,   bt_harvest_all_live.s(),      name="bt-live-90s")
+    sender.add_periodic_task(90.0,   od_harvest_all_live.s(),      name="od-live-90s")
+
+    # ── Health & maintenance ──────────────────────────────────────────────
+    sender.add_periodic_task(60.0,    health_check.s(),            name="health-1min")
+    sender.add_periodic_task(300.0,   build_health_report.s(),     name="health-report-5min")
+    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),   name="cleanup-daily")
+    sender.add_periodic_task(900.0,   _align_all.s(),              name="align-all-15min")
+
 def _dispatch_startup_harvestsv1() -> None:
     dispatched = 0
 

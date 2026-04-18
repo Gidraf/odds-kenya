@@ -171,6 +171,7 @@ def create_app() -> Flask:
         from app.models.live_snapshot_model import LiveRawSnapshot
         from app.models.tracking_model import UserActivityLog
         from app.models.bookmake_competition_data import BookmakerCompetitionName, BookmakerCountryName, BookmakerTeamName
+        from app.models.match_analytics import MatchAnalytics
 
     import app.sockets  # noqa: registers /admin namespace handlers
 

@@ -333,7 +333,7 @@ def enrich_matches_with_full_markets(
 def fetch_upcoming_stream(
     sport_slug:         str  = "soccer",
     max_matches:        int | None = None,
-    max_pages:          int  = 10,
+    max_pages:          int  = 100,
     period_id:          int  = 9,
     fetch_full_markets: bool = True,
     sleep_between:      float= 0.3,

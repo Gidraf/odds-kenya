@@ -31,6 +31,7 @@ CHANGES vs v1
 
 from __future__ import annotations
 
+import random
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
@@ -41,6 +42,7 @@ from urllib3.util.retry import Retry
 
 from app.workers.sp_mapper        import normalize_sp_market
 from app.workers.canonical_mapper import normalize_outcome
+from app.workers.tasks_analytics import scrape_sportpesa_match_analytics
 
 # =============================================================================
 # CONSTANTS & HTTP SESSION
@@ -701,12 +703,12 @@ def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
     sport_id  = SP_SPORT_ID.get(slug)
     if not sport_id:
         print(f"[sp] unknown sport: {sport_slug!r}")
-        return "", "", False, 3, 150
+        return "", "", False, 7, 1500
     is_esoccer   = sport_id in _ESOCCER_IDS
     market_ids   = _SPORT_MARKET_IDS.get(sport_id, _DEFAULT_MARKET_IDS)
     market_ids   = market_ids.replace("\n", "").replace(" ", "")
-    days_default = 1 if is_esoccer else 3
-    max_default  = 60 if is_esoccer else 150
+    days_default = 7 if is_esoccer else 7
+    max_default  = 1500 if is_esoccer else 1500
     return sport_id, market_ids, is_esoccer, days_default, max_default
 
 
@@ -760,12 +762,40 @@ def fetch_upcoming_stream(
             game_id  = parsed["sp_game_id"] if debug_ou else "",
             sport_id = parsed.get("sp_sport_id") or int(sport_id),
         )
-        yield _build_match(parsed, markets, sport_slug)
+        match_dict = _build_match(parsed, markets, sport_slug)
+        yield match_dict
+
+        if _is_near_term(match_dict.get("start_time"), days=3):
+            scrape_sportpesa_match_analytics.apply_async(
+                args=[match_dict["sp_game_id"]],
+                kwargs={"unified_match_id": None},  # will be resolved later
+                queue="analytics",
+                countdown=random.uniform(5, 30),    # spread out requests
+            )
 
     if inline_count:
         print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} "
               "matches used inline fallback (primary market only)")
 
+EAT = timezone(timedelta(hours=3))
+
+def _is_near_term(start_time_str: str, days: int = 3) -> bool:
+    if not start_time_str:
+        return False
+    try:
+        # Parse ISO format. If it has 'Z' (UTC), convert to EAT; otherwise assume it's already EAT local time.
+        if start_time_str.endswith('Z'):
+            st = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+            st = st.astimezone(EAT)
+        else:
+            st = datetime.fromisoformat(start_time_str)
+            if st.tzinfo is None:
+                st = st.replace(tzinfo=EAT)
+        now = datetime.now(EAT)
+        delta = st - now
+        return timedelta(0) <= delta <= timedelta(days=days)
+    except Exception:
+        return False
 
 def fetch_live_stream(
     sport_slug:         str,
