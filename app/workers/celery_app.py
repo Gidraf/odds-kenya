@@ -12,8 +12,8 @@ from celery import Celery
 
 
 def make_celery() -> Celery:
-    broker  = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    backend = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    broker  = os.getenv("REDIS_URL", "redis://localhost:6382/0")
+    backend = os.getenv("REDIS_URL", "redis://localhost:6382/0")
 
     app = Celery("kinetic", broker=broker, backend=backend)
     app.conf.update(

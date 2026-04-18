@@ -87,7 +87,7 @@ def _r():
     global _redis_client
     if _redis_client is None:
         import os, redis
-        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        url = os.getenv("REDIS_URL", "redis://localhost:6382/0")
         _redis_client = redis.from_url(url, decode_responses=True)
     return _redis_client
 

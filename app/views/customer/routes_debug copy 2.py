@@ -39,7 +39,7 @@ def _redis_url() -> str:
     Priority order:
       1. REDIS_URL      — full URL already set (e.g. by a managed service)
       2. REDIS_HOST / REDIS_PORT / REDIS_AUTH — individual vars (docker-compose)
-      3. Fallback       — redis://localhost:6379/0
+      3. Fallback       — redis://localhost:6382/0
 
     The password may start with '@' (e.g. @Winners1127) so we percent-encode it.
     """
@@ -48,7 +48,7 @@ def _redis_url() -> str:
         return full
 
     host = os.getenv("REDIS_HOST", "localhost")
-    port = os.getenv("REDIS_PORT", "6379")
+    port = os.getenv("REDIS_PORT", "6382")
     auth = os.getenv("REDIS_AUTH", os.getenv("REDIS_PASSWORD", ""))
     db   = os.getenv("REDIS_DB",   "0")
 

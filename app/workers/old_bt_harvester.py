@@ -689,7 +689,7 @@ def run_live_loop(interval: float = 1.0) -> None:
     from app.workers.live_broadcaster import broadcast_event_state, broadcast_market_odds
     import redis, os, json
     
-    r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+    r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6382/0"), decode_responses=True)
     last_hash = ""
 
     while True:

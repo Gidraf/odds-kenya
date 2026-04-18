@@ -25,8 +25,8 @@ def create_app() -> Flask:
     flask_app.config["SECRET_KEY"]              = os.environ.get("SECRET_KEY")
     flask_app.config["JWT_SECRET_KEY"]          = os.environ.get("JWT_SECRET_KEY")
     flask_app.config["SQLALCHEMY_ECHO"]         = False
-    flask_app.config["CELERY_BROKER_URL"]       = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/1"))
-    flask_app.config["CELERY_RESULT_BACKEND"]   = os.environ.get("CELERY_RESULT_URL",  os.environ.get("REDIS_URL", "redis://localhost:6379/2"))
+    flask_app.config["CELERY_BROKER_URL"]       = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6382/1"))
+    flask_app.config["CELERY_RESULT_BACKEND"]   = os.environ.get("CELERY_RESULT_URL",  os.environ.get("REDIS_URL", "redis://localhost:6382/2"))
     flask_app.config["OPENAI_API_KEY"]          = os.environ.get("OPENAI_API_KEY")
     flask_app.config["MAIL_SERVER"]             = SMTP_SERVER
     flask_app.config["MAIL_PORT"]               = SMTP_PORT
@@ -195,7 +195,7 @@ def create_app() -> Flask:
         try:
             import redis as _redis_lib
             _rd = _redis_lib.from_url(
-                flask_app.config.get("CELERY_BROKER_URL", "redis://localhost:6379/1"),
+                flask_app.config.get("CELERY_BROKER_URL", "redis://localhost:6382/1"),
                 decode_responses=False, socket_timeout=3,
             )
             from app.workers.od_harvester import init_live_poller as od_init

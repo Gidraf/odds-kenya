@@ -641,7 +641,7 @@ def _stream_matches(
         
     import redis as _rl
     from app.workers.celery_tasks import celery as _celery
-    url  = _celery.conf.broker_url or "redis://localhost:6379/0"
+    url  = _celery.conf.broker_url or "redis://localhost:6382/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     r    = _rl.Redis.from_url(f"{base}/2", decode_responses=True)
     ps   = r.pubsub()
@@ -1346,7 +1346,7 @@ def set_access_config():
 def _sse_stream(channel):
     import redis as _rl
     from app.workers.celery_tasks import celery as _celery
-    url  = _celery.conf.broker_url or "redis://localhost:6379/0"
+    url  = _celery.conf.broker_url or "redis://localhost:6382/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     r    = _rl.Redis.from_url(f"{base}/2", decode_responses=True)
     ps   = r.pubsub()

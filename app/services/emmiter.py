@@ -20,7 +20,7 @@ _emitter: SocketIO | None = None
 def get_emitter() -> SocketIO:
     global _emitter
     if _emitter is None:
-        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6382/0")
         _emitter = SocketIO(
             message_queue=redis_url,
             channel="flask-socketio",   # must match server channel

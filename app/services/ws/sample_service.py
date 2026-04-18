@@ -25,8 +25,8 @@ beat_schedule = {
 }
 
 timezone = "UTC"
-broker_url        = "redis://localhost:6379/0"
-result_backend    = "redis://localhost:6379/1"
+broker_url        = "redis://localhost:6382/0"
+result_backend    = "redis://localhost:6382/1"
 task_serializer   = "json"
 result_serializer = "json"
 accept_content    = ["json"]
@@ -153,7 +153,7 @@ celery.Task = ContextTask
 """
 # .env
 DATABASE_URL=postgresql://user:pass@localhost/db
-REDIS_URL=redis://localhost:6379/0
+REDIS_URL=redis://localhost:6382/0
 
 # AI providers
 GEMINI_API_KEY=your_gemini_key

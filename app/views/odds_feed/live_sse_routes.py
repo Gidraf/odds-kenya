@@ -87,7 +87,7 @@ _SSE_HEADERS = {
 
 def _redis_url() -> str:
     import os
-    return os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    return os.getenv("REDIS_URL", "redis://localhost:6382/0")
 
 
 def _new_redis() -> _redis_lib.Redis:
@@ -303,7 +303,7 @@ def stream_all():
 def snapshot_sports():
     """Return current live sport counts from Redis cache."""
     import os, redis as _rl
-    r = _rl.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+    r = _rl.from_url(os.getenv("REDIS_URL", "redis://localhost:6382/0"), decode_responses=True)
     raw = r.get("sp:live:sports")
     sports_list = json.loads(raw) if raw else []
     return _signed_response({
@@ -352,7 +352,7 @@ def snapshot_match(match_ref: str):
         return _err("Match not found", 404)
 
     import os, redis as _rl
-    r = _rl.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+    r = _rl.from_url(os.getenv("REDIS_URL", "redis://localhost:6382/0"), decode_responses=True)
 
     # Load Redis snapshots for each BK
     bk_slugs = ["sp", "bt", "od", "b2b", "sbo"]
@@ -563,7 +563,7 @@ def live_status():
         ws_ok = False
 
     import os, redis as _rl
-    r = _rl.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+    r = _rl.from_url(os.getenv("REDIS_URL", "redis://localhost:6382/0"), decode_responses=True)
 
     sports_raw = r.get("sp:live:sports")
     sports     = json.loads(sports_raw) if sports_raw else []

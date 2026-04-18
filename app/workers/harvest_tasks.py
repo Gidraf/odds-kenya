@@ -45,7 +45,7 @@ def _get_db():
 
 def _get_redis():
     import redis
-    url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    url = os.getenv("REDIS_URL", "redis://localhost:6382/0")
     return redis.from_url(url, decode_responses=True)
 
 

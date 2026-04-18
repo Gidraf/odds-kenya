@@ -25,8 +25,8 @@ def init_celery(app):
     Returns the same global celery object — NOT a new instance.
     """
     celery.conf.update(
-        broker_url    = app.config.get("CELERY_BROKER_URL",    "redis://localhost:6379/0"),
-        result_backend= app.config.get("CELERY_RESULT_BACKEND","redis://localhost:6379/0"),
+        broker_url    = app.config.get("CELERY_BROKER_URL",    "redis://localhost:6382/0"),
+        result_backend= app.config.get("CELERY_RESULT_BACKEND","redis://localhost:6382/0"),
         task_serializer  = "json",
         result_serializer= "json",
         accept_content   = ["json"],

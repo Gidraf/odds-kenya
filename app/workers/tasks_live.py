@@ -58,7 +58,7 @@ def _get_redis(db: int = 1) -> _redis_lib.Redis:
     with _redis_lock:
         if _redis_client is None:
             url  = os.environ.get("REDIS_URL",
-                   os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0"))
+                   os.environ.get("CELERY_BROKER_URL", "redis://localhost:6382/0"))
             base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
             _redis_client = _redis_lib.Redis.from_url(
                 f"{base}/{db}",

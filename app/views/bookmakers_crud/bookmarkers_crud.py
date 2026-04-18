@@ -89,7 +89,7 @@ def _serialize_list(bm) -> dict:
 
 def _redis():
     import redis as _r
-    url  = current_app.config.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+    url  = current_app.config.get("CELERY_BROKER_URL", "redis://localhost:6382/0")
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     return _r.Redis.from_url(f"{base}/2", decode_responses=True,
                              socket_timeout=3, socket_connect_timeout=3)

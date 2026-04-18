@@ -37,8 +37,8 @@ logger = get_task_logger(__name__)
 
 def make_celery(app=None):
     """Call from your Flask app factory."""
-    broker  = "redis://localhost:6379/0"
-    backend = "redis://localhost:6379/1"
+    broker  = "redis://localhost:6382/0"
+    backend = "redis://localhost:6382/1"
 
     if app:
         broker  = app.config.get("CELERY_BROKER_URL",  broker)
