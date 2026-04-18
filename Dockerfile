@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy installed Python packages from builder
 COPY --from=builder /install /usr/local
 
+RUN mkdir -p /app/logs && chown -R appuser:appuser /app/logs
+
 # Create app directory and set ownership
 WORKDIR /app
 RUN chown -R appuser:appuser /app
