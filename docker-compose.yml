@@ -125,7 +125,7 @@ version: "3.9"
 # -----------------------------------------------------------------------------
 # Redis URL (percent‑encoded password)
 # -----------------------------------------------------------------------------
-x-redis-url: &redis-url "redis://:%40Winners1127@redis6382:6382/0"
+x-redis-url: &redis-url "redis://:%40Winners1127@host.docker.internal:6382/0"
 
 # -----------------------------------------------------------------------------
 # Common environment variables for all services
