@@ -1,35 +1,68 @@
-FROM python:3.11-slim
+# ============================================================
+# Stage 1: Builder (compile dependencies, install tools)
+# ============================================================
+FROM python:3.11-slim AS builder
 
-WORKDIR /app
+WORKDIR /build
 
-# 1. Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
-# 2. Install base system dependencies AND ffmpeg
+# Install build dependencies (needed for psycopg2 compilation if you ever switch from binary)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only requirements first for better caching
+COPY requirements.txt .
+
+# Install Python packages into a temporary directory
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt gunicorn gevent
+
+# ============================================================
+# Stage 2: Final (runtime image)
+# ============================================================
+FROM python:3.11-slim
+
+# Create a non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install only runtime system dependencies (no build tools)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
     curl \
-    postgresql-client \
+    # If you need ffmpeg for video processing (odds feeds)
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Copy requirements first
-COPY requirements.txt .
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
 
-# 4. Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt gunicorn gevent "psycopg[binary]" playwright
+# Create app directory and set ownership
+WORKDIR /app
+RUN chown -R appuser:appuser /app
 
-# 5. Install Playwright browsers and dependencies
-RUN playwright install --with-deps chromium \
-    && rm -rf /var/lib/apt/lists/*
+# Copy application code (as appuser)
+COPY --chown=appuser:appuser . .
 
-# 6. Copy application code
-COPY . .
+# Optional: Install Playwright browsers only if needed (uncomment if required)
+# If you use Playwright for scraping, install browsers at runtime.
+# RUN playwright install --with-deps chromium && chown -R appuser:appuser /ms-playwright
+# ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# 7. Expose internal port
+# Switch to non-root user
+USER appuser
+
+# Healthcheck (adjust endpoint as needed)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:5000/health || exit 1
+
+# Expose port
 EXPOSE 5000
 
-# 8. Default command
-CMD ["gunicorn", "-k", "gevent", "-w", "4", "-b", "0.0.0.0:5000", "run:flask_app"]
+# Run gunicorn (production settings)
+CMD ["gunicorn", "-k", "gevent", "-w", "4", "--graceful-timeout", "30", "-b", "0.0.0.0:5000", "run:flask_app"]
