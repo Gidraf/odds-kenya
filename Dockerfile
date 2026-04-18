@@ -42,16 +42,12 @@ COPY --from=builder /install /usr/local
 WORKDIR /app
 
 # ------------------------------------------------------------------
-# FIX: Create logs directory and ensure appuser owns everything
+# Create logs directory and ensure appuser owns everything
 # ------------------------------------------------------------------
 RUN mkdir -p /app/logs && chown -R appuser:appuser /app
 
 # Copy application code (as appuser)
 COPY --chown=appuser:appuser . .
-
-# (Optional) Uncomment if Playwright is needed
-# RUN playwright install --with-deps chromium && chown -R appuser:appuser /ms-playwright
-# ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Switch to non-root user
 USER appuser
