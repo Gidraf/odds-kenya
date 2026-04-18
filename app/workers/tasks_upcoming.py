@@ -52,6 +52,25 @@ _LOCAL_SPORTS = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
 ]
+
+_ALL_SPORTS: list[str] = [
+    "soccer",
+    "basketball",
+    "tennis",
+    "cricket",
+    "rugby",
+    "ice-hockey",
+    "volleyball",
+    "handball",
+    "table-tennis",
+    "baseball",
+    "mma",
+    "boxing",
+    "darts",
+    "american-football",
+    "esoccer",
+]
+
 _B2B_HARVEST_SPORTS = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
@@ -127,7 +146,7 @@ def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
                 if isinstance(start_time_raw, str):
                     start_dt = datetime.fromisoformat(start_time_raw.replace("Z", "+00:00"))
                 elif isinstance(start_time_raw, (int, float)):
-                    start_dt = datetime.utcfromtimestamp(float(start_time_raw))
+                    start_dt = datetime.fromtimestamp(float(start_time_raw), tz=timezone.utc)
                 elif isinstance(start_time_raw, datetime):
                     start_dt = start_time_raw
             except Exception:
@@ -535,6 +554,18 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
         "br_count":     br_count,
     }, ttl=3600)
 
+    from app.workers.redis_bus import publish_snapshot as _bus_publish
+    _bus_publish("sp", "upcoming", sport_slug, matches, meta={
+        "source":      "sportpesa",
+        "avg_markets": avg_markets,
+        "br_count":    br_count,
+    })
+
+    from app.workers.redis_bus import publish_snapshot
+    publish_snapshot("sp", "upcoming", sport_slug, matches, meta={
+        "source": "sportpesa", "avg_markets": avg_markets, "br_count": br_count,
+    })
+
     _upsert_and_chain(matches, "SportPesa")
     _persist_bk_matches(matches, "sp", sport_slug)
     _emit("sportpesa", sport_slug, len(matches), latency)
@@ -802,6 +833,10 @@ def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -
         "match_count": len(matches), "harvested_at": _now_iso(),
         "latency_ms": latency, "matches": matches, "enriched": False,
     }, ttl=3600)
+    from app.workers.redis_bus import publish_snapshot as _bus_publish
+    _bus_publish("bt", "upcoming", sport_slug, matches, meta={
+        "source": "betika",
+    })
     _upsert_and_chain(matches, "Betika")
     _persist_bk_matches(matches, "bt", sport_slug)
     _emit("betika", sport_slug, len(matches), latency)
@@ -896,6 +931,10 @@ def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
         "match_count": len(matches), "harvested_at": _now_iso(),
         "latency_ms": latency, "matches": matches, "avg_markets": avg_markets,
     }, ttl=3600)
+    from app.workers.redis_bus import publish_snapshot as _bus_publish
+    _bus_publish("od", "upcoming", sport_slug, matches, meta={
+        "source": "odibets", "avg_markets": avg_markets,
+    })
     _upsert_and_chain(matches, "OdiBets")
     _persist_bk_matches(matches, "od", sport_slug)
     _emit("odibets", sport_slug, len(matches), latency)

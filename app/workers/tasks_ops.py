@@ -58,16 +58,37 @@ PERSIST_SPORTS: list[str] = [
 # bt_od is the new team-name matched cache written by tasks_bt_od
 _BK_SLUGS: list[str] = ["sp", "bt", "od", "b2b", "sbo", "bt_od"]
 
-_SP_SPORTS = [
+_ALL_SPORTS: list[str] = [
+    "soccer",
+    "basketball",
+    "tennis",
+    "cricket",
+    "rugby",
+    "ice-hockey",
+    "volleyball",
+    "handball",
+    "table-tennis",
+    "baseball",
+    "mma",
+    "boxing",
+    "darts",
+    "american-football",
+    "esoccer",
+]
+ 
+# Subsets per bookmaker (what each BK actually supports)
+_SP_SPORTS: list[str] = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
 ]
-_B2B_SPORTS_STARTUP = [
+ 
+_B2B_SPORTS_STARTUP: list[str] = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
     "darts", "handball",
 ]
-_SBO_SPORTS_STARTUP = [
+ 
+_SBO_SPORTS_STARTUP: list[str] = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "boxing",
     "handball", "mma", "table-tennis",
@@ -120,7 +141,7 @@ def on_worker_ready(sender, **kwargs):
         logger.error("[startup] Dispatch failed: %s", exc)
 
 
-def _dispatch_startup_harvests() -> None:
+def _dispatch_startup_harvestsv1() -> None:
     dispatched = 0
 
     from app.workers.tasks_upcoming import SP_MAX_MATCHES
@@ -162,61 +183,115 @@ def _dispatch_startup_harvests() -> None:
     )
 
 
+def _dispatch_startup_harvests() -> None:
+    """
+    Dispatch paged SP + BT + OD harvests for all sports on worker startup.
+    Each sport uses 10 parallel page workers (100 records/page = 1 000 total).
+    """
+    dispatched = 0
+ 
+    # ── SP paged (10 pages × 100 = 1 000 records per sport) ──────────────────
+    for i, sport in enumerate(_SP_SPORTS):
+        celery.send_task(
+            "tasks.sp.harvest_sport_paged",
+            args=[sport],
+            queue="harvest",
+            countdown=5 + i * 3,
+        )
+        dispatched += 1
+ 
+    # ── BT paged ──────────────────────────────────────────────────────────────
+    from app.workers.tasks_harvest_pages import _BT_SPORTS
+    for i, sport in enumerate(_BT_SPORTS):
+        celery.send_task(
+            "tasks.bt.harvest_sport_paged",
+            args=[sport],
+            queue="harvest",
+            countdown=10 + i * 3,
+        )
+        dispatched += 1
+ 
+    # ── OD paged ──────────────────────────────────────────────────────────────
+    from app.workers.tasks_harvest_pages import _OD_SPORTS
+    for i, sport in enumerate(_OD_SPORTS):
+        celery.send_task(
+            "tasks.od.harvest_sport_paged",
+            args=[sport],
+            queue="harvest",
+            countdown=15 + i * 3,
+        )
+        dispatched += 1
+ 
+    # ── B2B + SBO (unchanged) ─────────────────────────────────────────────────
+    for i, sport in enumerate(_B2B_SPORTS_STARTUP):
+        celery.send_task(
+            "tasks.b2b.harvest_sport",
+            args=[sport],
+            queue="harvest",
+            countdown=20 + i * 3,
+        )
+        dispatched += 1
+ 
+    for i, sport in enumerate(_SBO_SPORTS_STARTUP):
+        celery.send_task(
+            "tasks.sbo.harvest_sport",
+            args=[sport, 90],
+            queue="harvest",
+            countdown=25 + i * 3,
+        )
+        dispatched += 1
+ 
+    # ── System tasks ──────────────────────────────────────────────────────────
+    celery.send_task("tasks.ops.health_check",        queue="default",  countdown=1)
+    celery.send_task("tasks.ops.build_health_report", queue="default",  countdown=60)
+    celery.send_task("tasks.align.all",               queue="results",  countdown=240)
+ 
+    logger.info(
+        "[startup] %d tasks dispatched — SP/BT/OD paged (10 workers × 100 records each).",
+        dispatched,
+    )
+ 
+
 # =============================================================================
 # BEAT SCHEDULE
 # =============================================================================
 
 def setup_periodic_tasks(sender, **kw):
-    from app.workers.tasks_upcoming import (
-        sp_harvest_all_upcoming,
-        b2b_harvest_all_upcoming,
-        b2b_page_harvest_all_upcoming,
-        sbo_harvest_all_upcoming,
-    )
+    from app.workers.tasks_harvest_pages import harvest_all_paged
     from app.workers.tasks_ops import (
         update_match_results,
         expire_subscriptions,
         health_check,
         cleanup_old_snapshots,
+        build_health_report,
     )
-
-    # SP every 5 min — bt_od is auto-chained from SP (+30s), no separate schedule needed
-    sender.add_periodic_task(300.0,  sp_harvest_all_upcoming.s(),       name="sp-upcoming-5min")
-    # sender.add_periodic_task(180.0,  b2b_harvest_all_upcoming.s(),      name="b2b-upcoming-3min")
-    # sender.add_periodic_task(240.0,  b2b_page_harvest_all_upcoming.s(), name="b2b-page-upcoming-4min")
-    # sender.add_periodic_task(300.0,  sbo_harvest_all_upcoming.s(),      name="sbo-upcoming-5min")
-
-    # sender.add_periodic_task(600.0,  update_match_results.s(),          name="results-10min")
-    # sender.add_periodic_task(3600.0, expire_subscriptions.s(),          name="expire-subs-1hr")
-    # sender.add_periodic_task(60.0,   health_check.s(),                  name="health-1min")
-    # sender.add_periodic_task(2700.0, bt_od_harvest_all.s(),             name="bt-od-harvest-all-45min")
-    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),        name="cleanup-daily")
-
+ 
+    # ── Primary: paged SP + BT + OD every 5 min ──────────────────────────────
+    sender.add_periodic_task(
+        300.0,
+        harvest_all_paged.s(),
+        name="harvest-all-paged-5min",
+    )
+ 
+    # ── Health + cleanup ──────────────────────────────────────────────────────
+    sender.add_periodic_task(60.0,    health_check.s(),         name="health-1min")
+    sender.add_periodic_task(300.0,   build_health_report.s(),  name="health-report-5min")
+    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(), name="cleanup-daily")
+ 
+    # ── Results + subs (uncomment when ready) ─────────────────────────────────
+    # sender.add_periodic_task(600.0,   update_match_results.s(),  name="results-10min")
+    # sender.add_periodic_task(3600.0,  expire_subscriptions.s(),  name="expire-subs-1hr")
+ 
+    # ── Market alignment every 15 min ─────────────────────────────────────────
+    sender.add_periodic_task(900.0, _align_all.s(), name="align-all-15min")
+ 
     if not LIVE_ENABLED:
         return
 
-    # from app.workers.tasks_live import (
-    #     sp_harvest_all_live,
-    #     bt_harvest_all_live,
-    #     od_harvest_all_live,
-    #     b2b_harvest_all_live,
-    #     b2b_page_harvest_all_live,
-    #     sbo_harvest_all_live,
-    #     sp_poll_all_event_details,
-    #     live_cross_bk_refresh,
-    #     ensure_harvester_running,
-    # )
-
-    # sender.add_periodic_task(  60.0, ensure_harvester_running.s(),     name="sp-harvester-watchdog-1min")
-    # sender.add_periodic_task(   5.0, sp_poll_all_event_details.s(),    name="sp-details-5s")
-    # sender.add_periodic_task(  15.0, live_cross_bk_refresh.s(),        name="live-cross-bk-15s")
-    # sender.add_periodic_task(  60.0, sp_harvest_all_live.s(),          name="sp-live-60s")
-    # sender.add_periodic_task(  90.0, bt_harvest_all_live.s(),          name="bt-live-90s")
-    # sender.add_periodic_task(  90.0, od_harvest_all_live.s(),          name="od-live-90s")
-    # sender.add_periodic_task( 120.0, b2b_harvest_all_live.s(),         name="b2b-live-2min")
-    # sender.add_periodic_task(  30.0, b2b_page_harvest_all_live.s(),    name="b2b-page-live-30s")
-    # sender.add_periodic_task(  60.0, sbo_harvest_all_live.s(),         name="sbo-live-60s")
-
+@celery.task(name="ops.align_all_shim", soft_time_limit=30, time_limit=45)
+def _align_all():
+    celery.send_task("tasks.align.all", queue="results")
+    return {"ok": True}
 
 # =============================================================================
 # WS PUBLISH
@@ -838,7 +913,7 @@ def build_health_report() -> dict:
 # =============================================================================
 
 @celery.task(name="harvest.cleanup", soft_time_limit=60, time_limit=90)
-def cleanup_old_snapshots(days_keep: int = 7) -> dict:
+def cleanup_old_snapshots(days_keep: int = 30) -> dict:
     from app.extensions import db
     from app.models.odds_model import ArbitrageOpportunity, EVOpportunity
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_keep)

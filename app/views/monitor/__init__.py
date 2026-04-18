@@ -24,6 +24,10 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from app.models.competions_model import Competition, Team, Country, Sport
+from app.models.odds_model import UnifiedMatch 
+from app.models.bookmake_competition_data import BookmakerCompetitionName, BookmakerTeamName, BookmakerCountryName
+from sqlalchemy import func, desc
 
 from flask import Blueprint, Response, request, stream_with_context
 
@@ -785,3 +789,615 @@ setInterval(poll,15000);setInterval(pollBeat,30000);
 @bp_monitor.route("/dashboard")
 def dashboard():
     return Response(DASHBOARD_HTML, content_type="text/html; charset=utf-8")
+
+
+# =============================================================================
+# STRUCTURE VIEWS (Competitions, Teams, Countries, Bookmaker Mappings)
+# =============================================================================
+
+@bp_monitor.route("/competitions")
+def list_competitions():
+    """List all competitions with optional filters: sport, country, has_matches."""
+    sport_id = request.args.get("sport_id", type=int)
+    country_id = request.args.get("country_id", type=int)
+    has_matches = request.args.get("has_matches", type=bool, default=False)
+    limit = request.args.get("limit", 100, type=int)
+    
+    q = Competition.query
+    if sport_id:
+        q = q.filter(Competition.sport_id == sport_id)
+    if country_id:
+        q = q.filter(Competition.country_id == country_id)
+    if has_matches:
+        q = q.filter(Competition.id.in_(
+            db.session.query(UnifiedMatch.competition_id).filter(UnifiedMatch.competition_id.isnot(None))
+        ))
+    comps = q.order_by(Competition.name).limit(limit).all()
+    
+    result = []
+    for c in comps:
+        upcoming_count = UnifiedMatch.query.filter(
+            UnifiedMatch.competition_id == c.id,
+            UnifiedMatch.status == "PRE_MATCH"
+        ).count()
+        result.append({
+            "id": c.id,
+            "name": c.name,
+            "short_name": c.short_name,
+            "sport_id": c.sport_id,
+            "sport_name": c.sport.name if c.sport else None,
+            "country_id": c.country_id,
+            "country_name": c.country.name if c.country else None,
+            "gender": c.gender.value if c.gender else None,
+            "tier": c.tier,
+            "is_active": c.is_active,
+            "upcoming_matches": upcoming_count,
+            "betradar_id": c.betradar_id,
+        })
+    return {"ok": True, "competitions": result, "total": len(result), "ts": _now()}
+
+
+@bp_monitor.route("/competition/<int:comp_id>")
+def competition_detail(comp_id: int):
+    """Detailed view of a competition: matches (upcoming), bookmaker mappings."""
+    comp = Competition.query.get_or_404(comp_id)
+    
+    # Upcoming matches (next 7 days)
+    upcoming = UnifiedMatch.query.filter(
+        UnifiedMatch.competition_id == comp_id,
+        UnifiedMatch.status.in_(["PRE_MATCH", "LIVE"]),
+        UnifiedMatch.start_time >= datetime.now(timezone.utc)
+    ).order_by(UnifiedMatch.start_time).limit(50).all()
+    
+    matches = []
+    for m in upcoming:
+        matches.append({
+            "id": m.id,
+            "parent_match_id": m.parent_match_id,
+            "home_team": m.home_team_name,
+            "away_team": m.away_team_name,
+            "start_time": m.start_time.isoformat() if m.start_time else None,
+            "status": m.status.value if m.status else None,
+            "home_team_id": m.home_team_id,
+            "away_team_id": m.away_team_id,
+            "has_arb": bool(m.arbitrage_opps.filter_by(status="OPEN").first()),
+            "has_ev": bool(m.ev_opps.filter_by(status="OPEN").first()),
+        })
+    
+    # Bookmaker competition name mappings
+    mappings = BookmakerCompetitionName.query.filter_by(competition_id=comp_id).all()
+    bookmaker_names = [{
+        "bookmaker_key": bm.bookmaker_key,
+        "bookmaker_competition_name": bm.bookmaker_competition_name,
+        "created_at": bm.created_at.isoformat() if bm.created_at else None,
+    } for bm in mappings]
+    
+    return {
+        "ok": True,
+        "competition": {
+            "id": comp.id,
+            "name": comp.name,
+            "short_name": comp.short_name,
+            "sport_id": comp.sport_id,
+            "sport_name": comp.sport.name if comp.sport else None,
+            "country_id": comp.country_id,
+            "country_name": comp.country.name if comp.country else None,
+            "gender": comp.gender.value if comp.gender else None,
+            "tier": comp.tier,
+            "logo_url": comp.logo_url,
+            "is_active": comp.is_active,
+            "betradar_id": comp.betradar_id,
+            "sp_league_id": comp.sp_league_id,
+            "created_at": comp.created_at.isoformat() if comp.created_at else None,
+            "updated_at": comp.updated_at.isoformat() if comp.updated_at else None,
+        },
+        "bookmaker_names": bookmaker_names,
+        "upcoming_matches": matches,
+        "match_count": len(matches),
+        "ts": _now(),
+    }
+
+
+@bp_monitor.route("/team/<int:team_id>")
+def team_detail(team_id: int):
+    """Detailed view of a team: upcoming matches, bookmaker team names."""
+    team = Team.query.get_or_404(team_id)
+    
+    # Upcoming matches (home or away)
+    upcoming = UnifiedMatch.query.filter(
+        (UnifiedMatch.home_team_id == team_id) | (UnifiedMatch.away_team_id == team_id),
+        UnifiedMatch.status.in_(["PRE_MATCH", "LIVE"]),
+        UnifiedMatch.start_time >= datetime.now(timezone.utc)
+    ).order_by(UnifiedMatch.start_time).limit(30).all()
+    
+    matches = []
+    for m in upcoming:
+        matches.append({
+            "id": m.id,
+            "parent_match_id": m.parent_match_id,
+            "home_team": m.home_team_name,
+            "away_team": m.away_team_name,
+            "role": "home" if m.home_team_id == team_id else "away",
+            "start_time": m.start_time.isoformat() if m.start_time else None,
+            "status": m.status.value if m.status else None,
+            "competition_name": m.competition_name,
+        })
+    
+    # Bookmaker team name mappings
+    mappings = BookmakerTeamName.query.filter_by(team_id=team_id).all()
+    bookmaker_names = [{
+        "bookmaker_key": bm.bookmaker_key,
+        "bookmaker_team_name": bm.bookmaker_team_name,
+        "created_at": bm.created_at.isoformat() if bm.created_at else None,
+    } for bm in mappings]
+    
+    return {
+        "ok": True,
+        "team": {
+            "id": team.id,
+            "name": team.name,
+            "short_name": team.short_name,
+            "slug": team.slug,
+            "sport_id": team.sport_id,
+            "sport_name": team.sport.name if team.sport else None,
+            "country_id": team.country_id,
+            "country_name": team.country.name if team.country else None,
+            "gender": team.gender.value if team.gender else None,
+            "logo_url": team.logo_url,
+            "venue_name": team.venue_name,
+            "founded": team.founded,
+            "is_active": team.is_active,
+            "betradar_id": team.betradar_id,
+            "created_at": team.created_at.isoformat() if team.created_at else None,
+        },
+        "bookmaker_names": bookmaker_names,
+        "upcoming_matches": matches,
+        "match_count": len(matches),
+        "ts": _now(),
+    }
+
+
+@bp_monitor.route("/country/<int:country_id>")
+def country_detail(country_id: int):
+    """Detailed view of a country: competitions, teams, bookmaker country names."""
+    country = Country.query.get_or_404(country_id)
+    
+    # Competitions in this country
+    competitions = Competition.query.filter_by(country_id=country_id).limit(50).all()
+    comp_list = [{
+        "id": c.id,
+        "name": c.name,
+        "sport_name": c.sport.name if c.sport else None,
+        "upcoming_matches": UnifiedMatch.query.filter_by(competition_id=c.id, status="PRE_MATCH").count(),
+    } for c in competitions]
+    
+    # Teams in this country (limit 100)
+    teams = Team.query.filter_by(country_id=country_id).limit(100).all()
+    team_list = [{
+        "id": t.id,
+        "name": t.name,
+        "sport_name": t.sport.name if t.sport else None,
+    } for t in teams]
+    
+    # Bookmaker country name mappings
+    mappings = BookmakerCountryName.query.filter_by(country_id=country_id).all()
+    bookmaker_names = [{
+        "bookmaker_key": bm.bookmaker_key,
+        "bookmaker_country_name": bm.bookmaker_country_name,
+        "created_at": bm.created_at.isoformat() if bm.created_at else None,
+    } for bm in mappings]
+    
+    return {
+        "ok": True,
+        "country": {
+            "id": country.id,
+            "name": country.name,
+            "iso_code": country.iso_code,
+            "iso_code2": country.iso_code2,
+            "flag_url": country.flag_url,
+            "betradar_id": country.betradar_id,
+            "created_at": country.created_at.isoformat() if country.created_at else None,
+        },
+        "bookmaker_names": bookmaker_names,
+        "competitions": comp_list,
+        "teams": team_list,
+        "competition_count": len(comp_list),
+        "team_count": len(team_list),
+        "ts": _now(),
+    }
+
+
+@bp_monitor.route("/structure")
+def structure_dashboard():
+    """HTML dashboard for exploring competitions, teams, countries and their bookmaker mappings."""
+    html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Odds Kenya - Data Structure Explorer</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{background:#0a0f1a;color:#e2e8f0;font-family:system-ui,'Segoe UI',sans-serif;font-size:14px;padding:20px;}
+        .container{max-width:1400px;margin:0 auto;}
+        h1{color:#06b6d4;margin-bottom:10px;font-size:24px;}
+        .sub{color:#64748b;margin-bottom:30px;border-bottom:1px solid #1e293b;padding-bottom:10px;}
+        .grid{display:grid;grid-template-columns:280px 1fr;gap:20px;}
+        .sidebar{background:#0f172a;border-radius:12px;border:1px solid #1e293b;padding:15px;height:fit-content;}
+        .sidebar h3{font-size:14px;margin-bottom:12px;color:#94a3b8;}
+        .filter-group{margin-bottom:15px;}
+        label{font-size:12px;color:#64748b;display:block;margin-bottom:4px;}
+        select, input{width:100%;padding:8px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:6px;font-size:13px;}
+        button{background:#0f172a;border:1px solid #334155;color:#94a3b8;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;}
+        button:hover{background:#1e293b;color:#fff;}
+        .content{background:#0f172a;border-radius:12px;border:1px solid #1e293b;padding:20px;min-height:500px;}
+        .comp-list{display:flex;flex-direction:column;gap:8px;}
+        .comp-item{background:#1e293b;border-radius:8px;padding:12px;cursor:pointer;transition:all 0.2s;}
+        .comp-item:hover{background:#334155;transform:translateX(4px);}
+        .comp-name{font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;}
+        .comp-meta{font-size:12px;color:#94a3b8;display:flex;gap:12px;}
+        .badge{background:#0f172a;padding:2px 8px;border-radius:20px;font-size:11px;color:#06b6d4;}
+        .detail-card{background:#1e293b;border-radius:12px;padding:20px;margin-top:20px;}
+        .detail-card h2{font-size:18px;margin-bottom:15px;color:#38bdf8;}
+        .info-row{display:flex;margin-bottom:8px;font-size:13px;}
+        .info-label{width:140px;color:#94a3b8;}
+        .info-value{flex:1;color:#e2e8f0;}
+        .table-wrap{overflow-x:auto;margin-top:15px;}
+        table{width:100%;border-collapse:collapse;font-size:13px;}
+        th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #334155;}
+        th{color:#94a3b8;font-weight:500;}
+        .bk-mapping{margin-top:20px;}
+        .bk-mapping h3{font-size:14px;color:#facc15;margin-bottom:8px;}
+        .match-row{background:#0f172a;margin-bottom:6px;border-radius:6px;padding:8px 12px;font-size:12px;}
+        .status{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;}
+        .status.pre{background:#22c55e;}
+        .status.live{background:#f97316;animation:pulse 1s infinite;}
+        @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
+        .loading{text-align:center;padding:40px;color:#64748b;}
+        .error{color:#ef4444;padding:20px;text-align:center;}
+        .back{background:#1e293b;border:none;margin-bottom:15px;}
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🏛️ Data Structure Explorer</h1>
+    <div class="sub">Competitions · Teams · Countries · Bookmaker Name Mappings</div>
+
+    <div class="grid">
+        <div class="sidebar">
+            <h3>🔍 Filters</h3>
+            <div class="filter-group">
+                <label>Sport</label>
+                <select id="sport-select">
+                    <option value="">All Sports</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Country</label>
+                <select id="country-select">
+                    <option value="">All Countries</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Has upcoming matches</label>
+                <input type="checkbox" id="has-matches-checkbox">
+            </div>
+            <button id="refresh-btn" style="width:100%;margin-top:10px;">⟳ Refresh</button>
+            <hr style="margin:15px 0;border-color:#1e293b;">
+            <h3>📊 Quick Links</h3>
+            <button id="link-competitions" style="width:100%;margin-bottom:6px;">🏆 Competitions</button>
+            <button id="link-teams" style="width:100%;margin-bottom:6px;">⚽ Teams (top 100)</button>
+            <button id="link-countries" style="width:100%;">🌍 Countries</button>
+        </div>
+
+        <div class="content" id="content-area">
+            <div class="loading">Select a competition from the list or use filters →</div>
+        </div>
+    </div>
+</div>
+
+<script>
+let allCompetitions = [];
+let currentDetail = null;
+
+async function loadSports() {
+    try {
+        const res = await fetch('/api/monitor/sports');
+        const data = await res.json();
+        if (data.ok) {
+            const select = document.getElementById('sport-select');
+            data.sports.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.sport;
+                opt.textContent = s.sport.toUpperCase();
+                select.appendChild(opt);
+            });
+        }
+    } catch(e) { console.error(e); }
+}
+
+async function loadCompetitions() {
+    const sport = document.getElementById('sport-select').value;
+    const country = document.getElementById('country-select').value;
+    const hasMatches = document.getElementById('has-matches-checkbox').checked;
+    let url = '/api/monitor/competitions?limit=200';
+    if (sport) url += `&sport_name=${encodeURIComponent(sport)}`;
+    if (country) url += `&country_name=${encodeURIComponent(country)}`;
+    if (hasMatches) url += `&has_matches=true`;
+    
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.ok) {
+            allCompetitions = data.competitions;
+            renderCompetitionList(allCompetitions);
+        } else {
+            renderError('Failed to load competitions');
+        }
+    } catch(e) {
+        renderError(e.message);
+    }
+}
+
+function renderCompetitionList(comps) {
+    const area = document.getElementById('content-area');
+    if (!comps.length) {
+        area.innerHTML = '<div class="loading">No competitions found</div>';
+        return;
+    }
+    let html = '<div class="comp-list">';
+    comps.forEach(c => {
+        html += `
+            <div class="comp-item" onclick="loadCompetitionDetail(${c.id})">
+                <div class="comp-name">
+                    <span>${escapeHtml(c.name)}</span>
+                    <span class="badge">${c.upcoming_matches || 0} upcoming</span>
+                </div>
+                <div class="comp-meta">
+                    <span>${c.sport_name || '?'}</span>
+                    <span>${c.country_name || 'International'}</span>
+                    <span>${c.gender || 'MIX'}</span>
+                </div>
+            </div>
+        `;
+    });
+    html += '</div>';
+    area.innerHTML = html;
+}
+
+async function loadCompetitionDetail(compId) {
+    const area = document.getElementById('content-area');
+    area.innerHTML = '<div class="loading">Loading competition details...</div>';
+    try {
+        const res = await fetch(`/api/monitor/competition/${compId}`);
+        const data = await res.json();
+        if (data.ok) {
+            currentDetail = data;
+            renderCompetitionDetail(data);
+        } else {
+            renderError('Competition not found');
+        }
+    } catch(e) {
+        renderError(e.message);
+    }
+}
+
+function renderCompetitionDetail(data) {
+    const c = data.competition;
+    const html = `
+        <button class="back" onclick="loadCompetitions()">← Back to competitions list</button>
+        <div class="detail-card">
+            <h2>🏆 ${escapeHtml(c.name)}</h2>
+            <div class="info-row"><div class="info-label">Sport:</div><div class="info-value">${c.sport_name || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Country:</div><div class="info-value">${c.country_name || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Gender:</div><div class="info-value">${c.gender || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Tier:</div><div class="info-value">${c.tier || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Betradar ID:</div><div class="info-value">${c.betradar_id || '-'}</div></div>
+            <div class="info-row"><div class="info-label">SP League ID:</div><div class="info-value">${c.sp_league_id || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Created:</div><div class="info-value">${c.created_at || '-'}</div></div>
+        </div>
+        ${renderBookmakerMappings(data.bookmaker_names, 'Competition Names')}
+        ${renderMatches(data.upcoming_matches)}
+    `;
+    document.getElementById('content-area').innerHTML = html;
+}
+
+function renderBookmakerMappings(mappings, title) {
+    if (!mappings || mappings.length === 0) return '';
+    let rows = '';
+    mappings.forEach(m => {
+        rows += `<tr><td>${escapeHtml(m.bookmaker_key)}</td><td>${escapeHtml(m.bookmaker_competition_name || m.bookmaker_team_name || m.bookmaker_country_name)}</td><td>${m.created_at || '-'}</td></tr>`;
+    });
+    return `
+        <div class="bk-mapping">
+            <h3>📖 ${title} (Bookmaker Mappings)</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Bookmaker</th><th>External Name</th><th>Created</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+function renderMatches(matches) {
+    if (!matches || matches.length === 0) return '<div class="bk-mapping"><h3>📅 Upcoming Matches</h3><div>No upcoming matches.</div></div>';
+    let rows = '';
+    matches.forEach(m => {
+        const statusClass = m.status === 'PRE_MATCH' ? 'pre' : (m.status === 'LIVE' ? 'live' : '');
+        rows += `
+            <div class="match-row">
+                <span class="status ${statusClass}"></span>
+                <strong>${escapeHtml(m.home_team)}</strong> vs <strong>${escapeHtml(m.away_team)}</strong>
+                <span style="color:#94a3b8;margin-left:12px;">${m.start_time || 'TBD'}</span>
+                ${m.has_arb ? '<span style="color:#facc15;margin-left:8px;">⚡ ARB</span>' : ''}
+                ${m.has_ev ? '<span style="color:#a855f7;margin-left:8px;">📈 EV</span>' : ''}
+            </div>
+        `;
+    });
+    return `
+        <div class="bk-mapping">
+            <h3>📅 Upcoming Matches (${matches.length})</h3>
+            ${rows}
+        </div>
+    `;
+}
+
+async function loadTeamDetail(teamId) {
+    const area = document.getElementById('content-area');
+    area.innerHTML = '<div class="loading">Loading team details...</div>';
+    try {
+        const res = await fetch(`/api/monitor/team/${teamId}`);
+        const data = await res.json();
+        if (data.ok) {
+            renderTeamDetail(data);
+        } else {
+            renderError('Team not found');
+        }
+    } catch(e) {
+        renderError(e.message);
+    }
+}
+
+function renderTeamDetail(data) {
+    const t = data.team;
+    const html = `
+        <button class="back" onclick="loadCompetitions()">← Back to competitions</button>
+        <div class="detail-card">
+            <h2>⚽ ${escapeHtml(t.name)}</h2>
+            <div class="info-row"><div class="info-label">Sport:</div><div class="info-value">${t.sport_name || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Country:</div><div class="info-value">${t.country_name || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Venue:</div><div class="info-value">${t.venue_name || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Founded:</div><div class="info-value">${t.founded || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Betradar ID:</div><div class="info-value">${t.betradar_id || '-'}</div></div>
+        </div>
+        ${renderBookmakerMappings(data.bookmaker_names, 'Team Names')}
+        ${renderMatches(data.upcoming_matches)}
+    `;
+    document.getElementById('content-area').innerHTML = html;
+}
+
+async function loadCountryDetail(countryId) {
+    const area = document.getElementById('content-area');
+    area.innerHTML = '<div class="loading">Loading country details...</div>';
+    try {
+        const res = await fetch(`/api/monitor/country/${countryId}`);
+        const data = await res.json();
+        if (data.ok) {
+            renderCountryDetail(data);
+        } else {
+            renderError('Country not found');
+        }
+    } catch(e) {
+        renderError(e.message);
+    }
+}
+
+function renderCountryDetail(data) {
+    const c = data.country;
+    let compsHtml = '';
+    data.competitions.forEach(comp => {
+        compsHtml += `<div class="match-row" onclick="loadCompetitionDetail(${comp.id})" style="cursor:pointer;">🏆 ${escapeHtml(comp.name)} (${comp.sport_name}) — ${comp.upcoming_matches} upcoming</div>`;
+    });
+    let teamsHtml = '';
+    data.teams.forEach(team => {
+        teamsHtml += `<div class="match-row" onclick="loadTeamDetail(${team.id})" style="cursor:pointer;">⚽ ${escapeHtml(team.name)} (${team.sport_name})</div>`;
+    });
+    const html = `
+        <button class="back" onclick="loadCompetitions()">← Back to competitions</button>
+        <div class="detail-card">
+            <h2>🌍 ${escapeHtml(c.name)}</h2>
+            <div class="info-row"><div class="info-label">ISO Code:</div><div class="info-value">${c.iso_code || '-'} / ${c.iso_code2 || '-'}</div></div>
+            <div class="info-row"><div class="info-label">Betradar ID:</div><div class="info-value">${c.betradar_id || '-'}</div></div>
+        </div>
+        ${renderBookmakerMappings(data.bookmaker_names, 'Country Names')}
+        <div class="bk-mapping"><h3>🏆 Competitions in this country</h3>${compsHtml || '<div>None</div>'}</div>
+        <div class="bk-mapping"><h3>⚽ Teams in this country</h3>${teamsHtml || '<div>None</div>'}</div>
+    `;
+    document.getElementById('content-area').innerHTML = html;
+}
+
+async function loadTeamsList() {
+    const area = document.getElementById('content-area');
+    area.innerHTML = '<div class="loading">Loading top 100 teams...</div>';
+    try {
+        const res = await fetch('/api/monitor/competitions?limit=1'); // fake to get sport filter
+        // Actually we need a teams endpoint – use country filter? For simplicity, we'll load by sport from competition list
+        // Better: load all competitions then extract unique teams? Not efficient.
+        // We'll just redirect to a fallback: show note.
+        area.innerHTML = `
+            <div class="detail-card">
+                <h2>Teams Explorer</h2>
+                <p>Click on a country or competition to see its teams, or use the team detail link from match rows.</p>
+                <button onclick="loadCompetitions()">← Back to competitions</button>
+            </div>
+        `;
+    } catch(e) {
+        renderError(e.message);
+    }
+}
+
+async function loadCountriesList() {
+    const area = document.getElementById('content-area');
+    area.innerHTML = '<div class="loading">Loading countries...</div>';
+    try {
+        const res = await fetch('/api/monitor/competitions?limit=200');
+        const data = await res.json();
+        if (data.ok) {
+            const countries = {};
+            data.competitions.forEach(c => {
+                if (c.country_id && c.country_name) {
+                    if (!countries[c.country_id]) {
+                        countries[c.country_id] = { id: c.country_id, name: c.country_name, count: 0 };
+                    }
+                    countries[c.country_id].count++;
+                }
+            });
+            let html = '<button class="back" onclick="loadCompetitions()">← Back to competitions</button><div class="comp-list">';
+            for (const id in countries) {
+                const cnt = countries[id];
+                html += `<div class="comp-item" onclick="loadCountryDetail(${cnt.id})">
+                            <div class="comp-name">🌍 ${escapeHtml(cnt.name)}</div>
+                            <div class="comp-meta">${cnt.count} competitions</div>
+                         </div>`;
+            }
+            html += '</div>';
+            area.innerHTML = html;
+        } else {
+            renderError('Failed to load countries');
+        }
+    } catch(e) {
+        renderError(e.message);
+    }
+}
+
+function renderError(msg) {
+    document.getElementById('content-area').innerHTML = `<div class="error">❌ ${escapeHtml(msg)}</div>`;
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>]/g, function(m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        return m;
+    });
+}
+
+// Event handlers
+document.getElementById('refresh-btn').addEventListener('click', loadCompetitions);
+document.getElementById('link-competitions').addEventListener('click', loadCompetitions);
+document.getElementById('link-teams').addEventListener('click', loadTeamsList);
+document.getElementById('link-countries').addEventListener('click', loadCountriesList);
+
+// Initial load
+loadSports();
+loadCompetitions();
+</script>
+</body>
+</html>
+    """
+    return Response(html, content_type="text/html; charset=utf-8")

@@ -60,6 +60,18 @@ def _get_redis(timeout: int = 2):
         print(f"[redis] unavailable ({e.__class__.__name__}: {e})")
         return None
 
+def _get_redis():
+    import redis
+    full = os.getenv("REDIS_URL", "").strip()
+    if full: return redis.from_url(full, decode_responses=True, socket_timeout=3)
+    
+    host = os.getenv("REDIS_HOST", "localhost")
+    port = os.getenv("REDIS_PORT", "6379")
+    auth = os.getenv("REDIS_AUTH", os.getenv("REDIS_PASSWORD", ""))
+    db   = os.getenv("REDIS_DB", "0")
+    if auth: return redis.from_url(f"redis://:{quote(auth, safe='')}@{host}:{port}/{db}", decode_responses=True)
+    return redis.from_url(f"redis://{host}:{port}/{db}", decode_responses=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPILED PATTERNS
@@ -283,8 +295,8 @@ def _norm_team_key(h: str, a: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # STREAMING ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
-@bp_odds_customer.route("/odds/debug/unified/stream/<mode>/<sport_slug>")
-def debug_stream_unified(mode: str, sport_slug: str):
+@bp_odds_customer.route("/odds/old/debug/unified/stream/<mode>/<sport_slug>")
+def debug_stream_unified_(mode: str, sport_slug: str):
     fetch_full = str(request.args.get("full") or "true").lower() in ("1","true","yes")
     max_m      = int(request.args.get("max", 50))
     log_event("debug_unified_stream", {"sport":sport_slug,"mode":mode})
@@ -891,6 +903,374 @@ def debug_stream_unified(mode: str, sport_slug: str):
     return Response(stream_with_context(_gen()), headers=config._SSE_HEADERS)
 
 
+@bp_odds_customer.route("/odds/debug/unified/stream/<mode>/<sport_slug>")
+def debug_stream_unified(mode: str, sport_slug: str):
+    r = _get_redis()
+
+    def _event_stream():
+        yield _sse("meta", {"source": "redis_event_bus", "sport": sport_slug, "mode": mode})
+
+        try:   
+        # ══════════════════════════════════════════════════════════════════════
+        # PHASE 1: INSTANT SNAPSHOT LOAD
+        # ══════════════════════════════════════════════════════════════════════
+            if mode == "live":
+                # Get all active Betradar IDs for this sport
+                active_ids = r.smembers(f"live:active_matches:{sport_slug}")
+                initial_matches = []
+                
+                for br_id in active_ids:
+                    match_data = r.hgetall(f"live:match:{br_id}")
+                    if not match_data:
+                        continue
+                    
+                    # Build the unified shell the UI expects
+                    unified_shell = {
+                        "parent_match_id": br_id,
+                        "sport": sport_slug,
+                        "is_live": True,
+                        "bookmakers": {},
+                        "markets_by_bk": {},
+                        "best": {}
+                    }
+                    
+                    # Inject Match State (Score, Time, Phase)
+                    state_raw = match_data.get("state", "{}")
+                    state = json.loads(state_raw)
+                    unified_shell.update(state)
+                    
+                    # Inject Bookmaker Markets
+                    for bk_slug, bk_name in [("sp", "SPORTPESA"), ("bt", "BETIKA"), ("od", "ODIBETS")]:
+                        raw_bk = match_data.get(f"{bk_slug}_raw")
+                        if raw_bk:
+                            mkts = json.loads(raw_bk)
+                            unified_shell["bookmakers"][bk_slug] = {
+                                "slug": bk_slug, 
+                                "bookmaker": bk_name, 
+                                "markets": mkts, 
+                                "market_count": len(mkts)
+                            }
+                            unified_shell["markets_by_bk"][bk_slug] = mkts
+
+                    initial_matches.append(unified_shell)
+
+                # Stream snapshot in chunks
+                for i in range(0, len(initial_matches), 15):
+                    chunk = initial_matches[i:i+15]
+                    yield _sse("batch", {
+                        "matches": chunk, 
+                        "batch": min(i+15, len(initial_matches)), 
+                        "of": len(initial_matches)
+                    })
+                    yield _keepalive()
+                    
+                yield _sse("list_done", {"total_sent": len(initial_matches)})
+
+                # ══════════════════════════════════════════════════════════════════════
+                # PHASE 2: SUBSCRIBE TO DELTAS
+                # ══════════════════════════════════════════════════════════════════════
+                pubsub = r.pubsub(ignore_subscribe_messages=True)
+                pubsub.subscribe(f"bus:live_updates:{sport_slug}")
+                
+                last_keepalive = time.time()
+                while True:
+                    msg = pubsub.get_message(timeout=1.0)
+                    if msg and msg["type"] == "message":
+                        try:
+                            payload = json.loads(msg["data"])
+                            yield _sse("live_update", payload)
+                        except Exception:
+                            pass
+                    
+                    if time.time() - last_keepalive > 10.0:
+                        yield _keepalive()
+                        last_keepalive = time.time()
+            else:
+                    cache_key = f"unified:upcoming:{sport_slug}:{max_m}:{fetch_full}"
+                    _redis = _get_redis()
+                    if _redis is None:
+                        print("[unified] Redis unavailable — fetching fresh data")
+
+                    # ── Cache hit ─────────────────────────────────────────────────
+                    if _redis:
+                        try:
+                            cached_data = _redis.get(cache_key)
+                            if cached_data:
+                                matches = json.loads(cached_data)
+                                for i in range(0, len(matches), 15):
+                                    chunk = matches[i:i+15]
+                                    yield _sse("batch", {"matches": chunk, "batch": min(i+15, len(matches)),
+                                                        "of": len(matches), "offset": i})
+                                    yield _keepalive()
+                                yield _sse("list_done", {"total_sent": len(matches)})
+                                yield _sse("done", {"status": "finished", "total_sent": len(matches), "cached": True})
+                                return
+                        except Exception as _ce:
+                            print(f"[unified] Redis cache read failed: {_ce} — fetching fresh")
+
+                    from app.workers.sp_harvester  import fetch_upcoming_stream
+                    from app.workers.bt_harvester  import (
+                        fetch_upcoming_matches as bt_fetch_upcoming,
+                        get_full_markets as bt_get_full_markets,
+                    )
+                    from app.workers.od_harvester  import (
+                        fetch_upcoming_matches as od_fetch_upcoming,
+                        fetch_event_detail,
+                        slug_to_od_sport_id,
+                    )
+
+                    od_sport_id = slug_to_od_sport_id(sport_slug)
+
+                    # ── CRITICAL: fire BT + OD bulk fetches IMMEDIATELY ───────────
+                    # These run concurrently while SP streams its first matches.
+                    # BT fetch_upcoming_matches with fetch_full=True returns all
+                    # matches with full markets in ~2-4 API calls.
+                    # OD fetch_upcoming_matches returns all matches with markets.
+                    # Result: 2 bulk calls instead of N×2 per-event calls.
+                    _bulk_pool = ThreadPoolExecutor(max_workers=2)
+
+                    def _bt_bulk():
+                        try:
+                            return bt_fetch_upcoming(sport_slug, max_pages=5, fetch_full=True) or []
+                        except Exception as e:
+                            print(f"[upcoming] BT bulk error: {e}")
+                            return []
+
+                    def _od_bulk():
+                        try:
+                            return od_fetch_upcoming(sport_slug) or []
+                        except Exception as e:
+                            print(f"[upcoming] OD bulk error: {e}")
+                            return []
+
+                    _f_bt_bulk = _bulk_pool.submit(_bt_bulk)
+                    _f_od_bulk = _bulk_pool.submit(_od_bulk)
+
+                    # Lazy bulk maps — populated as futures resolve
+                    bt_bulk_map: dict = {}
+                    od_bulk_map: dict = {}
+                    bt_bulk_done = False
+                    od_bulk_done = False
+
+                    def _refresh_bulk_maps():
+                        nonlocal bt_bulk_map, od_bulk_map, bt_bulk_done, od_bulk_done
+                        if not bt_bulk_done and _f_bt_bulk.done():
+                            try:
+                                matches_list = _f_bt_bulk.result() or []
+                                bt_bulk_map = _build_bk_map(
+                                    matches_list, "betradar_id", "bt_parent_id"
+                                )
+                                print(f"[upcoming] BT bulk ready: {len(bt_bulk_map)} events")
+                            except Exception as e:
+                                print(f"[upcoming] BT bulk result error: {e}")
+                            bt_bulk_done = True
+                        if not od_bulk_done and _f_od_bulk.done():
+                            try:
+                                matches_list = _f_od_bulk.result() or []
+                                od_bulk_map = _build_bk_map(
+                                    matches_list, "betradar_id", "od_parent_id", "od_match_id"
+                                )
+                                print(f"[upcoming] OD bulk ready: {len(od_bulk_map)} events")
+                            except Exception as e:
+                                print(f"[upcoming] OD bulk result error: {e}")
+                            od_bulk_done = True
+
+                    all_sp_matches: dict = {}  # betradar_id → unified dict
+
+                    # ── Phase 1: Stream every SP match immediately ────────────────
+                    for sp_match in fetch_upcoming_stream(sport_slug, max_matches=max_m,
+                                                        fetch_full_markets=fetch_full):
+                        if not isinstance(sp_match, dict): continue
+                        count += 1
+
+                        # Check if bulk maps have resolved while we were streaming
+                        _refresh_bulk_maps()
+
+                        sp_clean = _unify_match_payload(sp_match, count, mode, "sp", "SPORTPESA")
+                        sp_clean["market_slugs"] = list(sp_clean["best"].keys())
+                        sp_clean["market_count"] = len(sp_clean["best"])
+
+                        brid = str(sp_clean.get("parent_match_id") or sp_clean.get("match_id") or "")
+                        if brid:
+                            all_sp_matches[brid] = sp_clean
+
+                        # ── Instant enrichment from bulk maps (O(1) lookup) ───────
+                        enriched = False
+                        if brid:
+                            bt_match = bt_bulk_map.get(brid)
+                            if bt_match and bt_match.get("markets"):
+                                b_c = _unify_match_payload(bt_match, count, mode, "bt", "BETIKA")
+                                sp_clean["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                                sp_clean["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                                if brid in all_sp_matches:
+                                    all_sp_matches[brid]["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                                    all_sp_matches[brid]["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                                enriched = True
+
+                            od_match = od_bulk_map.get(brid)
+                            if od_match and od_match.get("markets"):
+                                o_c = _unify_match_payload(od_match, count, mode, "od", "ODIBETS")
+                                sp_clean["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                                sp_clean["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                                if brid in all_sp_matches:
+                                    all_sp_matches[brid]["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                                    all_sp_matches[brid]["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                                enriched = True
+
+                        if enriched:
+                            _merge_best(sp_clean["best"], sp_clean.get("markets_by_bk", {}))
+                            sp_clean["market_slugs"] = list(sp_clean["best"].keys())
+                            sp_clean["market_count"] = len(sp_clean["best"])
+                            sp_clean["bk_count"]     = len(sp_clean["bookmakers"])
+
+                        yield _sse("batch", {"matches": [sp_clean], "batch": count,
+                                            "of": "unknown", "offset": count - 1})
+                        yield _keepalive()
+
+                    yield _sse("list_done", {"total_sent": count})
+
+                    # ── Phase 2: Wait for bulk maps if not ready yet ──────────────
+                    # Then enrich all remaining unmatched events.
+                    if not bt_bulk_done or not od_bulk_done:
+                        try:
+                            _f_bt_bulk.result(timeout=15)
+                            _f_od_bulk.result(timeout=15)
+                        except Exception:
+                            pass
+                        _refresh_bulk_maps()
+
+                    # ── Phase 3: send live_updates for events not yet enriched ────
+                    # Also kick off per-event fallback for betradar_ids missing from bulk.
+                    missing_brids: list = []
+
+                    for brid, sp_match_data in all_sp_matches.items():
+                        if brid and brid != "None":
+                            has_bt = "bt" in sp_match_data.get("bookmakers", {})
+                            has_od = "od" in sp_match_data.get("bookmakers", {})
+
+                            # Send enrichment for matches now in bulk maps
+                            update: dict = {"parent_match_id": brid, "home_team": "dummy",
+                                            "bookmakers": {}, "markets_by_bk": {}}
+                            changed = False
+
+                            if not has_bt:
+                                bt_match = bt_bulk_map.get(brid)
+                                if bt_match and bt_match.get("markets"):
+                                    b_c = _unify_match_payload(bt_match, 0, mode, "bt", "BETIKA")
+                                    update["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                                    update["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                                    sp_match_data["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                                    sp_match_data["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                                    changed = True
+
+                            if not has_od:
+                                od_match = od_bulk_map.get(brid)
+                                if od_match and od_match.get("markets"):
+                                    o_c = _unify_match_payload(od_match, 0, mode, "od", "ODIBETS")
+                                    update["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                                    update["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                                    sp_match_data["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                                    sp_match_data["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                                    changed = True
+
+                            if changed:
+                                _merge_best(sp_match_data["best"], sp_match_data["markets_by_bk"])
+                                sp_match_data["market_slugs"] = list(sp_match_data["best"].keys())
+                                sp_match_data["market_count"] = len(sp_match_data["best"])
+                                sp_match_data["bk_count"]     = len(sp_match_data["bookmakers"])
+                                yield _sse("live_update", update)
+                                yield _keepalive()
+
+                            # Queue for per-event fallback if still missing
+                            still_no_bt = "bt" not in sp_match_data.get("bookmakers", {})
+                            still_no_od = "od" not in sp_match_data.get("bookmakers", {})
+                            if still_no_bt or still_no_od:
+                                missing_brids.append(brid)
+
+                    # ── Phase 4: per-event fallback for cache misses ──────────────
+                    # Only fire for events genuinely absent from bulk responses.
+                    # In practice this should be a small minority (<10%).
+                    if missing_brids:
+                        print(f"[upcoming] per-event fallback for {len(missing_brids)} events")
+
+                        def _get_deep_fallback(brid):
+                            bt_mkts, od_mkts = {}, {}
+                            sp_data = all_sp_matches.get(brid, {})
+                            has_bt = "bt" in sp_data.get("bookmakers", {})
+                            has_od = "od" in sp_data.get("bookmakers", {})
+                            if not has_bt:
+                                try: bt_mkts = bt_get_full_markets(brid, sport_slug)
+                                except: pass
+                            if not has_od:
+                                try: od_mkts, _ = fetch_event_detail(brid, od_sport_id)
+                                except: pass
+                            return brid, bt_mkts, od_mkts
+
+                        n_workers = min(len(missing_brids) * 2, 20)
+                        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                            futs = [pool.submit(_get_deep_fallback, brid) for brid in missing_brids]
+                            for fut in as_completed(futs):
+                                try:
+                                    brid, bt_markets, od_markets = fut.result()
+                                except Exception:
+                                    continue
+                                if not bt_markets and not od_markets:
+                                    continue
+
+                                update = {"parent_match_id": brid, "home_team": "dummy",
+                                        "bookmakers": {}, "markets_by_bk": {}}
+
+                                if bt_markets:
+                                    b_c = _unify_match_payload(
+                                        {"markets": bt_markets, "betradar_id": brid,
+                                        "home_team": "", "away_team": "", "sport": sport_slug},
+                                        0, mode, "bt", "BETIKA")
+                                    update["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                                    update["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+                                    if brid in all_sp_matches:
+                                        all_sp_matches[brid]["bookmakers"]["bt"]    = b_c["bookmakers"]["bt"]
+                                        all_sp_matches[brid]["markets_by_bk"]["bt"] = b_c["markets_by_bk"]["bt"]
+
+                                if od_markets:
+                                    o_c = _unify_match_payload(
+                                        {"markets": od_markets, "betradar_id": brid,
+                                        "home_team": "", "away_team": "", "sport": sport_slug},
+                                        0, mode, "od", "ODIBETS")
+                                    update["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                                    update["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+                                    if brid in all_sp_matches:
+                                        all_sp_matches[brid]["bookmakers"]["od"]    = o_c["bookmakers"]["od"]
+                                        all_sp_matches[brid]["markets_by_bk"]["od"] = o_c["markets_by_bk"]["od"]
+
+                                if brid in all_sp_matches:
+                                    _merge_best(all_sp_matches[brid]["best"],
+                                                all_sp_matches[brid]["markets_by_bk"])
+                                    all_sp_matches[brid]["market_slugs"] = list(all_sp_matches[brid]["best"].keys())
+                                    all_sp_matches[brid]["market_count"] = len(all_sp_matches[brid]["best"])
+                                    all_sp_matches[brid]["bk_count"]     = len(all_sp_matches[brid]["bookmakers"])
+
+                                yield _sse("live_update", update)
+                                yield _keepalive()
+
+                    _bulk_pool.shutdown(wait=False)
+
+                    # ── Cache final result ────────────────────────────────────────
+                    if _redis and all_sp_matches:
+                        try:
+                            _redis.setex(cache_key, 300,
+                                        json.dumps(list(all_sp_matches.values())))
+                        except Exception as _we:
+                            print(f"[unified] Redis cache write failed: {_we}")
+
+                    yield _sse("done", {"status": "finished", "total_sent": count})
+
+        except Exception as exc:
+                tb = traceback.format_exc()
+                print("=== STREAM CRASH ==="); print(tb); print("====================")
+                yield _sse("error", {"error": str(exc), "traceback": tb})
+                yield _sse("done", {"status": "finished"})
+
+    return Response(stream_with_context(_event_stream()), headers=config._SSE_HEADERS)
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPER: emit live_update SSE events for one BK bulk result
 # ══════════════════════════════════════════════════════════════════════════════

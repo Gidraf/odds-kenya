@@ -310,8 +310,6 @@ def _fetch_upcoming_page(
         "o":              "leagues",
         "pag_count":      str(page_size),
         "pag_min":        str(offset + 1),
-        "from":           str(ts_start),
-        "to":             str(ts_end),
     })
     total = _parse_content_range(
         headers.get("content-range") or headers.get("Content-Range")
