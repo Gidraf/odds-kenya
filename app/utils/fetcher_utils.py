@@ -4,9 +4,9 @@ from enum import Enum
 
 class SubscriptionTier(str, Enum):
     FREE    = "free"
-    BASIC   = "basic"      # KES 150/day
-    PRO     = "pro"        # KES 3 000/month
-    PREMIUM = "premium"    # KES 5 000/month
+    BASIC   = "basic"      # KES 180/day
+    PRO     = "pro"        # KES 3 500/month
+    PREMIUM = "premium"    # KES 5 500/month
  
  
 class SubscriptionStatus(str, Enum):

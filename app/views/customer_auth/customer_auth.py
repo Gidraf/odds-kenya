@@ -48,26 +48,11 @@ def _hash_token(raw_token: str) -> str:
 
 def _send_verification_email(user, raw_token: str) -> None:
     """Queue the welcome+verify email via Celery."""
-    from app.workers.celery_tasks import send_async_email   # your existing celery task
+    from app.workers.celery_tasks import send_async_email
 
     app_url   = os.environ.get("APP_URL", "https://oddskenya.com")
     verify_url = f"{app_url}/auth/verify-email?token={raw_token}"
 
-    # Render the Jinja2 HTML template
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
-    env = Environment(
-        loader      = FileSystemLoader("app/templates"),
-        autoescape  = select_autoescape(["html"]),
-    )
-    # template = env.get_template("welcome_email.html")
-    # html_body = template.render(
-    #     display_name     = user.display_name or user.email.split("@")[0],
-    #     tier             = user.tier,
-    #     verification_url = verify_url,
-    #     trial_ends       = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%d %b %Y"),
-    #     app_url          = app_url,
-    #     year             = datetime.now(timezone.utc).year,
-    # )
     html_body = render_template(
         "welcome_email.html",
         display_name     = user.display_name or user.email.split("@")[0],
@@ -77,8 +62,7 @@ def _send_verification_email(user, raw_token: str) -> None:
         app_url          = app_url,
         year             = datetime.now(timezone.utc).year,
     )
-    print(html_body)
-    print(user.email)
+
     send_async_email.apply_async(args=[
         "Welcome to OddsKenya — Please Verify Your Email ⚽",
         [user.email],
@@ -97,14 +81,10 @@ def _send_password_reset_email(user, raw_token: str) -> None:
     app_url   = os.environ.get("APP_URL", "https://oddskenya.com")
     reset_url = f"{app_url}/auth/reset-password?token={raw_token}"
 
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
-    env = Environment(
-        loader     = FileSystemLoader("app/templates"),
-        autoescape = select_autoescape(["html"]),
-    )
-    template  = env.get_template("password_reset_email.html")
-    print("password",template)
-    html_body = template.render(
+    # FIX: Use Flask's render_template instead of raw Jinja2 Environment 
+    # to avoid path resolution errors in production.
+    html_body = render_template(
+        "password_reset_email.html",
         display_name = user.display_name or user.email.split("@")[0],
         email        = user.email,
         reset_url    = reset_url,
@@ -152,9 +132,13 @@ def register():
 
     user = Customer(email=email, display_name=data.get("display_name", ""))
     user.set_password(password)
-    user.is_verified = False          # must verify email before full access
+    
+    # FIX: Ensure user is active so they can log in, but unverified.
+    user.is_active = True 
+    user.is_verified = False
+    
     db.session.add(user)
-    db.session.flush()
+    db.session.flush() # Flush to get user.id for foreign keys
 
     Subscription.start_trial(user.id, tier)
 
@@ -167,6 +151,10 @@ def register():
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24),
     )
     db.session.add(token_rec)
+    
+    MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
+    
+    # FIX: Consolidated commit
     db.session.commit()
 
     # Queue welcome + verification email
@@ -175,16 +163,13 @@ def register():
     except Exception as exc:
         current_app.logger.error(f"[auth] verification email failed for {email}: {exc}")
 
-    MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
-    db.session.commit()
-
     access_token  = _issue_token(user.id, "access")
     refresh_token = _issue_token(user.id, "refresh")
 
     return _signed_response({
         "ok":            True,
         "user":          user.to_dict(),
-        "subscription":  user.subscription.to_dict(),
+        "subscription":  user.subscription.to_dict() if user.subscription else None,
         "access_token":  access_token,
         "refresh_token": refresh_token,
         "trial_message": f"You have a 3-day free trial of the {tier.title()} plan.",
@@ -222,7 +207,7 @@ def login():
         "refresh_token": _issue_token(user.id, "refresh"),
     }
 
-    # Warn if email not verified (still allow login but surface the notice)
+    # Warn if email not verified
     if not user.is_verified:
         resp["verify_notice"] = (
             "Your email is not yet verified. "
@@ -309,7 +294,6 @@ def verify_email():
         return _err("Account not found.", 404)
 
     user.is_verified = True
-    user.is_active = True
     rec.used         = True
     rec.used_at      = now
     db.session.commit()
@@ -337,6 +321,7 @@ def resend_verify():
     from app.extensions          import db
 
     user = Customer.query.filter_by(email=email, is_active=True).first()
+    
     # Always return OK to avoid email enumeration
     if not user or user.is_verified:
         return _signed_response({"ok": True, "message": "If the email exists and is unverified, a new link has been sent."})
@@ -382,6 +367,7 @@ def forgot_password():
     from app.extensions          import db
 
     user = Customer.query.filter_by(email=email, is_active=True).first()
+    
     # Anti-enumeration: always return the same response
     ok_resp = _signed_response({
         "ok":      True,

@@ -685,7 +685,19 @@ def sp_harvest_all_live() -> dict:
         for sid, events in result.items():
             r.set(f"sp:live:snapshot:{sid}",
                   json.dumps({"events": events, "ts": _now_ts()}), ex=90)
+            
+            try:
+                sport_slug = _SPORT_ID_TO_SLUG.get(sid, "soccer")
+                _publish("odds:updates", {
+                    "event": "odds_updated", "source": "sportpesa",
+                    "sport": sport_slug, "mode": "live",
+                    "count": len(events), "ts": _now_ts()
+                })
+            except Exception:
+                pass
+
             total += len(events)
+
             # Register events in local tracking map for poll task
             with _sr_map_lock:
                 for ev in events:
@@ -712,12 +724,13 @@ def bt_harvest_all_live() -> dict:
     """
     try:
         from app.workers.bt_harvester import fetch_live_matches
-        from app.utils.entity_resolver import EntityResolver
-        from app.workers.celery_tasks import _get_or_create_bookmaker, _persist_bk_matches
+        from app.workers.celery_tasks import _persist_bk_matches
 
         matches = fetch_live_matches()
         if not matches:
             return {"ok": True, "events": 0}
+
+        r = _get_redis()
 
         # Group by sport
         by_sport: dict[str, list] = {}
@@ -728,6 +741,26 @@ def bt_harvest_all_live() -> dict:
         total = 0
         for slug, sport_matches in by_sport.items():
             try:
+                # 1. UPDATE REDIS & CACHE BEFORE DB PERSISTENCE
+                r.setex(f"bt:live:{slug}", 300, json.dumps({
+                    "source": "betika", "sport": slug, "mode": "live",
+                    "match_count": len(sport_matches), "harvested_at": _now_ts(),
+                    "matches": sport_matches,
+                }))
+
+                try:
+                    from app.workers.redis_bus import publish_snapshot
+                    publish_snapshot("bt", "live", slug, sport_matches, meta={"source": "betika"})
+                except ImportError:
+                    pass
+
+                _publish("odds:updates", {
+                    "event": "odds_updated", "source": "betika",
+                    "sport": slug, "mode": "live",
+                    "count": len(sport_matches), "ts": _now_ts()
+                })
+
+                # 2. PERSIST TO DB
                 _persist_bk_matches(sport_matches, "bt", slug)
                 total += len(sport_matches)
             except Exception as exc:
@@ -760,6 +793,8 @@ def od_harvest_all_live() -> dict:
         if not matches:
             return {"ok": True, "events": 0}
 
+        r = _get_redis()
+
         by_sport: dict[str, list] = {}
         for m in matches:
             slug = m.get("sport_slug") or "soccer"
@@ -768,6 +803,26 @@ def od_harvest_all_live() -> dict:
         total = 0
         for slug, sport_matches in by_sport.items():
             try:
+                # 1. UPDATE REDIS & CACHE BEFORE DB PERSISTENCE
+                r.setex(f"od:live:{slug}", 300, json.dumps({
+                    "source": "odibets", "sport": slug, "mode": "live",
+                    "match_count": len(sport_matches), "harvested_at": _now_ts(),
+                    "matches": sport_matches,
+                }))
+
+                try:
+                    from app.workers.redis_bus import publish_snapshot
+                    publish_snapshot("od", "live", slug, sport_matches, meta={"source": "odibets"})
+                except ImportError:
+                    pass
+
+                _publish("odds:updates", {
+                    "event": "odds_updated", "source": "odibets",
+                    "sport": slug, "mode": "live",
+                    "count": len(sport_matches), "ts": _now_ts()
+                })
+
+                # 2. PERSIST TO DB
                 _persist_bk_matches(sport_matches, "od", slug)
                 total += len(sport_matches)
             except Exception as exc:

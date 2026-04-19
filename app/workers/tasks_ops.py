@@ -4,12 +4,11 @@ app/workers/tasks_ops.py
 Operational tasks: EV/arb, results, notifications, health, subscriptions,
 persist pipeline, minute health reports, job logging.
 
-LIVE_ENABLED = False
-  • No live tasks in beat schedule.
-  • Startup dispatches SP per-sport tasks only.
+LIVE_ENABLED = True
+  • Live tasks are scheduled in beat.
+  • Startup dispatches SP per-sport tasks and starts live pollers.
     BT and OD are handled automatically by sp_cross_bk_enrich (+10s) and
     tasks.bt_od.harvest_sport (+30s) which SP dispatches after each harvest.
-    No separate BT/OD startup tasks needed.
 
 Market Alignment Service
   • align_all_sports runs every 15 min (beat) and is also triggered
@@ -132,24 +131,16 @@ def log_job(bookmaker: str, sport: str, mode: str, count: int, status: str,
 @worker_ready.connect
 def on_worker_ready(sender, **kwargs):
     logger.info(
-        "[startup] Worker ready — dispatching SP harvests "
+        "[startup] Worker ready — dispatching SP harvests & starting live pollers "
         "(BT/OD via cross-BK enrich +10s and bt_od team-name match +30s)"
     )
     try:
         _dispatch_startup_harvests()
+        if LIVE_ENABLED:
+            _start_live_pollers()
     except Exception as exc:
         logger.error("[startup] Dispatch failed: %s", exc)
 
-
-# app/workers/tasks_ops.py (excerpt – full file in final answer)
-...
-LIVE_ENABLED = True   # ← Already True in your code
-
-@worker_ready.connect
-def on_worker_ready(sender, **kwargs):
-    logger.info("[startup] Worker ready — dispatching SP harvests & starting live pollers")
-    _dispatch_startup_harvests()
-    _start_live_pollers()   # ← NEW: starts BT/OD pollers and SP WebSocket harvester
 
 def _start_live_pollers():
     """Start Betika + OdiBets live pollers and SP WebSocket harvester."""
@@ -160,7 +151,7 @@ def _start_live_pollers():
 
     r = _redis(db=1)
 
-    # Betika live poller (already exists in bt_harvester)
+    # Betika live poller
     try:
         bt_poller = BetikaLivePoller(redis_client=r, interval=1.5)
         bt_poller.start()
@@ -182,83 +173,6 @@ def _start_live_pollers():
         logger.info("[startup] SP live WebSocket harvester started")
     except Exception as e:
         logger.error("[startup] SP live harvester failed: %s", e)
-
-def setup_periodic_tasks(sender, **kw):
-    from app.workers.tasks_harvest_pages import harvest_all_paged
-    from app.workers.tasks_ops import (
-        update_match_results, expire_subscriptions, health_check,
-        cleanup_old_snapshots, build_health_report,
-    )
-    from app.workers.tasks_live import (
-        live_cross_bk_refresh, live_snapshot_to_db,
-        ensure_harvester_running, sp_harvest_all_live,
-        bt_harvest_all_live, od_harvest_all_live,
-    )
-
-    # ── Full upcoming sweep every 4 hours ─────────────────────────────────
-    sender.add_periodic_task(
-        4 * 3600.0,
-        harvest_all_paged.s(),
-        name="harvest-all-paged-4h",
-    )
-
-    # ── Near‑term refresh every 15 min (optional, can be added later) ───
-    # sender.add_periodic_task(900.0, harvest_near_term.s(), name="harvest-near-term-15m")
-
-    # ── Live tasks (all lightweight, frequent) ───────────────────────────
-    sender.add_periodic_task(15.0,   live_cross_bk_refresh.s(),    name="live-cross-bk-15s")
-    sender.add_periodic_task(30.0,   live_snapshot_to_db.s(),      name="live-snapshot-30s")
-    sender.add_periodic_task(60.0,   ensure_harvester_running.s(), name="live-ensure-harvester-60s")
-    sender.add_periodic_task(60.0,   sp_harvest_all_live.s(),      name="sp-live-snapshot-60s")
-    sender.add_periodic_task(90.0,   bt_harvest_all_live.s(),      name="bt-live-90s")
-    sender.add_periodic_task(90.0,   od_harvest_all_live.s(),      name="od-live-90s")
-
-    # ── Health & maintenance ──────────────────────────────────────────────
-    sender.add_periodic_task(60.0,    health_check.s(),            name="health-1min")
-    sender.add_periodic_task(300.0,   build_health_report.s(),     name="health-report-5min")
-    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),   name="cleanup-daily")
-    sender.add_periodic_task(900.0,   _align_all.s(),              name="align-all-15min")
-
-def _dispatch_startup_harvestsv1() -> None:
-    dispatched = 0
-
-    from app.workers.tasks_upcoming import SP_MAX_MATCHES
-    for i, sport in enumerate(_SP_SPORTS):
-        celery.send_task(
-            "tasks.sp.harvest_sport",
-            args=[sport, SP_MAX_MATCHES],
-            queue="harvest",
-            countdown=5 + i * 5,
-        )
-        dispatched += 1
-
-    for i, sport in enumerate(_B2B_SPORTS_STARTUP):
-        celery.send_task(
-            "tasks.b2b.harvest_sport",
-            args=[sport],
-            queue="harvest",
-            countdown=10 + i * 3,
-        )
-        dispatched += 1
-
-    for i, sport in enumerate(_SBO_SPORTS_STARTUP):
-        celery.send_task(
-            "tasks.sbo.harvest_sport",
-            args=[sport, 90],
-            queue="harvest",
-            countdown=15 + i * 3,
-        )
-        dispatched += 1
-
-    celery.send_task("tasks.ops.health_check",        queue="default",  countdown=1)
-    celery.send_task("tasks.ops.build_health_report", queue="default",  countdown=30)
-    celery.send_task("tasks.align.all",               queue="results",  countdown=180)
-
-    logger.info(
-        "[startup] %d tasks dispatched (SP=%d, B2B=%d, SBO=%d). "
-        "BT+OD via sp_cross_bk_enrich (+10s) and bt_od (+30s) per sport.",
-        dispatched, len(_SP_SPORTS), len(_B2B_SPORTS_STARTUP), len(_SBO_SPORTS_STARTUP),
-    )
 
 
 def _dispatch_startup_harvests() -> None:
@@ -337,34 +251,43 @@ def _dispatch_startup_harvests() -> None:
 def setup_periodic_tasks(sender, **kw):
     from app.workers.tasks_harvest_pages import harvest_all_paged
     from app.workers.tasks_ops import (
-        update_match_results,
-        expire_subscriptions,
-        health_check,
-        cleanup_old_snapshots,
-        build_health_report,
+        update_match_results, expire_subscriptions, health_check,
+        cleanup_old_snapshots, build_health_report,
     )
- 
+    from app.workers.tasks_live import (
+        live_cross_bk_refresh, live_snapshot_to_db,
+        ensure_harvester_running, sp_harvest_all_live,
+        bt_harvest_all_live, od_harvest_all_live,
+    )
+
     # ── Primary: paged SP + BT + OD every 5 min ──────────────────────────────
     sender.add_periodic_task(
         300.0,
         harvest_all_paged.s(),
         name="harvest-all-paged-5min",
     )
- 
-    # ── Health + cleanup ──────────────────────────────────────────────────────
-    sender.add_periodic_task(60.0,    health_check.s(),         name="health-1min")
-    sender.add_periodic_task(300.0,   build_health_report.s(),  name="health-report-5min")
-    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(), name="cleanup-daily")
- 
-    # ── Results + subs (uncomment when ready) ─────────────────────────────────
+
+    # ── Live tasks (all lightweight, frequent) ───────────────────────────────
+    if LIVE_ENABLED:
+        sender.add_periodic_task(15.0,   live_cross_bk_refresh.s(),    name="live-cross-bk-15s")
+        sender.add_periodic_task(30.0,   live_snapshot_to_db.s(),      name="live-snapshot-30s")
+        sender.add_periodic_task(60.0,   ensure_harvester_running.s(), name="live-ensure-harvester-60s")
+        sender.add_periodic_task(60.0,   sp_harvest_all_live.s(),      name="sp-live-snapshot-60s")
+        sender.add_periodic_task(90.0,   bt_harvest_all_live.s(),      name="bt-live-90s")
+        sender.add_periodic_task(90.0,   od_harvest_all_live.s(),      name="od-live-90s")
+
+    # ── Health & maintenance ─────────────────────────────────────────────────
+    sender.add_periodic_task(60.0,    health_check.s(),            name="health-1min")
+    sender.add_periodic_task(300.0,   build_health_report.s(),     name="health-report-5min")
+    sender.add_periodic_task(86400.0, cleanup_old_snapshots.s(),   name="cleanup-daily")
+
+    # ── Results + subs (uncomment when ready) ────────────────────────────────
     # sender.add_periodic_task(600.0,   update_match_results.s(),  name="results-10min")
     # sender.add_periodic_task(3600.0,  expire_subscriptions.s(),  name="expire-subs-1hr")
- 
-    # ── Market alignment every 15 min ─────────────────────────────────────────
-    sender.add_periodic_task(900.0, _align_all.s(), name="align-all-15min")
- 
-    if not LIVE_ENABLED:
-        return
+
+    # ── Market alignment every 15 min ────────────────────────────────────────
+    sender.add_periodic_task(900.0,   _align_all.s(),              name="align-all-15min")
+
 
 @celery.task(name="ops.align_all_shim", soft_time_limit=30, time_limit=45)
 def _align_all():
