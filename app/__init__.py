@@ -92,7 +92,7 @@ def create_app() -> Flask:
     from app.views.monitor import bp_monitor
     from app.views.monitor.harvest_control import bp_harvest_ctrl
     from app.views.customer import bp_odds_customer
-    from app.views.odds_feed.analytics_view import bp_analytics
+    # from app.views.odds_feed.analytics_view import bp_analytics
     # from app.views.odds_feed.match_refresh import bp_match_refresh
     from app.views.odds_feed.live_sse_routes import bp_live_sse
     from app.views.monitor.analytics_view import bp_analytics_dash
@@ -129,7 +129,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_data)
     flask_app.register_blueprint(bp_monitor) 
     flask_app.register_blueprint(bp_harvest_ctrl)  
-    flask_app.register_blueprint(bp_analytics)
+    # flask_app.register_blueprint(bp_analytics)
     # flask_app.register_blueprint(bp_match_refresh)  
     flask_app.register_blueprint(bp_live_sse)  
     flask_app.register_blueprint(bp_analytics_dash) 

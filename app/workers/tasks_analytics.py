@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright
 
 from app.workers.celery_tasks import celery, _redis
 from app.extensions import db
-from app.models.analytics_models import MatchAnalytics
+from app.models.match_analytics import MatchAnalytics
 from app.models.odds_model import UnifiedMatch
 
 logger = logging.getLogger(__name__)

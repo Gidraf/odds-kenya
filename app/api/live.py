@@ -15,7 +15,6 @@ import time
 from flask import request, Response, stream_with_context, current_app
 from . import bp_live, _signed_response, _err
 from .decorators import tier_required
-from app.workers.celery_tasks import _redis
 
 # Mappings to match the Celery worker sport IDs and slugs
 _SPORT_SLUG_TO_ID = {
@@ -34,6 +33,7 @@ def live_matches_list():
     Paginated list of currently live matches.
     Basic tier clients use this to poll or load the initial view.
     """
+    from app.workers.celery_tasks import _redis
     sport = request.args.get("sport", "soccer")
     page = int(request.args.get("page", 1))
     limit = int(request.args.get("limit", 20))
@@ -78,6 +78,7 @@ def upcoming_matches_list():
     """
     Paginated list of upcoming matches.
     """
+    from app.workers.celery_tasks import _redis
     sport = request.args.get("sport", "soccer")
     page = int(request.args.get("page", 1))
     limit = int(request.args.get("limit", 20))
@@ -123,6 +124,7 @@ def unified_stream():
     - sport: e.g., 'soccer'
     - match_ids[]: Optional list of specific IDs to track (ties to pagination)
     """
+    from app.workers.celery_tasks import _redis
     mode = request.args.get("mode", "all")
     sport = request.args.get("sport", "soccer")
     match_ids = request.args.getlist("match_ids[]")

@@ -3,12 +3,12 @@ from . import bp_bookmakers, _signed_response
 from .decorators import tier_required
 from app.models.bookmakers_model import Bookmaker
 from app.models.odds_model import BookmakerMatchOdds
-from app.workers.celery_tasks import cache_get
 
 @bp_bookmakers.route("/bookmakers", methods=["GET"])
 @tier_required("basic")
 def list_bookmakers():
     """List all active bookmakers."""
+    from app.workers.celery_tasks import cache_get
     bms = Bookmaker.query.filter_by(is_active=True).all()
     return _signed_response({
         "bookmakers": [{"id": b.id, "name": b.name, "slug": b.slug} for b in bms]
@@ -18,6 +18,7 @@ def list_bookmakers():
 @tier_required("basic")
 def bookmaker_matches(slug):
     """Get matches with odds from a specific bookmaker."""
+    from app.workers.celery_tasks import cache_get
     bookmaker = Bookmaker.query.filter_by(slug=slug).first_or_404()
     sport = request.args.get("sport", "soccer")
 
