@@ -21,6 +21,7 @@ class Bookmaker(db.Model):
     # AI-observed UI metadata
     brand_color = db.Column(db.String(20))
     logo_url = db.Column(db.String(255))
+    
     payments = db.relationship(
         "BookmakerPayment", 
         back_populates="bookmaker", 

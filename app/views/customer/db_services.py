@@ -23,7 +23,7 @@ def _fetch_analytics_map(um_list: list, include: bool) -> dict[str, dict]:
 
 def _sport_filter(q, sport_slug: str):
     from sqlalchemy import or_
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     if not sport_slug or sport_slug.lower() in ("all", ""): return q
     canonical = _normalise_sport_slug(sport_slug)
     db_names = config._SPORT_ALIASES.get(canonical, [sport_slug])
@@ -32,7 +32,7 @@ def _sport_filter(q, sport_slug: str):
 
 def _mode_time_filter(q, mode: str):
     from sqlalchemy import or_
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     now = _now_utc()
     if mode == "upcoming": return q.filter(UnifiedMatch.status.notin_(list(config._EXCLUDE_FROM_UPCOMING)), UnifiedMatch.start_time.isnot(None), UnifiedMatch.start_time > now)
     elif mode == "live": return q.filter(UnifiedMatch.start_time <= now, UnifiedMatch.start_time > now - config._LIVE_WINDOW, UnifiedMatch.status.notin_(list(config._TERMINAL_STATUSES)))
@@ -41,14 +41,14 @@ def _mode_time_filter(q, mode: str):
 
 def _multi_bk_filter(q):
     from app.extensions import db
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from sqlalchemy import func
     bk_count_sq = db.session.query(BookmakerMatchOdds.match_id, func.count(BookmakerMatchOdds.bookmaker_id.distinct()).label("bk_count")).group_by(BookmakerMatchOdds.match_id).having(func.count(BookmakerMatchOdds.bookmaker_id.distinct()) >= config.MIN_BOOKMAKERS).subquery()
     return q.join(bk_count_sq, UnifiedMatch.id == bk_count_sq.c.match_id)
 
 def _build_base_query(sport_slug, mode, comp_filter, team_filter, date_str, from_dt, to_dt, sort, apply_multi_bk: bool = True):
     from sqlalchemy import or_
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     q = UnifiedMatch.query
     q = _sport_filter(q, sport_slug)
     q = _mode_time_filter(q, mode)
@@ -72,7 +72,7 @@ def _build_base_query(sport_slug, mode, comp_filter, team_filter, date_str, from
     return q.order_by(sort_col.asc())
 
 def _fetch_batch_data(match_ids: list[int]):
-    from app.models.odds_model import BookmakerMatchOdds, ArbitrageOpportunity
+    from app.models.odds import BookmakerMatchOdds, ArbitrageOpportunity
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
     bmo_rows = BookmakerMatchOdds.query.filter(BookmakerMatchOdds.match_id.in_(match_ids)).all()
     all_bk_ids = {bmo.bookmaker_id for bmo in bmo_rows}

@@ -326,7 +326,7 @@ def _fuzzy_find_match(
     if not home or not away:
         return None
     try:
-        from app.models.odds_model import UnifiedMatch
+        from app.models.odds import UnifiedMatch
         from sqlalchemy import func
 
         start_dt: datetime | None = None
@@ -452,7 +452,7 @@ def _upsert_unified_match(
     """
     try:
         from app.extensions import db
-        from app.models.odds_model import (
+        from app.models.odds import (
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
         )
 

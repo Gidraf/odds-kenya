@@ -90,7 +90,7 @@ except ImportError:
 from app.extensions import db
 from app.models.bookmakers_model import Bookmaker
 from app.models.harvest_workflow import HarvestWorkflow, HarvestWorkflowStep
-from app.models.odds_model import validate_parser_row, REQUIRED_PARSER_KEYS
+from app.models.odds import validate_parser_row, REQUIRED_PARSER_KEYS
 from app.utils.mapping_seed import (
     MARKETS_BY_SPORT,
     get_markets_for_sport,

@@ -113,7 +113,7 @@ def _resolve_match(betradar_id: str) -> tuple[object | None, str]:
     Returns (um, error_message). If um is None the caller should return 404.
     """
     try:
-        from app.models.odds_model import UnifiedMatch
+        from app.models.odds import UnifiedMatch
         um = UnifiedMatch.query.filter_by(parent_match_id=betradar_id).first()
         return um, ""
     except Exception as exc:
@@ -509,7 +509,7 @@ def batch_analytics():
         # Resolve match name for context (best-effort — don't fail if not found)
         home = away = competition = sport = start_time = None
         try:
-            from app.models.odds_model import UnifiedMatch
+            from app.models.odds import UnifiedMatch
             from app.views.odds_feed.customer_odds_view import _normalise_sport_slug, _effective_status
             um = UnifiedMatch.query.filter_by(parent_match_id=br_id).first()
             if um:

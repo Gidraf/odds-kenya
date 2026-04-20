@@ -246,6 +246,9 @@ class UnifiedMatch(db.Model):
             "{best_price, best_bookmaker_id, bookmakers:{id:price}, is_active, updated_at}"
         ),
     )
+    external_ids = db.Column(db.JSON, nullable=True, default=dict)
+    bookmaker_odds = db.Column(db.JSON, nullable=True, default=dict)
+    aligned_bks = db.Column(db.ARRAY(db.Text), default=list)
 
     # Optimistic locking — SQLAlchemy increments this on every UPDATE
     version    = db.Column(db.Integer, nullable=True, default=0, server_default="0")
@@ -963,7 +966,7 @@ class OddsQueryHelper:
 
     Usage
     ─────
-    from app.models.odds_model import OddsQueryHelper as Q
+    from app.models.odds import OddsQueryHelper as Q
 
     # Games on 2026-03-27
     matches = Q.matches_by_date("2026-03-27", "2026-03-27").all()

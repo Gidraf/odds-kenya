@@ -270,7 +270,7 @@ class SteamMoveDetector:
         """
         Compare current best_odds against history and return steam signals.
         """
-        from app.models.odds_model import BookmakerOddsHistory
+        from app.models.odds import BookmakerOddsHistory
 
         cutoff   = datetime.now(timezone.utc) - timedelta(seconds=STEAM_WINDOW_SECS)
         signals: list[dict] = []
@@ -363,7 +363,7 @@ class EVArbPersistenceService:
         bookmaker_id_map: {"Betika": 3, "Sportpesa": 7, ...}
         """
         from app.extensions import db
-        from app.models.odds_model import (
+        from app.models.odds import (
             ArbitrageOpportunity, ArbitrageLeg, ArbitrageHistory,
             EVOpportunity, SharpMoneySignal, MarketDefinition,
         )
@@ -489,7 +489,7 @@ class EVArbPersistenceService:
     def collapse_stale_arbs(before: datetime | None = None) -> int:
         """Mark arb opportunities as collapsed if the match has started."""
         from app.extensions import db
-        from app.models.odds_model import ArbitrageOpportunity, UnifiedMatch
+        from app.models.odds import ArbitrageOpportunity, UnifiedMatch
 
         if before is None:
             before = datetime.now(timezone.utc)

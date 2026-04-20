@@ -228,7 +228,7 @@ class EntityResolver:
         Persists ONLY SportPesa data. The expected dictionary `cm` comes directly
         from the `sp_harvester.py` yield output.
         """
-        from app.models.odds_model import (
+        from app.models.odds import (
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory
         )
         

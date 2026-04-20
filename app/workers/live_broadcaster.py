@@ -22,7 +22,7 @@ def get_internal_id(betradar_id: str):
     
     # Fallback to DB if not in Redis
     try:
-        from app.models.odds_model import UnifiedMatch
+        from app.models.odds import UnifiedMatch
         from app.extensions import db
         um = db.session.query(UnifiedMatch.id).filter_by(parent_match_id=str(betradar_id)).first()
         if um:

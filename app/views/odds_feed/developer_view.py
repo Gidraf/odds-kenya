@@ -28,7 +28,7 @@ def api_v1_arbitrage():
     if not user or user.tier != "premium":
         return _err("Developer API requires Premium", 403)
  
-    from app.models.odds_model import ArbitrageOpportunity, UnifiedMatch
+    from app.models.odds import ArbitrageOpportunity, UnifiedMatch
     arbs = ArbitrageOpportunity.query.filter_by(is_active=True) \
              .order_by(ArbitrageOpportunity.max_profit_percentage.desc()).limit(50).all()
  

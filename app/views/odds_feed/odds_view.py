@@ -69,7 +69,7 @@ def unified_matches(sport_slug: str):
 
     try:
         from app.extensions import db
-        from app.models.odds_model import (
+        from app.models.odds import (
             UnifiedMatch, BookmakerMatchOdds,
             ArbitrageOpportunity,
         )
@@ -306,7 +306,7 @@ def unified_match_detail(match_id: int):
     t0 = time.perf_counter()
     try:
         from app.extensions import db
-        from app.models.odds_model import (
+        from app.models.odds import (
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
             ArbitrageOpportunity, EVOpportunity,
         )
@@ -410,7 +410,7 @@ def unified_search():
 
     try:
         from app.extensions import db
-        from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+        from app.models.odds import UnifiedMatch, BookmakerMatchOdds
         from sqlalchemy import or_, func
 
         matches = (
@@ -476,7 +476,7 @@ def unified_stats():
     t0 = time.perf_counter()
     try:
         from app.extensions import db
-        from app.models.odds_model import (
+        from app.models.odds import (
             UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity,
         )
         from app.models.bookmakers_model import Bookmaker

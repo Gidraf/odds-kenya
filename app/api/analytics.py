@@ -2,7 +2,7 @@ from flask import request
 from . import bp_analytics, _signed_response, _err
 from .decorators import tier_required
 from app.models.match_analytics import MatchAnalytics
-from app.models.odds_model import UnifiedMatch
+from app.models.odds import UnifiedMatch
 
 @bp_analytics.route("/matches/<int:match_id>/analytics", methods=["GET"])
 @tier_required("pro")

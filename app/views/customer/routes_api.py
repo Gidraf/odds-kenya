@@ -83,7 +83,7 @@ def get_results_by_date(date_str: str = ""):
 def get_match(parent_match_id: str):
     from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
     from app.utils.decorators_ import log_event
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
     from sqlalchemy import and_, func
     from datetime import timedelta, timezone
@@ -160,7 +160,7 @@ def get_match(parent_match_id: str):
 @bp_odds_customer.route("/odds/match/<parent_match_id>/markets")
 def get_match_full_markets(parent_match_id: str):
     from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from app.models.bookmakers_model import Bookmaker
     t0 = time.perf_counter()
     user = _current_user_from_header()
@@ -219,7 +219,7 @@ def get_match_full_markets(parent_match_id: str):
 def get_match_analytics(parent_match_id: str):
     from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
     from app.utils.decorators_ import log_event
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     t0 = time.perf_counter()
     user = _current_user_from_header()
     um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
@@ -236,7 +236,7 @@ def get_match_analytics(parent_match_id: str):
 @bp_odds_customer.route("/odds/match/<parent_match_id>/analytics/refresh", methods=["POST"])
 def refresh_match_analytics(parent_match_id: str):
     from app.utils.customer_jwt_helpers import _err, _signed_response
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from app.workers.celery_tasks import celery
     if not UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first(): return _err("Match not found", 404)
     try: celery.send_task("tasks.sp.get_match_analytics", args=[parent_match_id, True], queue="harvest", countdown=0); dispatched = True
@@ -247,7 +247,7 @@ def refresh_match_analytics(parent_match_id: str):
 def search_matches():
     from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
     from app.utils.decorators_ import log_event
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from sqlalchemy import or_, func as sqlfunc
     from app.extensions import db
     t0 = time.perf_counter()

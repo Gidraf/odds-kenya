@@ -464,7 +464,7 @@ def _parse_timestamp(item: dict) -> str | None:
                 t = int(ts)
                 if t > 1_000_000_000_000:
                     t //= 1000
-                return datetime.utcfromtimestamp(t).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                return datetime.fromtimestamp(t).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             except Exception:
                 pass
     for key in ("date", "startTime", "start_time"):

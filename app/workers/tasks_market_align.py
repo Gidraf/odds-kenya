@@ -196,7 +196,7 @@ def _detect_arbs(best_markets: dict[str, dict], match_id: int, home_team: str, a
 
 def _align_single_match(um, bmo_rows: list, bk_map: dict) -> dict:
     from app.extensions import db
-    from app.models.odds_model import ArbitrageOpportunity, OpportunityStatus
+    from app.models.odds import ArbitrageOpportunity, OpportunityStatus
     from sqlalchemy.orm.attributes import flag_modified
 
     if not bmo_rows:
@@ -273,7 +273,7 @@ def _align_single_match(um, bmo_rows: list, bk_map: dict) -> dict:
 )
 def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
     from app.extensions import db
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from app.models.bookmakers_model import Bookmaker
     from sqlalchemy import or_
     from sqlalchemy.orm.exc import StaleDataError
@@ -435,7 +435,7 @@ def align_all_sports() -> dict:
 )
 def align_single_match_task(self, match_id: int) -> dict:
     from app.extensions import db
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from app.models.bookmakers_model import Bookmaker
 
     try:

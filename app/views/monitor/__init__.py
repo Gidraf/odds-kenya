@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from app.models.competions_model import Competition, Team, Country, Sport
-from app.models.odds_model import UnifiedMatch 
+from app.models.odds import UnifiedMatch 
 from app.models.bookmake_competition_data import BookmakerCompetitionName, BookmakerTeamName, BookmakerCountryName
 from sqlalchemy import func, desc
 

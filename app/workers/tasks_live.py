@@ -534,7 +534,7 @@ def live_snapshot_to_db() -> dict:
     even if SSE consumers aren't subscribed.
     """
     from app.extensions import db
-    from app.models.odds_model import UnifiedMatch, MatchStatus
+    from app.models.odds import UnifiedMatch, MatchStatus
     r       = _get_redis()
     updated = 0
     errors  = 0

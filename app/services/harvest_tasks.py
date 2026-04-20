@@ -32,7 +32,7 @@ from celery.utils.log import get_task_logger
 from app.extensions import db, celery, socketio
 from app.models.vendor_template import VendorTemplate, BookmakerVendorConfig
 from app.models.bookmakers_model import Bookmaker
-from app.models.odds_model import (
+from app.models.odds import (
     UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
     validate_parser_row,
 )

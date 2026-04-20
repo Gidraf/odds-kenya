@@ -138,7 +138,7 @@ def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
     if not home or not away:
         return None
     try:
-        from app.models.odds_model import UnifiedMatch
+        from app.models.odds import UnifiedMatch
         from sqlalchemy import func
         start_dt = None
         if start_time_raw:
@@ -391,7 +391,7 @@ def merge_and_broadcast(sport_slug: str) -> dict:
 @celery.task(name="harvest.value_bets", soft_time_limit=60, time_limit=90)
 def compute_value_bets(sport_slug: str) -> dict:
     from app.extensions import db
-    from app.models.odds_model import ArbitrageOpportunity, OpportunityStatus
+    from app.models.odds import ArbitrageOpportunity, OpportunityStatus
 
     SAFE_ARB_MARKETS = {
         "match_winner", "1x2", "moneyline", "btts", "both_teams_score",
@@ -530,7 +530,7 @@ def compute_value_bets(sport_slug: str) -> dict:
 )
 def persist_arb_opportunity(self, payload: dict) -> dict:
     from app.extensions import db
-    from app.models.odds_model import ArbitrageOpportunity, OpportunityStatus
+    from app.models.odds import ArbitrageOpportunity, OpportunityStatus
 
     try:
         start_dt = None
@@ -576,7 +576,7 @@ def persist_arb_opportunity(self, payload: dict) -> dict:
 @celery.task(name="harvest.cleanup", soft_time_limit=60, time_limit=90)
 def cleanup_old_snapshots(days_keep: int = 7) -> dict:
     from app.extensions import db
-    from app.models.odds_model import ArbitrageOpportunity, EVOpportunity
+    from app.models.odds import ArbitrageOpportunity, EVOpportunity
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_keep)
     n_a = ArbitrageOpportunity.query.filter(ArbitrageOpportunity.open_at < cutoff).delete()
     n_e = EVOpportunity.query.filter(EVOpportunity.open_at < cutoff).delete()

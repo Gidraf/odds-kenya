@@ -210,7 +210,7 @@ def match_detail(match_id: int):
 @bp_data.route("/matches/<int:match_id>/odds")
 def match_odds(match_id: int):
     """Per-bookmaker odds comparison for a match."""
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from app.models.bookmakers_model import BookmakerMatchLink
 
     um = UnifiedMatch.query.get(match_id)
@@ -334,7 +334,7 @@ def search():
 @bp_data.route("/matches/<int:match_id>/odds-history")
 def odds_history(match_id: int):
     """Price movement timeline for a specific selection."""
-    from app.models.odds_model import OddsQueryHelper
+    from app.models.odds import OddsQueryHelper
 
     market      = request.args.get("market", "1x2")
     selection   = request.args.get("selection", "1")

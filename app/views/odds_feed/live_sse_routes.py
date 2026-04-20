@@ -181,7 +181,7 @@ def _match_id_from_param(raw: str) -> tuple[int | None, str | None]:
     try:
         mid = int(raw)
         # Resolve betradar_id from DB
-        from app.models.odds_model import UnifiedMatch
+        from app.models.odds import UnifiedMatch
         um = UnifiedMatch.query.get(mid)
         return (mid, um.parent_match_id if um else None)
     except ValueError:
@@ -371,7 +371,7 @@ def snapshot_match(match_ref: str):
     db_markets: dict[str, dict] = {}
     if match_id:
         try:
-            from app.models.odds_model import BookmakerMatchOdds
+            from app.models.odds import BookmakerMatchOdds
             from app.models.bookmakers_model import Bookmaker
             from app.views.odds_feed.customer_odds_view import _flatten_db_markets, _bk_slug
             bmos = BookmakerMatchOdds.query.filter_by(match_id=match_id).all()

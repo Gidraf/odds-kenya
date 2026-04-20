@@ -297,7 +297,7 @@ def _normalise_sport_slug(raw: str) -> str:
 
 def _sport_filter(q, sport_slug: str):
     from sqlalchemy import or_
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     if not sport_slug or sport_slug.lower() in ("all", ""):
         return q
     canonical = _normalise_sport_slug(sport_slug)
@@ -307,7 +307,7 @@ def _sport_filter(q, sport_slug: str):
     return q.filter(or_(*[UnifiedMatch.sport_name == n for n in db_names]))
 
 def _mode_time_filter(q, mode: str):
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from sqlalchemy import or_, and_
     
     now         = _now_utc()
@@ -337,7 +337,7 @@ def _mode_time_filter(q, mode: str):
     return q
 
 def _multi_bk_filter(q):
-    from app.models.odds_model import BookmakerMatchOdds, UnifiedMatch
+    from app.models.odds import BookmakerMatchOdds, UnifiedMatch
     from app.extensions import db
     from sqlalchemy import func
     bk_count_sq = (
@@ -483,7 +483,7 @@ def _build_match_dict(um, bmos, bk_objs, links_by_match, arb_set, sport_slug, an
 
 
 def _build_base_query(sport_slug, mode, comp_filter, team_filter, date_str, from_dt, to_dt, sort, apply_multi_bk: bool = True):
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from sqlalchemy import or_
     q = UnifiedMatch.query
     q = _sport_filter(q, sport_slug)
@@ -515,7 +515,7 @@ def _build_base_query(sport_slug, mode, comp_filter, team_filter, date_str, from
 
 
 def _fetch_batch_data(match_ids: list[int]):
-    from app.models.odds_model import BookmakerMatchOdds, ArbitrageOpportunity
+    from app.models.odds import BookmakerMatchOdds, ArbitrageOpportunity
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
     bmo_rows  = BookmakerMatchOdds.query.filter(BookmakerMatchOdds.match_id.in_(match_ids)).all()
     all_bk_ids = {bmo.bookmaker_id for bmo in bmo_rows}
@@ -1040,7 +1040,7 @@ def get_match(parent_match_id: str):
     t0   = time.perf_counter()
     user = _current_user_from_header()
     tier = getattr(user, "tier", "free") if user else "free"
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
     from sqlalchemy import and_, func
 
@@ -1125,7 +1125,7 @@ def get_match(parent_match_id: str):
 def get_match_full_markets(parent_match_id: str):
     t0   = time.perf_counter()
     user = _current_user_from_header()
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
 
     um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
@@ -1195,7 +1195,7 @@ def get_match_full_markets(parent_match_id: str):
 def get_match_analytics(parent_match_id: str):
     t0   = time.perf_counter()
     user = _current_user_from_header()
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
     if not um: return _err("Match not found", 404)
     log_event("match_analytics_view", {"match_id": parent_match_id})
@@ -1213,7 +1213,7 @@ def get_match_analytics(parent_match_id: str):
 
 @bp_odds_customer.route("/odds/match/<parent_match_id>/analytics/refresh", methods=["POST"])
 def refresh_match_analytics(parent_match_id: str):
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from app.workers.celery_tasks import celery
     um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
     if not um: return _err("Match not found", 404)
@@ -1231,7 +1231,7 @@ def refresh_match_analytics(parent_match_id: str):
 
 @bp_odds_customer.route("/odds/sports")
 def list_sports():
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from sqlalchemy import func
     sports: dict[str, int] = {}
     try:
@@ -1251,7 +1251,7 @@ def list_sports():
 @bp_odds_customer.route("/odds/bookmakers")
 def list_bookmakers():
     from app.models.bookmakers_model import Bookmaker
-    from app.models.odds_model import BookmakerMatchOdds
+    from app.models.odds import BookmakerMatchOdds
     from sqlalchemy import func
     bk_counts = dict(BookmakerMatchOdds.query.with_entities(BookmakerMatchOdds.bookmaker_id, func.count(BookmakerMatchOdds.match_id)).group_by(BookmakerMatchOdds.bookmaker_id).all())
     result = [{"id": bm.id, "name": bm.name, "slug": _bk_slug(bm.name), "domain": bm.domain, "is_active": bm.is_active, "match_count": bk_counts.get(bm.id, 0), "group": "local" if _bk_slug(bm.name) in ("sp", "bt", "od") else "international"} for bm in Bookmaker.query.filter_by(is_active=True).order_by(Bookmaker.name).all()]
@@ -1261,7 +1261,7 @@ def list_bookmakers():
 @bp_odds_customer.route("/odds/markets")
 def list_markets():
     try:
-        from app.models.odds_model import MarketDefinition
+        from app.models.odds import MarketDefinition
         return _signed_response({"ok": True, "markets": [m.to_dict() for m in MarketDefinition.query.order_by(MarketDefinition.name).all()]})
     except Exception as exc: return _err(str(exc), 500)
 
@@ -1278,7 +1278,7 @@ def search_matches():
     sport    = (request.args.get("sport") or "").strip()
     if not q_str: return _err("Provide query param 'q'", 400)
 
-    from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds
     from sqlalchemy import or_, func as sqlfunc
     from app.extensions import db
 
@@ -1303,7 +1303,7 @@ def harvest_status():
     heartbeat = cache_get("worker_heartbeat") or {}
     now = _now_utc()
     try:
-        from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+        from app.models.odds import UnifiedMatch, BookmakerMatchOdds
         from app.models.bookmakers_model import Bookmaker
         from sqlalchemy import func
         from app.extensions import db
@@ -1416,7 +1416,7 @@ def get_navigation_tree():
     t0 = time.perf_counter()
     user = _current_user_from_header()
     
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from app.extensions import db
     from sqlalchemy import func
     

@@ -6,7 +6,7 @@ from .utils import _normalise_sport_slug, _bk_slug, _get_country_weight, _now_ut
 
 @bp_odds_customer.route("/odds/sports")
 def list_sports():
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from sqlalchemy import func
     from app.workers.celery_tasks import cache_keys
     from app.utils.customer_jwt_helpers import _signed_response
@@ -23,7 +23,7 @@ def list_sports():
 @bp_odds_customer.route("/odds/bookmakers")
 def list_bookmakers():
     from app.models.bookmakers_model import Bookmaker
-    from app.models.odds_model import BookmakerMatchOdds
+    from app.models.odds import BookmakerMatchOdds
     from sqlalchemy import func
     from app.utils.customer_jwt_helpers import _signed_response
     bk_counts = dict(BookmakerMatchOdds.query.with_entities(BookmakerMatchOdds.bookmaker_id, func.count(BookmakerMatchOdds.match_id)).group_by(BookmakerMatchOdds.bookmaker_id).all())
@@ -34,7 +34,7 @@ def list_bookmakers():
 def list_markets():
     from app.utils.customer_jwt_helpers import _err, _signed_response
     try:
-        from app.models.odds_model import MarketDefinition
+        from app.models.odds import MarketDefinition
         return _signed_response({"ok": True, "markets": [m.to_dict() for m in MarketDefinition.query.order_by(MarketDefinition.name).all()]})
     except Exception as exc: return _err(str(exc), 500)
 
@@ -45,7 +45,7 @@ def harvest_status():
     heartbeat = cache_get("worker_heartbeat") or {}
     now = _now_utc()
     try:
-        from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+        from app.models.odds import UnifiedMatch, BookmakerMatchOdds
         from app.models.bookmakers_model import Bookmaker
         from sqlalchemy import func
         from app.extensions import db
@@ -80,7 +80,7 @@ def set_access_config():
 @bp_odds_customer.route("/odds/navigation")
 def get_navigation_tree():
     from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
     from app.extensions import db
     from sqlalchemy import func
     t0 = time.perf_counter()

@@ -760,7 +760,7 @@ def sp_results(sport_slug: str):
     # ── 2. Postgres fallback if cache empty ───────────────────────────────────
     if not matches:
         try:
-            from app.models.odds_model import OddsQueryHelper, MatchStatus
+            from app.models.odds import OddsQueryHelper, MatchStatus
             q = OddsQueryHelper.finished_matches(
                 date_from=date_str, date_to=date_to, sport=sport_slug)
             db_matches = q.limit(500).all()

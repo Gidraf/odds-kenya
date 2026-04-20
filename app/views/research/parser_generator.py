@@ -39,7 +39,7 @@ from flask import request, jsonify
 from app.extensions import db
 from app.models.harvest_workflow import HarvestWorkflow, HarvestWorkflowStep
 from app.models.onboarding_model import BookmakerOnboardingSession
-from app.models.odds_model import validate_parser_row, REQUIRED_PARSER_KEYS
+from app.models.odds import validate_parser_row, REQUIRED_PARSER_KEYS
 from app.utils.mapping_seed import get_primary_slugs_for_sport, MARKETS_BY_SPORT
 
 # ─────────────────────────────────────────────────────────────────────────────

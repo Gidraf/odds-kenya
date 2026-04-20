@@ -1,6 +1,6 @@
 from flask import request
 from . import bp_public, _signed_response, _err
-from app.models.odds_model import UnifiedMatch, MatchStatus
+from app.models.odds import UnifiedMatch, MatchStatus
 from app.models.competions_model import Competition, Country
 from datetime import datetime, timedelta
 

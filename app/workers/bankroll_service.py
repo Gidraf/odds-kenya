@@ -98,7 +98,7 @@ class BankrollEngine:
         return round(total * self.target.max_bet_pct, 2)
 
     def _arb_recommendations(self) -> list[dict]:
-        from app.models.odds_model import ArbitrageOpportunity, UnifiedMatch
+        from app.models.odds import ArbitrageOpportunity, UnifiedMatch
 
         arbs = ArbitrageOpportunity.query.filter(
             ArbitrageOpportunity.is_active == True,
@@ -137,7 +137,7 @@ class BankrollEngine:
         return recs
 
     def _ev_recommendations(self) -> list[dict]:
-        from app.models.odds_model import EVOpportunity, UnifiedMatch
+        from app.models.odds import EVOpportunity, UnifiedMatch
 
         evs = EVOpportunity.query.filter(
             EVOpportunity.is_active == True,

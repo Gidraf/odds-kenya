@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.models.customer import Customer
-    from app.models.odds_model import ArbitrageOpportunity, EVOpportunity
+    from app.models.odds import ArbitrageOpportunity, EVOpportunity
 
 log = logging.getLogger(__name__)
 

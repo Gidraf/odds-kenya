@@ -153,7 +153,7 @@ def harvest_bookmaker_sport(bookmaker_slug: str, sport_slug: str) -> dict:
     t0 = time.perf_counter()
 
     with _flask_ctx():
-        from app.models.odds_models import db, HarvestRun, OddsSnapshot
+        from app.models.oddss import db, HarvestRun, OddsSnapshot
 
         run = HarvestRun(bookmaker=bookmaker_slug, sport=sport_slug, status="running")
         db.session.add(run)
@@ -165,7 +165,7 @@ def harvest_bookmaker_sport(bookmaker_slug: str, sport_slug: str) -> dict:
     except Exception as exc:
         log.exception("harvest fetch error: %s/%s", bookmaker_slug, sport_slug)
         with _flask_ctx():
-            from app.models.odds_models import db, HarvestRun
+            from app.models.oddss import db, HarvestRun
             run = db.session.get(HarvestRun, run_id)
             if run:
                 run.status    = "failed"
@@ -177,7 +177,7 @@ def harvest_bookmaker_sport(bookmaker_slug: str, sport_slug: str) -> dict:
     if not matches:
         log.warning("harvest: %s/%s returned 0 matches", bookmaker_slug, sport_slug)
         with _flask_ctx():
-            from app.models.odds_models import db, HarvestRun
+            from app.models.oddss import db, HarvestRun
             run = db.session.get(HarvestRun, run_id)
             if run:
                 run.status    = "partial"
@@ -196,7 +196,7 @@ def harvest_bookmaker_sport(bookmaker_slug: str, sport_slug: str) -> dict:
     batch_size  = 500
 
     with _flask_ctx():
-        from app.models.odds_models import db, HarvestRun, OddsSnapshot
+        from app.models.oddss import db, HarvestRun, OddsSnapshot
 
         batch: list[OddsSnapshot] = []
         now   = datetime.now(timezone.utc)
@@ -413,7 +413,7 @@ def compute_value_bets(sport_slug: str) -> dict:
     value_bets_payload: list[dict] = []
 
     with _flask_ctx():
-        from app.models.odds_models import db, ValueBet
+        from app.models.oddss import db, ValueBet
 
         for match in matches:
             for mkt_slug, outcomes in (match.get("markets") or {}).items():
@@ -498,7 +498,7 @@ def cleanup_old_snapshots(days_keep: int = 7) -> dict:
     log.info("cleanup: deleting odds_snapshots older than %s", cutoff.date())
 
     with _flask_ctx():
-        from app.models.odds_models import db, OddsSnapshot, HarvestRun, ValueBet
+        from app.models.oddss import db, OddsSnapshot, HarvestRun, ValueBet
 
         n_snaps = OddsSnapshot.query.filter(OddsSnapshot.recorded_at < cutoff).delete()
         n_runs  = HarvestRun.query.filter(HarvestRun.started_at < cutoff).delete()

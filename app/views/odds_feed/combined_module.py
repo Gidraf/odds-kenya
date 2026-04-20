@@ -502,7 +502,7 @@ def upcoming_rest(sport_slug: str):
     # ── 2. PostgreSQL fallback ────────────────────────────────────────────────
     if not matches_raw:
         try:
-            from app.models.odds_model import UnifiedMatch, BookmakerMatchOdds
+            from app.models.odds import UnifiedMatch, BookmakerMatchOdds
             from app.models.bookmakers_model import Bookmaker
             from app.extensions import db
             from sqlalchemy import or_

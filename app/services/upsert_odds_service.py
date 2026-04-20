@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.extensions import db
-from app.models.odds_model import (
+from app.models.odds import (
     UnifiedMatch,
     BookmakerMatchOdds,
     BookmakerOddsHistory,

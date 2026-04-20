@@ -73,7 +73,7 @@ def get_arbitrage():
       days        history lookback days for DB (default: 7)
       limit       max results (default: 50, max: 100)
     """
-    from app.models.odds_model import (
+    from app.models.odds import (
         ArbitrageOpportunity, OpportunityStatus, OddsQueryHelper,
     )
 
@@ -189,7 +189,7 @@ def get_ev():
     Query params:
       sport, mode, min_ev, source, days, limit
     """
-    from app.models.odds_model import EVOpportunity, OddsQueryHelper
+    from app.models.odds import EVOpportunity, OddsQueryHelper
 
     sport   = request.args.get("sport")
     mode    = request.args.get("mode", "all")

@@ -27,7 +27,7 @@ _SPORT_SLUG_TO_ID = {
 # -----------------------------------------------------------------------------
 
 @bp_live.route("/live/matches", methods=["GET"])
-@tier_required("basic")
+@tier_required(["basic","pro"])
 def live_matches_list():
     """
     Paginated list of currently live matches.
@@ -73,7 +73,7 @@ def live_matches_list():
 
 
 @bp_live.route("/upcoming/matches", methods=["GET"])
-@tier_required("basic")
+@tier_required(["basic", "pro"])
 def upcoming_matches_list():
     """
     Paginated list of upcoming matches.
@@ -113,7 +113,7 @@ def upcoming_matches_list():
 # -----------------------------------------------------------------------------
 
 @bp_live.route("/stream", methods=["GET"])
-@tier_required("pro")
+@tier_required(["basic","pro"])
 def unified_stream():
     """
     Unified SSE stream for real-time push updates.

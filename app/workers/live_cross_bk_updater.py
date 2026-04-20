@@ -113,7 +113,7 @@ def _resolve_match_id(betradar_id: str) -> int | None:
         except ValueError:
             pass
     try:
-        from app.models.odds_model import UnifiedMatch
+        from app.models.odds import UnifiedMatch
         um = UnifiedMatch.query.filter_by(parent_match_id=betradar_id).first()
         if um:
             _r().setex(key, _TTL_ID_MAP, str(um.id))
@@ -135,7 +135,7 @@ def _resolve_sport_slug(betradar_id: str, sport_id: int | None) -> str:
         if slug:
             return slug
     try:
-        from app.models.odds_model import UnifiedMatch
+        from app.models.odds import UnifiedMatch
         from app.views.odds_feed.customer_odds_view import _normalise_sport_slug
         um = UnifiedMatch.query.filter_by(parent_match_id=betradar_id).first()
         if um and um.sport_name:
@@ -247,7 +247,7 @@ def _upsert_bk_odds(match_id: int, bookmaker_id: int, markets: dict) -> int:
         return 0
     try:
         from app.extensions import db
-        from app.models.odds_model import BookmakerMatchOdds, BookmakerOddsHistory
+        from app.models.odds import BookmakerMatchOdds, BookmakerOddsHistory
         bmo = (BookmakerMatchOdds.query
                .filter_by(match_id=match_id, bookmaker_id=bookmaker_id)
                .with_for_update(skip_locked=True)

@@ -1,11 +1,11 @@
 from flask import request
 from . import bp_arbitrage, _signed_response
 from .decorators import tier_required
-from app.models.odds_model import ArbitrageOpportunity, OpportunityStatus
+from app.models.odds import ArbitrageOpportunity, OpportunityStatus
 from datetime import datetime, timedelta
 
 @bp_arbitrage.route("/arbitrage", methods=["GET"])
-@tier_required("pro")
+@tier_required("basic")
 def list_arbitrage():
     """List current arbitrage opportunities."""
     sport = request.args.get("sport")
@@ -19,7 +19,7 @@ def list_arbitrage():
         query = query.filter(ArbitrageOpportunity.sport == sport)
 
     # Only show recent (last hour)
-    since = datetime.utcnow() - timedelta(hours=1)
+    since = datetime.now() - timedelta(hours=1)
     query = query.filter(ArbitrageOpportunity.open_at >= since)
 
     arbs = query.order_by(ArbitrageOpportunity.profit_pct.desc()).limit(50).all()

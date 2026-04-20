@@ -5,7 +5,7 @@ from app.models.bookmakers_model import Bookmaker, BookmakerEndpoint
 
 # ── Optionally import Odds if you have it ─────────────────────────────────────
 try:
-    from app.models.odds_model import Odds
+    from app.models.odds import Odds
     _HAS_ODDS = True
 except ImportError:
     _HAS_ODDS = False

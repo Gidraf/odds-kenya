@@ -896,7 +896,7 @@ def list_bookmakers():
 def list_markets():
     """List known market keys from DB."""
     try:
-        from app.models.odds_model import MarketDefinition
+        from app.models.odds import MarketDefinition
         mkts = MarketDefinition.query.order_by(MarketDefinition.name).all()
         return _signed_response({"ok": True, "markets": [m.to_dict() for m in mkts]})
     except Exception as exc:
@@ -1050,7 +1050,7 @@ def get_results_by_date(date_str: str):
 
 def _get_finished_by_date(date_str: str) -> Response:
     from app.workers.celery_tasks import cache_get
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
 
     log_event("finished_games_view", {"date": date_str})
 
@@ -1122,7 +1122,7 @@ def get_match(parent_match_id: str):
     user = _current_user_from_header()
     tier = user.tier if user else "free"
 
-    from app.models.odds_model import UnifiedMatch, ArbitrageOpportunity, EVOpportunity
+    from app.models.odds import UnifiedMatch, ArbitrageOpportunity, EVOpportunity
 
     um = UnifiedMatch.query.filter_by(parent_match_id=parent_match_id).first()
     if not um:
@@ -1181,7 +1181,7 @@ def search_matches():
         return _err("Provide query param 'q'", 400)
 
     # Search DB — always accurate for historical + current
-    from app.models.odds_model import UnifiedMatch
+    from app.models.odds import UnifiedMatch
 
     qs = UnifiedMatch.query.filter(
         (UnifiedMatch.home_team_name.ilike(f"%{q}%")) |

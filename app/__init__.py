@@ -155,7 +155,7 @@ def create_app() -> Flask:
         from app.models.research_model import (
             ResearchSession, ResearchFinding, ResearchEndpoint,
         )
-        from app.models.odds_model import (
+        from app.models.odds import (
             UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
             MarketDefinition, ArbitrageOpportunity, EVOpportunity,
         )

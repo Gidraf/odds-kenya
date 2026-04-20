@@ -2,7 +2,7 @@ from flask import request
 from . import bp_bookmakers, _signed_response
 from .decorators import tier_required
 from app.models.bookmakers_model import Bookmaker
-from app.models.odds_model import BookmakerMatchOdds
+from app.models.odds import BookmakerMatchOdds
 
 @bp_bookmakers.route("/bookmakers", methods=["GET"])
 @tier_required("basic")
