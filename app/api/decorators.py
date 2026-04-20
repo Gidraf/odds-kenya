@@ -8,12 +8,8 @@ SSE endpoints accept `?token=<jwt>` as a fallback.
 
 Usage:
     @bp_live.route("/upcoming/stream")
-    @tier_required("pro")               # Requires Pro, Premium, or Admin
+    @tier_required("pro")
     def upcoming_stream(): ...
-
-    @bp_live.route("/basic-only")
-    @tier_required(["basic", "pro"])    # Exact match for Basic, Pro, or Admin
-    def basic_and_pro_only(): ...
 """
 from __future__ import annotations
 
@@ -72,17 +68,17 @@ def _decode_token(raw: str) -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def tier_required(required: str | list[str] | tuple[str, ...] | set[str] = "basic") -> Callable:
+def tier_required(minimum_tier: str = "basic") -> Callable:
     """
-    Decorator that enforces subscription tier limits.
+    Decorator that enforces a minimum subscription tier.
+
+    Attaches `g.user_id`, `g.tier`, and `g.token_payload` on success.
 
     Args:
-        required: 
-            - If a string (e.g., "pro"), acts as a MINIMUM tier.
-            - If an iterable (e.g., ["basic", "pro"]), restricts access EXACTLY 
-              to those tiers.
-            - Admins (rank 99) bypass these checks automatically.
+        minimum_tier: One of "free", "basic", "pro", "premium", "admin".
     """
+    min_rank = _TIER_RANK.get(minimum_tier, 1)
+
     def decorator(fn: Callable) -> Callable:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
@@ -102,27 +98,12 @@ def tier_required(required: str | list[str] | tuple[str, ...] | set[str] = "basi
 
             user_tier = (payload.get("tier") or payload.get("subscription_tier") or "basic").lower()
             user_rank = _TIER_RANK.get(user_tier, 0)
-            admin_rank = _TIER_RANK.get("admin", 99)
 
-            is_authorized = False
-
-            if isinstance(required, str):
-                # String acts as a minimum required rank
-                min_rank = _TIER_RANK.get(required.lower(), 1)
-                if user_rank >= min_rank:
-                    is_authorized = True
-            else:
-                # Iterable acts as an exact match whitelist (plus admins)
-                allowed_tiers = [t.lower() for t in required]
-                if user_tier in allowed_tiers or user_rank >= admin_rank:
-                    is_authorized = True
-
-            if not is_authorized:
-                req_display = required if isinstance(required, str) else " or ".join(required)
+            if user_rank < min_rank:
                 return jsonify({
-                    "error":    f"This endpoint requires {req_display} tier",
+                    "error":    f"This endpoint requires {minimum_tier} tier or above",
                     "code":     "tier_insufficient",
-                    "required": required,
+                    "required": minimum_tier,
                     "current":  user_tier,
                     "upgrade":  "https://kinetic.bet/pricing",
                 }), 403

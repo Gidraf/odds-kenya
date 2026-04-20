@@ -180,6 +180,7 @@ def create_app() -> Flask:
         from app.models.tracking_model import UserActivityLog
         from app.models.bookmake_competition_data import BookmakerCompetitionName, BookmakerCountryName, BookmakerTeamName
         from app.models.match_analytics import MatchAnalytics
+        from app.models.match_ev_arb import MatchEvArb
 
     import app.sockets  # noqa: registers /admin namespace handlers
 
