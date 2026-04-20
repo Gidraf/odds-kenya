@@ -60,6 +60,30 @@ logger = logging.getLogger(__name__)
 
 # ─── Bookmaker registry ───────────────────────────────────────────────────────
 
+# Sports known to work across all BetB2B bookmakers
+_B2B_COMMON_SPORTS = {1, 2, 3, 5, 8, 17, 21}   # soccer, ice-hockey, basketball, tennis, volleyball, rugby, cricket
+
+# Per-BK additional sports (discovered empirically; niche sports vary by BK)
+# None = use common sports only; explicit set = union with common
+_BK_EXTRA_SPORTS: dict[str, set] = {
+    "1xbet":     {4, 9, 11, 13, 14, 16, 47},   # widest offering
+    "22bet":     {4, 9, 11, 13, 14, 16, 47},
+    "betwinner": {4, 9, 11, 13, 14, 16, 47},
+    "melbet":    {4, 9, 11, 13, 14, 16, 47},
+    "megapari":  {4, 9, 11, 13, 14, 47},
+    "helabet":   {9, 11},                        # LineFeed, limited sports
+    "paripesa":  {4, 9, 11, 13, 14},
+}
+
+
+def _bk_supports_sport(bk_slug: str, sport_id: int) -> bool:
+    """Return True if this BK is likely to have data for this sport_id."""
+    if sport_id in _B2B_COMMON_SPORTS:
+        return True
+    extras = _BK_EXTRA_SPORTS.get(bk_slug, set())
+    return sport_id in extras
+
+
 B2B_BOOKMAKERS: list[dict] = [
     {
         "slug":       "1xbet",
@@ -323,11 +347,30 @@ def _build_livefeed_url(bk: dict, sport_id: int) -> str:
     )
 
 
+# In-process cache: (bk_slug, sport_id, mode) combos known to return empty.
+# Populated at runtime; cleared on worker restart so BKs can add sports.
+_UNSUPPORTED_SPORT_CACHE: set = set()
+
+
 def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming") -> list[dict]:
     """
     Fetch raw game list from BetB2B API.
-    Returns the Value[] array or [] on failure.
+    Returns the Value[] array, or [] when sport is not offered.
+
+    Empty/null body = sport not available on this BK.
+    These combos are cached in-process so we stop making pointless requests.
     """
+    slug      = bk["slug"]
+    cache_key = (slug, sport_id, mode)
+
+    # Skip sports this BK is known not to support (before making any HTTP request)
+    if not _bk_supports_sport(slug, sport_id):
+        return []
+
+    # Skip known-empty combos discovered at runtime
+    if cache_key in _UNSUPPORTED_SPORT_CACHE:
+        return []
+
     url = (
         _build_livefeed_url(bk, sport_id)
         if mode == "live"
@@ -339,21 +382,62 @@ def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming") -> list[dict
             "Referer": f"https://{bk['domain']}/",
             "Origin":  f"https://{bk['domain']}",
         })
+
+        # Empty body = sport not offered — cache and skip silently
+        body = resp.content
+        if not body or body.strip() in (b"", b"null", b"[]", b"{}"):
+            logger.debug("[b2b:%s] sport %d not offered (empty body)", slug, sport_id)
+            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
+            return []
+
         resp.raise_for_status()
-        data = resp.json()
+
+        try:
+            data = resp.json()
+        except ValueError:
+            # Non-JSON body (HTML error page, plain text) — cache as unsupported
+            logger.debug("[b2b:%s] sport %d non-JSON response (%d bytes) — skipping",
+                         slug, sport_id, len(body))
+            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
+            return []
 
         # BetB2B wraps response in {"Value": [...], "Err": 0}
         if isinstance(data, dict):
-            return data.get("Value") or data.get("value") or []
+            err = data.get("Err") or data.get("err") or 0
+            if err and err != 0:
+                logger.debug("[b2b:%s] sport %d API err=%s — skipping", slug, sport_id, err)
+                _UNSUPPORTED_SPORT_CACHE.add(cache_key)
+                return []
+            result = data.get("Value") or data.get("value") or []
+            if not result:
+                _UNSUPPORTED_SPORT_CACHE.add(cache_key)   # empty Value → nothing to offer
+            return result
+
         if isinstance(data, list):
             return data
         return []
 
     except httpx.HTTPStatusError as e:
-        logger.warning("[b2b:%s] HTTP %d for sport %d", bk["slug"], e.response.status_code, sport_id)
+        code = e.response.status_code
+        if code in (400, 404, 422, 204):
+            logger.debug("[b2b:%s] sport %d HTTP %d — caching as unsupported", slug, sport_id, code)
+            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
+        else:
+            logger.warning("[b2b:%s] HTTP %d for sport %d", slug, code, sport_id)
         return []
+
+    except httpx.TimeoutException:
+        logger.warning("[b2b:%s] timeout for sport %d", slug, sport_id)
+        return []
+
     except Exception as e:
-        logger.warning("[b2b:%s] fetch error sport %d: %s", bk["slug"], sport_id, e)
+        err_str = str(e)
+        # "Expecting value" = JSON parse on empty body; demote to debug
+        if any(x in err_str for x in ("Expecting value", "No data", "JSONDecodeError")):
+            logger.debug("[b2b:%s] sport %d empty/invalid response — caching skip", slug, sport_id)
+            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
+        else:
+            logger.warning("[b2b:%s] fetch error sport %d: %s", slug, sport_id, e)
         return []
 
 
