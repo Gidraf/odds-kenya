@@ -261,7 +261,7 @@ def test_harvesters():
                 start = time.time()
                 upcoming = fetch_upcoming_matches(
                     sport_slug=sport,
-                    fetch_full_markets=False,
+                    fetch_full_markets=True,
                     max_matches=MAX_MATCHES_PER_SPORT
                 )
                 elapsed = time.time() - start
@@ -612,7 +612,7 @@ def test_bt_od_all():
             upcoming = fetch_upcoming_matches(
                 sport_slug=sport,
                 days=30,
-                fetch_full_markets=False,   # speed
+                fetch_full_markets=True,   # speed
             )
             elapsed = time.time() - start
 
@@ -670,6 +670,6 @@ def test_bt_od_all():
 
     print("\n" + "=" * 80)
     print("✅ Test completed.")
-    
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
