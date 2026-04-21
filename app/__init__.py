@@ -103,6 +103,7 @@ def create_app() -> Flask:
     from app.views.customer.analytic_debug import bp_raw_stream
     from app.views.customer.bk_streams import bp_bk_streams
     from app.api import bp_public, bp_matches, bp_live, bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers
+    from app.views.admin import admin_bp as debug_admin
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -144,6 +145,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_arbitrage)
     flask_app.register_blueprint(bp_competitions)
     flask_app.register_blueprint(bp_bookmakers)
+    flask_app.register_blueprint(debug_admin)
     # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────

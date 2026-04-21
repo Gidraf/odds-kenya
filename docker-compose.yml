@@ -80,7 +80,7 @@ services:
     build: .
     restart: always
     command: >
-      celery -A app.workers.celery_tasks worker
+      sh -c "rm -f celerybeat-schedule* && celery -A app.workers.celery_tasks worker
       --queues=analytics
       --concurrency=2
       --loglevel=info
