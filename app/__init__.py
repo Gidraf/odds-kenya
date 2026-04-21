@@ -78,7 +78,7 @@ def create_app() -> Flask:
     from app.views.onboarding                         import bp_onboarding
     from app.views.vendors                            import bp_vendor
     from app.views.sbo                                import bp_sbo
-    from app.views.admin                              import admin_bp
+    # from app.views.admin                              import admin_bp
     from app.views.customer_auth                      import bp_customer
     from app.views.subscriptions                      import bp_customer_subscriptions
     from app.views.webhook                            import bp_interceptor
