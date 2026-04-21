@@ -1,14 +1,14 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester – FULLY FIXED for all sports.
+OdiBets upcoming + live harvester – FIXED for all sports, 7-day upcoming.
 
 FIXES
 ─────
+• Loops over multiple days (default 7) for upcoming matches.
+• Uses comprehensive sub_type_id (1‑500) to fetch all markets.
+• Parallel full market enrichment via fetch_event_detail.
 • Correct sport ID mapping (cricket=21, table-tennis=20, etc.)
-• Upcoming uses comprehensive sub_type_id (1‑500)
-• Parallel full market enrichment via fetch_event_detail
-• Live fetch filters by sport ID
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date as _date
+from datetime import date as _date, timedelta
 from typing import Any, Generator
 
 import httpx
@@ -464,52 +464,61 @@ def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[
     return markets, meta
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (with full market enrichment)
+# UPCOMING MATCHES (multiple days, with full market enrichment)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
     sport_slug: str = "soccer",
-    day: str = "",
+    days: int = 7,
     fetch_full_markets: bool = True,
     max_matches: int | None = None,
     max_workers: int = 8,
     **kwargs,
 ) -> list[dict]:
+    """
+    Fetch upcoming matches for the next `days` (default 7) for a given sport.
+    Aggregates matches across days, then enriches with full markets in parallel.
+    """
     od_sport_id = slug_to_od_sport_id(sport_slug)
-    if not day:
-        day = _date.today().isoformat()
+    all_matches: list[dict] = []
+    start_date = _date.today()
 
-    params = {
-        "resource": "sportevents",
-        "platform": "mobile",
-        "mode": 1,
-        "sport_id": od_sport_id,
-        "sub_type_id": _ALL_SUB_TYPE_IDS,
-        "day": day,
-    }
-    data = _get(SBOOK_ODI, params=params, _throttle=True)
-    if not data:
-        logger.warning("OD upcoming %s %s: no response", sport_slug, day)
-        return []
+    for offset in range(days):
+        day = start_date + timedelta(days=offset)
+        day_str = day.isoformat()
 
-    raw_events = _unwrap_upcoming_response(data, od_sport_id)
-    if not raw_events:
-        logger.warning("OD upcoming %s %s: 0 events after unwrap", sport_slug, day)
-        return []
-
-    matches: list[dict] = []
-    for raw in raw_events:
-        if not isinstance(raw, dict):
+        params = {
+            "resource": "sportevents",
+            "platform": "mobile",
+            "mode": 1,
+            "sport_id": od_sport_id,
+            "sub_type_id": _ALL_SUB_TYPE_IDS,
+            "day": day_str,
+        }
+        data = _get(SBOOK_ODI, params=params, _throttle=True)
+        if not data:
+            logger.warning("OD upcoming %s %s: no response", sport_slug, day_str)
             continue
-        m = _normalise_match(raw, od_sport_id, is_live=False)
-        if m:
-            matches.append(m)
-        if max_matches and len(matches) >= max_matches:
+
+        raw_events = _unwrap_upcoming_response(data, od_sport_id)
+        if not raw_events:
+            continue
+
+        for raw in raw_events:
+            if not isinstance(raw, dict):
+                continue
+            m = _normalise_match(raw, od_sport_id, is_live=False)
+            if m:
+                all_matches.append(m)
+            if max_matches and len(all_matches) >= max_matches:
+                break
+
+        if max_matches and len(all_matches) >= max_matches:
             break
 
-    logger.info("OD upcoming %s %s: %d basic matches", sport_slug, day, len(matches))
+    logger.info("OD upcoming %s (next %d days): %d basic matches", sport_slug, days, len(all_matches))
 
-    if fetch_full_markets and matches:
+    if fetch_full_markets and all_matches:
         def _fetch(m: dict) -> dict:
             br_id = m.get("betradar_id")
             if not br_id:
@@ -521,9 +530,9 @@ def fetch_upcoming_matches(
             return m
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            matches = list(pool.map(_fetch, matches))
+            all_matches = list(pool.map(_fetch, all_matches))
 
-    return matches
+    return all_matches
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE MATCHES (filtered by sport)
@@ -572,43 +581,48 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
 
 def fetch_upcoming_stream(
     sport_slug: str = "soccer",
+    days: int = 7,
     max_matches: int | None = None,
     fetch_full_markets: bool = True,
     sleep_between: float = 0.3,
     **kwargs,
 ) -> Generator[dict, None, None]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
-    day = _date.today().isoformat()
-    params = {
-        "resource": "sportevents",
-        "platform": "mobile",
-        "mode": 1,
-        "sport_id": od_sport_id,
-        "sub_type_id": _ALL_SUB_TYPE_IDS,
-        "day": day,
-    }
-    data = _get(SBOOK_ODI, params=params, _throttle=True)
-    if not data:
-        return
-
-    raw_events = _unwrap_upcoming_response(data, od_sport_id)
+    start_date = _date.today()
     count = 0
-    for raw in raw_events:
-        if max_matches and count >= max_matches:
-            break
-        m = _normalise_match(raw, od_sport_id, is_live=False)
-        if not m:
+
+    for offset in range(days):
+        day = start_date + timedelta(days=offset)
+        day_str = day.isoformat()
+        params = {
+            "resource": "sportevents",
+            "platform": "mobile",
+            "mode": 1,
+            "sport_id": od_sport_id,
+            "sub_type_id": _ALL_SUB_TYPE_IDS,
+            "day": day_str,
+        }
+        data = _get(SBOOK_ODI, params=params, _throttle=True)
+        if not data:
             continue
 
-        if fetch_full_markets and m.get("betradar_id"):
-            full, _ = fetch_event_detail(m["betradar_id"], m.get("od_sport_id", od_sport_id))
-            if full:
-                m["markets"].update(full)
-                m["market_count"] = len(m["markets"])
-            time.sleep(sleep_between)
+        raw_events = _unwrap_upcoming_response(data, od_sport_id)
+        for raw in raw_events:
+            if max_matches and count >= max_matches:
+                return
+            m = _normalise_match(raw, od_sport_id, is_live=False)
+            if not m:
+                continue
 
-        count += 1
-        yield m
+            if fetch_full_markets and m.get("betradar_id"):
+                full, _ = fetch_event_detail(m["betradar_id"], m.get("od_sport_id", od_sport_id))
+                if full:
+                    m["markets"].update(full)
+                    m["market_count"] = len(m["markets"])
+                time.sleep(sleep_between)
+
+            count += 1
+            yield m
 
 def fetch_live_stream(
     sport_slug: str,
@@ -630,8 +644,8 @@ def fetch_live_stream(
 # ALIASES & STUBS (compatibility)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def fetch_upcoming(sport_slug: str = "soccer", fetch_full_markets: bool = True, **kwargs) -> list[dict]:
-    return fetch_upcoming_matches(sport_slug, fetch_full_markets=fetch_full_markets, **kwargs)
+def fetch_upcoming(sport_slug: str = "soccer", days: int = 7, fetch_full_markets: bool = True, **kwargs) -> list[dict]:
+    return fetch_upcoming_matches(sport_slug, days=days, fetch_full_markets=fetch_full_markets, **kwargs)
 
 def fetch_live(sport_slug: str | None = None, **kwargs) -> list[dict]:
     return fetch_live_matches(sport_slug)
@@ -679,8 +693,8 @@ class OdiBetsHarvesterPlugin:
     bookie_name = "OdiBets"
     sport_slugs = list(OD_SPORT_IDS.keys())
 
-    def fetch_upcoming(self, sport_slug: str, day: str = "", **kwargs) -> list[dict]:
-        return fetch_upcoming_matches(sport_slug, day=day, **kwargs)
+    def fetch_upcoming(self, sport_slug: str, days: int = 7, **kwargs) -> list[dict]:
+        return fetch_upcoming_matches(sport_slug, days=days, **kwargs)
 
     def fetch_live(self, sport_slug: str | None = None) -> list[dict]:
         return fetch_live_matches(sport_slug)
