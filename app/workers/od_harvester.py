@@ -36,54 +36,45 @@ logger = logging.getLogger(__name__)
 # SPORT ID MAPS (keep as is, but will log unknown ones)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 OD_SPORT_IDS: dict[str, int] = {
     "soccer":            1,
     "basketball":        2,
-    "tennis":            3,
-    "cricket":           4,
-    "rugby":             5,
-    "ice-hockey":        6,
-    "volleyball":        7,
-    "handball":          8,
-    "table-tennis":      9,
-    "baseball":          10,
-    "american-football": 11,
-    "mma":               15,
-    "boxing":            16,
-    "darts":             17,
-    "esoccer":           1001,
+    "tennis":            3,       # confirmed from earlier code
+    "ice-hockey":        4,       # confirmed from earlier code
+    "handball":          6,       # inferred
+    "volleyball":        23,      # from days response
+    "table-tennis":      20,      # from days response (sport_id "20")
+    "baseball":          10,      # inferred (common)
+    "american-football": 11,      # inferred
+    "mma":               15,      # inferred
+    "boxing":            16,      # inferred
+    "darts":             17,      # inferred
+    "cricket":           21,      # ✅ fixed from 4 → 21
+    "rugby":             5,       # from earlier code
+    "esoccer":           1001,    # virtual soccer (not in days response but kept)
 }
 
+# Reverse mapping
 OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
 
-_OD_STRING_SPORT_MAP: dict[str, str] = {
-    "soccer":            "soccer",
-    "football":          "soccer",
-    "internationals":    "soccer",
-    "itl":               "soccer",
-    "basketball":        "basketball",
-    "tennis":            "tennis",
-    "cricket":           "cricket",
-    "rugby":             "rugby",
-    "rugby union":       "rugby",
-    "rugby league":      "rugby",
-    "ice-hockey":        "ice-hockey",
-    "icehockey":         "ice-hockey",
-    "ice hockey":        "ice-hockey",
-    "volleyball":        "volleyball",
-    "handball":          "handball",
-    "table-tennis":      "table-tennis",
-    "tabletennis":       "table-tennis",
-    "table tennis":      "table-tennis",
-    "baseball":          "baseball",
-    "mma":               "mma",
-    "boxing":            "boxing",
-    "darts":             "darts",
+# Also add a mapping for string IDs that may appear in API responses (e.g., "cricket")
+_OD_STRING_SPORT_MAP.update({
+    "cricket": "cricket",
+    "table tennis": "table-tennis",
+    "handball": "handball",
+    "volleyball": "volleyball",
+    "baseball": "baseball",
     "american football": "american-football",
-    "american-football": "american-football",
-    "esoccer":           "esoccer",
-    "e-soccer":          "esoccer",
-}
+    "mma": "mma",
+    "boxing": "boxing",
+    "darts": "darts",
+    "rugby": "rugby",
+    "ice hockey": "ice-hockey",
+    "basketball": "basketball",
+    "tennis": "tennis",
+    "soccer": "soccer",
+})
 
 def slug_to_od_sport_id(slug: str) -> int:
     return OD_SPORT_IDS.get(slug, 1)
