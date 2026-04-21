@@ -114,7 +114,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(mapping_bp)
     flask_app.register_blueprint(bp_vendor,     url_prefix="/api/vendors")
     flask_app.register_blueprint(bp_onboarding, url_prefix="/api/onboarding")
-    flask_app.register_blueprint(admin_bp)
+    # flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
     flask_app.register_blueprint(bp_story)
