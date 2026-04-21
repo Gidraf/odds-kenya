@@ -149,7 +149,7 @@ _log = logging.getLogger(__name__)
 
 def _redis(db: int = 2):
     import redis as _r
-    url  = celery.conf.broker_url or "redis://localhost:6382/0"
+    url  = celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     return _r.Redis.from_url(
         f"{base}/{db}",

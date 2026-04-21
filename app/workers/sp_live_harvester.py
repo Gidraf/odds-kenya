@@ -150,7 +150,7 @@ def _build_redis_url() -> str:
     full = os.getenv("REDIS_URL", "").strip()
     if full: return full
     host = os.getenv("REDIS_HOST", "localhost")
-    port = os.getenv("REDIS_PORT", "6382")
+    port = os.getenv("REDIS_PORT", "6379")
     auth = os.getenv("REDIS_AUTH", os.getenv("REDIS_PASSWORD", ""))
     db   = os.getenv("REDIS_DB", "0")
     if auth: return f"redis://:{_urlquote(auth, safe='')}@{host}:{port}/{db}"

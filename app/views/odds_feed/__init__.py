@@ -40,7 +40,7 @@
 # def _redis():
 #     import redis
 #     from flask import current_app
-#     url  = current_app.config.get("CELERY_BROKER_URL", "redis://localhost:6382/0")
+#     url  = current_app.config.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 #     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
 #     return redis.Redis.from_url(
 #         f"{base}/2",
@@ -1238,7 +1238,7 @@ def _sse_stream(channel: str):
     """
     import redis as _redis_lib
     from app.workers.celery_tasks import celery
-    url  = celery.conf.broker_url or "redis://localhost:6382/0"
+    url  = celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     r    = _redis_lib.Redis.from_url(f"{base}/2", decode_responses=True)
     ps   = r.pubsub()

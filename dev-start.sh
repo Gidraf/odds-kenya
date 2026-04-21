@@ -29,7 +29,7 @@ warn() { echo -e "${YELLOW}⚠${RESET} $1"; }
 # ── Config ────────────────────────────────────────────────────────────────────
 FLASK_APP="${FLASK_APP:-app}"
 FLASK_PORT="${FLASK_PORT:-5500}"
-REDIS_URL="${REDIS_URL:-redis://localhost:6382/0}"
+REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 LOG_DIR="${LOG_DIR:-logs}"
 CELERY_APP="app.workers.celery_tasks"
 

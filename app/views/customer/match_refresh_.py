@@ -359,7 +359,7 @@ def debug_stream_unified(mode: str, sport_slug: str):
 
             # ── REAL-TIME LIVE PUB/SUB ──
             import redis
-            r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6382/0"), decode_responses=True)
+            r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
             pubsub = r.pubsub(ignore_subscribe_messages=True)
             pubsub.subscribe(f"sp:live:sport:{sport_id}")
 

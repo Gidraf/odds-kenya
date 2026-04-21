@@ -53,8 +53,8 @@ logger = get_task_logger(__name__)
 # ── Module-level instance (replaced by make_celery) ────────────────────────────
 celery = Celery(
     "odds_harvester",
-    broker  = "redis://localhost:6382/0",
-    backend = "redis://localhost:6382/1",
+    broker  = "redis://localhost:6379/0",
+    backend = "redis://localhost:6379/1",
 )
 
 _DEFAULT_SPORTS = [
@@ -129,7 +129,7 @@ _DEFAULT_SPORTS = [
 
 def _redis():
     import redis as _r
-    url  = celery.conf.broker_url or "redis://localhost:6382/0"
+    url  = celery.conf.broker_url or "redis://localhost:6379/0"
     # Always use DB 2 for our odds cache (broker=0, backend=1, cache=2)
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     return _r.Redis.from_url(

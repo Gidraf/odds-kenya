@@ -9,7 +9,7 @@ logger = logging.getLogger("kinetic_live_events")
 logger.setLevel(logging.INFO)
 
 # Connect to Redis DB 2 (The same one your SSE endpoint uses)
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6382/0")
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 base_url = redis_url.rsplit("/", 1)[0] if redis_url.count("/") >= 3 else redis_url
 r = redis.from_url(f"{base_url}/2", decode_responses=True)
 

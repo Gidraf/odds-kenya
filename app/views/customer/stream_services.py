@@ -64,7 +64,7 @@ def _stream_matches(sport_slug, mode="upcoming", comp_filter="", team_filter="",
         
     import redis as _rl
     from app.workers.celery_tasks import celery as _celery
-    url = _celery.conf.broker_url or "redis://localhost:6382/0"
+    url = _celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     ps = _rl.Redis.from_url(f"{base}/2", decode_responses=True).pubsub()
     channels = [f"match:update:{mid}" for mid in match_ids_for_redis]
@@ -85,7 +85,7 @@ def _stream_matches(sport_slug, mode="upcoming", comp_filter="", team_filter="",
 def _sse_stream(channel):
     import redis as _rl
     from app.workers.celery_tasks import celery as _celery
-    url = _celery.conf.broker_url or "redis://localhost:6382/0"
+    url = _celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
     ps = _rl.Redis.from_url(f"{base}/2", decode_responses=True).pubsub()
     ps.subscribe(channel)

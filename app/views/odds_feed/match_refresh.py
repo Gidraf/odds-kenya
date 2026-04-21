@@ -354,7 +354,7 @@ def unified_stream(mode: str, sport_slug: str):
 
                 # Phase 4 – Real-time pub/sub
                 import redis as _redis
-                r_conn = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6382/0"), decode_responses=True)
+                r_conn = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
                 pubsub = r_conn.pubsub(ignore_subscribe_messages=True)
                 pubsub.subscribe(f"sp:live:sport:{sport_id}")
                 last_poll = time.time()

@@ -37,7 +37,7 @@ def _redis_url() -> str:
     if full:
         return full
     host = os.getenv("REDIS_HOST", "localhost")
-    port = os.getenv("REDIS_PORT", "6382")
+    port = os.getenv("REDIS_PORT", "6379")
     auth = os.getenv("REDIS_AUTH", os.getenv("REDIS_PASSWORD", ""))
     db   = os.getenv("REDIS_DB",   "0")
     if auth:
@@ -66,7 +66,7 @@ def _get_redis():
     if full: return redis.from_url(full, decode_responses=True, socket_timeout=3)
     
     host = os.getenv("REDIS_HOST", "localhost")
-    port = os.getenv("REDIS_PORT", "6382")
+    port = os.getenv("REDIS_PORT", "6379")
     auth = os.getenv("REDIS_AUTH", os.getenv("REDIS_PASSWORD", ""))
     db   = os.getenv("REDIS_DB", "0")
     if auth: return redis.from_url(f"redis://:{quote(auth, safe='')}@{host}:{port}/{db}", decode_responses=True)
