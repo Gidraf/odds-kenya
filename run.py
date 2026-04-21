@@ -480,11 +480,12 @@ def slug_to_bt_sport_id(slug: str) -> int:
     }
     return bt_sport_map.get(slug, 1)
 
-@flask_app.cli.command("test-bt-od-all")
-def test_bt_od_all():
+@flask_app.cli.command("test-all")
+def test_all():
     """
-    Test Betika and OdiBets harvesters for every sport they support.
-    Prints only the final summary tables (no per-sport progress).
+    Test Betika, OdiBets, and Sportpesa harvesters for all sports.
+    Uses 30 days upcoming, full markets for ALL matches (fetch_full_markets=True).
+    Prints only the final summary tables.
     """
     import time
     from datetime import datetime
@@ -492,9 +493,14 @@ def test_bt_od_all():
     def fmt(slug: str) -> str:
         return slug.replace("-", " ").title()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # 1. BETIKA (keep as is, but suppress per-sport prints)
-    # ──────────────────────────────────────────────────────────────────────────
+    print("\n" + "=" * 80)
+    print(f"🧪 ALL BOOKMAKERS TEST (30 days upcoming, full markets enabled)")
+    print(f"   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 80)
+
+    # ============================================================
+    # 1. BETIKA
+    # ============================================================
     try:
         from app.workers.bt_harvester import (
             fetch_upcoming_matches,
@@ -513,17 +519,22 @@ def test_bt_od_all():
     for sport in betika_sports:
         res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
         try:
-            upcoming = fetch_upcoming_matches(sport_slug=sport, days=30, fetch_full=False, max_pages=20)
+            # Fetch all upcoming matches for 30 days, fetch_full=True (gets all markets for every match)
+            upcoming = fetch_upcoming_matches(
+                sport_slug=sport,
+                days=30,
+                fetch_full=True,        # ← full markets for all matches
+                max_pages=30
+            )
             if upcoming:
                 res["upcoming"] = len(upcoming)
+                # Use first match's markets (already have full markets)
                 first = upcoming[0]
-                pid = first.get("bt_parent_id")
-                if pid:
-                    full = get_full_markets(pid, sport)
-                    res["markets"] = len(full)
-                    res["has_1x2"] = any("1x2" in k or "match_winner" in k for k in full)
-                    res["has_ou"] = any("over_under" in k for k in full)
-                    res["has_hc"] = any("handicap" in k or "spread" in k for k in full)
+                markets = first.get("markets", {})
+                res["markets"] = len(markets)
+                res["has_1x2"] = any("1x2" in k or "match_winner" in k for k in markets)
+                res["has_ou"] = any("over_under" in k for k in markets)
+                res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
                 res["status"] = "passed"
             else:
                 res["status"] = "warning"
@@ -540,9 +551,9 @@ def test_bt_od_all():
         betika_results[sport] = res
         time.sleep(0.3)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # 2. ODIBETS (using smart full market fetch)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ============================================================
+    # 2. ODIBETS (full markets for all matches)
+    # ============================================================
     try:
         from app.workers.od_harvester import (
             fetch_upcoming_matches,
@@ -560,16 +571,15 @@ def test_bt_od_all():
     for sport in odibets_sports:
         res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
         try:
-            # Fetch upcoming with full markets enabled (will call smart fetcher)
+            # Fetch all upcoming matches for 30 days, fetch_full_markets=True (gets all markets for every match via smart fetcher)
             upcoming = fetch_upcoming_matches(
                 sport_slug=sport,
                 days=30,
-                fetch_full_markets=True,
-                max_matches=5,  # limit to 5 for speed in test, but full markets for those
+                fetch_full_markets=True,   # ← full markets for all matches
             )
             if upcoming:
                 res["upcoming"] = len(upcoming)
-                # Use the first match's full markets (already enriched)
+                # Use first match's markets (already have full markets)
                 first = upcoming[0]
                 markets = first.get("markets", {})
                 res["markets"] = len(markets)
@@ -579,8 +589,7 @@ def test_bt_od_all():
                 res["status"] = "passed"
             else:
                 res["status"] = "warning"
-        except Exception as e:
-            print(f"Error for {sport}: {e}")
+        except Exception:
             res["status"] = "failed"
 
         try:
@@ -592,15 +601,59 @@ def test_bt_od_all():
         odibets_results[sport] = res
         time.sleep(0.3)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # PRINT FINAL TABLES (only)
-    # ──────────────────────────────────────────────────────────────────────────
-    print("\n" + "=" * 80)
-    print(f"🧪 BETIKA + ODIBETS – ALL SPORTS TEST (30 days upcoming)")
-    print(f"   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80)
+    # ============================================================
+    # 3. SPORTPESA (full markets for all matches)
+    # ============================================================
+    try:
+        from app.workers.sp_harvester import fetch_upcoming, SP_SPORT_ID
+    except ImportError as e:
+        print(f"❌ Cannot import Sportpesa harvester: {e}")
+        return
 
-    # Betika table
+    seen_ids = set()
+    sp_sports = []
+    for slug, sid in SP_SPORT_ID.items():
+        if sid not in seen_ids:
+            seen_ids.add(sid)
+            sp_sports.append((slug, sid))
+
+    sp_results = {}
+
+    for slug, sid in sp_sports:
+        res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
+        try:
+            # Fetch all upcoming matches for 30 days, fetch_full_markets=True (gets all markets for every match)
+            matches = fetch_upcoming(
+                sport_slug=slug,
+                days=30,
+                max_matches=None,          # no limit
+                fetch_full_markets=True,   # ← full markets for all matches
+                sleep_between=0.2,
+                debug_ou=False,
+            )
+            if matches:
+                res["upcoming"] = len(matches)
+                # Use first match's markets (already have full markets)
+                first = matches[0]
+                markets = first.get("markets", {})
+                res["markets"] = len(markets)
+                res["has_1x2"] = any("1x2" in k or "match_winner" in k for k in markets)
+                res["has_ou"] = any("over_under" in k for k in markets)
+                res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
+                res["status"] = "passed"
+            else:
+                res["status"] = "warning"
+        except Exception as e:
+            print(f"Error for {slug}: {e}")
+            res["status"] = "failed"
+
+        res["live"] = 0  # Sportpesa live not tested here for simplicity
+        sp_results[slug] = res
+        time.sleep(0.3)
+
+    # ============================================================
+    # PRINT FINAL TABLES
+    # ============================================================
     print("\n📊 BETIKA HARVESTER")
     print("-" * 60)
     print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
@@ -609,7 +662,6 @@ def test_bt_od_all():
         print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
               f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
 
-    # OdiBets table
     print("\n📊 ODIBETS HARVESTER")
     print("-" * 60)
     print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
@@ -618,8 +670,16 @@ def test_bt_od_all():
         print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
               f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
 
+    print("\n📊 SPORTPESA HARVESTER")
+    print("-" * 60)
+    print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
+    print("-" * 70)
+    for s, r in sp_results.items():
+        print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
+              f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
+
     print("\n" + "=" * 80)
     print("✅ Test completed.")
-
+    
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
