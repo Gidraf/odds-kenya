@@ -85,7 +85,7 @@ services:
       --concurrency=2
       --loglevel=info
       --logfile=/app/logs/celery-analytics.log
-      --hostname=analytics@%h
+      --hostname=analytics@%h"
     env_file: .env
     networks:
       - app-network
