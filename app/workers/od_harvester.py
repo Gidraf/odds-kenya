@@ -1,10 +1,8 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester.
-
-DEFAULTS:
-  • days = 30  (loop over 30 consecutive days)
+OdiBets upcoming + live harvester – FIXED for all sports with full market fetching.
+Uses sport-specific sub_type_id lists to get all available markets.
 """
 
 from __future__ import annotations
@@ -49,6 +47,7 @@ OD_SPORT_IDS: dict[str, int] = {
 
 OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
 
+# String to slug mapping
 _OD_STRING_SPORT_MAP: dict[str, str] = {
     "soccer":            "soccer",
     "football":          "soccer",
@@ -90,6 +89,34 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int) -> tuple[int, str]:
     return fallback_od_id, od_sport_to_slug(fallback_od_id)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SPORT-SPECIFIC SUB_TYPE_ID LISTS (from API responses)
+# ══════════════════════════════════════════════════════════════════════════════
+
+SPORT_SUB_TYPE_IDS: dict[int, str] = {
+    1:   "1,8,9,10,11,12,13,14,15,16,18,19,20,21,23,24,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,62,63,64,65,69,70,71,74,75,76,77,78,79,81,83,84,85,86,87,90,91,92,93,94,95,96,97,98,100,101,105,136,137,138,139,142,143,144,146,147,148,149,150,151,152,155,156,157,159,160,161,162,163,164,165,166,169,170,171,172,173,174,175,176,177,180,181,182,183,184,540,541,542,543,544,545,546,547,548,549,550,551,552,553,818,819,820,854,855,856,857,858,859,860,861,862,863,864,865,879,880,881,889,890,1179,1601",
+    2:   "1,11,14,18,47,60,64,66,74,83,86,88,94,219,220,223,227,228,229,234,235,292,293,298,301,302,303,304",
+    3:   "1,251,256,258,260,261,264,268,274,275,276,287,288",
+    4:   "1,10,14,15,16,18,19,20,26,29,199,220,406,443,446,452",
+    5:   "186",  # Tennis only has Winner market
+    6:   "1,10,11,15,16,18,26,37,47,52,60,63,64,66,68,74,83,85,86,94",
+    10:  "1,18,186,910,911",
+    11:  "186",  # American Football - just Winner
+    12:  "1,10,11,15,16,18,47,60,63,64,66,470",
+    20:  "186,187,237,238",
+    21:  "340",  # Cricket - Winner (incl. super over)
+    22:  "186",  # Darts - Winner
+    23:  "186,192,193,199,202,237,238,309,310,311,525,526,850,851,852,853",
+    117: "186",  # MMA - Winner
+    137: "1,10,11,16,18",  # eSoccer
+}
+
+# Default for any sport not listed (fallback to soccer)
+DEFAULT_SUB_TYPE_IDS = SPORT_SUB_TYPE_IDS[1]
+
+# For live – slim list for speed
+_LIVE_SUB_TYPE_IDS = "1,2,8,10,11,18,29,60,186,219,251,340,406"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # API ENDPOINTS + HEADERS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -121,11 +148,6 @@ _LIVE_SPORTS_KEY = "od:live:sports"
 _UPC_DATA_KEY    = "od:upcoming:{sport_slug}:data"
 _UPC_HASH_KEY    = "od:upcoming:{sport_slug}:hash"
 _UPC_CHAN_KEY    = "od:upcoming:{sport_slug}:updates"
-
-# Comprehensive sub_type_id list (1‑500) for upcoming
-_ALL_SUB_TYPE_IDS = ",".join(str(i) for i in range(1, 501))
-# Slim list for live
-_LIVE_SUB_TYPE_IDS = "1,2,8,10,11,18,29,60,186,219,251,340,406"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HTTP HELPERS
@@ -402,15 +424,18 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EVENT DETAIL (full markets for a match)
+# EVENT DETAIL (full markets for a match) – uses sport-specific sub_type_ids
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[str, dict[str, float]], dict]:
+    # Get sport-specific sub_type_ids, fallback to default
+    sub_type_ids = SPORT_SUB_TYPE_IDS.get(od_sport_id, DEFAULT_SUB_TYPE_IDS)
+
     params = {
         "resource": "sportevent",
         "id": str(event_id),
         "category_id": "",
-        "sub_type_id": _ALL_SUB_TYPE_IDS,
+        "sub_type_id": sub_type_ids,
         "builder": 0,
         "sportsbook": "sportsbook",
         "ua": HEADERS["user-agent"],
@@ -459,7 +484,7 @@ def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[
     return markets, meta
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (default 30 days)
+# UPCOMING MATCHES (30 days, with full market enrichment)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
@@ -478,12 +503,15 @@ def fetch_upcoming_matches(
         day = start_date + timedelta(days=offset)
         day_str = day.isoformat()
 
+        # Use the sport-specific sub_type_ids for the listing call as well
+        sub_type_ids = SPORT_SUB_TYPE_IDS.get(od_sport_id, DEFAULT_SUB_TYPE_IDS)
+
         params = {
             "resource": "sportevents",
             "platform": "mobile",
             "mode": 1,
             "sport_id": od_sport_id,
-            "sub_type_id": _ALL_SUB_TYPE_IDS,
+            "sub_type_id": sub_type_ids,
             "day": day_str,
         }
         data = _get(SBOOK_ODI, params=params, _throttle=True)
@@ -567,7 +595,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     return matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS
+# STREAMING GENERATORS (for SSE)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -580,6 +608,7 @@ def fetch_upcoming_stream(
 ) -> Generator[dict, None, None]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
     start_date = _date.today()
+    sub_type_ids = SPORT_SUB_TYPE_IDS.get(od_sport_id, DEFAULT_SUB_TYPE_IDS)
     count = 0
 
     for offset in range(days):
@@ -590,7 +619,7 @@ def fetch_upcoming_stream(
             "platform": "mobile",
             "mode": 1,
             "sport_id": od_sport_id,
-            "sub_type_id": _ALL_SUB_TYPE_IDS,
+            "sub_type_id": sub_type_ids,
             "day": day_str,
         }
         data = _get(SBOOK_ODI, params=params, _throttle=True)
