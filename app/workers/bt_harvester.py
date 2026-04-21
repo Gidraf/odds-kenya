@@ -1,14 +1,14 @@
 """
 app/workers/bt_harvester.py
 ============================
-Betika upcoming + live harvester – fixed for all sports.
+Betika upcoming + live harvester – FULLY FIXED for all sports.
 
 FIXES
 ─────
 • Correct sport ID mapping (from live sports endpoint)
-• Live fetch now filters by sport using `sport` parameter
+• Live fetch filters by sport using `sport` parameter
 • Proper parsing of live match response
-• Added debug logging for live counts
+• Full market fetching for upcoming matches
 """
 
 from __future__ import annotations
@@ -72,10 +72,10 @@ def bt_sport_to_slug(sport_id: int) -> str:
 # COMPREHENSIVE SUB_TYPE_ID LISTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-# For upcoming – full list to get all markets
+# For upcoming – full list to get all markets (1-500)
 _ALL_SUB_TYPE_IDS = ",".join(str(i) for i in range(1, 501))
 
-# For live – slim list for speed
+# For live – slim list for speed (core markets)
 _LIVE_SUB_TYPE_IDS = "1,186,340"
 
 # ══════════════════════════════════════════════════════════════════════════════

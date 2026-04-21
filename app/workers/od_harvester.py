@@ -1,14 +1,14 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester – fixed for all sports.
+OdiBets upcoming + live harvester – FULLY FIXED for all sports.
 
 FIXES
 ─────
 • Correct sport ID mapping (cricket=21, table-tennis=20, etc.)
-• Live fetch now properly filters by sport ID.
-• Added _OD_STRING_SPORT_MAP definition before use.
-• Debug output for sample team names.
+• Upcoming uses comprehensive sub_type_id (1‑500)
+• Parallel full market enrichment via fetch_event_detail
+• Live fetch filters by sport ID
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date as _date
-from typing import Any
+from typing import Any, Generator
 
 import httpx
 
@@ -30,57 +30,47 @@ from app.workers.mappers.betika import get_market_slug, normalize_outcome
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORRECT SPORT ID MAPS (based on OdiBets API responses)
+# CORRECT SPORT ID MAPS (from OdiBets API)
 # ══════════════════════════════════════════════════════════════════════════════
 
 OD_SPORT_IDS: dict[str, int] = {
     "soccer":            1,
     "basketball":        2,
-    "tennis":            3,
+    "tennis":            5,
     "ice-hockey":        4,
-    "rugby":             5,
+    "rugby":             12,
     "handball":          6,
     "table-tennis":      20,
     "cricket":           21,
     "volleyball":        23,
-    "baseball":          10,
+    "baseball":          3,
     "american-football": 11,
-    "mma":               15,
-    "boxing":            16,
-    "darts":             17,
-    "esoccer":           1001,
+    "mma":               117,
+    "boxing":            10,
+    "darts":             22,
+    "esoccer":           137,
 }
 
 OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
 
-# String to slug mapping (used in _resolve_sport)
+# String to slug mapping
 _OD_STRING_SPORT_MAP: dict[str, str] = {
     "soccer":            "soccer",
     "football":          "soccer",
-    "internationals":    "soccer",
-    "itl":               "soccer",
     "basketball":        "basketball",
     "tennis":            "tennis",
     "cricket":           "cricket",
     "rugby":             "rugby",
-    "rugby union":       "rugby",
-    "rugby league":      "rugby",
     "ice-hockey":        "ice-hockey",
-    "icehockey":         "ice-hockey",
-    "ice hockey":        "ice-hockey",
     "volleyball":        "volleyball",
     "handball":          "handball",
     "table-tennis":      "table-tennis",
-    "tabletennis":       "table-tennis",
-    "table tennis":      "table-tennis",
     "baseball":          "baseball",
     "mma":               "mma",
     "boxing":            "boxing",
     "darts":             "darts",
     "american football": "american-football",
-    "american-football": "american-football",
     "esoccer":           "esoccer",
-    "e-soccer":          "esoccer",
 }
 
 def slug_to_od_sport_id(slug: str) -> int:
@@ -105,7 +95,7 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int) -> tuple[int, str]:
     return fallback_od_id, od_sport_to_slug(fallback_od_id)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# API ENDPOINTS + HEADERS (unchanged)
+# API ENDPOINTS + HEADERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 API_BASE  = "https://api.odi.site"
@@ -114,7 +104,7 @@ SBOOK_ODI = f"{API_BASE}/odi/sportsbook"
 
 HEADERS: dict[str, str] = {
     "accept":             "application/json, text/plain, */*",
-    "accept-language":    "en-GB,en;q=0.9",
+    "accept-language":    "en-GB,en-US;q=0.9,en;q=0.8",
     "authorization":      "Bearer",
     "content-type":       "application/json",
     "origin":             "https://odibets.com",
@@ -128,7 +118,7 @@ HEADERS: dict[str, str] = {
     "sec-fetch-site":     "cross-site",
 }
 
-# Redis key patterns (kept for compatibility)
+# Redis key patterns (compatibility)
 _LIVE_DATA_KEY   = "od:live:{sport_id}:data"
 _LIVE_HASH_KEY   = "od:live:{sport_id}:hash"
 _LIVE_CHAN_KEY   = "od:live:{sport_id}:updates"
@@ -137,12 +127,13 @@ _UPC_DATA_KEY    = "od:upcoming:{sport_slug}:data"
 _UPC_HASH_KEY    = "od:upcoming:{sport_slug}:hash"
 _UPC_CHAN_KEY    = "od:upcoming:{sport_slug}:updates"
 
-# Comprehensive sub_type_id list (1‑500)
+# Comprehensive sub_type_id list (1‑500) for upcoming
 _ALL_SUB_TYPE_IDS = ",".join(str(i) for i in range(1, 501))
+# Slim list for live
 _LIVE_SUB_TYPE_IDS = "1,2,8,10,11,18,29,60,186,219,251,340,406"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HTTP HELPERS (unchanged)
+# HTTP HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle: bool = False) -> dict | list | None:
@@ -162,7 +153,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle:
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESPONSE UNWRAPPING (unchanged)
+# RESPONSE UNWRAPPING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int) -> list[dict]:
@@ -217,7 +208,7 @@ def _unwrap_live_response(data: dict | list) -> list[dict]:
     return []
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MARKET PARSING (unchanged)
+# MARKET PARSING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_od_specifiers(spec_string: str) -> dict:
@@ -334,7 +325,7 @@ def _parse_all_markets(
     return result
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MATCH NORMALISATION (unchanged)
+# MATCH NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict | None:
@@ -416,7 +407,7 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EVENT DETAIL (full markets)
+# EVENT DETAIL (full markets for a match)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[str, dict[str, float]], dict]:
@@ -473,7 +464,7 @@ def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[
     return markets, meta
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (with full markets)
+# UPCOMING MATCHES (with full market enrichment)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
@@ -535,14 +526,10 @@ def fetch_upcoming_matches(
     return matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE MATCHES (fixed to filter by sport ID)
+# LIVE MATCHES (filtered by sport)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
-    """
-    Fetch live matches from OdiBets.
-    If sport_slug is provided, filters by that sport's ID.
-    """
     params: dict[str, Any] = {
         "resource": "live",
         "sportsbook": "sportsbook",
@@ -563,14 +550,11 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     for raw in raw_events:
         if not isinstance(raw, dict):
             continue
-        # Determine sport ID from raw data (fallback to requested sport if available)
         raw_sport_id = raw.get("sport_id")
-        if raw_sport_id is None:
-            # If no sport_id in raw, use the requested one
-            if sport_slug:
-                raw_sport_id = slug_to_od_sport_id(sport_slug)
-            else:
-                raw_sport_id = 1
+        if raw_sport_id is None and sport_slug:
+            raw_sport_id = slug_to_od_sport_id(sport_slug)
+        else:
+            raw_sport_id = raw_sport_id or 1
         try:
             raw_sport_id = int(raw_sport_id)
         except (TypeError, ValueError):
@@ -583,7 +567,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     return matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (unchanged)
+# STREAMING GENERATORS (for SSE)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -643,7 +627,7 @@ def fetch_live_stream(
         yield m
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ALIASES & STUBS (for compatibility)
+# ALIASES & STUBS (compatibility)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming(sport_slug: str = "soccer", fetch_full_markets: bool = True, **kwargs) -> list[dict]:
