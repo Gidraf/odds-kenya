@@ -103,7 +103,7 @@ def create_app() -> Flask:
     from app.views.customer.analytic_debug import bp_raw_stream
     from app.views.customer.bk_streams import bp_bk_streams
     from app.api import bp_public, bp_matches, bp_live, bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers
-    from app.views.odds.admin import admin_bp as debug_admin
+    from app.views.odds.admin import bp_admin as debug_admin
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
