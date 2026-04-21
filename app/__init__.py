@@ -78,7 +78,7 @@ def create_app() -> Flask:
     from app.views.onboarding                         import bp_onboarding
     from app.views.vendors                            import bp_vendor
     from app.views.sbo                                import bp_sbo
-    # from app.views.admin                              import admin_bp
+    from app.views.admin                              import admin_bp
     from app.views.customer_auth                      import bp_customer
     from app.views.subscriptions                      import bp_customer_subscriptions
     from app.views.webhook                            import bp_interceptor
@@ -103,7 +103,7 @@ def create_app() -> Flask:
     from app.views.customer.analytic_debug import bp_raw_stream
     from app.views.customer.bk_streams import bp_bk_streams
     from app.api import bp_public, bp_matches, bp_live, bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers
-    from app.views.admin import admin_bp as debug_admin
+    from app.views.odds.admin import admin_bp as debug_admin
 
     flask_app.register_blueprint(bp_search)
     flask_app.register_blueprint(authorization)
@@ -114,7 +114,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(mapping_bp)
     flask_app.register_blueprint(bp_vendor,     url_prefix="/api/vendors")
     flask_app.register_blueprint(bp_onboarding, url_prefix="/api/onboarding")
-    # flask_app.register_blueprint(admin_bp)
+    flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
     flask_app.register_blueprint(bp_story)
