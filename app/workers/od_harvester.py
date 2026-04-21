@@ -1,14 +1,10 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester – FIXED for all sports, 7-day upcoming.
+OdiBets upcoming + live harvester.
 
-FIXES
-─────
-• Loops over multiple days (default 7) for upcoming matches.
-• Uses comprehensive sub_type_id (1‑500) to fetch all markets.
-• Parallel full market enrichment via fetch_event_detail.
-• Correct sport ID mapping (cricket=21, table-tennis=20, etc.)
+DEFAULTS:
+  • days = 30  (loop over 30 consecutive days)
 """
 
 from __future__ import annotations
@@ -53,7 +49,6 @@ OD_SPORT_IDS: dict[str, int] = {
 
 OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
 
-# String to slug mapping
 _OD_STRING_SPORT_MAP: dict[str, str] = {
     "soccer":            "soccer",
     "football":          "soccer",
@@ -464,21 +459,17 @@ def fetch_event_detail(event_id: str | int, od_sport_id: int = 1) -> tuple[dict[
     return markets, meta
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (multiple days, with full market enrichment)
+# UPCOMING MATCHES (default 30 days)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
     sport_slug: str = "soccer",
-    days: int = 7,
+    days: int = 30,
     fetch_full_markets: bool = True,
     max_matches: int | None = None,
     max_workers: int = 8,
     **kwargs,
 ) -> list[dict]:
-    """
-    Fetch upcoming matches for the next `days` (default 7) for a given sport.
-    Aggregates matches across days, then enriches with full markets in parallel.
-    """
     od_sport_id = slug_to_od_sport_id(sport_slug)
     all_matches: list[dict] = []
     start_date = _date.today()
@@ -535,7 +526,7 @@ def fetch_upcoming_matches(
     return all_matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE MATCHES (filtered by sport)
+# LIVE MATCHES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
@@ -576,12 +567,12 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     return matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (for SSE)
+# STREAMING GENERATORS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
     sport_slug: str = "soccer",
-    days: int = 7,
+    days: int = 30,
     max_matches: int | None = None,
     fetch_full_markets: bool = True,
     sleep_between: float = 0.3,
@@ -644,7 +635,7 @@ def fetch_live_stream(
 # ALIASES & STUBS (compatibility)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def fetch_upcoming(sport_slug: str = "soccer", days: int = 7, fetch_full_markets: bool = True, **kwargs) -> list[dict]:
+def fetch_upcoming(sport_slug: str = "soccer", days: int = 30, fetch_full_markets: bool = True, **kwargs) -> list[dict]:
     return fetch_upcoming_matches(sport_slug, days=days, fetch_full_markets=fetch_full_markets, **kwargs)
 
 def fetch_live(sport_slug: str | None = None, **kwargs) -> list[dict]:
@@ -693,7 +684,7 @@ class OdiBetsHarvesterPlugin:
     bookie_name = "OdiBets"
     sport_slugs = list(OD_SPORT_IDS.keys())
 
-    def fetch_upcoming(self, sport_slug: str, days: int = 7, **kwargs) -> list[dict]:
+    def fetch_upcoming(self, sport_slug: str, days: int = 30, **kwargs) -> list[dict]:
         return fetch_upcoming_matches(sport_slug, days=days, **kwargs)
 
     def fetch_live(self, sport_slug: str | None = None) -> list[dict]:

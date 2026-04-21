@@ -1,14 +1,11 @@
 """
 app/workers/bt_harvester.py
 ============================
-Betika upcoming + live harvester – FULLY FIXED for all sports.
+Betika upcoming + live harvester.
 
-FIXES
-─────
-• Correct sport ID mapping (from live sports endpoint)
-• Live fetch filters by sport using `sport` parameter
-• Proper parsing of live match response
-• Full market fetching for upcoming matches
+DEFAULTS:
+  • days = 30  (upcoming matches for the next 30 days, via period_id=9)
+  • max_pages = 30  (to fetch all matches)
 """
 
 from __future__ import annotations
@@ -69,13 +66,21 @@ def bt_sport_to_slug(sport_id: int) -> str:
     return BT_SPORT_ID_TO_SLUG.get(sport_id, "soccer")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# HELPER: map days to Betika period_id (days >= 3 → all upcoming)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def days_to_period_id(days: int) -> int:
+    if days <= 1:
+        return -1      # Today
+    if days <= 2:
+        return -2      # Next 48hrs
+    return 9           # All upcoming (covers > 1 month)
+
+# ══════════════════════════════════════════════════════════════════════════════
 # COMPREHENSIVE SUB_TYPE_ID LISTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-# For upcoming – full list to get all markets (1-500)
 _ALL_SUB_TYPE_IDS = ",".join(str(i) for i in range(1, 501))
-
-# For live – slim list for speed (core markets)
 _LIVE_SUB_TYPE_IDS = "1,186,340"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -83,8 +88,6 @@ _LIVE_SUB_TYPE_IDS = "1,186,340"
 # ══════════════════════════════════════════════════════════════════════════════
 
 API_BASE = "https://api.betika.com/v1/uo"
-LIVE_BASE = "https://live.betika.com/v1/uo"
-
 HEADERS: dict[str, str] = {
     "accept": "application/json, text/plain, */*",
     "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
@@ -112,10 +115,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 8.0) -> dict | N
 # MARKET PARSING
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _parse_all_inline_markets(
-    raw_mkts: list[dict],
-    sport_slug: str,
-) -> dict[str, dict[str, float]]:
+def _parse_all_inline_markets(raw_mkts: list[dict], sport_slug: str) -> dict[str, dict[str, float]]:
     result: dict[str, dict[str, float]] = {}
     for mkt in raw_mkts:
         sid = str(mkt.get("sub_type_id", ""))
@@ -205,7 +205,6 @@ def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: 
 
         markets = _parse_all_inline_markets(raw.get("odds") or [], sport_slug)
 
-        # Fallback to home/away/draw odds
         if "home_odd" in raw and not any(k.endswith("1x2") for k in markets):
             try:
                 ho = float(raw.get("home_odd") or 0)
@@ -250,17 +249,18 @@ def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: 
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES
+# UPCOMING MATCHES (default 30 days)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
     sport_slug: str = "soccer",
-    max_pages: int = 10,
+    days: int = 30,
+    max_pages: int = 30,
     fetch_full: bool = True,
     max_workers: int = 8,
-    period_id: int = 9,
 ) -> list[dict]:
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
+    period_id = days_to_period_id(days)
     all_matches: list[dict] = []
 
     for page in range(1, max_pages + 1):
@@ -293,18 +293,14 @@ def fetch_upcoming_matches(
     if fetch_full and all_matches:
         all_matches = enrich_matches_with_full_markets(all_matches, max_workers=max_workers)
 
-    logger.info("BT upcoming %s: %d matches", sport_slug, len(all_matches))
+    logger.info("BT upcoming %s (days=%d, period_id=%d): %d matches", sport_slug, days, period_id, len(all_matches))
     return all_matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE MATCHES (FIXED)
+# LIVE MATCHES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
-    """
-    Fetch live matches from Betika.
-    If bt_sport_id is provided, filters by that sport.
-    """
     params: dict[str, Any] = {
         "page": 1,
         "limit": 1000,
@@ -321,7 +317,6 @@ def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
     raw_matches = data.get("data") or []
     results: list[dict] = []
     for raw in raw_matches:
-        # Determine sport_id from raw (fallback to requested)
         raw_sport_id = raw.get("sport_id")
         if raw_sport_id is None and bt_sport_id is not None:
             raw_sport_id = bt_sport_id
@@ -344,13 +339,15 @@ def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
 
 def fetch_upcoming_stream(
     sport_slug: str = "soccer",
+    days: int = 30,
     max_matches: int | None = None,
-    max_pages: int = 100,
+    max_pages: int = 30,
     fetch_full_markets: bool = True,
     sleep_between: float = 0.3,
     **kwargs,
 ) -> Generator[dict, None, None]:
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
+    period_id = days_to_period_id(days)
     count = 0
     for page in range(1, max_pages + 1):
         params = {
@@ -360,7 +357,7 @@ def fetch_upcoming_stream(
             "sub_type_id": _ALL_SUB_TYPE_IDS,
             "sport_id": bt_sport_id,
             "sort_id": 2,
-            "period_id": 9,
+            "period_id": period_id,
             "esports": "false",
         }
         data = _get(f"{API_BASE}/matches", params=params, timeout=8.0)
@@ -389,18 +386,11 @@ def fetch_upcoming_stream(
         if page * limit >= total:
             break
 
-def fetch_live_stream(
-    sport_slug: str,
-    **kwargs,
-) -> Generator[dict, None, None]:
+def fetch_live_stream(sport_slug: str, **kwargs) -> Generator[dict, None, None]:
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
     matches = fetch_live_matches(bt_sport_id)
     for m in matches:
         yield m
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PUBLIC API
-# ══════════════════════════════════════════════════════════════════════════════
 
 __all__ = [
     "fetch_upcoming_matches",
