@@ -1320,5 +1320,267 @@ function toggleCollapsible(el) {{
             print(f"    - {o.get('home_team_name')} vs {o.get('away_team_name')} ({time_display}) – only from {list(o.get('external_ids', {}).keys())[0]}")
 
 
+@flask_app.cli.command("full-report")
+@click.option("--days", default=30, help="Days ahead to fetch")
+@click.option("--max-matches", default=10, help="Max unified matches to display per sport")
+def full_report(days, max_matches):
+    """
+    Generate a complete odds comparison report for ALL sports (30 days).
+    Outputs HTML and JSON files.
+    """
+    import json
+    import time
+    from datetime import datetime
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from app.workers.bt_harvester import fetch_upcoming_matches, CANONICAL_SPORT_IDS
+    from app.workers.od_harvester import fetch_upcoming_matches as od_fetch_upcoming, OD_SPORT_IDS
+    from app.workers.sp_harvester import fetch_upcoming as sp_fetch_upcoming, SP_SPORT_ID
+    from app.workers.b2b_harvester import fetch_all_b2b_sport, B2B_BOOKMAKERS, B2B_SUPPORTED_SPORTS
+    from app.workers.fuzzy_matcher import match_dict_to_candidate, bulk_align
+
+    # Build list of all sports
+    all_sports = set()
+    all_sports.update(CANONICAL_SPORT_IDS.keys())
+    all_sports.update(OD_SPORT_IDS.keys())
+    all_sports.update([s for s, _ in SP_SPORT_ID.items()])
+    all_sports.update(B2B_SUPPORTED_SPORTS)
+    ALL_SPORTS = sorted(list(all_sports))
+
+    print(f"\n📊 Generating full odds comparison report for ALL {len(ALL_SPORTS)} sports")
+    print(f"   Days ahead: {days} | Display limit: {max_matches} matches per sport")
+    print(f"   Started at: {datetime.now()}\n")
+
+    def process_sport(sport_slug):
+        print(f"🏆 Processing {sport_slug}...")
+        start = time.time()
+        sport_data = {
+            "sport": sport_slug,
+            "bookmaker_counts": {},
+            "unified_matches": [],
+            "errors": []
+        }
+
+        # Fetch from each bookmaker
+        try:
+            bt = fetch_upcoming_matches(sport_slug=sport_slug, days=days, fetch_full=False, max_pages=30)
+            sport_data["bookmaker_counts"]["betika"] = len(bt)
+        except Exception as e:
+            sport_data["errors"].append(f"betika: {e}")
+            bt = []
+
+        try:
+            od = od_fetch_upcoming(sport_slug=sport_slug, days=days, fetch_full_markets=False)
+            sport_data["bookmaker_counts"]["odibets"] = len(od)
+        except Exception as e:
+            sport_data["errors"].append(f"odibets: {e}")
+            od = []
+
+        try:
+            sp = sp_fetch_upcoming(sport_slug=sport_slug, days=days, max_matches=None, fetch_full_markets=False)
+            sport_data["bookmaker_counts"]["sportpesa"] = len(sp)
+        except Exception as e:
+            sport_data["errors"].append(f"sportpesa: {e}")
+            sp = []
+
+        try:
+            b2b_per_bk = fetch_all_b2b_sport(sport_slug, mode="upcoming", max_workers=7)
+            for bk, matches in b2b_per_bk.items():
+                sport_data["bookmaker_counts"][bk] = len(matches)
+        except Exception as e:
+            sport_data["errors"].append(f"b2b: {e}")
+            b2b_per_bk = {}
+
+        # Combine all matches
+        all_bk_matches = {
+            "betika": bt,
+            "odibets": od,
+            "sportpesa": sp,
+            **b2b_per_bk
+        }
+
+        # Choose anchor (bookmaker with most matches)
+        anchor_bk = max(all_bk_matches.items(), key=lambda x: len(x[1]))[0]
+        anchor_matches = all_bk_matches[anchor_bk]
+
+        if not anchor_matches:
+            sport_data["unified_matches"] = []
+            sport_data["anchor_bk"] = anchor_bk
+            return sport_slug, sport_data
+
+        # Build anchor list for fuzzy matcher
+        anchor_list = []
+        for m in anchor_matches:
+            anchor_list.append({
+                "id": m.get("sp_game_id") or m.get("bt_match_id") or m.get("od_match_id") or m.get("b2b_match_id"),
+                "betradar_id": m.get("betradar_id") or "",
+                "home_team_name": m.get("home_team", ""),
+                "away_team_name": m.get("away_team", ""),
+                "start_time": m.get("start_time"),
+                "competition_name": m.get("competition") or m.get("competition_name"),
+                "external_ids": {anchor_bk: m.get("sp_game_id") or m.get("bt_match_id") or m.get("od_match_id")}
+            })
+
+        # Align other bookmakers
+        unified_map = {u["id"]: u for u in anchor_list}
+        for bk, matches in all_bk_matches.items():
+            if bk == anchor_bk or not matches:
+                continue
+            candidates = [match_dict_to_candidate(m, bk_slug=bk) for m in matches]
+            updates, creates = bulk_align(candidates, anchor_list, sport_slug)
+            for upd in updates:
+                uid = upd.unified_match_id
+                if uid in unified_map:
+                    unified_map[uid].setdefault("bookmakers", {})[bk] = {
+                        "match_id": upd.candidate.external_id,
+                        "markets": upd.candidate.raw.get("markets", {})
+                    }
+            for create in creates:
+                cand = create.candidate
+                new_id = f"new_{bk}_{cand.external_id}"
+                unified_map[new_id] = {
+                    "id": new_id,
+                    "betradar_id": "",
+                    "home_team_name": cand.raw.get("home_team", ""),
+                    "away_team_name": cand.raw.get("away_team", ""),
+                    "start_time": cand.raw.get("start_time"),
+                    "competition_name": cand.raw.get("competition") or cand.raw.get("competition_name"),
+                    "external_ids": {bk: cand.external_id},
+                    "bookmakers": {bk: {"match_id": cand.external_id, "markets": cand.raw.get("markets", {})}}
+                }
+
+        unified_matches = list(unified_map.values())
+        # Add anchor bookmaker markets
+        for um in unified_matches:
+            if anchor_bk in um.get("external_ids", {}):
+                anchor_id = um["external_ids"][anchor_bk]
+                anchor_match = next((m for m in anchor_matches if m.get("sp_game_id") == anchor_id or m.get("bt_match_id") == anchor_id or m.get("od_match_id") == anchor_id or m.get("b2b_match_id") == anchor_id), None)
+                if anchor_match:
+                    um.setdefault("bookmakers", {})[anchor_bk] = {
+                        "match_id": anchor_id,
+                        "markets": anchor_match.get("markets", {})
+                    }
+
+        sport_data["anchor_bk"] = anchor_bk
+        sport_data["unified_matches"] = unified_matches
+        sport_data["elapsed_ms"] = int((time.time() - start) * 1000)
+        print(f"   ✅ Unified: {len(unified_matches)} matches in {sport_data['elapsed_ms']}ms")
+        return sport_slug, sport_data
+
+    # Process all sports in parallel
+    results = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(process_sport, s): s for s in ALL_SPORTS}
+        for future in as_completed(futures):
+            sport, data = future.result()
+            results[sport] = data
+
+    # Generate HTML report
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    html_path = f"odds_comparison_{timestamp}.html"
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(f"""<html>
+<head><title>Full Odds Comparison Report – {datetime.now()}</title>
+<style>
+body {{ font-family: Arial, sans-serif; margin: 20px; }}
+table {{ border-collapse: collapse; margin-bottom: 20px; width: 100%; }}
+th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; vertical-align: top; }}
+th {{ background: #f0f0f0; }}
+.collapsible {{
+    background-color: #f9f9f9; cursor: pointer; padding: 10px; width: 100%;
+    border: none; text-align: left; outline: none; font-size: 1.2em; margin-top: 10px;
+}}
+.active, .collapsible:hover {{ background-color: #e9e9e9; }}
+.content {{ padding: 0 18px; display: none; overflow-x: auto; background-color: #f1f1f1; }}
+.match-container {{ margin-bottom: 30px; border-bottom: 1px solid #ccc; }}
+</style>
+<script>
+function toggleCollapsible(el) {{
+    el.classList.toggle("active");
+    var content = el.nextElementSibling;
+    content.style.display = content.style.display === "block" ? "none" : "block";
+}}
+</script>
+</head>
+<body>
+<h1>📊 Full Cross‑Bookmaker Odds Comparison Report</h1>
+<p>Generated: {datetime.now()}</p>
+<p>Days ahead: {days} | Display limit per sport: {max_matches} matches</p>
+
+<h2>Summary per Sport</h2>
+<table>
+    <tr><th>Sport</th><th>Betika</th><th>OdiBets</th><th>Sportpesa</th><th>B2B (merged)</th><th>Unified</th><th>Anchor</th><th>Time (ms)</th></tr>
+""")
+        for sport, data in results.items():
+            bt = data["bookmaker_counts"].get("betika", 0)
+            od = data["bookmaker_counts"].get("odibets", 0)
+            sp = data["bookmaker_counts"].get("sportpesa", 0)
+            b2b_total = sum(v for k,v in data["bookmaker_counts"].items() if k not in ("betika","odibets","sportpesa"))
+            unified = len(data["unified_matches"])
+            anchor = data.get("anchor_bk", "?")
+            elapsed = data.get("elapsed_ms", 0)
+            f.write(f"<tr><td>{sport}</td><td>{bt}</td><td>{od}</td><td>{sp}</td><td>{b2b_total}</td><td>{unified}</td><td>{anchor}</td><td>{elapsed}</td></tr>")
+        f.write("</table>")
+
+        # Detailed matches per sport
+        for sport, data in results.items():
+            unified = data["unified_matches"]
+            if not unified:
+                continue
+            f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">{sport.upper()} – {len(unified)} unified matches (showing first {min(max_matches, len(unified))})</button>')
+            f.write('<div class="content">')
+            f.write(f'<p><strong>Anchor bookmaker:</strong> {data.get("anchor_bk")}</p>')
+            for idx, um in enumerate(unified[:max_matches]):
+                f.write('<div class="match-container">')
+                f.write(f'<h3>{idx+1}. {um.get("home_team_name")} vs {um.get("away_team_name")}</h3>')
+                f.write(f'<p><strong>Competition:</strong> {um.get("competition_name")}<br>')
+                f.write(f'<strong>Start time:</strong> {um.get("start_time")}<br>')
+                f.write(f'<strong>Betradar ID:</strong> {um.get("betradar_id") or "N/A"}</p>')
+
+                # Collect all markets across bookmakers
+                all_markets = set()
+                for bk, bk_data in um.get("bookmakers", {}).items():
+                    all_markets.update(bk_data.get("markets", {}).keys())
+                all_markets = sorted(all_markets)
+
+                if not all_markets:
+                    f.write("<p><em>No markets available for this match.</em></p>")
+                else:
+                    bookmakers = list(um["bookmakers"].keys())
+                    f.write(f'<table><tr><th>Market / Outcome</th>')
+                    for bk in bookmakers:
+                        f.write(f'<th>{bk}</th>')
+                    f.write('</tr>')
+                    for mkt in all_markets:
+                        outcomes = set()
+                        for bk in bookmakers:
+                            outcomes.update(um["bookmakers"][bk].get("markets", {}).get(mkt, {}).keys())
+                        outcomes = sorted(outcomes)
+                        # Market name row
+                        f.write(f'<tr><td colspan="{len(bookmakers)+1}"><strong>{mkt}</strong></td></tr>')
+                        for out in outcomes:
+                            f.write(f'<tr><td style="padding-left:20px;">{out}</td>')
+                            for bk in bookmakers:
+                                odds = um["bookmakers"][bk].get("markets", {}).get(mkt, {}).get(out)
+                                if odds:
+                                    f.write(f'<td>{odds:.2f}</td>')
+                                else:
+                                    f.write('<td>—</td>')
+                            f.write('</tr>')
+                    f.write('</table>')
+                f.write('</div>')
+            f.write('</div>')
+        f.write("</body></html>")
+
+    print(f"\n📄 HTML report saved to {html_path}")
+
+    # Save raw JSON
+    json_path = f"odds_comparison_{timestamp}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, default=str, indent=2)
+    print(f"💾 JSON data saved to {json_path}")
+    print("\n✅ Report generation complete.")
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
