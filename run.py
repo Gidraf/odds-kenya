@@ -1104,7 +1104,7 @@ def debug_unify(sport, days):
 
     # 1. Betika
     try:
-        bt = fetch_upcoming_matches(sport_slug=sport, days=days, fetch_full=False, max_pages=20)
+        bt = fetch_upcoming_matches(sport_slug=sport, days=days, fetch_full=False, max_pages=30)
         bookmaker_data["betika"] = bt
         print(f"✅ Betika: {len(bt)} matches")
     except Exception as e:
@@ -1138,12 +1138,14 @@ def debug_unify(sport, days):
     except Exception as e:
         print(f"❌ B2B: {e}")
 
-    # Prepare anchor (prefer Sportpesa for betradar_id)
-    anchor_bk = "sportpesa" if bookmaker_data.get("sportpesa") else "betika"
+    # Determine anchor bookmaker: the one with the MOST matches
+    anchor_bk = max(bookmaker_data.items(), key=lambda x: len(x[1]))[0]
     anchor_matches = bookmaker_data.get(anchor_bk, [])
     if not anchor_matches:
         print("\n⚠️ No anchor matches found – unification impossible.")
         return
+
+    print(f"\n📌 Using anchor: {anchor_bk} ({len(anchor_matches)} matches)")
 
     # Convert anchor to unified format
     anchor_list = []
@@ -1177,6 +1179,7 @@ def debug_unify(sport, days):
                 alignment_log.append({
                     "bk": bk,
                     "match": f"{upd.candidate.raw.get('home_team')} vs {upd.candidate.raw.get('away_team')}",
+                    "start_time": upd.candidate.raw.get('start_time'),
                     "matched_to": uid,
                     "confidence": upd.confidence
                 })
@@ -1197,6 +1200,7 @@ def debug_unify(sport, days):
             alignment_log.append({
                 "bk": bk,
                 "match": f"{cand.raw.get('home_team')} vs {cand.raw.get('away_team')}",
+                "start_time": cand.raw.get('start_time'),
                 "matched_to": "NEW (not in anchor)",
                 "confidence": create.confidence
             })
@@ -1257,7 +1261,7 @@ function toggleCollapsible(el) {{
 <body>
 <h1>🔗 Unification Debug – {sport.upper()}</h1>
 <p>Generated: {datetime.now()}</p>
-<p>Anchor bookmaker: {anchor_bk}</p>
+<p>Anchor bookmaker: {anchor_bk} (most matches: {len(anchor_matches)})</p>
 <h2>Summary</h2>
 <ul>
 <li>Total raw matches across all bookmakers: {sum(output['bookmaker_counts'].values())}</li>
@@ -1267,31 +1271,36 @@ function toggleCollapsible(el) {{
 
 <h2>Raw matches per bookmaker</h2>
 <table>
-  <tr><th>Bookmaker</th><th>Match count</th></tr>
+   <tr><th>Bookmaker</th><th>Match count</th></tr>
 """)
         for bk, cnt in output['bookmaker_counts'].items():
             f.write(f"<tr><td>{bk}</td><td>{cnt}</td></tr>")
         f.write("</table>")
 
-        f.write("<h2>Alignment log</h2><table><tr><th>Bookmaker</th><th>Match</th><th>Matched to</th><th>Confidence</th></tr>")
+        f.write("<h2>Alignment log</h2><table><tr><th>Bookmaker</th><th>Match</th><th>Time</th><th>Matched to</th><th>Confidence</th></tr>")
         for log in alignment_log:
-            f.write(f"<tr><td>{log['bk']}</td><td>{log['match']}</td><td>{log['matched_to']}</td><td>{log['confidence']:.2f}</td></tr>")
+            match_time = log.get('start_time', '') or ''
+            # Format time for display (first 16 chars: YYYY-MM-DD HH:MM)
+            time_display = match_time[:16] if match_time else '?'
+            f.write(f"<tr><td>{log['bk']}</td><td>{log['match']}</td><td>{time_display}</td><td>{log['matched_to']}</td><td>{log['confidence']:.2f}</td></tr>")
         f.write("</table>")
 
         f.write("<h2>Unified matches (collapsible)</h2>")
         for idx, um in enumerate(unified_matches[:50]):  # limit for readability
-            f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">#{idx+1}: {um.get("home_team_name")} vs {um.get("away_team_name")} – {um["bookmaker_count"]} bookmakers</button>')
+            # Format start time nicely
+            start_time = um.get("start_time", "")
+            time_display = start_time[:16] if start_time else "TBD"
+            f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">#{idx+1}: {um.get("home_team_name")} vs {um.get("away_team_name")} – {um["bookmaker_count"]} bookmakers – {time_display}</button>')
             f.write('<div class="content">')
-            f.write(f"<p><b>Betradar ID:</b> {um.get('betradar_id')}<br>")
-            f.write(f"<b>Competition:</b> {um.get('competition_name')}<br>")
-            f.write(f"<b>Start time:</b> {um.get('start_time')}</p>")
+            f.write(f"<p><b>Start time:</b> {um.get('start_time')}<br>")
+            f.write(f"<b>Betradar ID:</b> {um.get('betradar_id')}<br>")
+            f.write(f"<b>Competition:</b> {um.get('competition_name')}</p>")
             f.write("<h4>Bookmakers & markets</h4><ul>")
             for bk, bk_data in um.get("bookmakers", {}).items():
                 mkts = list(bk_data.get("markets", {}).keys())
                 f.write(f"<li><b>{bk}</b>: {len(mkts)} markets – {', '.join(mkts[:10])}{'...' if len(mkts)>10 else ''}</li>")
             # Also show anchor bookmaker if present
             if anchor_bk in um.get("external_ids", {}):
-                # Need to fetch anchor markets from raw data
                 anchor_match = next((m for m in bookmaker_data.get(anchor_bk, []) if m.get("sp_game_id") == um["external_ids"][anchor_bk]), None)
                 if anchor_match:
                     mkts = list(anchor_match.get("markets", {}).keys())
@@ -1299,13 +1308,17 @@ function toggleCollapsible(el) {{
             f.write("</ul>")
             f.write('</div>')
         f.write("</body></html>")
+
     print(f"📄 HTML report saved: {html_path}")
 
     print(f"\n🎯 Orphan matches (not unified with any other bookmaker): {len(orphans)}")
     if orphans:
         print("  First 5 orphans:")
         for o in orphans[:5]:
-            print(f"    - {o.get('home_team_name')} vs {o.get('away_team_name')} (only from {list(o.get('external_ids', {}).keys())[0]})")
+            start_time = o.get("start_time", "")
+            time_display = start_time[:16] if start_time else "TBD"
+            print(f"    - {o.get('home_team_name')} vs {o.get('away_team_name')} ({time_display}) – only from {list(o.get('external_ids', {}).keys())[0]}")
+
 
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
