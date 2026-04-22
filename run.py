@@ -927,5 +927,151 @@ def get_unified_matches():
         "matches": [m.to_dict() for m in matches]  # ensure to_dict exists
     })
 
+@flask_app.cli.command("debug-markets-per-bookmaker")
+def debug_markets_per_bookmaker():
+    """
+    For each sport, fetch one match from each bookmaker (Betika, OdiBets, Sportpesa, B2B)
+    and display all markets they return (without unification).
+    Saves HTML and JSON reports.
+    """
+    import json
+    from datetime import datetime
+    from app.workers.bt_harvester import fetch_upcoming_matches, get_full_markets, CANONICAL_SPORT_IDS
+    from app.workers.od_harvester import fetch_upcoming_matches as od_fetch, fetch_full_markets_for_match, OD_SPORT_IDS
+    from app.workers.sp_harvester import fetch_upcoming as sp_fetch, SP_SPORT_ID
+    from app.workers.b2b_harvester import fetch_single_bk, B2B_BOOKMAKERS, B2B_SUPPORTED_SPORTS
+
+    # Combine all sports from all sources
+    all_sports = set()
+    all_sports.update(CANONICAL_SPORT_IDS.keys())
+    all_sports.update(OD_SPORT_IDS.keys())
+    all_sports.update([s for s, _ in SP_SPORT_ID.items()])
+    all_sports.update(B2B_SUPPORTED_SPORTS)
+    all_sports = sorted(list(all_sports))
+
+    report = []
+    json_data = {}
+
+    for sport in all_sports:
+        print(f"Processing {sport}...")
+        sport_data = {"sport": sport, "bookmakers": {}}
+
+        # Betika
+        try:
+            bt_matches = fetch_upcoming_matches(sport_slug=sport, days=3, fetch_full=False, max_pages=1)
+            if bt_matches:
+                first = bt_matches[0]
+                pid = first.get("bt_parent_id")
+                if pid:
+                    full_markets = get_full_markets(pid, sport)
+                    sport_data["bookmakers"]["betika"] = {
+                        "match": f"{first.get('home_team')} vs {first.get('away_team')}",
+                        "start_time": first.get("start_time"),
+                        "market_count": len(full_markets),
+                        "markets": full_markets  # dict of {slug: {outcome: price}}
+                    }
+        except Exception as e:
+            sport_data["bookmakers"]["betika"] = {"error": str(e)}
+
+        # OdiBets
+        try:
+            od_matches = od_fetch(sport_slug=sport, days=3, fetch_full_markets=False, max_matches=1)
+            if od_matches:
+                first = od_matches[0]
+                br_id = first.get("betradar_id")
+                if br_id:
+                    full_markets = fetch_full_markets_for_match(br_id, OD_SPORT_IDS.get(sport, 1))
+                    sport_data["bookmakers"]["odibets"] = {
+                        "match": f"{first.get('home_team')} vs {first.get('away_team')}",
+                        "start_time": first.get("start_time"),
+                        "market_count": len(full_markets),
+                        "markets": full_markets
+                    }
+        except Exception as e:
+            sport_data["bookmakers"]["odibets"] = {"error": str(e)}
+
+        # Sportpesa
+        try:
+            sp_matches = sp_fetch(sport_slug=sport, days=3, max_matches=1, fetch_full_markets=True)
+            if sp_matches:
+                first = sp_matches[0]
+                sport_data["bookmakers"]["sportpesa"] = {
+                    "match": f"{first.get('home_team')} vs {first.get('away_team')}",
+                    "start_time": first.get("start_time"),
+                    "market_count": first.get("market_count", 0),
+                    "markets": first.get("markets", {})
+                }
+        except Exception as e:
+            sport_data["bookmakers"]["sportpesa"] = {"error": str(e)}
+
+        # B2B bookmakers
+        for bk in B2B_BOOKMAKERS:
+            slug = bk["slug"]
+            try:
+                # Fetch a small number of matches (page 1, limit 1)
+                raw = fetch_single_bk(bk, sport, mode="upcoming", page=1, page_size=1)
+                if raw:
+                    first = raw[0]
+                    sport_data["bookmakers"][slug] = {
+                        "match": f"{first.get('home_team')} vs {first.get('away_team')}",
+                        "start_time": first.get("start_time"),
+                        "market_count": first.get("market_count", 0),
+                        "markets": first.get("markets", {})
+                    }
+            except Exception as e:
+                sport_data["bookmakers"][slug] = {"error": str(e)}
+
+        json_data[sport] = sport_data
+
+        # Build HTML for this sport
+        html = f"<h2>{sport}</h2>"
+        for bk, data in sport_data["bookmakers"].items():
+            if "error" in data:
+                html += f"<h3>{bk}</h3><p>❌ {data['error']}</p>"
+                continue
+            html += f"<h3>{bk}</h3>"
+            html += f"<p><b>Match:</b> {data.get('match', 'N/A')}<br>"
+            html += f"<b>Start:</b> {data.get('start_time', 'N/A')}<br>"
+            html += f"<b>Total markets:</b> {data.get('market_count', 0)}</p>"
+            markets = data.get("markets", {})
+            if markets:
+                html += "<ul>"
+                for mkt_slug, outcomes in markets.items():
+                    outcome_count = len(outcomes)
+                    html += f"<li><b>{mkt_slug}</b>: {outcome_count} outcomes</li>"
+                html += "</ul>"
+            else:
+                html += "<p>No markets available.</p>"
+        report.append(html)
+
+    # Write HTML file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    html_path = f"markets_per_bookmaker_{timestamp}.html"
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(f"""<html>
+<head><title>Markets per Bookmaker - {timestamp}</title>
+<style>
+body{{font-family: Arial; margin:20px;}}
+h2{{background:#f0f0f0; padding:10px;}}
+h3{{margin-top:20px; color:#0066cc;}}
+li{{margin:5px 0;}}
+</style>
+</head>
+<body>
+<h1>Markets Returned by Each Bookmaker (per sport, first match)</h1>
+<p>Generated: {datetime.now()}</p>
+""")
+        for html_block in report:
+            f.write(html_block)
+        f.write("</body></html>")
+
+    # Write JSON file
+    json_path = f"markets_per_bookmaker_{timestamp}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(json_data, f, indent=2, default=str)
+
+    print(f"\n✅ HTML report: {html_path}")
+    print(f"✅ JSON data:   {json_path}")
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
