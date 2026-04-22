@@ -1,9 +1,7 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester – SMART MARKET FETCHING.
-FIX: Added safety fallback – if day response yields fewer matches than reported,
-     we fetch each competition individually.
+OdiBets upcoming + live harvester – COMPETITION‑LEVEL FETCHING (slower but complete).
 """
 
 from __future__ import annotations
@@ -461,7 +459,7 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (with safety fallback to competition-level fetch)
+# UPCOMING MATCHES (COMPETITION‑LEVEL FETCHING – SLOWER BUT COMPLETE)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
@@ -480,7 +478,8 @@ def fetch_upcoming_matches(
         day = start_date + timedelta(days=offset)
         day_str = day.isoformat()
 
-        params = {
+        # Step 1: Get the day overview to know which competitions exist
+        params_overview = {
             "resource": "sportevents",
             "platform": "mobile",
             "mode": 1,
@@ -488,55 +487,63 @@ def fetch_upcoming_matches(
             "sub_type_id": "",
             "day": day_str,
         }
-        data = _get(SBOOK_ODI, params=params, _throttle=True)
-        if not data:
-            logger.warning("OD upcoming %s %s: no response", sport_slug, day_str)
+        overview_data = _get(SBOOK_ODI, params=params_overview, _throttle=True)
+        if not overview_data:
+            logger.warning("OD upcoming %s %s: no overview response", sport_slug, day_str)
             continue
 
-        raw_events = _unwrap_upcoming_response(data, od_sport_id)
-        extracted_count = len(raw_events)
-        logger.info("OD upcoming %s %s: extracted %d matches from main response", sport_slug, day_str, extracted_count)
+        # Extract competition IDs from the overview
+        competitions = []
+        inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
+        if isinstance(inner, dict):
+            leagues = inner.get("leagues") or []
+            for league in leagues:
+                comp_id = league.get("competition_id")
+                if comp_id:
+                    competitions.append(str(comp_id))
 
-        # Safety check: compare with reported match_count for this sport (if available)
-        sports_array = data.get("data", {}).get("sports") if isinstance(data.get("data"), dict) else None
-        reported_count = None
-        if sports_array and isinstance(sports_array, list):
-            for sport_info in sports_array:
-                if sport_info.get("sport_id") == str(od_sport_id):
-                    reported_count = int(sport_info.get("match_count", 0))
-                    break
-        if reported_count and extracted_count < reported_count:
-            logger.warning("OD upcoming %s %s: extracted %d < reported %d – falling back to competition-level fetch", sport_slug, day_str, extracted_count, reported_count)
-            # Fetch by competition IDs
-            leagues = data.get("data", {}).get("leagues") if isinstance(data.get("data"), dict) else []
-            if leagues:
-                comp_ids = [str(l.get("competition_id")) for l in leagues if l.get("competition_id")]
-                for comp_id in comp_ids:
-                    comp_params = {
-                        "resource": "sportevents",
-                        "platform": "mobile",
-                        "mode": 1,
-                        "sport_id": od_sport_id,
-                        "sub_type_id": "",
-                        "day": day_str,
-                        "competition_id": comp_id,
-                    }
-                    comp_data = _get(SBOOK_ODI, params=comp_params, _throttle=True)
-                    if comp_data:
-                        comp_events = _unwrap_upcoming_response(comp_data, od_sport_id)
-                        raw_events.extend(comp_events)
-                # Deduplicate by match_id
-                seen = set()
-                unique_events = []
-                for ev in raw_events:
-                    mid = ev.get("parent_match_id") or ev.get("game_id")
-                    if mid and mid not in seen:
-                        seen.add(mid)
-                        unique_events.append(ev)
-                raw_events = unique_events
-                logger.info("OD upcoming %s %s: after competition fetch → %d unique matches", sport_slug, day_str, len(raw_events))
+        if not competitions:
+            logger.warning("OD upcoming %s %s: no competitions found", sport_slug, day_str)
+            continue
 
-        for raw in raw_events:
+        logger.info("OD upcoming %s %s: fetching %d competitions", sport_slug, day_str, len(competitions))
+
+        # Step 2: Fetch each competition's matches in parallel
+        day_matches: list[dict] = []
+
+        def fetch_competition(comp_id: str) -> list[dict]:
+            params_comp = {
+                "resource": "sportevents",
+                "platform": "mobile",
+                "mode": 1,
+                "sport_id": od_sport_id,
+                "sub_type_id": "",
+                "day": day_str,
+                "competition_id": comp_id,
+            }
+            data = _get(SBOOK_ODI, params=params_comp, _throttle=True)
+            if not data:
+                return []
+            return _unwrap_upcoming_response(data, od_sport_id)
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(competitions))) as executor:
+            futures = {executor.submit(fetch_competition, comp_id): comp_id for comp_id in competitions}
+            for future in as_completed(futures):
+                comp_matches = future.result()
+                day_matches.extend(comp_matches)
+
+        # Deduplicate by parent_match_id (or game_id)
+        seen = set()
+        unique_matches = []
+        for m in day_matches:
+            mid = m.get("parent_match_id") or m.get("game_id")
+            if mid and mid not in seen:
+                seen.add(mid)
+                unique_matches.append(m)
+
+        logger.info("OD upcoming %s %s: fetched %d unique matches from %d competitions", sport_slug, day_str, len(unique_matches), len(competitions))
+
+        for raw in unique_matches:
             if not isinstance(raw, dict):
                 continue
             m = _normalise_match(raw, od_sport_id, is_live=False)
@@ -608,7 +615,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     return matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (unchanged)
+# STREAMING GENERATORS (updated for competition-level fetching)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -626,7 +633,8 @@ def fetch_upcoming_stream(
     for offset in range(days):
         day = start_date + timedelta(days=offset)
         day_str = day.isoformat()
-        params = {
+
+        params_overview = {
             "resource": "sportevents",
             "platform": "mobile",
             "mode": 1,
@@ -634,27 +642,49 @@ def fetch_upcoming_stream(
             "sub_type_id": "",
             "day": day_str,
         }
-        data = _get(SBOOK_ODI, params=params, _throttle=True)
-        if not data:
+        overview_data = _get(SBOOK_ODI, params=params_overview, _throttle=True)
+        if not overview_data:
             continue
 
-        raw_events = _unwrap_upcoming_response(data, od_sport_id)
-        for raw in raw_events:
-            if max_matches and count >= max_matches:
-                return
-            m = _normalise_match(raw, od_sport_id, is_live=False)
-            if not m:
+        competitions = []
+        inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
+        if isinstance(inner, dict):
+            leagues = inner.get("leagues") or []
+            for league in leagues:
+                comp_id = league.get("competition_id")
+                if comp_id:
+                    competitions.append(str(comp_id))
+
+        for comp_id in competitions:
+            params_comp = {
+                "resource": "sportevents",
+                "platform": "mobile",
+                "mode": 1,
+                "sport_id": od_sport_id,
+                "sub_type_id": "",
+                "day": day_str,
+                "competition_id": comp_id,
+            }
+            comp_data = _get(SBOOK_ODI, params=params_comp, _throttle=True)
+            if not comp_data:
                 continue
+            raw_events = _unwrap_upcoming_response(comp_data, od_sport_id)
+            for raw in raw_events:
+                if max_matches and count >= max_matches:
+                    return
+                m = _normalise_match(raw, od_sport_id, is_live=False)
+                if not m:
+                    continue
 
-            if fetch_full_markets and m.get("betradar_id"):
-                full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
-                if full:
-                    m["markets"].update(full)
-                    m["market_count"] = len(m["markets"])
-                time.sleep(sleep_between)
+                if fetch_full_markets and m.get("betradar_id"):
+                    full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
+                    if full:
+                        m["markets"].update(full)
+                        m["market_count"] = len(m["markets"])
+                    time.sleep(sleep_between)
 
-            count += 1
-            yield m
+                count += 1
+                yield m
 
 def fetch_live_stream(
     sport_slug: str,
