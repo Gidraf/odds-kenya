@@ -1582,5 +1582,96 @@ function toggleCollapsible(el) {{
     print(f"💾 JSON data saved to {json_path}")
     print("\n✅ Report generation complete.")
 
+@flask_app.cli.command("raw-odds-report")
+@click.option("--sport", default="soccer", help="Sport slug")
+@click.option("--days", default=7, help="Days ahead to fetch")
+def raw_odds_report(sport, days):
+    """
+    Find one match that exists in Sportpesa, Betika, and OdiBets (by betradar_id)
+    and show raw markets from each bookmaker.
+    """
+    import json
+    from datetime import datetime
+    from app.workers.bt_harvester import fetch_upcoming_matches, CANONICAL_SPORT_IDS
+    from app.workers.od_harvester import fetch_upcoming_matches as od_fetch_upcoming, OD_SPORT_IDS
+    from app.workers.sp_harvester import fetch_upcoming as sp_fetch_upcoming, SP_SPORT_ID
+
+    print(f"\n🔍 Fetching matches for {sport} ({days} days)...")
+    
+    # Fetch from each bookmaker
+    bt = fetch_upcoming_matches(sport_slug=sport, days=days, fetch_full=True, max_pages=10)
+    od = od_fetch_upcoming(sport_slug=sport, days=days, fetch_full_markets=True)
+    sp = sp_fetch_upcoming(sport_slug=sport, days=days, max_matches=None, fetch_full_markets=True)
+    
+    print(f"Betika: {len(bt)} matches")
+    print(f"OdiBets: {len(od)} matches")
+    print(f"Sportpesa: {len(sp)} matches")
+    
+    # Build maps by betradar_id
+    bt_by_br = {m.get("betradar_id"): m for m in bt if m.get("betradar_id")}
+    od_by_br = {m.get("betradar_id"): m for m in od if m.get("betradar_id")}
+    sp_by_br = {m.get("betradar_id"): m for m in sp if m.get("betradar_id")}
+    
+    # Find common betradar_id
+    common = set(bt_by_br.keys()) & set(od_by_br.keys()) & set(sp_by_br.keys())
+    if not common:
+        print("No match found with betradar_id across all three bookmakers.")
+        return
+    
+    # Pick first common match
+    br_id = next(iter(common))
+    bt_match = bt_by_br[br_id]
+    od_match = od_by_br[br_id]
+    sp_match = sp_by_br[br_id]
+    
+    print(f"\n✅ Found common match: {bt_match.get('home_team')} vs {bt_match.get('away_team')} (betradar_id: {br_id})")
+    
+    # Helper to format raw markets
+    def format_raw_markets(match, bookie_name):
+        markets = match.get("markets", {})
+        if not markets:
+            return "<p>No markets</p>"
+        html = f"<h4>{bookie_name} – {len(markets)} markets</h4><ul>"
+        for mkt_slug, outcomes in markets.items():
+            html += f"<li><strong>{mkt_slug}</strong>: "
+            odds_str = ", ".join([f"{k}={v:.2f}" for k, v in outcomes.items()])
+            html += odds_str + "</li>"
+        html += "</ul>"
+        return html
+    
+    # Generate HTML
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    html_path = f"raw_odds_comparison_{sport}_{timestamp}.html"
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(f"""<html>
+<head><meta charset="UTF-8"><title>Raw Markets Comparison – {sport}</title>
+<style>
+body {{ font-family: Arial, sans-serif; margin: 20px; }}
+.match-info {{ background: #f0f0f0; padding: 10px; margin-bottom: 20px; }}
+.bookmaker-section {{ border: 1px solid #ccc; margin: 10px 0; padding: 10px; }}
+</style>
+</head>
+<body>
+<h1>Raw Markets Comparison – {sport.upper()}</h1>
+<div class="match-info">
+<h2>{bt_match.get('home_team')} vs {bt_match.get('away_team')}</h2>
+<p><strong>Competition:</strong> {bt_match.get('competition')}<br>
+<strong>Start time:</strong> {bt_match.get('start_time')}<br>
+<strong>Betradar ID:</strong> {br_id}</p>
+</div>
+<div class="bookmaker-section">
+{format_raw_markets(sp_match, "Sportpesa (raw, no normalization)")}
+</div>
+<div class="bookmaker-section">
+{format_raw_markets(bt_match, "Betika (raw, no normalization)")}
+</div>
+<div class="bookmaker-section">
+{format_raw_markets(od_match, "OdiBets (raw, no normalization)")}
+</div>
+</body></html>""")
+    
+    print(f"\n📄 Report saved to {html_path}")
+    print(f"   Open in browser to see raw market slugs and odds from all three bookmakers for the same match.")
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
