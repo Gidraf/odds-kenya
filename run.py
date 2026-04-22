@@ -480,206 +480,430 @@ def slug_to_bt_sport_id(slug: str) -> int:
     }
     return bt_sport_map.get(slug, 1)
 
-@flask_app.cli.command("test-all")
-def test_all():
+# @flask_app.cli.command("test-all")
+# def test_all():
+#     """
+#     Test Betika, OdiBets, and Sportpesa harvesters for all sports.
+#     Uses 30 days upcoming, full markets for ALL matches (fetch_full_markets=True).
+#     Prints only the final summary tables.
+#     """
+#     import time
+#     from datetime import datetime
+
+#     def fmt(slug: str) -> str:
+#         return slug.replace("-", " ").title()
+
+#     print("\n" + "=" * 80)
+#     print(f"🧪 ALL BOOKMAKERS TEST (30 days upcoming, full markets enabled)")
+#     print(f"   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+#     print("=" * 80)
+
+#     # ============================================================
+#     # 1. BETIKA
+#     # ============================================================
+#     try:
+#         from app.workers.bt_harvester import (
+#             fetch_upcoming_matches,
+#             fetch_live_matches,
+#             get_full_markets,
+#             CANONICAL_SPORT_IDS,
+#             slug_to_bt_sport_id,
+#         )
+#     except ImportError as e:
+#         print(f"❌ Cannot import Betika harvester: {e}")
+#         return
+
+#     betika_sports = list(CANONICAL_SPORT_IDS.keys())
+#     betika_results = {}
+
+#     for sport in betika_sports:
+#         res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
+#         try:
+#             # Fetch all upcoming matches for 30 days, fetch_full=True (gets all markets for every match)
+#             upcoming = fetch_upcoming_matches(
+#                 sport_slug=sport,
+#                 days=30,
+#                 fetch_full=True,        # ← full markets for all matches
+#                 max_pages=30
+#             )
+#             if upcoming:
+#                 res["upcoming"] = len(upcoming)
+#                 # Use first match's markets (already have full markets)
+#                 first = upcoming[0]
+#                 markets = first.get("markets", {})
+#                 res["markets"] = len(markets)
+#                 res["has_1x2"] = any("1x2" in k or "match_winner" in k for k in markets)
+#                 res["has_ou"] = any("over_under" in k for k in markets)
+#                 res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
+#                 res["status"] = "passed"
+#             else:
+#                 res["status"] = "warning"
+#         except Exception:
+#             res["status"] = "failed"
+
+#         try:
+#             bt_id = slug_to_bt_sport_id(sport)
+#             live = fetch_live_matches(bt_id)
+#             res["live"] = len(live)
+#         except Exception:
+#             pass
+
+#         betika_results[sport] = res
+#         time.sleep(0.3)
+
+#     # ============================================================
+#     # 2. ODIBETS (full markets for all matches)
+#     # ============================================================
+#     try:
+#         from app.workers.od_harvester import (
+#             fetch_upcoming_matches,
+#             fetch_live_matches,
+#             fetch_full_markets_for_match,
+#             OD_SPORT_IDS,
+#         )
+#     except ImportError as e:
+#         print(f"❌ Cannot import OdiBets harvester: {e}")
+#         return
+
+#     odibets_sports = list(OD_SPORT_IDS.keys())
+#     odibets_results = {}
+
+#     for sport in odibets_sports:
+#         res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
+#         try:
+#             # Fetch all upcoming matches for 30 days, fetch_full_markets=True (gets all markets for every match via smart fetcher)
+#             upcoming = fetch_upcoming_matches(
+#                 sport_slug=sport,
+#                 days=30,
+#                 fetch_full_markets=True,   # ← full markets for all matches
+#             )
+#             if upcoming:
+#                 res["upcoming"] = len(upcoming)
+#                 # Use first match's markets (already have full markets)
+#                 first = upcoming[0]
+#                 markets = first.get("markets", {})
+#                 res["markets"] = len(markets)
+#                 res["has_1x2"] = any("1x2" in k for k in markets)
+#                 res["has_ou"] = any("over_under" in k for k in markets)
+#                 res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
+#                 res["status"] = "passed"
+#             else:
+#                 res["status"] = "warning"
+#         except Exception:
+#             res["status"] = "failed"
+
+#         try:
+#             live = fetch_live_matches(sport)
+#             res["live"] = len(live)
+#         except Exception:
+#             pass
+
+#         odibets_results[sport] = res
+#         time.sleep(0.3)
+
+#     # ============================================================
+#     # 3. SPORTPESA (full markets for all matches)
+#     # ============================================================
+#     try:
+#         from app.workers.sp_harvester import fetch_upcoming, SP_SPORT_ID
+#     except ImportError as e:
+#         print(f"❌ Cannot import Sportpesa harvester: {e}")
+#         return
+
+#     seen_ids = set()
+#     sp_sports = []
+#     for slug, sid in SP_SPORT_ID.items():
+#         if sid not in seen_ids:
+#             seen_ids.add(sid)
+#             sp_sports.append((slug, sid))
+
+#     sp_results = {}
+
+#     for slug, sid in sp_sports:
+#         res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
+#         try:
+#             # Fetch all upcoming matches for 30 days, fetch_full_markets=True (gets all markets for every match)
+#             matches = fetch_upcoming(
+#                 sport_slug=slug,
+#                 days=30,
+#                 max_matches=None,          # no limit
+#                 fetch_full_markets=True,   # ← full markets for all matches
+#                 sleep_between=0.2,
+#                 debug_ou=False,
+#             )
+#             if matches:
+#                 res["upcoming"] = len(matches)
+#                 # Use first match's markets (already have full markets)
+#                 first = matches[0]
+#                 markets = first.get("markets", {})
+#                 res["markets"] = len(markets)
+#                 res["has_1x2"] = any("1x2" in k or "match_winner" in k for k in markets)
+#                 res["has_ou"] = any("over_under" in k for k in markets)
+#                 res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
+#                 res["status"] = "passed"
+#             else:
+#                 res["status"] = "warning"
+#         except Exception as e:
+#             print(f"Error for {slug}: {e}")
+#             res["status"] = "failed"
+
+#         res["live"] = 0  # Sportpesa live not tested here for simplicity
+#         sp_results[slug] = res
+#         time.sleep(0.3)
+
+#     # ============================================================
+#     # PRINT FINAL TABLES
+#     # ============================================================
+#     print("\n📊 BETIKA HARVESTER")
+#     print("-" * 60)
+#     print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
+#     print("-" * 70)
+#     for s, r in betika_results.items():
+#         print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
+#               f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
+
+#     print("\n📊 ODIBETS HARVESTER")
+#     print("-" * 60)
+#     print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
+#     print("-" * 70)
+#     for s, r in odibets_results.items():
+#         print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
+#               f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
+
+#     print("\n📊 SPORTPESA HARVESTER")
+#     print("-" * 60)
+#     print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
+#     print("-" * 70)
+#     for s, r in sp_results.items():
+#         print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
+#               f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
+
+#     print("\n" + "=" * 80)
+#     print("✅ Test completed.")
+
+@flask_app.cli.command("run-all-harvesters")
+def run_all_harvesters():
     """
-    Test Betika, OdiBets, and Sportpesa harvesters for all sports.
-    Uses 30 days upcoming, full markets for ALL matches (fetch_full_markets=True).
-    Prints only the final summary tables.
+    Run ALL 10 bookmakers for ALL sports (30 days upcoming) and persist to DB + Redis.
+    Also generates HTML report and stores unified matches for API access.
     """
+    import json
     import time
     from datetime import datetime
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def fmt(slug: str) -> str:
-        return slug.replace("-", " ").title()
+    from app.workers.bt_harvester import fetch_upcoming_matches, CANONICAL_SPORT_IDS
+    from app.workers.od_harvester import fetch_upcoming_matches as od_fetch_upcoming, OD_SPORT_IDS
+    from app.workers.sp_harvester import fetch_upcoming as sp_fetch_upcoming, SP_SPORT_ID
+    from app.workers.b2b_harvester import fetch_all_b2b_sport, merge_b2b_by_match, B2B_SUPPORTED_SPORTS
+    from app.utils.persist_hook import persist_merged_sync
+    from app.workers.redis_bus import publish_snapshot
+    from app.workers.fuzzy_matcher import bulk_align, match_dict_to_candidate
 
-    print("\n" + "=" * 80)
-    print(f"🧪 ALL BOOKMAKERS TEST (30 days upcoming, full markets enabled)")
-    print(f"   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80)
+    # --- Configuration ---
+    ALL_SPORTS = list(set(
+        list(CANONICAL_SPORT_IDS.keys()) +
+        list(OD_SPORT_IDS.keys()) +
+        [s for s, _ in SP_SPORT_ID.items()] +
+        B2B_SUPPORTED_SPORTS
+    ))
+    # Remove duplicates
+    ALL_SPORTS = list(dict.fromkeys(ALL_SPORTS))
+    DAYS = 30
+    MAX_WORKERS = 10  # parallel per sport
 
-    # ============================================================
-    # 1. BETIKA
-    # ============================================================
-    try:
-        from app.workers.bt_harvester import (
-            fetch_upcoming_matches,
-            fetch_live_matches,
-            get_full_markets,
-            CANONICAL_SPORT_IDS,
-            slug_to_bt_sport_id,
-        )
-    except ImportError as e:
-        print(f"❌ Cannot import Betika harvester: {e}")
-        return
+    print(f"\n🚀 Starting ALL BOOKMAKERS HARVESTER ({len(ALL_SPORTS)} sports, {DAYS} days)")
+    print(f"   Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-    betika_sports = list(CANONICAL_SPORT_IDS.keys())
-    betika_results = {}
+    results = {}
+    report = []
 
-    for sport in betika_sports:
-        res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
+    def process_sport(sport_slug):
+        print(f"🏆 Processing {sport_slug}...")
+        start = time.time()
+        sport_result = {
+            "sport": sport_slug,
+            "upcoming": {},
+            "merged_upcoming": None,
+            "error": None
+        }
+
         try:
-            # Fetch all upcoming matches for 30 days, fetch_full=True (gets all markets for every match)
-            upcoming = fetch_upcoming_matches(
-                sport_slug=sport,
-                days=30,
-                fetch_full=True,        # ← full markets for all matches
-                max_pages=30
-            )
-            if upcoming:
-                res["upcoming"] = len(upcoming)
-                # Use first match's markets (already have full markets)
-                first = upcoming[0]
-                markets = first.get("markets", {})
-                res["markets"] = len(markets)
-                res["has_1x2"] = any("1x2" in k or "match_winner" in k for k in markets)
-                res["has_ou"] = any("over_under" in k for k in markets)
-                res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
-                res["status"] = "passed"
+            # 1. Betika
+            bt_matches = fetch_upcoming_matches(sport_slug=sport_slug, days=DAYS, fetch_full=False, max_pages=30)
+            sport_result["upcoming"]["betika"] = len(bt_matches) if bt_matches else 0
+
+            # 2. OdiBets
+            od_matches = od_fetch_upcoming(sport_slug=sport_slug, days=DAYS, fetch_full_markets=False)
+            sport_result["upcoming"]["odibets"] = len(od_matches) if od_matches else 0
+
+            # 3. Sportpesa (try/except because not all sports are supported)
+            try:
+                sp_matches = sp_fetch_upcoming(sport_slug=sport_slug, days=DAYS, max_matches=None, fetch_full_markets=False)
+                sport_result["upcoming"]["sportpesa"] = len(sp_matches) if sp_matches else 0
+            except Exception as e:
+                sport_result["upcoming"]["sportpesa"] = 0
+                print(f"   ⚠️ Sportpesa {sport_slug} error: {e}")
+
+            # 4. B2B (7 bookmakers) – fetch all, then merge
+            b2b_per_bk = fetch_all_b2b_sport(sport_slug, mode="upcoming", max_workers=7)
+            b2b_merged = merge_b2b_by_match(b2b_per_bk, sport_slug)
+            sport_result["upcoming"]["b2b_raw"] = {bk: len(matches) for bk, matches in b2b_per_bk.items()}
+            sport_result["merged_upcoming"] = b2b_merged
+
+            # Also collect all BK matches (including non-B2B) for final unified merge
+            all_bk_matches = {
+                "betika": bt_matches,
+                "odibets": od_matches,
+                "sportpesa": sp_matches if 'sp_matches' in locals() else [],
+                **b2b_per_bk
+            }
+            sport_result["all_bk_matches"] = all_bk_matches
+
+            # --- Cross-BK fuzzy merge using SP as anchor (if available) ---
+            anchor_bk = "sportpesa" if sport_result["upcoming"].get("sportpesa", 0) > 0 else "betika"
+            anchor_matches = all_bk_matches.get(anchor_bk, [])
+            if anchor_matches:
+                # Convert anchor to unified format
+                anchor_unified = []
+                for m in anchor_matches:
+                    anchor_unified.append({
+                        "id": m.get("sp_game_id") or m.get("bt_match_id") or m.get("od_match_id") or m.get("b2b_match_id"),
+                        "betradar_id": m.get("betradar_id") or "",
+                        "home_team_name": m.get("home_team", ""),
+                        "away_team_name": m.get("away_team", ""),
+                        "start_time": m.get("start_time"),
+                        "competition_name": m.get("competition") or m.get("competition_name"),
+                        "external_ids": {anchor_bk: m.get("sp_game_id") or m.get("bt_match_id") or m.get("od_match_id")}
+                    })
+                # Align other BKs
+                unified_map = {u["id"]: u for u in anchor_unified}
+                for bk, bk_matches in all_bk_matches.items():
+                    if bk == anchor_bk or not bk_matches:
+                        continue
+                    candidates = [match_dict_to_candidate(m, bk_slug=bk) for m in bk_matches]
+                    # Use bulk_align (simplified)
+                    from app.workers.fuzzy_matcher import bulk_align
+                    updates, _ = bulk_align(candidates, anchor_unified, sport_slug)
+                    for upd in updates:
+                        uid = upd.unified_match_id
+                        if uid not in unified_map:
+                            continue
+                        rec = unified_map[uid]
+                        rec.setdefault("bookmakers", {})[bk] = {
+                            "match_id": upd.candidate.external_id,
+                            "markets": upd.candidate.raw.get("markets", {})
+                        }
+                sport_result["unified_matches"] = list(unified_map.values())
             else:
-                res["status"] = "warning"
-        except Exception:
-            res["status"] = "failed"
+                sport_result["unified_matches"] = b2b_merged  # fallback
 
-        try:
-            bt_id = slug_to_bt_sport_id(sport)
-            live = fetch_live_matches(bt_id)
-            res["live"] = len(live)
-        except Exception:
-            pass
-
-        betika_results[sport] = res
-        time.sleep(0.3)
-
-    # ============================================================
-    # 2. ODIBETS (full markets for all matches)
-    # ============================================================
-    try:
-        from app.workers.od_harvester import (
-            fetch_upcoming_matches,
-            fetch_live_matches,
-            fetch_full_markets_for_match,
-            OD_SPORT_IDS,
-        )
-    except ImportError as e:
-        print(f"❌ Cannot import OdiBets harvester: {e}")
-        return
-
-    odibets_sports = list(OD_SPORT_IDS.keys())
-    odibets_results = {}
-
-    for sport in odibets_sports:
-        res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
-        try:
-            # Fetch all upcoming matches for 30 days, fetch_full_markets=True (gets all markets for every match via smart fetcher)
-            upcoming = fetch_upcoming_matches(
-                sport_slug=sport,
-                days=30,
-                fetch_full_markets=True,   # ← full markets for all matches
-            )
-            if upcoming:
-                res["upcoming"] = len(upcoming)
-                # Use first match's markets (already have full markets)
-                first = upcoming[0]
-                markets = first.get("markets", {})
-                res["markets"] = len(markets)
-                res["has_1x2"] = any("1x2" in k for k in markets)
-                res["has_ou"] = any("over_under" in k for k in markets)
-                res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
-                res["status"] = "passed"
+            # --- Persist to DB ---
+            if sport_result["unified_matches"]:
+                stats = persist_merged_sync(sport_result["unified_matches"], sport_slug)
+                sport_result["db_persisted"] = stats.get("persisted", 0)
             else:
-                res["status"] = "warning"
-        except Exception:
-            res["status"] = "failed"
+                sport_result["db_persisted"] = 0
 
-        try:
-            live = fetch_live_matches(sport)
-            res["live"] = len(live)
-        except Exception:
-            pass
+            # --- Publish to Redis ---
+            try:
+                from app.workers.redis_bus import publish_snapshot, _r
+                r = _r()
+                # Store unified snapshot
+                unified_key = f"odds:unified:upcoming:{sport_slug}"
+                r.setex(unified_key, 7200, json.dumps({
+                    "sport": sport_slug,
+                    "mode": "upcoming",
+                    "matches": sport_result["unified_matches"],
+                    "harvested_at": datetime.now().isoformat()
+                }, default=str))
+                # Also publish per-BK snapshots (optional)
+                for bk, matches in all_bk_matches.items():
+                    if matches:
+                        publish_snapshot(bk, "upcoming", sport_slug, matches, ttl=3600)
+                sport_result["redis_published"] = True
+            except Exception as e:
+                sport_result["redis_published"] = False
+                print(f"   ⚠️ Redis publish error: {e}")
 
-        odibets_results[sport] = res
-        time.sleep(0.3)
+            sport_result["elapsed_ms"] = int((time.time() - start) * 1000)
+            print(f"   ✅ Done: unified={len(sport_result.get('unified_matches', []))} db={sport_result.get('db_persisted',0)} redis={sport_result.get('redis_published',False)} in {sport_result['elapsed_ms']}ms")
 
-    # ============================================================
-    # 3. SPORTPESA (full markets for all matches)
-    # ============================================================
-    try:
-        from app.workers.sp_harvester import fetch_upcoming, SP_SPORT_ID
-    except ImportError as e:
-        print(f"❌ Cannot import Sportpesa harvester: {e}")
-        return
-
-    seen_ids = set()
-    sp_sports = []
-    for slug, sid in SP_SPORT_ID.items():
-        if sid not in seen_ids:
-            seen_ids.add(sid)
-            sp_sports.append((slug, sid))
-
-    sp_results = {}
-
-    for slug, sid in sp_sports:
-        res = {"upcoming": 0, "live": 0, "markets": 0, "has_1x2": False, "has_ou": False, "has_hc": False, "status": "unknown"}
-        try:
-            # Fetch all upcoming matches for 30 days, fetch_full_markets=True (gets all markets for every match)
-            matches = fetch_upcoming(
-                sport_slug=slug,
-                days=30,
-                max_matches=None,          # no limit
-                fetch_full_markets=True,   # ← full markets for all matches
-                sleep_between=0.2,
-                debug_ou=False,
-            )
-            if matches:
-                res["upcoming"] = len(matches)
-                # Use first match's markets (already have full markets)
-                first = matches[0]
-                markets = first.get("markets", {})
-                res["markets"] = len(markets)
-                res["has_1x2"] = any("1x2" in k or "match_winner" in k for k in markets)
-                res["has_ou"] = any("over_under" in k for k in markets)
-                res["has_hc"] = any("handicap" in k or "spread" in k for k in markets)
-                res["status"] = "passed"
-            else:
-                res["status"] = "warning"
         except Exception as e:
-            print(f"Error for {slug}: {e}")
-            res["status"] = "failed"
+            sport_result["error"] = str(e)
+            print(f"   ❌ FAILED: {e}")
 
-        res["live"] = 0  # Sportpesa live not tested here for simplicity
-        sp_results[slug] = res
-        time.sleep(0.3)
+        return sport_slug, sport_result
 
-    # ============================================================
-    # PRINT FINAL TABLES
-    # ============================================================
-    print("\n📊 BETIKA HARVESTER")
-    print("-" * 60)
-    print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
-    print("-" * 70)
-    for s, r in betika_results.items():
-        print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
-              f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
+    # Run in parallel across sports
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(process_sport, sport): sport for sport in ALL_SPORTS}
+        for future in as_completed(futures):
+            sport, res = future.result()
+            results[sport] = res
 
-    print("\n📊 ODIBETS HARVESTER")
-    print("-" * 60)
-    print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
-    print("-" * 70)
-    for s, r in odibets_results.items():
-        print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
-              f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
+    # --- Generate HTML report ---
+    html_path = f"all_bookmakers_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(f"""
+        <html>
+        <head><title>All Bookmakers Report - {datetime.now()}</title>
+        <style>
+            body{{font-family: Arial, sans-serif; margin:20px;}}
+            table{{border-collapse:collapse; margin-bottom:20px; width:100%;}}
+            th, td{{border:1px solid #ccc; padding:8px; text-align:left;}}
+            th{{background:#f0f0f0;}}
+            .good{{color:green;}} .bad{{color:red;}} .warn{{color:orange;}}
+        </style>
+        </head>
+        <body>
+        <h1>All Bookmakers Harvester Report</h1>
+        <p>Run at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <h2>Summary per Sport</h2>
+        <table>
+            <tr><th>Sport</th><th>Betika</th><th>OdiBets</th><th>Sportpesa</th><th>B2B (merged)</th><th>Unified</th><th>DB</th><th>Redis</th><th>Time (ms)</th></tr>
+        """)
+        for sport, res in results.items():
+            err = res.get("error")
+            if err:
+                f.write(f"<tr><td>{sport}</td><td colspan='7' class='bad'>❌ {err}</td></tr>")
+            else:
+                betika = res.get("upcoming", {}).get("betika", 0)
+                odibets = res.get("upcoming", {}).get("odibets", 0)
+                sportpesa = res.get("upcoming", {}).get("sportpesa", 0)
+                b2b_merged = len(res.get("merged_upcoming", []))
+                unified = len(res.get("unified_matches", []))
+                db = res.get("db_persisted", 0)
+                redis = "✅" if res.get("redis_published") else "❌"
+                elapsed = res.get("elapsed_ms", 0)
+                f.write(f"<tr><td>{sport}</td><td>{betika}</td><td>{odibets}</td><td>{sportpesa}</td><td>{b2b_merged}</td><td>{unified}</td><td>{db}</td><td>{redis}</td><td>{elapsed}</td></tr>")
+        f.write("</table>")
 
-    print("\n📊 SPORTPESA HARVESTER")
-    print("-" * 60)
-    print(f"{'Sport':<20} {'Up':<6} {'Live':<6} {'Mkts':<6} {'1X2':<4} {'O/U':<4} {'HC':<4} {'Status':<8}")
-    print("-" * 70)
-    for s, r in sp_results.items():
-        print(f"  {fmt(s):<18} {r['upcoming']:<6} {r['live']:<6} {r['markets']:<6} "
-              f"{'✓' if r['has_1x2'] else '✗':<4} {'✓' if r['has_ou'] else '✗':<4} {'✓' if r['has_hc'] else '✗':<4} {r['status']:<8}")
+        # Optional: show a sample unified match for each sport
+        f.write("<h2>Sample Unified Matches</h2>")
+        for sport, res in results.items():
+            unified_matches = res.get("unified_matches", [])
+            if unified_matches:
+                sample = unified_matches[0]
+                f.write(f"<h3>{sport}</h3>")
+                f.write(f"<p><b>{sample.get('home_team_name')} vs {sample.get('away_team_name')}</b> – {sample.get('competition_name')}<br>")
+                f.write(f"Betradar ID: {sample.get('betradar_id')}<br>")
+                f.write("Bookmakers with odds:</p><ul>")
+                for bk, bk_data in sample.get("bookmakers", {}).items():
+                    markets_count = len(bk_data.get("markets", {}))
+                    f.write(f"<li>{bk}: {markets_count} markets</li>")
+                f.write("</ul><hr>")
+        f.write("</body></html>")
+    print(f"\n📄 HTML report saved to {html_path}")
 
-    print("\n" + "=" * 80)
-    print("✅ Test completed.")
-    
+    # --- Final summary ---
+    total_unified = sum(len(res.get("unified_matches", [])) for res in results.values())
+    total_db = sum(res.get("db_persisted", 0) for res in results.values())
+    print(f"\n🎉 Done! Total unified matches: {total_unified}")
+    print(f"   Persisted to DB: {total_db}")
+    print(f"   Redis published: {sum(1 for r in results.values() if r.get('redis_published'))}/{len(results)} sports")
+    print(f"   Report: {html_path}")
+
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
