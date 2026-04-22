@@ -699,7 +699,7 @@ def run_all_harvesters():
     from app.workers.od_harvester import fetch_upcoming_matches as od_fetch_upcoming, OD_SPORT_IDS
     from app.workers.sp_harvester import fetch_upcoming as sp_fetch_upcoming, SP_SPORT_ID
     from app.workers.b2b_harvester import fetch_all_b2b_sport, merge_b2b_by_match, B2B_SUPPORTED_SPORTS
-    from app.utils.persist_hook import persist_merged_sync
+    from app.workers.persist_hook import persist_merged_sync
     from app.workers.redis_bus import publish_snapshot, _r
     from app.workers.fuzzy_matcher import match_dict_to_candidate, bulk_align
 
