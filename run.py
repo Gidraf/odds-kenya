@@ -1,3 +1,4 @@
+import click
 from flask import jsonify, request
 
 from app import create_app
