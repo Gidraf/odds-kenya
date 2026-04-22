@@ -2,12 +2,8 @@
 app/workers/od_harvester.py
 ============================
 OdiBets upcoming + live harvester – SMART MARKET FETCHING.
-
-FIXES
-─────
-• Dynamically discovers all available market types from markets_list.
-• Fetches each market type individually to get full odds.
-• Merges all markets into a single dict.
+FIX: Added safety fallback – if day response yields fewer matches than reported,
+     we fetch each competition individually.
 """
 
 from __future__ import annotations
@@ -146,7 +142,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle:
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESPONSE UNWRAPPING (unchanged)
+# RESPONSE UNWRAPPING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int) -> list[dict]:
@@ -322,18 +318,11 @@ def _parse_all_markets(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_full_markets_for_match(event_id: str | int, od_sport_id: int = 1) -> dict[str, dict[str, float]]:
-    """
-    Fetch all available markets for a match by:
-    1. Calling detail endpoint with empty sub_type_id to get market list.
-    2. Then calling for each missing sub_type_id.
-    3. Merging all outcomes.
-    """
     all_markets: dict[str, dict[str, float]] = {}
     home_team = ""
     away_team = ""
     sport_slug = ""
 
-    # Step 1: Get the initial response (contains markets_list and some markets)
     params = {
         "resource": "sportevent",
         "id": str(event_id),
@@ -357,25 +346,20 @@ def fetch_full_markets_for_match(event_id: str | int, od_sport_id: int = 1) -> d
     raw_sport = info.get("s_binomen") or info.get("sport_id")
     od_sport_id_, sport_slug = _resolve_sport(raw_sport, od_sport_id)
 
-    # Parse markets that came in the initial response
     initial_markets = inner.get("markets") or []
     if initial_markets:
         all_markets.update(_parse_all_markets(initial_markets, sport_slug, home_team, away_team))
 
-    # Step 2: Get the list of all available sub_type_ids from markets_list
     markets_list = inner.get("markets_list") or []
     if not markets_list:
-        # If no markets_list, just return what we have
         return all_markets
 
-    # Collect unique sub_type_ids
     sub_type_ids = set()
     for m in markets_list:
         sid = m.get("sub_type_id")
         if sid:
             sub_type_ids.add(str(sid))
 
-    # Step 3: For each sub_type_id, fetch its markets
     for sid in sub_type_ids:
         params["sub_type_id"] = sid
         detail_data = _get(SBOOK_V1, params=params)
@@ -396,7 +380,7 @@ def fetch_full_markets_for_match(event_id: str | int, od_sport_id: int = 1) -> d
     return all_markets
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MATCH NORMALISATION (updated to use smart fetcher)
+# MATCH NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict | None:
@@ -427,7 +411,6 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         score_home = score_parts[0].strip() if len(score_parts) >= 2 else None
         score_away = score_parts[1].strip() if len(score_parts) >= 2 else None
 
-        # Use inline markets from raw (these are the basic ones)
         markets_raw = raw.get("markets") or raw.get("odds") or []
         if isinstance(markets_raw, list):
             markets = _parse_all_markets(markets_raw, sport_slug, home, away)
@@ -436,7 +419,6 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         else:
             markets = {}
 
-        # Fallback to inline odds
         if "1x2" not in markets and (sport_slug == "soccer" or "1x2" in markets.keys()):
             try:
                 ho = float(raw.get("home_odd") or raw.get("h_odd") or 0)
@@ -470,7 +452,7 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
             "current_score": current_score,
             "score_home": score_home,
             "score_away": score_away,
-            "markets": markets,  # will be replaced later with full markets if fetch_full_markets=True
+            "markets": markets,
             "market_count": len(markets),
         }
 
@@ -479,7 +461,7 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (with smart full market enrichment)
+# UPCOMING MATCHES (with safety fallback to competition-level fetch)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
@@ -503,7 +485,7 @@ def fetch_upcoming_matches(
             "platform": "mobile",
             "mode": 1,
             "sport_id": od_sport_id,
-            "sub_type_id": "1",  # we only need basic data; full markets will be fetched later
+            "sub_type_id": "",
             "day": day_str,
         }
         data = _get(SBOOK_ODI, params=params, _throttle=True)
@@ -512,8 +494,47 @@ def fetch_upcoming_matches(
             continue
 
         raw_events = _unwrap_upcoming_response(data, od_sport_id)
-        if not raw_events:
-            continue
+        extracted_count = len(raw_events)
+        logger.info("OD upcoming %s %s: extracted %d matches from main response", sport_slug, day_str, extracted_count)
+
+        # Safety check: compare with reported match_count for this sport (if available)
+        sports_array = data.get("data", {}).get("sports") if isinstance(data.get("data"), dict) else None
+        reported_count = None
+        if sports_array and isinstance(sports_array, list):
+            for sport_info in sports_array:
+                if sport_info.get("sport_id") == str(od_sport_id):
+                    reported_count = int(sport_info.get("match_count", 0))
+                    break
+        if reported_count and extracted_count < reported_count:
+            logger.warning("OD upcoming %s %s: extracted %d < reported %d – falling back to competition-level fetch", sport_slug, day_str, extracted_count, reported_count)
+            # Fetch by competition IDs
+            leagues = data.get("data", {}).get("leagues") if isinstance(data.get("data"), dict) else []
+            if leagues:
+                comp_ids = [str(l.get("competition_id")) for l in leagues if l.get("competition_id")]
+                for comp_id in comp_ids:
+                    comp_params = {
+                        "resource": "sportevents",
+                        "platform": "mobile",
+                        "mode": 1,
+                        "sport_id": od_sport_id,
+                        "sub_type_id": "",
+                        "day": day_str,
+                        "competition_id": comp_id,
+                    }
+                    comp_data = _get(SBOOK_ODI, params=comp_params, _throttle=True)
+                    if comp_data:
+                        comp_events = _unwrap_upcoming_response(comp_data, od_sport_id)
+                        raw_events.extend(comp_events)
+                # Deduplicate by match_id
+                seen = set()
+                unique_events = []
+                for ev in raw_events:
+                    mid = ev.get("parent_match_id") or ev.get("game_id")
+                    if mid and mid not in seen:
+                        seen.add(mid)
+                        unique_events.append(ev)
+                raw_events = unique_events
+                logger.info("OD upcoming %s %s: after competition fetch → %d unique matches", sport_slug, day_str, len(raw_events))
 
         for raw in raw_events:
             if not isinstance(raw, dict):
@@ -527,7 +548,7 @@ def fetch_upcoming_matches(
         if max_matches and len(all_matches) >= max_matches:
             break
 
-    logger.info("OD upcoming %s (next %d days): %d basic matches", sport_slug, days, len(all_matches))
+    logger.info("OD upcoming %s (next %d days): %d total matches", sport_slug, days, len(all_matches))
 
     if fetch_full_markets and all_matches:
         def _fetch(m: dict) -> dict:
@@ -546,7 +567,7 @@ def fetch_upcoming_matches(
     return all_matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE MATCHES (with smart full market enrichment)
+# LIVE MATCHES (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
@@ -554,7 +575,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
         "resource": "live",
         "sportsbook": "sportsbook",
         "ua": HEADERS["user-agent"],
-        "sub_type_id": "1",  # basic only
+        "sub_type_id": "1",
         "sport_id": "",
     }
     if sport_slug:
@@ -587,7 +608,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     return matches
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (updated to use smart fetcher)
+# STREAMING GENERATORS (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -610,7 +631,7 @@ def fetch_upcoming_stream(
             "platform": "mobile",
             "mode": 1,
             "sport_id": od_sport_id,
-            "sub_type_id": "1",
+            "sub_type_id": "",
             "day": day_str,
         }
         data = _get(SBOOK_ODI, params=params, _throttle=True)
