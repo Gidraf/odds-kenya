@@ -8,6 +8,7 @@ Key change:
 - cm is passed as a dictionary via Celery. Uses `_val()` helper to safely extract properties.
 - _infer_sport_slug() normalises via _NAME_TO_SLUG map.
 - Added country resolution with BookmakerCountryName mapping and fuzzy matching.
+- FIXED: Removed invalid 'country_id' argument from UnifiedMatch constructor.
 """
 
 from __future__ import annotations
@@ -274,12 +275,18 @@ class EntityResolver:
 
                 # --- 1. UPSERT UNIFIED MATCH ---
                 if not um:
+                    # FIX: Removed 'country_id' argument (model does not have it)
                     um = UnifiedMatch(
-                        parent_match_id=parent_id, home_team_name=cm_home_team,
-                        away_team_name=cm_away_team, sport_name=sport_name_db,
-                        competition_name=cm_competition or "", start_time=start_time,
-                        competition_id=comp_id, home_team_id=home_team_id, away_team_id=away_team_id,
-                        country_id=country_id, country_name=cm_country,
+                        parent_match_id=parent_id,
+                        home_team_name=cm_home_team,
+                        away_team_name=cm_away_team,
+                        sport_name=sport_name_db,
+                        competition_name=cm_competition or "",
+                        start_time=start_time,
+                        competition_id=comp_id,
+                        home_team_id=home_team_id,
+                        away_team_id=away_team_id,
+                        country_name=cm_country,  # store country name string
                     )
                     db.session.add(um)
                     db.session.flush()
@@ -292,7 +299,7 @@ class EntityResolver:
                     if home_team_id and not um.home_team_id: um.home_team_id = home_team_id
                     if away_team_id and not um.away_team_id: um.away_team_id = away_team_id
                     if sport_name_db: um.sport_name = sport_name_db
-                    if country_id and not um.country_id: um.country_id = country_id
+                    # country_id removed – no such column
                     if cm_country and not um.country_name: um.country_name = cm_country
 
                 # --- 2. MAP SPORTPESA EXTERNAL ID ---
