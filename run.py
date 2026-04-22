@@ -1481,7 +1481,7 @@ def full_report(days, max_matches):
     html_path = f"odds_comparison_{timestamp}.html"
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(f"""<html>
-<head><title>Full Odds Comparison Report – {datetime.now()}</title>
+<head><meta charset="UTF-8"><title>Full Odds Comparison Report – {datetime.now()}</title>
 <style>
 body {{ font-family: Arial, sans-serif; margin: 20px; }}
 table {{ border-collapse: collapse; margin-bottom: 20px; width: 100%; }}
