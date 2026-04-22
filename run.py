@@ -1,3 +1,5 @@
+from flask import jsonify, request
+
 from app import create_app
 
 flask_app = create_app()
@@ -685,38 +687,36 @@ def slug_to_bt_sport_id(slug: str) -> int:
 def run_all_harvesters():
     """
     Run ALL 10 bookmakers for ALL sports (30 days upcoming) and persist to DB + Redis.
-    Also generates HTML report and stores unified matches for API access.
+    Runs sports in parallel for faster execution.
     """
     import json
     import time
     from datetime import datetime
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    # Lazy imports to avoid circular deps
     from app.workers.bt_harvester import fetch_upcoming_matches, CANONICAL_SPORT_IDS
     from app.workers.od_harvester import fetch_upcoming_matches as od_fetch_upcoming, OD_SPORT_IDS
     from app.workers.sp_harvester import fetch_upcoming as sp_fetch_upcoming, SP_SPORT_ID
     from app.workers.b2b_harvester import fetch_all_b2b_sport, merge_b2b_by_match, B2B_SUPPORTED_SPORTS
     from app.utils.persist_hook import persist_merged_sync
-    from app.workers.redis_bus import publish_snapshot
-    from app.workers.fuzzy_matcher import bulk_align, match_dict_to_candidate
+    from app.workers.redis_bus import publish_snapshot, _r
+    from app.workers.fuzzy_matcher import match_dict_to_candidate, bulk_align
 
-    # --- Configuration ---
-    ALL_SPORTS = list(set(
-        list(CANONICAL_SPORT_IDS.keys()) +
-        list(OD_SPORT_IDS.keys()) +
-        [s for s, _ in SP_SPORT_ID.items()] +
-        B2B_SUPPORTED_SPORTS
-    ))
-    # Remove duplicates
-    ALL_SPORTS = list(dict.fromkeys(ALL_SPORTS))
+    # Build unique list of sports from all bookmakers
+    all_sports = set()
+    all_sports.update(CANONICAL_SPORT_IDS.keys())
+    all_sports.update(OD_SPORT_IDS.keys())
+    all_sports.update([s for s, _ in SP_SPORT_ID.items()])
+    all_sports.update(B2B_SUPPORTED_SPORTS)
+    ALL_SPORTS = sorted(list(all_sports))  # deterministic order
     DAYS = 30
-    MAX_WORKERS = 10  # parallel per sport
+    MAX_WORKERS_SPORTS = 8  # parallel sports
 
     print(f"\n🚀 Starting ALL BOOKMAKERS HARVESTER ({len(ALL_SPORTS)} sports, {DAYS} days)")
     print(f"   Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     results = {}
-    report = []
 
     def process_sport(sport_slug):
         print(f"🏆 Processing {sport_slug}...")
@@ -737,13 +737,12 @@ def run_all_harvesters():
             od_matches = od_fetch_upcoming(sport_slug=sport_slug, days=DAYS, fetch_full_markets=False)
             sport_result["upcoming"]["odibets"] = len(od_matches) if od_matches else 0
 
-            # 3. Sportpesa (try/except because not all sports are supported)
+            # 3. Sportpesa (may raise if sport not supported)
             try:
                 sp_matches = sp_fetch_upcoming(sport_slug=sport_slug, days=DAYS, max_matches=None, fetch_full_markets=False)
                 sport_result["upcoming"]["sportpesa"] = len(sp_matches) if sp_matches else 0
             except Exception as e:
                 sport_result["upcoming"]["sportpesa"] = 0
-                print(f"   ⚠️ Sportpesa {sport_slug} error: {e}")
 
             # 4. B2B (7 bookmakers) – fetch all, then merge
             b2b_per_bk = fetch_all_b2b_sport(sport_slug, mode="upcoming", max_workers=7)
@@ -751,11 +750,11 @@ def run_all_harvesters():
             sport_result["upcoming"]["b2b_raw"] = {bk: len(matches) for bk, matches in b2b_per_bk.items()}
             sport_result["merged_upcoming"] = b2b_merged
 
-            # Also collect all BK matches (including non-B2B) for final unified merge
+            # Collect all BK matches (including non-B2B) for final unified merge
             all_bk_matches = {
                 "betika": bt_matches,
                 "odibets": od_matches,
-                "sportpesa": sp_matches if 'sp_matches' in locals() else [],
+                "sportpesa": sp_matches if sp_matches else [],
                 **b2b_per_bk
             }
             sport_result["all_bk_matches"] = all_bk_matches
@@ -778,12 +777,10 @@ def run_all_harvesters():
                     })
                 # Align other BKs
                 unified_map = {u["id"]: u for u in anchor_unified}
-                for bk, bk_matches in all_bk_matches.items():
-                    if bk == anchor_bk or not bk_matches:
+                for bk, bk_matches_list in all_bk_matches.items():
+                    if bk == anchor_bk or not bk_matches_list:
                         continue
-                    candidates = [match_dict_to_candidate(m, bk_slug=bk) for m in bk_matches]
-                    # Use bulk_align (simplified)
-                    from app.workers.fuzzy_matcher import bulk_align
+                    candidates = [match_dict_to_candidate(m, bk_slug=bk) for m in bk_matches_list]
                     updates, _ = bulk_align(candidates, anchor_unified, sport_slug)
                     for upd in updates:
                         uid = upd.unified_match_id
@@ -807,7 +804,6 @@ def run_all_harvesters():
 
             # --- Publish to Redis ---
             try:
-                from app.workers.redis_bus import publish_snapshot, _r
                 r = _r()
                 # Store unified snapshot
                 unified_key = f"odds:unified:upcoming:{sport_slug}"
@@ -817,7 +813,7 @@ def run_all_harvesters():
                     "matches": sport_result["unified_matches"],
                     "harvested_at": datetime.now().isoformat()
                 }, default=str))
-                # Also publish per-BK snapshots (optional)
+                # Also publish per-BK snapshots
                 for bk, matches in all_bk_matches.items():
                     if matches:
                         publish_snapshot(bk, "upcoming", sport_slug, matches, ttl=3600)
@@ -835,34 +831,35 @@ def run_all_harvesters():
 
         return sport_slug, sport_result
 
-    # Run in parallel across sports
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    # Run sports in parallel
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS_SPORTS) as executor:
         futures = {executor.submit(process_sport, sport): sport for sport in ALL_SPORTS}
         for future in as_completed(futures):
             sport, res = future.result()
             results[sport] = res
 
-    # --- Generate HTML report ---
-    html_path = f"all_bookmakers_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    # Generate HTML report
+    from datetime import datetime as dt
+    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+    html_path = f"all_bookmakers_report_{timestamp}.html"
     with open(html_path, "w", encoding="utf-8") as f:
-        f.write(f"""
-        <html>
-        <head><title>All Bookmakers Report - {datetime.now()}</title>
-        <style>
-            body{{font-family: Arial, sans-serif; margin:20px;}}
-            table{{border-collapse:collapse; margin-bottom:20px; width:100%;}}
-            th, td{{border:1px solid #ccc; padding:8px; text-align:left;}}
-            th{{background:#f0f0f0;}}
-            .good{{color:green;}} .bad{{color:red;}} .warn{{color:orange;}}
-        </style>
-        </head>
-        <body>
-        <h1>All Bookmakers Harvester Report</h1>
-        <p>Run at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        <h2>Summary per Sport</h2>
-        <table>
-            <tr><th>Sport</th><th>Betika</th><th>OdiBets</th><th>Sportpesa</th><th>B2B (merged)</th><th>Unified</th><th>DB</th><th>Redis</th><th>Time (ms)</th></tr>
-        """)
+        f.write(f"""<html>
+<head><title>All Bookmakers Report - {dt.now()}</title>
+<style>
+body{{font-family: Arial, sans-serif; margin:20px;}}
+table{{border-collapse:collapse; margin-bottom:20px; width:100%;}}
+th,td{{border:1px solid #ccc; padding:8px; text-align:left;}}
+th{{background:#f0f0f0;}}
+.good{{color:green;}} .bad{{color:red;}}
+</style>
+</head>
+<body>
+<h1>All Bookmakers Harvester Report</h1>
+<p>Run at: {dt.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+<h2>Summary per Sport</h2>
+<table>
+<tr><th>Sport</th><th>Betika</th><th>OdiBets</th><th>Sportpesa</th><th>B2B (merged)</th><th>Unified</th><th>DB</th><th>Redis</th><th>Time (ms)</th></tr>
+""")
         for sport, res in results.items():
             err = res.get("error")
             if err:
@@ -879,7 +876,7 @@ def run_all_harvesters():
                 f.write(f"<tr><td>{sport}</td><td>{betika}</td><td>{odibets}</td><td>{sportpesa}</td><td>{b2b_merged}</td><td>{unified}</td><td>{db}</td><td>{redis}</td><td>{elapsed}</td></tr>")
         f.write("</table>")
 
-        # Optional: show a sample unified match for each sport
+        # Sample unified matches
         f.write("<h2>Sample Unified Matches</h2>")
         for sport, res in results.items():
             unified_matches = res.get("unified_matches", [])
@@ -894,9 +891,8 @@ def run_all_harvesters():
                     f.write(f"<li>{bk}: {markets_count} markets</li>")
                 f.write("</ul><hr>")
         f.write("</body></html>")
-    print(f"\n📄 HTML report saved to {html_path}")
 
-    # --- Final summary ---
+    print(f"\n📄 HTML report saved to {html_path}")
     total_unified = sum(len(res.get("unified_matches", [])) for res in results.values())
     total_db = sum(res.get("db_persisted", 0) for res in results.values())
     print(f"\n🎉 Done! Total unified matches: {total_unified}")
@@ -904,6 +900,33 @@ def run_all_harvesters():
     print(f"   Redis published: {sum(1 for r in results.values() if r.get('redis_published'))}/{len(results)} sports")
     print(f"   Report: {html_path}")
 
+
+@flask_app.route("/api/v1/dev/unified/matches", methods=["GET"])
+def get_unified_matches():
+    """Get unified matches from PostgreSQL (latest persisted)."""
+    from app.models.odds import UnifiedMatch
+    from app.views.odds_feed.customer_odds_view import _normalise_sport_slug
+
+    sport = request.args.get("sport")
+    limit = int(request.args.get("limit", 100))
+    offset = int(request.args.get("offset", 0))
+
+    query = UnifiedMatch.query.filter_by(match_status="upcoming")
+    if sport:
+        sport_slug = _normalise_sport_slug(sport)
+        query = query.filter_by(sport_slug=sport_slug)
+
+    total = query.count()
+    matches = query.order_by(UnifiedMatch.start_time.desc()).offset(offset).limit(limit).all()
+
+    return jsonify({
+        "success": True,
+        "total": total,
+        "returned": len(matches),
+        "offset": offset,
+        "limit": limit,
+        "matches": [m.to_dict() for m in matches]  # ensure to_dict exists
+    })
 
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
