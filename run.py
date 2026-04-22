@@ -694,12 +694,12 @@ def run_all_harvesters():
     from datetime import datetime
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Lazy imports to avoid circular deps
+    # Lazy imports to avoid circular dependencies
     from app.workers.bt_harvester import fetch_upcoming_matches, CANONICAL_SPORT_IDS
     from app.workers.od_harvester import fetch_upcoming_matches as od_fetch_upcoming, OD_SPORT_IDS
     from app.workers.sp_harvester import fetch_upcoming as sp_fetch_upcoming, SP_SPORT_ID
     from app.workers.b2b_harvester import fetch_all_b2b_sport, merge_b2b_by_match, B2B_SUPPORTED_SPORTS
-    from app.workers.persist_hook import persist_merged_sync
+    from app.utils.persist_hook import persist_merged_sync
     from app.workers.redis_bus import publish_snapshot, _r
     from app.workers.fuzzy_matcher import match_dict_to_candidate, bulk_align
 
@@ -741,7 +741,7 @@ def run_all_harvesters():
             try:
                 sp_matches = sp_fetch_upcoming(sport_slug=sport_slug, days=DAYS, max_matches=None, fetch_full_markets=False)
                 sport_result["upcoming"]["sportpesa"] = len(sp_matches) if sp_matches else 0
-            except Exception as e:
+            except Exception:
                 sport_result["upcoming"]["sportpesa"] = 0
 
             # 4. B2B (7 bookmakers) – fetch all, then merge
@@ -754,7 +754,7 @@ def run_all_harvesters():
             all_bk_matches = {
                 "betika": bt_matches,
                 "odibets": od_matches,
-                "sportpesa": sp_matches if sp_matches else [],
+                "sportpesa": sp_matches if 'sp_matches' in locals() else [],
                 **b2b_per_bk
             }
             sport_result["all_bk_matches"] = all_bk_matches
@@ -795,14 +795,15 @@ def run_all_harvesters():
             else:
                 sport_result["unified_matches"] = b2b_merged  # fallback
 
-            # --- Persist to DB ---
-            if sport_result["unified_matches"]:
-                stats = persist_merged_sync(sport_result["unified_matches"], sport_slug)
-                sport_result["db_persisted"] = stats.get("persisted", 0)
-            else:
-                sport_result["db_persisted"] = 0
+            # --- Persist to DB (WITH APP CONTEXT) ---
+            with flask_app.app_context():
+                if sport_result["unified_matches"]:
+                    stats = persist_merged_sync(sport_result["unified_matches"], sport_slug)
+                    sport_result["db_persisted"] = stats.get("persisted", 0)
+                else:
+                    sport_result["db_persisted"] = 0
 
-            # --- Publish to Redis ---
+            # --- Publish to Redis (no app context needed) ---
             try:
                 r = _r()
                 # Store unified snapshot
@@ -839,12 +840,11 @@ def run_all_harvesters():
             results[sport] = res
 
     # Generate HTML report
-    from datetime import datetime as dt
-    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     html_path = f"all_bookmakers_report_{timestamp}.html"
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(f"""<html>
-<head><title>All Bookmakers Report - {dt.now()}</title>
+<head><title>All Bookmakers Report - {datetime.now()}</title>
 <style>
 body{{font-family: Arial, sans-serif; margin:20px;}}
 table{{border-collapse:collapse; margin-bottom:20px; width:100%;}}
@@ -855,7 +855,7 @@ th{{background:#f0f0f0;}}
 </head>
 <body>
 <h1>All Bookmakers Harvester Report</h1>
-<p>Run at: {dt.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+<p>Run at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
 <h2>Summary per Sport</h2>
 <table>
 <tr><th>Sport</th><th>Betika</th><th>OdiBets</th><th>Sportpesa</th><th>B2B (merged)</th><th>Unified</th><th>DB</th><th>Redis</th><th>Time (ms)</th></tr>
@@ -899,7 +899,6 @@ th{{background:#f0f0f0;}}
     print(f"   Persisted to DB: {total_db}")
     print(f"   Redis published: {sum(1 for r in results.values() if r.get('redis_published'))}/{len(results)} sports")
     print(f"   Report: {html_path}")
-
 
 @flask_app.route("/api/v1/dev/unified/matches", methods=["GET"])
 def get_unified_matches():
