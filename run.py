@@ -1073,5 +1073,238 @@ li{{margin:5px 0;}}
     print(f"\n✅ HTML report: {html_path}")
     print(f"✅ JSON data:   {json_path}")
 
+
+@flask_app.cli.command("debug-unify")
+@click.option("--sport", default="soccer", help="Sport slug to debug")
+@click.option("--days", default=7, help="Days ahead to fetch")
+def debug_unify(sport, days):
+    """
+    Debug cross-bookmaker unification for a specific sport.
+    Shows raw markets per match per bookmaker, then attempts unification.
+    Outputs JSON + HTML with detailed matching results.
+    """
+    import json
+    import time
+    from datetime import datetime
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.workers.bt_harvester import fetch_upcoming_matches, CANONICAL_SPORT_IDS
+    from app.workers.od_harvester import fetch_upcoming_matches as od_fetch_upcoming, OD_SPORT_IDS
+    from app.workers.sp_harvester import fetch_upcoming as sp_fetch_upcoming, SP_SPORT_ID
+    from app.workers.b2b_harvester import fetch_all_b2b_sport, B2B_BOOKMAKERS
+    from app.workers.fuzzy_matcher import match_dict_to_candidate, bulk_align
+
+    print(f"\n🔍 Debugging unification for: {sport} (next {days} days)")
+    print(f"   {datetime.now()}\n")
+
+    # Fetch all bookmakers
+    bookmaker_data = {}
+
+    # 1. Betika
+    try:
+        bt = fetch_upcoming_matches(sport_slug=sport, days=days, fetch_full=False, max_pages=20)
+        bookmaker_data["betika"] = bt
+        print(f"✅ Betika: {len(bt)} matches")
+    except Exception as e:
+        print(f"❌ Betika: {e}")
+        bookmaker_data["betika"] = []
+
+    # 2. OdiBets
+    try:
+        od = od_fetch_upcoming(sport_slug=sport, days=days, fetch_full_markets=False)
+        bookmaker_data["odibets"] = od
+        print(f"✅ OdiBets: {len(od)} matches")
+    except Exception as e:
+        print(f"❌ OdiBets: {e}")
+        bookmaker_data["odibets"] = []
+
+    # 3. Sportpesa
+    try:
+        sp = sp_fetch_upcoming(sport_slug=sport, days=days, max_matches=None, fetch_full_markets=False)
+        bookmaker_data["sportpesa"] = sp
+        print(f"✅ Sportpesa: {len(sp)} matches")
+    except Exception as e:
+        print(f"❌ Sportpesa: {e}")
+        bookmaker_data["sportpesa"] = []
+
+    # 4. B2B (7 bookmakers)
+    try:
+        b2b_per_bk = fetch_all_b2b_sport(sport, mode="upcoming", max_workers=7)
+        for bk, matches in b2b_per_bk.items():
+            bookmaker_data[bk] = matches
+            print(f"✅ {bk}: {len(matches)} matches")
+    except Exception as e:
+        print(f"❌ B2B: {e}")
+
+    # Prepare anchor (prefer Sportpesa for betradar_id)
+    anchor_bk = "sportpesa" if bookmaker_data.get("sportpesa") else "betika"
+    anchor_matches = bookmaker_data.get(anchor_bk, [])
+    if not anchor_matches:
+        print("\n⚠️ No anchor matches found – unification impossible.")
+        return
+
+    # Convert anchor to unified format
+    anchor_list = []
+    for m in anchor_matches:
+        anchor_list.append({
+            "id": m.get("sp_game_id") or m.get("bt_match_id") or m.get("od_match_id") or m.get("b2b_match_id"),
+            "betradar_id": m.get("betradar_id") or "",
+            "home_team_name": m.get("home_team", ""),
+            "away_team_name": m.get("away_team", ""),
+            "start_time": m.get("start_time"),
+            "competition_name": m.get("competition") or m.get("competition_name"),
+            "external_ids": {anchor_bk: m.get("sp_game_id") or m.get("bt_match_id") or m.get("od_match_id")}
+        })
+
+    # Align other bookmakers
+    unified_map = {u["id"]: u for u in anchor_list}
+    alignment_log = []  # store which matches were aligned
+
+    for bk, matches in bookmaker_data.items():
+        if bk == anchor_bk or not matches:
+            continue
+        candidates = [match_dict_to_candidate(m, bk_slug=bk) for m in matches]
+        updates, creates = bulk_align(candidates, anchor_list, sport)
+        for upd in updates:
+            uid = upd.unified_match_id
+            if uid in unified_map:
+                unified_map[uid].setdefault("bookmakers", {})[bk] = {
+                    "match_id": upd.candidate.external_id,
+                    "markets": upd.candidate.raw.get("markets", {})
+                }
+                alignment_log.append({
+                    "bk": bk,
+                    "match": f"{upd.candidate.raw.get('home_team')} vs {upd.candidate.raw.get('away_team')}",
+                    "matched_to": uid,
+                    "confidence": upd.confidence
+                })
+        for create in creates:
+            # New match not in anchor – add to unified
+            cand = create.candidate
+            new_id = f"new_{bk}_{cand.external_id}"
+            unified_map[new_id] = {
+                "id": new_id,
+                "betradar_id": "",
+                "home_team_name": cand.raw.get("home_team", ""),
+                "away_team_name": cand.raw.get("away_team", ""),
+                "start_time": cand.raw.get("start_time"),
+                "competition_name": cand.raw.get("competition") or cand.raw.get("competition_name"),
+                "external_ids": {bk: cand.external_id},
+                "bookmakers": {bk: {"match_id": cand.external_id, "markets": cand.raw.get("markets", {})}}
+            }
+            alignment_log.append({
+                "bk": bk,
+                "match": f"{cand.raw.get('home_team')} vs {cand.raw.get('away_team')}",
+                "matched_to": "NEW (not in anchor)",
+                "confidence": create.confidence
+            })
+
+    unified_matches = list(unified_map.values())
+
+    # Count how many bookmakers contributed to each unified match
+    for um in unified_matches:
+        um["bookmaker_count"] = len(um.get("bookmakers", {})) + (1 if anchor_bk in um.get("external_ids", {}) else 0)
+
+    # Identify failures: matches that are only from one bookmaker
+    orphans = [um for um in unified_matches if um["bookmaker_count"] == 1]
+
+    # Prepare output data
+    output = {
+        "sport": sport,
+        "days": days,
+        "anchor_bk": anchor_bk,
+        "bookmaker_counts": {bk: len(matches) for bk, matches in bookmaker_data.items()},
+        "unified_total": len(unified_matches),
+        "orphan_count": len(orphans),
+        "alignment_log": alignment_log,
+        "unified_matches": unified_matches,
+        "raw_bookmaker_matches": bookmaker_data,  # full raw data
+    }
+
+    # Save JSON
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = f"unify_debug_{sport}_{timestamp}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(output, f, default=str, indent=2)
+    print(f"\n💾 JSON saved: {json_path}")
+
+    # Generate HTML report
+    html_path = f"unify_debug_{sport}_{timestamp}.html"
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(f"""<html>
+<head><title>Unification Debug – {sport}</title>
+<style>
+body{{font-family: Arial, sans-serif; margin:20px;}}
+table{{border-collapse:collapse; margin-bottom:20px; width:100%;}}
+th,td{{border:1px solid #ccc; padding:8px; text-align:left;}}
+th{{background:#f0f0f0;}}
+.collapsible{{background-color:#f9f9f9; cursor:pointer; padding:10px; width:100%; border:none; text-align:left; outline:none;}}
+.active, .collapsible:hover{{background-color:#e9e9e9;}}
+.content{{padding:0 18px; display:none; overflow:hidden; background-color:#f1f1f1;}}
+.bad{{color:red;}} .good{{color:green;}}
+</style>
+<script>
+function toggleCollapsible(el) {{
+    el.classList.toggle("active");
+    var content = el.nextElementSibling;
+    if (content.style.display === "block") content.style.display = "none";
+    else content.style.display = "block";
+}}
+</script>
+</head>
+<body>
+<h1>🔗 Unification Debug – {sport.upper()}</h1>
+<p>Generated: {datetime.now()}</p>
+<p>Anchor bookmaker: {anchor_bk}</p>
+<h2>Summary</h2>
+<ul>
+<li>Total raw matches across all bookmakers: {sum(output['bookmaker_counts'].values())}</li>
+<li>Unified matches: {len(unified_matches)}</li>
+<li>Orphan matches (only one bookmaker): {len(orphans)}</li>
+</ul>
+
+<h2>Raw matches per bookmaker</h2>
+<table>
+  <tr><th>Bookmaker</th><th>Match count</th></tr>
+""")
+        for bk, cnt in output['bookmaker_counts'].items():
+            f.write(f"<tr><td>{bk}</td><td>{cnt}</td></tr>")
+        f.write("</table>")
+
+        f.write("<h2>Alignment log</h2><table><tr><th>Bookmaker</th><th>Match</th><th>Matched to</th><th>Confidence</th></tr>")
+        for log in alignment_log:
+            f.write(f"<tr><td>{log['bk']}</td><td>{log['match']}</td><td>{log['matched_to']}</td><td>{log['confidence']:.2f}</td></tr>")
+        f.write("</table>")
+
+        f.write("<h2>Unified matches (collapsible)</h2>")
+        for idx, um in enumerate(unified_matches[:50]):  # limit for readability
+            f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">#{idx+1}: {um.get("home_team_name")} vs {um.get("away_team_name")} – {um["bookmaker_count"]} bookmakers</button>')
+            f.write('<div class="content">')
+            f.write(f"<p><b>Betradar ID:</b> {um.get('betradar_id')}<br>")
+            f.write(f"<b>Competition:</b> {um.get('competition_name')}<br>")
+            f.write(f"<b>Start time:</b> {um.get('start_time')}</p>")
+            f.write("<h4>Bookmakers & markets</h4><ul>")
+            for bk, bk_data in um.get("bookmakers", {}).items():
+                mkts = list(bk_data.get("markets", {}).keys())
+                f.write(f"<li><b>{bk}</b>: {len(mkts)} markets – {', '.join(mkts[:10])}{'...' if len(mkts)>10 else ''}</li>")
+            # Also show anchor bookmaker if present
+            if anchor_bk in um.get("external_ids", {}):
+                # Need to fetch anchor markets from raw data
+                anchor_match = next((m for m in bookmaker_data.get(anchor_bk, []) if m.get("sp_game_id") == um["external_ids"][anchor_bk]), None)
+                if anchor_match:
+                    mkts = list(anchor_match.get("markets", {}).keys())
+                    f.write(f"<li><b>{anchor_bk} (anchor)</b>: {len(mkts)} markets – {', '.join(mkts[:10])}{'...' if len(mkts)>10 else ''}</li>")
+            f.write("</ul>")
+            f.write('</div>')
+        f.write("</body></html>")
+    print(f"📄 HTML report saved: {html_path}")
+
+    print(f"\n🎯 Orphan matches (not unified with any other bookmaker): {len(orphans)}")
+    if orphans:
+        print("  First 5 orphans:")
+        for o in orphans[:5]:
+            print(f"    - {o.get('home_team_name')} vs {o.get('away_team_name')} (only from {list(o.get('external_ids', {}).keys())[0]})")
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
