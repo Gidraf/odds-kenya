@@ -135,8 +135,7 @@ def test_sp_harvester():
 @click.option("--sport", default=None, help="Limit to one sport slug")
 @click.option("--days", default=30, help="Days ahead for upcoming")
 @click.option("--max-matches", default=10, help="Max matches to display per sport")
-@click.option("--workers", default=8, help="Number of concurrent threads")
-def show_normalized(bk, mode, sport, days, max_matches, workers):
+def show_normalized(bk, mode, sport, days, max_matches):
     """
     Show normalized matches for a single bookmaker (sp, bt, od).
     Markets are already normalized by the respective harvester.
@@ -148,13 +147,17 @@ def show_normalized(bk, mode, sport, days, max_matches, workers):
     # Fetch data based on bookmaker
     if bk == "sp":
         from app.workers.sp_harvester import fetch_upcoming as fetch_func
+        from app.workers.sp_mapper import SPORT_PRIMARY_MARKETS
         bookmaker_name = "Sportpesa"
+        sport_id_map = lambda s: 1  # not used here
     elif bk == "bt":
         from app.workers.bt_harvester import fetch_upcoming_matches as fetch_func
         bookmaker_name = "Betika"
+        SPORT_PRIMARY_MARKETS = {}  # not used
     elif bk == "od":
         from app.workers.od_harvester import fetch_upcoming as fetch_func
         bookmaker_name = "OdiBets"
+        SPORT_PRIMARY_MARKETS = {}
     else:
         print(f"Unknown bookmaker: {bk}")
         return
@@ -173,7 +176,7 @@ def show_normalized(bk, mode, sport, days, max_matches, workers):
             from app.workers.od_harvester import OD_SPORT_IDS
             sports = list(OD_SPORT_IDS.keys())
 
-    print(f"\n📊 Fetching {mode} data for {bookmaker_name} ({len(sports)} sports, days={days}, workers={workers})")
+    print(f"\n📊 Fetching {mode} data for {bookmaker_name} ({len(sports)} sports, days={days})")
     print(f"   {datetime.now()}\n")
 
     all_data = {}
@@ -186,81 +189,81 @@ def show_normalized(bk, mode, sport, days, max_matches, workers):
                 matches = []  # live not implemented
             return sport_slug, matches[:max_matches] if max_matches else matches
         except Exception as e:
+            print(f"  {sport_slug} error: {e}")
             return sport_slug, []
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    # Parallel fetch
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fetch_sport, s): s for s in sports}
         for future in as_completed(futures):
-            s, matches = future.result()
-            all_data[s] = matches
-            print(f"  {s}: {len(matches)} matches")
+            s, m = future.result()
+            all_data[s] = m
+            print(f"  {s}: {len(m)} matches")
 
-    # Generate HTML report with improved styling
+    # Debug: print raw normalized market slugs for first match of each sport
+    print("\n🔍 Raw normalized markets for first match of each sport (if any):")
+    for sport_slug, matches in all_data.items():
+        if matches:
+            first = matches[0]
+            print(f"\n  {sport_slug.upper()} – {first.get('home_team')} vs {first.get('away_team')}")
+            print(f"    Betradar ID: {first.get('betradar_id')}")
+            for slug, outcomes in first.get("markets", {}).items():
+                print(f"      {slug}: {', '.join(outcomes.keys())}")
+
+    # Generate HTML report (unchanged structure, but add expected markets check)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     html_path = f"normalized_{bk}_{mode}_{timestamp}.html"
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(f"""<html>
 <head><meta charset="UTF-8"><title>Normalized {bookmaker_name} {mode}</title>
 <style>
-body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-.sport-section {{ margin-bottom: 30px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); overflow: hidden; }}
-.sport-header {{ background: #2c3e50; color: white; padding: 12px 20px; cursor: pointer; font-size: 1.2em; font-weight: bold; }}
-.sport-header:hover {{ background: #1a252f; }}
-.match-card {{ margin: 20px; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden; }}
-.match-header {{ background: #f8f9fa; padding: 12px 15px; border-bottom: 1px solid #e0e0e0; }}
-.match-header h3 {{ margin: 0; color: #2c3e50; }}
-.match-details {{ padding: 10px 15px; background: #fafafa; font-size: 0.9em; color: #666; border-bottom: 1px solid #e0e0e0; }}
-.markets-table {{ width: 100%; border-collapse: collapse; }}
-.markets-table th {{ background: #3498db; color: white; padding: 10px; text-align: left; font-weight: 600; }}
-.markets-table td {{ padding: 8px 10px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }}
-.market-name {{ font-weight: bold; background: #ecf0f1; width: 180px; }}
-.outcome-cell {{ display: inline-block; margin-right: 12px; padding: 2px 6px; background: #f0f0f0; border-radius: 4px; font-size: 0.85em; }}
-.odds-cell {{ margin-left: 4px; font-weight: 600; color: #27ae60; }}
+body {{ font-family: Arial, sans-serif; margin: 20px; }}
+.sport-section {{ margin-bottom: 30px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; }}
+.match {{ border-bottom: 1px solid #eee; margin-bottom: 15px; padding-bottom: 10px; }}
+.market {{ margin: 5px 0; border-left: 3px solid #aaa; padding-left: 10px; }}
+.slug {{ font-weight: bold; display: inline-block; width: 250px; }}
+.outcome {{ display: inline-block; margin-right: 20px; background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
+.collapsible {{ background-color: #f9f9f9; cursor: pointer; padding: 10px; width: 100%; border: none; text-align: left; outline: none; font-size: 1.1em; }}
+.active, .collapsible:hover {{ background-color: #e9e9e9; }}
+.content {{ padding: 0 18px; display: none; overflow-x: auto; background-color: #f1f1f1; }}
 </style>
 <script>
-function toggleSport(el) {{
+function toggleCollapsible(el) {{
+    el.classList.toggle("active");
     var content = el.nextElementSibling;
-    content.style.display = content.style.display === "none" ? "block" : "none";
+    content.style.display = content.style.display === "block" ? "none" : "block";
 }}
 </script>
 </head>
 <body>
-<h1>📊 Normalized Markets – {bookmaker_name} ({mode})</h1>
+<h1>Normalized Markets – {bookmaker_name} ({mode})</h1>
 <p>Generated: {datetime.now()}</p>
 """)
         for sport_slug, matches in all_data.items():
             if not matches:
                 continue
             f.write(f'<div class="sport-section">')
-            f.write(f'<div class="sport-header" onclick="toggleSport(this)">▼ {sport_slug.upper()} – {len(matches)} matches</div>')
-            f.write('<div style="display: block;">')  # content initially visible
+            f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">{sport_slug.upper()} – {len(matches)} matches</button>')
+            f.write('<div class="content">')
             for idx, m in enumerate(matches):
-                f.write(f'<div class="match-card">')
-                f.write(f'<div class="match-header">')
+                f.write(f'<div class="match">')
                 f.write(f'<h3>{idx+1}. {m.get("home_team")} vs {m.get("away_team")}</h3>')
-                f.write(f'</div>')
-                f.write(f'<div class="match-details">')
-                f.write(f'<strong>Competition:</strong> {m.get("competition")} | ')
-                f.write(f'<strong>Start:</strong> {m.get("start_time")} | ')
-                f.write(f'<strong>Betradar ID:</strong> {m.get("betradar_id") or "N/A"}')
-                f.write(f'</div>')
-                f.write('<table class="markets-table">')
-                f.write('<tr><th>Market</th><th>Outcomes & Odds</th></tr>')
+                f.write(f'<p><strong>Competition:</strong> {m.get("competition")}<br>')
+                f.write(f'<strong>Start:</strong> {m.get("start_time")}<br>')
+                f.write(f'<strong>Betradar ID:</strong> {m.get("betradar_id") or "N/A"}</p>')
+                f.write('<h4>Markets (normalized)</h4>')
                 for slug, outcomes in m.get("markets", {}).items():
-                    f.write(f'<tr>')
-                    f.write(f'<td class="market-name">{slug}</td>')
-                    f.write(f'<td>')
+                    f.write(f'<div class="market"><span class="slug">{slug}</span> ')
                     for out, odds in outcomes.items():
-                        f.write(f'<span class="outcome-cell">{out}: <span class="odds-cell">{odds:.2f}</span></span> ')
-                    f.write(f'</td>')
-                    f.write(f'</tr>')
-                f.write('</table>')
+                        f.write(f'<span class="outcome">{out}: {odds:.2f}</span> ')
+                    f.write('</div>')
                 f.write('</div>')
             f.write('</div>')
             f.write('</div>')
         f.write("</body></html>")
 
     print(f"\n📄 HTML report saved: {html_path}")
+
 
 @flask_app.cli.command("run-all-harvesters")
 def run_all_harvesters():
