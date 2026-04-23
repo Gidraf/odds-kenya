@@ -2,17 +2,12 @@
 app/workers/sp_mapper.py
 =========================
 Sportpesa market-ID → canonical slug mapping for EVERY sport using class-based routing.
-
-FIX: eFootball (sport_id 126) now uses dedicated mapper, so Over/Under markets appear.
 """
 
 from __future__ import annotations
 import re
 from typing import Any
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. SPORT-SPECIFIC MAPPERS
-# ══════════════════════════════════════════════════════════════════════════════
 
 class BaseMapper:
     @staticmethod
@@ -36,8 +31,10 @@ class SportpesaFootballMapper(BaseMapper):
     def get_market_slug(cls, sp_id: int, spec_value: float) -> str | None:
         if sp_id in cls.STATIC_MARKETS:
             return cls.STATIC_MARKETS[sp_id]
+
         line = cls.format_line(spec_value)
-        # Over/Under – includes ID 52 (soccer) and 56 (eFootball fallback)
+
+        # Full Time Over/Under
         if sp_id in [52, 18, 56]:
             return f"over_under_goals_{line}"
         if sp_id in [54, 15, 68]:
@@ -76,7 +73,8 @@ class SportpesaEFootballMapper(BaseMapper):
 
         line = cls.format_line(spec_value)
 
-        if sp_id == 56:   # Total Goals Over/Under
+        # Over/Under (Market ID 56 for eFootball)
+        if sp_id == 56:
             return f"over_under_efootball_goals_{line}"
         if sp_id == 51:   # Asian Handicap
             if spec_value == 0:
@@ -84,7 +82,7 @@ class SportpesaEFootballMapper(BaseMapper):
             prefix = "plus" if spec_value > 0 else "minus"
             val = str(abs(spec_value)).replace(".", "_")
             return f"efootball_ah_{prefix}_{val}"
-        # Fallback to football mapper for other IDs (e.g., 1x2)
+        # Fallback: try football mapper for other IDs (e.g., 1x2, double_chance)
         return SportpesaFootballMapper.get_market_slug(sp_id, spec_value)
 
 
@@ -221,7 +219,7 @@ class SportpesaCombatMapper(BaseMapper):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. MASTER DISPATCHER (FIXED: eFootball routed correctly)
+# MASTER DISPATCHER (routes eFootball to its own mapper)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MasterSportpesaMapper:
@@ -256,7 +254,7 @@ class MasterSportpesaMapper:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. PUBLIC API UTILITIES (unchanged)
+# PUBLIC API UTILITIES (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def normalize_sp_market(mkt_id: int, spec_val: Any = None, sport_id: int = 1) -> str:
@@ -372,11 +370,10 @@ def get_sport_meta(sport_id: int) -> dict:
     return SPORT_META.get(sport_id, {"name": f"Sport {sport_id}", "emoji": "🏆", "slugs": []})
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. LEGACY COMPATIBILITY API
+# LEGACY COMPATIBILITY API
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_sport_table(sport_id: int) -> dict[int, tuple[str, bool]]:
-    """Legacy compatibility mapping to prevent import errors in other modules."""
     return {
         382: ("match_winner", False), 51: ("asian_handicap", True),
         52: ("over_under_goals", True), 45: ("odd_even", False),
