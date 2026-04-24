@@ -135,10 +135,13 @@ def test_sp_harvester():
 @click.option("--sport", default=None, help="Limit to one sport slug")
 @click.option("--days", default=30, help="Days ahead for upcoming")
 @click.option("--max-matches", default=10, help="Max matches to display per sport")
-def show_normalized(bk, mode, sport, days, max_matches):
+@click.option("--format", default="html", type=click.Choice(["html", "json"]), help="Output format")
+@click.option("--output", default=None, help="Output file path (optional)")
+def show_normalized(bk, mode, sport, days, max_matches, format, output):
     """
     Show normalized matches for a single bookmaker (sp, bt, od).
     Markets are already normalized by the respective harvester.
+    Output as HTML (default) or JSON.
     """
     import json
     from datetime import datetime
@@ -199,7 +202,7 @@ def show_normalized(bk, mode, sport, days, max_matches):
             all_data[s] = m
             print(f"  {s}: {len(m)} matches")
 
-    # Debug: print raw normalized market slugs for first match of each sport
+    # Debug: print raw normalized market slugs for first match of each sport (only for console)
     print("\n🔍 Raw normalized markets for first match of each sport (if any):")
     for sport_slug, matches in all_data.items():
         if matches:
@@ -212,11 +215,33 @@ def show_normalized(bk, mode, sport, days, max_matches):
             else:
                 print("      No markets")
 
-    # Generate HTML report
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    html_path = f"normalized_{bk}_{mode}_{timestamp}.html"
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(f"""<html>
+
+    if format == "json":
+        # Prepare JSON output
+        output_data = {
+            "bookmaker": bookmaker_name,
+            "mode": mode,
+            "days": days,
+            "max_matches": max_matches,
+            "generated_at": datetime.now().isoformat(),
+            "sports": {}
+        }
+        for sport_slug, matches in all_data.items():
+            output_data["sports"][sport_slug] = matches
+        json_str = json.dumps(output_data, default=str, indent=2)
+        if output:
+            with open(output, "w", encoding="utf-8") as f:
+                f.write(json_str)
+            print(f"\n💾 JSON saved to: {output}")
+        else:
+            print(json_str)
+    else:
+        # HTML output
+        if not output:
+            output = f"normalized_{bk}_{mode}_{timestamp}.html"
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(f"""<html>
 <head><meta charset="UTF-8"><title>Normalized {bookmaker_name} {mode}</title>
 <style>
 body {{ font-family: Arial, sans-serif; margin: 20px; }}
@@ -241,40 +266,38 @@ function toggleCollapsible(el) {{
 <h1>Normalized Markets – {bookmaker_name} ({mode})</h1>
 <p>Generated: {datetime.now()}</p>
 """)
-        for sport_slug, matches in all_data.items():
-            if not matches:
-                continue
-            f.write(f'<div class="sport-section">')
-            f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">{sport_slug.upper()} – {len(matches)} matches</button>')
-            f.write('<div class="content">')
-            for idx, m in enumerate(matches):
-                f.write(f'<div class="match">')
-                f.write(f'<h3>{idx+1}. {m.get("home_team")} vs {m.get("away_team")}</h3>')
-                f.write(f'<p><strong>Competition:</strong> {m.get("competition")}<br>')
-                f.write(f'<strong>Start:</strong> {m.get("start_time")}<br>')
-                f.write(f'<strong>Betradar ID:</strong> {m.get("betradar_id") or "N/A"}</p>')
-                f.write('<h4>Markets (normalized)</h4>')
-                actual_markets = m.get("markets", {})
-                if actual_markets:
-                    for slug, outcomes in actual_markets.items():
-                        f.write(f'<div class="market"><span class="slug">{slug}</span> ')
-                        for out, odds in outcomes.items():
-                            f.write(f'<span class="outcome">{out}: {odds:.2f}</span> ')
-                        f.write('</div>')
-                else:
-                    f.write('<p><em>No markets returned by API.</em></p>')
-                # Show missing expected markets (only for Sportpesa)
-                if bk == "sp" and sport_slug in expected_markets:
-                    expected = expected_markets.get(sport_slug, [])
-                    missing = [e for e in expected if e not in actual_markets]
-                    if missing:
-                        f.write('<div style="margin-top:10px; color:#888;"><em>Missing expected markets: ' + ', '.join(missing) + '</em></div>')
+            for sport_slug, matches in all_data.items():
+                if not matches:
+                    continue
+                f.write(f'<div class="sport-section">')
+                f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">{sport_slug.upper()} – {len(matches)} matches</button>')
+                f.write('<div class="content">')
+                for idx, m in enumerate(matches):
+                    f.write(f'<div class="match">')
+                    f.write(f'<h3>{idx+1}. {m.get("home_team")} vs {m.get("away_team")}</h3>')
+                    f.write(f'<p><strong>Competition:</strong> {m.get("competition")}<br>')
+                    f.write(f'<strong>Start:</strong> {m.get("start_time")}<br>')
+                    f.write(f'<strong>Betradar ID:</strong> {m.get("betradar_id") or "N/A"}</p>')
+                    f.write('<h4>Markets (normalized)</h4>')
+                    actual_markets = m.get("markets", {})
+                    if actual_markets:
+                        for slug, outcomes in actual_markets.items():
+                            f.write(f'<div class="market"><span class="slug">{slug}</span> ')
+                            for out, odds in outcomes.items():
+                                f.write(f'<span class="outcome">{out}: {odds:.2f}</span> ')
+                            f.write('</div>')
+                    else:
+                        f.write('<p><em>No markets returned by API.</em></p>')
+                    if bk == "sp" and sport_slug in expected_markets:
+                        expected = expected_markets.get(sport_slug, [])
+                        missing = [e for e in expected if e not in actual_markets]
+                        if missing:
+                            f.write('<div style="margin-top:10px; color:#888;"><em>Missing expected markets: ' + ', '.join(missing) + '</em></div>')
+                    f.write('</div>')
                 f.write('</div>')
-            f.write('</div>')
-            f.write('</div>')
-        f.write("</body></html>")
-
-    print(f"\n📄 HTML report saved: {html_path}")
+                f.write('</div>')
+            f.write("</body></html>")
+        print(f"\n📄 HTML report saved: {output}")
 
 @flask_app.cli.command("run-all-harvesters")
 def run_all_harvesters():
