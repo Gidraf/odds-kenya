@@ -1,7 +1,7 @@
 """
 app/workers/sp_harvester.py
 ============================
-Sportpesa Kenya harvester – FIXED for eFootball (markets=all).
+Sportpesa Kenya harvester – FIXED for eFootball (markets=all) + offset for parallel batches.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ _ESOCCER_IDS = {"126"}
 
 
 # =============================================================================
-# HTTP (unchanged)
+# HTTP
 # =============================================================================
 
 def _get(
@@ -120,6 +120,7 @@ def _get(
         print(f"[sp] request error {url}: {exc}")
         return None, {}
 
+
 def _parse_content_range(header: str | None) -> int | None:
     if not header:
         return None
@@ -130,7 +131,7 @@ def _parse_content_range(header: str | None) -> int | None:
 
 
 # =============================================================================
-# RAW SP API FETCHERS (unchanged except _fetch_markets)
+# RAW SP API FETCHERS
 # =============================================================================
 
 def _fetch_upcoming_page(
@@ -261,7 +262,7 @@ def _fetch_markets(
 
 
 # =============================================================================
-# PARSERS (unchanged)
+# PARSERS
 # =============================================================================
 
 def _str_field(v: Any) -> str:
@@ -426,7 +427,7 @@ def _build_match(
 
 
 # =============================================================================
-# RAW ITEM COLLECTOR (unchanged)
+# RAW ITEM COLLECTOR
 # =============================================================================
 
 def _collect_raw_items(
@@ -483,30 +484,44 @@ def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
 
 
 # =============================================================================
-# PUBLIC API — STREAMING GENERATORS (unchanged)
+# PUBLIC API — STREAMING GENERATORS (with offset)
 # =============================================================================
 
 def fetch_upcoming_stream(
-    sport_slug: str,
-    days: int | None = None,
-    max_matches: int | None = None,
-    fetch_full_markets: bool = True,
-    sleep_between: float = 0.3,
-    debug_ou: bool = False,
+    sport_slug:         str,
+    days:               int | None   = None,
+    max_matches:        int | None   = None,
+    offset:             int          = 0,
+    fetch_full_markets: bool         = True,
+    sleep_between:      float        = 0.3,
+    debug_ou:           bool         = False,
     **_,
 ) -> Generator[dict, None, None]:
+    """
+    Yield one normalised match dict at a time as markets are fetched.
+    fetch_full_markets=True (default) is required to see O/U, handicap, etc.
+    offset: skip first N matches (useful for parallel processing)
+    """
     sport_id, market_ids, is_esoccer, days_default, max_default = _get_config(sport_slug)
     if not sport_id:
         return
 
-    days = days or days_default
+    days  = days        or days_default
     max_m = max_matches or max_default
 
-    raw_items = _collect_raw_items(sport_id, days, 30, max_m, is_esoccer=is_esoccer)
+    # Fetch enough raw items to cover offset + max_m
+    fetch_limit = (max_m + offset) if max_m is not None else None
+    raw_items = _collect_raw_items(sport_id, days, 30, fetch_limit, is_esoccer=is_esoccer)
     print(f"[sp:{sport_slug}] {len(raw_items)} raw items (sportId={sport_id})")
 
     inline_count = 0
+    skipped = 0
+    yielded = 0
     for item in raw_items:
+        if skipped < offset:
+            skipped += 1
+            continue
+
         parsed = _parse_match_item(item)
         if not parsed:
             continue
@@ -522,11 +537,15 @@ def fetch_upcoming_stream(
 
         markets = _parse_markets(
             raw_mkts,
-            game_id=parsed["sp_game_id"] if debug_ou else "",
-            sport_id=parsed.get("sp_sport_id") or int(sport_id),
+            game_id  = parsed["sp_game_id"] if debug_ou else "",
+            sport_id = parsed.get("sp_sport_id") or int(sport_id),
         )
         match_dict = _build_match(parsed, markets, sport_slug)
         yield match_dict
+
+        yielded += 1
+        if max_m and yielded >= max_m:
+            break
 
         if _is_near_term(match_dict.get("start_time"), days=3):
             scrape_sportpesa_match_analytics.apply_async(
@@ -537,7 +556,8 @@ def fetch_upcoming_stream(
             )
 
     if inline_count:
-        print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} matches used inline fallback")
+        print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} "
+              "matches used inline fallback (primary market only)")
 
 def _is_near_term(start_time_str: str, days: int = 3) -> bool:
     if not start_time_str:
@@ -557,10 +577,10 @@ def _is_near_term(start_time_str: str, days: int = 3) -> bool:
         return False
 
 def fetch_live_stream(
-    sport_slug: str,
-    fetch_full_markets: bool = True,
-    sleep_between: float = 0.3,
-    debug_ou: bool = False,
+    sport_slug:         str,
+    fetch_full_markets: bool  = True,
+    sleep_between:      float = 0.3,
+    debug_ou:           bool  = False,
     **_,
 ) -> Generator[dict, None, None]:
     sport_id, market_ids, _, _, _ = _get_config(sport_slug)
@@ -589,8 +609,8 @@ def fetch_live_stream(
 
         markets = _parse_markets(
             raw_mkts,
-            game_id=parsed["sp_game_id"] if debug_ou else "",
-            sport_id=parsed.get("sp_sport_id") or int(sport_id),
+            game_id  = parsed["sp_game_id"] if debug_ou else "",
+            sport_id = parsed.get("sp_sport_id") or int(sport_id),
         )
         yield _build_match(parsed, markets, sport_slug, status="live")
 
@@ -599,44 +619,48 @@ def fetch_live_stream(
 
 
 # =============================================================================
-# PUBLIC API — BLOCKING (unchanged)
+# PUBLIC API — BLOCKING (with offset)
 # =============================================================================
 
 def fetch_upcoming(
-    sport_slug: str,
-    days: int | None = None,
-    max_matches: int | None = None,
-    fetch_full_markets: bool = True,
-    sleep_between: float = 0.3,
-    debug_ou: bool = False,
+    sport_slug:         str,
+    days:               int | None = None,
+    max_matches:        int | None = None,
+    offset:             int        = 0,
+    fetch_full_markets: bool       = True,
+    sleep_between:      float      = 0.3,
+    debug_ou:           bool       = False,
     **_,
 ) -> list[dict]:
     results = list(fetch_upcoming_stream(
         sport_slug,
-        days=days,
-        max_matches=max_matches,
-        fetch_full_markets=fetch_full_markets,
-        sleep_between=sleep_between,
-        debug_ou=debug_ou,
+        days               = days,
+        max_matches        = max_matches,
+        offset             = offset,
+        fetch_full_markets = fetch_full_markets,
+        sleep_between      = sleep_between,
+        debug_ou           = debug_ou,
     ))
     print(f"[sp] {sport_slug}: {len(results)} normalised")
     return results
 
+
 def fetch_live(
-    sport_slug: str,
-    fetch_full_markets: bool = True,
-    sleep_between: float = 0.3,
-    debug_ou: bool = False,
+    sport_slug:         str,
+    fetch_full_markets: bool  = True,
+    sleep_between:      float = 0.3,
+    debug_ou:           bool  = False,
     **_,
 ) -> list[dict]:
     results = list(fetch_live_stream(
         sport_slug,
-        fetch_full_markets=fetch_full_markets,
-        sleep_between=sleep_between,
-        debug_ou=debug_ou,
+        fetch_full_markets = fetch_full_markets,
+        sleep_between      = sleep_between,
+        debug_ou           = debug_ou,
     ))
     print(f"[sp:live] {sport_slug}: {len(results)} live")
     return results
+
 
 __all__ = [
     "fetch_upcoming_stream",
