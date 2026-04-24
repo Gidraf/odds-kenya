@@ -144,20 +144,20 @@ def show_normalized(bk, mode, sport, days, max_matches):
     from datetime import datetime
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Fetch data based on bookmaker
+    # Helper to get the correct fetch function and expected markets (for sp)
+    expected_markets = {}
+
     if bk == "sp":
         from app.workers.sp_harvester import fetch_upcoming as fetch_func
         from app.workers.sp_mapper import SPORT_PRIMARY_MARKETS
         bookmaker_name = "Sportpesa"
-        sport_id_map = lambda s: 1  # not used here
+        expected_markets = SPORT_PRIMARY_MARKETS
     elif bk == "bt":
         from app.workers.bt_harvester import fetch_upcoming_matches as fetch_func
         bookmaker_name = "Betika"
-        SPORT_PRIMARY_MARKETS = {}  # not used
     elif bk == "od":
         from app.workers.od_harvester import fetch_upcoming as fetch_func
         bookmaker_name = "OdiBets"
-        SPORT_PRIMARY_MARKETS = {}
     else:
         print(f"Unknown bookmaker: {bk}")
         return
@@ -186,13 +186,12 @@ def show_normalized(bk, mode, sport, days, max_matches):
             if mode == "upcoming":
                 matches = fetch_func(sport_slug=sport_slug, days=days, max_matches=None, fetch_full_markets=True)
             else:
-                matches = []  # live not implemented
+                matches = []  # live not fully implemented
             return sport_slug, matches[:max_matches] if max_matches else matches
         except Exception as e:
             print(f"  {sport_slug} error: {e}")
             return sport_slug, []
 
-    # Parallel fetch
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fetch_sport, s): s for s in sports}
         for future in as_completed(futures):
@@ -207,10 +206,13 @@ def show_normalized(bk, mode, sport, days, max_matches):
             first = matches[0]
             print(f"\n  {sport_slug.upper()} – {first.get('home_team')} vs {first.get('away_team')}")
             print(f"    Betradar ID: {first.get('betradar_id')}")
-            for slug, outcomes in first.get("markets", {}).items():
-                print(f"      {slug}: {', '.join(outcomes.keys())}")
+            if first.get("markets"):
+                for slug, outcomes in first.get("markets", {}).items():
+                    print(f"      {slug}: {', '.join(outcomes.keys())}")
+            else:
+                print("      No markets")
 
-    # Generate HTML report (unchanged structure, but add expected markets check)
+    # Generate HTML report
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     html_path = f"normalized_{bk}_{mode}_{timestamp}.html"
     with open(html_path, "w", encoding="utf-8") as f:
@@ -252,18 +254,27 @@ function toggleCollapsible(el) {{
                 f.write(f'<strong>Start:</strong> {m.get("start_time")}<br>')
                 f.write(f'<strong>Betradar ID:</strong> {m.get("betradar_id") or "N/A"}</p>')
                 f.write('<h4>Markets (normalized)</h4>')
-                for slug, outcomes in m.get("markets", {}).items():
-                    f.write(f'<div class="market"><span class="slug">{slug}</span> ')
-                    for out, odds in outcomes.items():
-                        f.write(f'<span class="outcome">{out}: {odds:.2f}</span> ')
-                    f.write('</div>')
+                actual_markets = m.get("markets", {})
+                if actual_markets:
+                    for slug, outcomes in actual_markets.items():
+                        f.write(f'<div class="market"><span class="slug">{slug}</span> ')
+                        for out, odds in outcomes.items():
+                            f.write(f'<span class="outcome">{out}: {odds:.2f}</span> ')
+                        f.write('</div>')
+                else:
+                    f.write('<p><em>No markets returned by API.</em></p>')
+                # Show missing expected markets (only for Sportpesa)
+                if bk == "sp" and sport_slug in expected_markets:
+                    expected = expected_markets.get(sport_slug, [])
+                    missing = [e for e in expected if e not in actual_markets]
+                    if missing:
+                        f.write('<div style="margin-top:10px; color:#888;"><em>Missing expected markets: ' + ', '.join(missing) + '</em></div>')
                 f.write('</div>')
             f.write('</div>')
             f.write('</div>')
         f.write("</body></html>")
 
     print(f"\n📄 HTML report saved: {html_path}")
-
 
 @flask_app.cli.command("run-all-harvesters")
 def run_all_harvesters():
