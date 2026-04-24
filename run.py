@@ -639,10 +639,7 @@ def fast_sp_harvest(days, batch_size, max_workers, full_markets):
     def fetch_sport(sport_slug):
         print(f"🔍 {sport_slug} – fetching...")
         t0 = time.perf_counter()
-        # We'll run up to 4 batches in parallel inside the sport
         batches = []
-        # Determine approximate total matches by fetching first batch and count
-        # But we'll just run 4 batches; if a batch returns less than batch_size, we stop.
         with ThreadPoolExecutor(max_workers=4) as batch_executor:
             futures = []
             for i in range(4):
@@ -663,7 +660,6 @@ def fast_sp_harvest(days, batch_size, max_workers, full_markets):
                     batches.append(matches)
                     print(f"  {sport_slug} batch{i+1} (offset={offset}): {len(matches)} matches")
                     if len(matches) < batch_size:
-                        # No more matches beyond this offset
                         break
                 except Exception as e:
                     print(f"  {sport_slug} batch{i+1} error: {e}")
@@ -677,7 +673,6 @@ def fast_sp_harvest(days, batch_size, max_workers, full_markets):
                     seen.add(mid)
                     all_matches.append(m)
                 elif not mid:
-                    # fallback to index? unlikely
                     all_matches.append(m)
         elapsed = time.perf_counter() - t0
         print(f"✅ {sport_slug}: {len(all_matches)} matches in {elapsed:.2f}s")

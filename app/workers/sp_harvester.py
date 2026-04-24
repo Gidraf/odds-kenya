@@ -1,7 +1,7 @@
 """
 app/workers/sp_harvester.py
 ============================
-Sportpesa Kenya harvester – FIXED for eFootball (markets=all) + offset for parallel batches.
+Sportpesa Kenya harvester – FULL MARKETS for ALL sports (markets=all).
 """
 
 from __future__ import annotations
@@ -73,24 +73,25 @@ SP_SPORT_ID: dict[str, str] = {
 }
 
 # ── Sport ID → market IDs for /api/games/markets ─────────────────────────────
+# Set to "all" for every sport to fetch all available markets.
 _SPORT_MARKET_IDS: dict[str, str] = {
-    "1":   "10,1,46,47,43,29,386,52,18,353,352,208,258,202,332,51,53,55,45,41,207,42,60,15,54,68,44,328,203,162,166,136,139",
-    "126": "all",   # ← FETCH ALL MARKETS (including Over/Under lines)
-    "2":   "382,51,52,353,352,45,222,42,53,54,224,362,363,364,365,366,367,368,369",
-    "5":   "382,204,231,51,226,233,439,45,339,340,433,353,352",
-    "4":   "1,10,382,52,51,45,46,353,352,208,43,210,378",
-    "23":  "382,204,20,51,226,233,45,353,352",
-    "6":   "1,10,382,52,51,45,46,47,353,352,208,43,42,207",
-    "16":  "382,51,226,45,233,340",
-    "12":  "10,1,382,46,42,51,53,60,52,353,352,45,379,207,44",
-    "21":  "382,1,51,52,353,352",
-    "10":  "382,51,52",
-    "117": "382,20,51,52",
-    "49":  "382,226,45,51",
-    "15":  "382,51,52,45,353,352",
-    "3":   "382,51,52,45,353,352",
+    "1":   "all",      # Soccer
+    "126": "all",      # eFootball
+    "2":   "all",      # Basketball
+    "5":   "all",      # Tennis
+    "4":   "all",      # Ice Hockey
+    "23":  "all",      # Volleyball
+    "6":   "all",      # Handball
+    "16":  "all",      # Table Tennis
+    "12":  "all",      # Rugby
+    "21":  "all",      # Cricket
+    "10":  "all",      # Boxing
+    "117": "all",      # MMA
+    "49":  "all",      # Darts
+    "15":  "all",      # American Football
+    "3":   "all",      # Baseball
 }
-_DEFAULT_MARKET_IDS = "382,1,10,51,52,45,46"
+_DEFAULT_MARKET_IDS = "all"
 _ESOCCER_IDS = {"126"}
 
 
