@@ -607,6 +607,111 @@ def show_normalized(bk, mode, sport, days, max_matches, format, output):
         print(f"💾 JSON companion saved: {json_file}")
 
 
+@flask_app.cli.command("fast-sp-harvest")
+@click.option("--days", default=7, help="Days ahead")
+@click.option("--batch-size", default=500, help="Matches per batch")
+@click.option("--max-workers", default=8, help="Max parallel batches across sports")
+@click.option("--full-markets/--no-full-markets", default=True, help="Fetch full markets (slower)")
+def fast_sp_harvest(days, batch_size, max_workers, full_markets):
+    """
+    Harvest Sportpesa matches for ALL sports in parallel batches.
+    Splits sports with many matches into 4 parallel batches using offset.
+    """
+    import time
+    from datetime import datetime
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.workers.sp_harvester import fetch_upcoming, SP_SPORT_ID
+
+    # Deduplicate sports by id
+    seen_ids = set()
+    sports = []
+    for slug, sid in SP_SPORT_ID.items():
+        if sid not in seen_ids:
+            seen_ids.add(sid)
+            sports.append(slug)
+
+    print(f"\n🚀 FAST SPORTPESA HARVEST – {len(sports)} sports, {days} days")
+    print(f"   Batch size: {batch_size}, Parallel workers: {max_workers}, Full markets: {full_markets}")
+    print(f"   Started: {datetime.now()}\n")
+
+    final_results = {}
+
+    def fetch_sport(sport_slug):
+        print(f"🔍 {sport_slug} – fetching...")
+        t0 = time.perf_counter()
+        # We'll run up to 4 batches in parallel inside the sport
+        batches = []
+        # Determine approximate total matches by fetching first batch and count
+        # But we'll just run 4 batches; if a batch returns less than batch_size, we stop.
+        with ThreadPoolExecutor(max_workers=4) as batch_executor:
+            futures = []
+            for i in range(4):
+                offset = i * batch_size
+                fut = batch_executor.submit(
+                    fetch_upcoming,
+                    sport_slug=sport_slug,
+                    days=days,
+                    max_matches=batch_size,
+                    offset=offset,
+                    fetch_full_markets=full_markets,
+                    sleep_between=0.1
+                )
+                futures.append((i, offset, fut))
+            for i, offset, fut in futures:
+                try:
+                    matches = fut.result()
+                    batches.append(matches)
+                    print(f"  {sport_slug} batch{i+1} (offset={offset}): {len(matches)} matches")
+                    if len(matches) < batch_size:
+                        # No more matches beyond this offset
+                        break
+                except Exception as e:
+                    print(f"  {sport_slug} batch{i+1} error: {e}")
+        # Merge batches (deduplicate by sp_game_id)
+        all_matches = []
+        seen = set()
+        for batch in batches:
+            for m in batch:
+                mid = m.get("sp_game_id") or m.get("betradar_id")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    all_matches.append(m)
+                elif not mid:
+                    # fallback to index? unlikely
+                    all_matches.append(m)
+        elapsed = time.perf_counter() - t0
+        print(f"✅ {sport_slug}: {len(all_matches)} matches in {elapsed:.2f}s")
+        return sport_slug, all_matches
+
+    # Run all sports in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(fetch_sport, sport): sport for sport in sports}
+        for future in as_completed(futures):
+            sport, matches = future.result()
+            final_results[sport] = matches
+
+    # Summary table
+    print("\n" + "="*80)
+    print("📊 SPORTPESA HARVEST SUMMARY")
+    print("-"*80)
+    print(f"{'Sport':<20} {'Matches':<10}")
+    print("-"*40)
+    total_matches = 0
+    for sport in sorted(final_results.keys()):
+        cnt = len(final_results[sport])
+        total_matches += cnt
+        print(f"{sport:<20} {cnt:<10}")
+    print("-"*40)
+    print(f"{'TOTAL':<20} {total_matches:<10}")
+    print("="*80)
+
+    # Save to JSON
+    import json
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_file = f"sp_fast_harvest_{timestamp}.json"
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(final_results, f, default=str, indent=2)
+    print(f"\n💾 Full data saved to {out_file}")
 
 @flask_app.cli.command("run-all-harvesters")
 def run_all_harvesters():
