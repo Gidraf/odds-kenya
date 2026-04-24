@@ -129,6 +129,183 @@ def test_sp_harvester():
 
 # Add this to your run.py file
 
+def generate_html_with_json(all_data, bookmaker_name, mode, days, max_matches, expected_markets, bk, timestamp):
+    import json
+    from datetime import datetime
+
+    # Convert data to JSON string for embedding
+    data_json = json.dumps(all_data, default=str, indent=2)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Normalized {bookmaker_name} {mode}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+        .container {{ max-width: 1400px; margin: 0 auto; }}
+        .header {{ background: #2c3e50; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
+        .controls {{ background: #ecf0f1; padding: 10px; border-radius: 8px; margin-bottom: 20px; }}
+        button {{ background: #3498db; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; }}
+        button:hover {{ background: #2980b9; }}
+        .sport-section {{ margin-bottom: 30px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background: white; }}
+        .match {{ border-bottom: 1px solid #eee; margin-bottom: 15px; padding-bottom: 10px; }}
+        .market {{ margin: 5px 0; border-left: 3px solid #aaa; padding-left: 10px; }}
+        .slug {{ font-weight: bold; display: inline-block; width: 250px; }}
+        .outcome {{ display: inline-block; margin-right: 20px; background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
+        .collapsible {{ background-color: #f9f9f9; cursor: pointer; padding: 10px; width: 100%; border: none; text-align: left; outline: none; font-size: 1.1em; }}
+        .active, .collapsible:hover {{ background-color: #e9e9e9; }}
+        .content {{ padding: 0 18px; display: none; overflow-x: auto; background-color: #f1f1f1; }}
+        .modal {{
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }}
+        .modal-content {{
+            background-color: #fefefe;
+            margin: 5% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-height: 80%;
+            overflow-y: auto;
+            border-radius: 8px;
+        }}
+        .close {{
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }}
+        .close:hover {{ color: black; }}
+        pre {{
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 12px;
+        }}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Normalized Markets – {bookmaker_name} ({mode})</h1>
+        <p>Generated: {datetime.now()}</p>
+        <p>Days: {days} | Max matches per sport: {max_matches}</p>
+    </div>
+    <div class="controls">
+        <button onclick="showJsonModal()">📋 View JSON Data</button>
+        <button onclick="downloadJson()">💾 Download JSON</button>
+        <button onclick="copyJson()">📄 Copy JSON to Clipboard</button>
+    </div>
+"""
+
+    for sport_slug, matches in all_data.items():
+        if not matches:
+            continue
+        html += f"""
+    <div class="sport-section">
+        <button class="collapsible" onclick="toggleCollapsible(this)">{sport_slug.upper()} – {len(matches)} matches</button>
+        <div class="content">
+"""
+        for idx, m in enumerate(matches):
+            html += f"""
+            <div class="match">
+                <h3>{idx+1}. {m.get('home_team')} vs {m.get('away_team')}</h3>
+                <p><strong>Competition:</strong> {m.get('competition')}<br>
+                <strong>Start:</strong> {m.get('start_time')}<br>
+                <strong>Betradar ID:</strong> {m.get('betradar_id') or 'N/A'}</p>
+                <h4>Markets (normalized)</h4>
+"""
+            actual_markets = m.get('markets', {})
+            if actual_markets:
+                for slug, outcomes in actual_markets.items():
+                    html += f'                <div class="market"><span class="slug">{slug}</span> '
+                    for out, odds in outcomes.items():
+                        html += f'<span class="outcome">{out}: {odds:.2f}</span> '
+                    html += '</div>\n'
+            else:
+                html += '                <p><em>No markets returned by API.</em></p>\n'
+            if bk == "sp" and sport_slug in expected_markets:
+                expected = expected_markets.get(sport_slug, [])
+                missing = [e for e in expected if e not in actual_markets]
+                if missing:
+                    html += f'                <div style="margin-top:10px; color:#888;"><em>Missing expected markets: {", ".join(missing)}</em></div>\n'
+            html += '            </div>\n'
+        html += '        </div>\n    </div>\n'
+
+    # Add modal for JSON viewer
+    html += f"""
+</div>
+
+<div id="jsonModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <h2>JSON Data</h2>
+        <pre id="jsonDisplay"></pre>
+    </div>
+</div>
+
+<script>
+    const jsonData = {data_json};
+
+    function toggleCollapsible(el) {{
+        el.classList.toggle("active");
+        var content = el.nextElementSibling;
+        content.style.display = content.style.display === "block" ? "none" : "block";
+    }}
+
+    function showJsonModal() {{
+        document.getElementById("jsonDisplay").textContent = JSON.stringify(jsonData, null, 2);
+        document.getElementById("jsonModal").style.display = "block";
+    }}
+
+    function closeModal() {{
+        document.getElementById("jsonModal").style.display = "none";
+    }}
+
+    function downloadJson() {{
+        const dataStr = JSON.stringify(jsonData, null, 2);
+        const blob = new Blob([dataStr], {{type: "application/json"}});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "normalized_{bk}_{mode}_{timestamp}.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }}
+
+    function copyJson() {{
+        const dataStr = JSON.stringify(jsonData, null, 2);
+        navigator.clipboard.writeText(dataStr).then(() => {{
+            alert("JSON copied to clipboard!");
+        }}).catch(err => {{
+            alert("Failed to copy: " + err);
+        }});
+    }}
+
+    window.onclick = function(event) {{
+        if (event.target == document.getElementById("jsonModal")) {{
+            closeModal();
+        }}
+    }}
+</script>
+</body>
+</html>"""
+    return html
+
+
 @flask_app.cli.command("show-normalized")
 @click.option("--bk", default="sp", help="Bookmaker: sp, bt, od")
 @click.option("--mode", default="upcoming", help="upcoming or live")
@@ -202,7 +379,7 @@ def show_normalized(bk, mode, sport, days, max_matches, format, output):
             all_data[s] = m
             print(f"  {s}: {len(m)} matches")
 
-    # Debug: print raw normalized market slugs for first match of each sport (only for console)
+    # Debug: print raw normalized market slugs for first match of each sport (console only)
     print("\n🔍 Raw normalized markets for first match of each sport (if any):")
     for sport_slug, matches in all_data.items():
         if matches:
@@ -216,88 +393,220 @@ def show_normalized(bk, mode, sport, days, max_matches, format, output):
                 print("      No markets")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if not output:
+        if format == "json":
+            output = f"normalized_{bk}_{mode}_{timestamp}.json"
+        else:
+            output = f"normalized_{bk}_{mode}_{timestamp}.html"
+    else:
+        if format == "json" and not output.endswith(".json"):
+            output += ".json"
+        elif format == "html" and not output.endswith(".html"):
+            output += ".html"
 
     if format == "json":
-        # Prepare JSON output
+        # Save only JSON
         output_data = {
             "bookmaker": bookmaker_name,
             "mode": mode,
             "days": days,
             "max_matches": max_matches,
             "generated_at": datetime.now().isoformat(),
-            "sports": {}
+            "sports": all_data
         }
-        for sport_slug, matches in all_data.items():
-            output_data["sports"][sport_slug] = matches
-        json_str = json.dumps(output_data, default=str, indent=2)
-        if output:
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(json_str)
-            print(f"\n💾 JSON saved to: {output}")
-        else:
-            print(json_str)
-    else:
-        # HTML output
-        if not output:
-            output = f"normalized_{bk}_{mode}_{timestamp}.html"
         with open(output, "w", encoding="utf-8") as f:
-            f.write(f"""<html>
-<head><meta charset="UTF-8"><title>Normalized {bookmaker_name} {mode}</title>
-<style>
-body {{ font-family: Arial, sans-serif; margin: 20px; }}
-.sport-section {{ margin-bottom: 30px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; }}
-.match {{ border-bottom: 1px solid #eee; margin-bottom: 15px; padding-bottom: 10px; }}
-.market {{ margin: 5px 0; border-left: 3px solid #aaa; padding-left: 10px; }}
-.slug {{ font-weight: bold; display: inline-block; width: 250px; }}
-.outcome {{ display: inline-block; margin-right: 20px; background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
-.collapsible {{ background-color: #f9f9f9; cursor: pointer; padding: 10px; width: 100%; border: none; text-align: left; outline: none; font-size: 1.1em; }}
-.active, .collapsible:hover {{ background-color: #e9e9e9; }}
-.content {{ padding: 0 18px; display: none; overflow-x: auto; background-color: #f1f1f1; }}
-</style>
-<script>
-function toggleCollapsible(el) {{
-    el.classList.toggle("active");
-    var content = el.nextElementSibling;
-    content.style.display = content.style.display === "block" ? "none" : "block";
-}}
-</script>
+            json.dump(output_data, f, default=str, indent=2)
+        print(f"\n💾 JSON saved to: {output}")
+    else:
+        # Generate HTML with embedded JSON viewer
+        data_json = json.dumps(all_data, default=str, indent=2)
+
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Normalized {bookmaker_name} {mode}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+        .container {{ max-width: 1400px; margin: 0 auto; }}
+        .header {{ background: #2c3e50; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
+        .controls {{ background: #ecf0f1; padding: 10px; border-radius: 8px; margin-bottom: 20px; }}
+        button {{ background: #3498db; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; }}
+        button:hover {{ background: #2980b9; }}
+        .sport-section {{ margin-bottom: 30px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background: white; }}
+        .match {{ border-bottom: 1px solid #eee; margin-bottom: 15px; padding-bottom: 10px; }}
+        .market {{ margin: 5px 0; border-left: 3px solid #aaa; padding-left: 10px; }}
+        .slug {{ font-weight: bold; display: inline-block; width: 250px; }}
+        .outcome {{ display: inline-block; margin-right: 20px; background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
+        .collapsible {{ background-color: #f9f9f9; cursor: pointer; padding: 10px; width: 100%; border: none; text-align: left; outline: none; font-size: 1.1em; }}
+        .active, .collapsible:hover {{ background-color: #e9e9e9; }}
+        .content {{ padding: 0 18px; display: none; overflow-x: auto; background-color: #f1f1f1; }}
+        .modal {{
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.5);
+        }}
+        .modal-content {{
+            background-color: #fefefe;
+            margin: 5% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-height: 80%;
+            overflow-y: auto;
+            border-radius: 8px;
+        }}
+        .close {{
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }}
+        .close:hover {{ color: black; }}
+        pre {{
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 12px;
+        }}
+    </style>
 </head>
 <body>
-<h1>Normalized Markets – {bookmaker_name} ({mode})</h1>
-<p>Generated: {datetime.now()}</p>
-""")
-            for sport_slug, matches in all_data.items():
-                if not matches:
-                    continue
-                f.write(f'<div class="sport-section">')
-                f.write(f'<button class="collapsible" onclick="toggleCollapsible(this)">{sport_slug.upper()} – {len(matches)} matches</button>')
-                f.write('<div class="content">')
-                for idx, m in enumerate(matches):
-                    f.write(f'<div class="match">')
-                    f.write(f'<h3>{idx+1}. {m.get("home_team")} vs {m.get("away_team")}</h3>')
-                    f.write(f'<p><strong>Competition:</strong> {m.get("competition")}<br>')
-                    f.write(f'<strong>Start:</strong> {m.get("start_time")}<br>')
-                    f.write(f'<strong>Betradar ID:</strong> {m.get("betradar_id") or "N/A"}</p>')
-                    f.write('<h4>Markets (normalized)</h4>')
-                    actual_markets = m.get("markets", {})
-                    if actual_markets:
-                        for slug, outcomes in actual_markets.items():
-                            f.write(f'<div class="market"><span class="slug">{slug}</span> ')
-                            for out, odds in outcomes.items():
-                                f.write(f'<span class="outcome">{out}: {odds:.2f}</span> ')
-                            f.write('</div>')
-                    else:
-                        f.write('<p><em>No markets returned by API.</em></p>')
-                    if bk == "sp" and sport_slug in expected_markets:
-                        expected = expected_markets.get(sport_slug, [])
-                        missing = [e for e in expected if e not in actual_markets]
-                        if missing:
-                            f.write('<div style="margin-top:10px; color:#888;"><em>Missing expected markets: ' + ', '.join(missing) + '</em></div>')
-                    f.write('</div>')
-                f.write('</div>')
-                f.write('</div>')
-            f.write("</body></html>")
+<div class="container">
+    <div class="header">
+        <h1>Normalized Markets – {bookmaker_name} ({mode})</h1>
+        <p>Generated: {datetime.now()}</p>
+        <p>Days: {days} | Max matches per sport: {max_matches}</p>
+    </div>
+    <div class="controls">
+        <button onclick="showJsonModal()">📋 View JSON Data</button>
+        <button onclick="downloadJson()">💾 Download JSON</button>
+        <button onclick="copyJson()">📄 Copy JSON to Clipboard</button>
+    </div>
+"""
+
+        for sport_slug, matches in all_data.items():
+            if not matches:
+                continue
+            html_content += f"""
+    <div class="sport-section">
+        <button class="collapsible" onclick="toggleCollapsible(this)">{sport_slug.upper()} – {len(matches)} matches</button>
+        <div class="content">
+"""
+            for idx, m in enumerate(matches):
+                html_content += f"""
+            <div class="match">
+                <h3>{idx+1}. {m.get('home_team')} vs {m.get('away_team')}</h3>
+                <p><strong>Competition:</strong> {m.get('competition')}<br>
+                <strong>Start:</strong> {m.get('start_time')}<br>
+                <strong>Betradar ID:</strong> {m.get('betradar_id') or 'N/A'}</p>
+                <h4>Markets (normalized)</h4>
+"""
+                actual_markets = m.get('markets', {})
+                if actual_markets:
+                    for slug, outcomes in actual_markets.items():
+                        html_content += f'                <div class="market"><span class="slug">{slug}</span> '
+                        for out, odds in outcomes.items():
+                            html_content += f'<span class="outcome">{out}: {odds:.2f}</span> '
+                        html_content += '</div>\n'
+                else:
+                    html_content += '                <p><em>No markets returned by API.</em></p>\n'
+                if bk == "sp" and sport_slug in expected_markets:
+                    expected = expected_markets.get(sport_slug, [])
+                    missing = [e for e in expected if e not in actual_markets]
+                    if missing:
+                        html_content += f'                <div style="margin-top:10px; color:#888;"><em>Missing expected markets: {", ".join(missing)}</em></div>\n'
+                html_content += '            </div>\n'
+            html_content += '        </div>\n    </div>\n'
+
+        html_content += f"""
+</div>
+
+<div id="jsonModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <h2>JSON Data</h2>
+        <pre id="jsonDisplay"></pre>
+    </div>
+</div>
+
+<script>
+    const jsonData = {data_json};
+
+    function toggleCollapsible(el) {{
+        el.classList.toggle("active");
+        var content = el.nextElementSibling;
+        content.style.display = content.style.display === "block" ? "none" : "block";
+    }}
+
+    function showJsonModal() {{
+        document.getElementById("jsonDisplay").textContent = JSON.stringify(jsonData, null, 2);
+        document.getElementById("jsonModal").style.display = "block";
+    }}
+
+    function closeModal() {{
+        document.getElementById("jsonModal").style.display = "none";
+    }}
+
+    function downloadJson() {{
+        const dataStr = JSON.stringify(jsonData, null, 2);
+        const blob = new Blob([dataStr], {{type: "application/json"}});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "normalized_{bk}_{mode}_{timestamp}.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }}
+
+    function copyJson() {{
+        const dataStr = JSON.stringify(jsonData, null, 2);
+        navigator.clipboard.writeText(dataStr).then(() => {{
+            alert("JSON copied to clipboard!");
+        }}).catch(err => {{
+            alert("Failed to copy: " + err);
+        }});
+    }}
+
+    window.onclick = function(event) {{
+        if (event.target == document.getElementById("jsonModal")) {{
+            closeModal();
+        }}
+    }}
+</script>
+</body>
+</html>"""
+
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(html_content)
         print(f"\n📄 HTML report saved: {output}")
+
+        # Also save a standalone JSON file
+        json_file = output.replace(".html", ".json")
+        output_data = {
+            "bookmaker": bookmaker_name,
+            "mode": mode,
+            "days": days,
+            "max_matches": max_matches,
+            "generated_at": datetime.now().isoformat(),
+            "sports": all_data
+        }
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, default=str, indent=2)
+        print(f"💾 JSON companion saved: {json_file}")
+
+
 
 @flask_app.cli.command("run-all-harvesters")
 def run_all_harvesters():
