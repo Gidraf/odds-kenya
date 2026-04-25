@@ -1,7 +1,7 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester – COMPETITION‑LEVEL FETCHING + OFFSET for batching.
+OdiBets upcoming + live harvester – supports all sports including esoccer (string sport_id).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # CORRECT SPORT ID MAPS (from OdiBets API)
 # ══════════════════════════════════════════════════════════════════════════════
 
-OD_SPORT_IDS: dict[str, int] = {
+OD_SPORT_IDS: dict[str, int | str] = {
     "soccer":            1,
     "basketball":        2,
     "tennis":            5,
@@ -41,10 +41,10 @@ OD_SPORT_IDS: dict[str, int] = {
     "mma":               117,
     "boxing":            10,
     "darts":             22,
-    "esoccer":           "esoccer",
+    "esoccer":           "esoccer",   # ← string for esoccer
 }
 
-OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
+OD_SPORT_SLUGS: dict[int | str, str] = {v: k for k, v in OD_SPORT_IDS.items()}
 
 _OD_STRING_SPORT_MAP: dict[str, str] = {
     "soccer":            "soccer",
@@ -65,13 +65,16 @@ _OD_STRING_SPORT_MAP: dict[str, str] = {
     "esoccer":           "esoccer",
 }
 
-def slug_to_od_sport_id(slug: str) -> int:
+def slug_to_od_sport_id(slug: str) -> int | str:
+    """Return sport ID (int for most, string for esoccer)."""
+    if slug == "esoccer":
+        return "esoccer"
     return OD_SPORT_IDS.get(slug, 1)
 
-def od_sport_to_slug(sport_id: int) -> str:
+def od_sport_to_slug(sport_id: int | str) -> str:
     return OD_SPORT_SLUGS.get(sport_id, "soccer")
 
-def _resolve_sport(raw_sport: Any, fallback_od_id: int) -> tuple[int, str]:
+def _resolve_sport(raw_sport: Any, fallback_od_id: int | str) -> tuple[int | str, str]:
     if raw_sport is None:
         return fallback_od_id, od_sport_to_slug(fallback_od_id)
     try:
@@ -83,7 +86,7 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int) -> tuple[int, str]:
     canonical = _OD_STRING_SPORT_MAP.get(str_val)
     if canonical:
         return slug_to_od_sport_id(canonical), canonical
-    logger.warning("Unknown OdiBets sport string: %s, using fallback %d", str_val, fallback_od_id)
+    logger.warning("Unknown OdiBets sport string: %s, using fallback %s", str_val, fallback_od_id)
     return fallback_od_id, od_sport_to_slug(fallback_od_id)
 
 
@@ -143,10 +146,16 @@ def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESPONSE UNWRAPPING
+# RESPONSE UNWRAPPING (handles both leagues and direct matches)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int) -> list[dict]:
+def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int | str) -> list[dict]:
+    """
+    Extract match list from OdiBets response.
+    Supports:
+      - flat list (esoccer)
+      - nested leagues structure (soccer, basketball, etc.)
+    """
     if isinstance(data, list):
         return data
     if not isinstance(data, dict):
@@ -155,6 +164,11 @@ def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int) -> list
     if isinstance(inner, list):
         return inner
     if isinstance(inner, dict):
+        # First, try direct "matches" key (esoccer)
+        direct_matches = inner.get("matches")
+        if isinstance(direct_matches, list) and direct_matches:
+            return direct_matches
+        # Then, leagues structure
         leagues: list[dict] = inner.get("leagues") or []
         raw_events: list[dict] = []
         for league in leagues:
@@ -317,10 +331,10 @@ def _parse_all_markets(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SMART MARKET FETCHER
+# SMART MARKET FETCHER (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def fetch_full_markets_for_match(event_id: str | int, od_sport_id: int = 1) -> dict[str, dict[str, float]]:
+def fetch_full_markets_for_match(event_id: str | int, od_sport_id: int | str = 1) -> dict[str, dict[str, float]]:
     all_markets: dict[str, dict[str, float]] = {}
     home_team = ""
     away_team = ""
@@ -384,10 +398,10 @@ def fetch_full_markets_for_match(event_id: str | int, od_sport_id: int = 1) -> d
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MATCH NORMALISATION
+# MATCH NORMALISATION (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict | None:
+def _normalise_match(raw: dict, od_sport_id: int | str, is_live: bool = False) -> dict | None:
     try:
         match_id = str(raw.get("game_id") or raw.get("id") or raw.get("match_id") or raw.get("event_id") or "")
         parent_id = str(raw.get("parent_match_id") or raw.get("parent_id") or match_id)
@@ -466,11 +480,10 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS FOR BATCH FETCHING
+# HELPERS FOR BATCH FETCHING (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _fetch_competition(od_sport_id: int, day_str: str, comp_id: str) -> list[dict]:
-    """Fetch matches for a single competition on a given day."""
+def _fetch_competition(od_sport_id: int | str, day_str: str, comp_id: str) -> list[dict]:
     params_comp = {
         "resource": "sportevents",
         "platform": "mobile",
@@ -486,7 +499,6 @@ def _fetch_competition(od_sport_id: int, day_str: str, comp_id: str) -> list[dic
     return _unwrap_upcoming_response(data, od_sport_id)
 
 def _fetch_markets_for_match(match: dict) -> dict:
-    """Fetch full markets for a single match (used in map)."""
     br_id = match.get("betradar_id")
     if not br_id:
         return match
@@ -510,9 +522,6 @@ def fetch_upcoming_matches(
     max_workers: int = 8,
     **kwargs,
 ) -> list[dict]:
-    """
-    Fetch upcoming matches for a sport, with optional offset and limit.
-    """
     od_sport_id = slug_to_od_sport_id(sport_slug)
     all_matches: list[dict] = []
     start_date = _date.today()
@@ -521,7 +530,6 @@ def fetch_upcoming_matches(
         day = start_date + timedelta(days=day_offset)
         day_str = day.isoformat()
 
-        # Get competitions for this day
         params_overview = {
             "resource": "sportevents",
             "platform": "mobile",
@@ -534,35 +542,32 @@ def fetch_upcoming_matches(
         if not overview_data:
             continue
 
-        competitions = []
-        inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
-        if isinstance(inner, dict):
-            leagues = inner.get("leagues") or []
-            for league in leagues:
-                comp_id = league.get("competition_id")
-                if comp_id:
-                    competitions.append(str(comp_id))
+        # For esoccer (or any sport that returns direct matches), we can extract matches directly
+        raw_events = _unwrap_upcoming_response(overview_data, od_sport_id)
+        if raw_events:
+            # If we have direct matches, add them (no competition breakdown needed)
+            all_matches.extend(raw_events)
+        else:
+            # Otherwise, use competition-level fetching (same as before)
+            competitions = []
+            inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
+            if isinstance(inner, dict):
+                leagues = inner.get("leagues") or []
+                for league in leagues:
+                    comp_id = league.get("competition_id")
+                    if comp_id:
+                        competitions.append(str(comp_id))
 
-        if not competitions:
-            continue
+            if not competitions:
+                continue
 
-        # Fetch each competition in parallel
-        day_matches: list[dict] = []
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(competitions))) as ex:
-            futures = {ex.submit(_fetch_competition, od_sport_id, day_str, comp_id): comp_id for comp_id in competitions}
-            for future in as_completed(futures):
-                comp_matches = future.result()
-                day_matches.extend(comp_matches)
-
-        # Deduplicate by parent_match_id (or game_id)
-        seen = set()
-        for m in day_matches:
-            mid = m.get("parent_match_id") or m.get("game_id")
-            if mid and mid not in seen:
-                seen.add(mid)
-                all_matches.append(m)
-            elif not mid:
-                all_matches.append(m)
+            day_matches: list[dict] = []
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(competitions))) as ex:
+                futures = {ex.submit(_fetch_competition, od_sport_id, day_str, comp_id): comp_id for comp_id in competitions}
+                for future in as_completed(futures):
+                    comp_matches = future.result()
+                    day_matches.extend(comp_matches)
+            all_matches.extend(day_matches)
 
     # Apply offset and limit
     if offset > 0:
@@ -613,7 +618,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
         try:
             raw_sport_id = int(raw_sport_id)
         except (TypeError, ValueError):
-            raw_sport_id = 1
+            pass
         m = _normalise_match(raw, raw_sport_id, is_live=True)
         if m:
             matches.append(m)
@@ -654,45 +659,62 @@ def fetch_upcoming_stream(
         if not overview_data:
             continue
 
-        competitions = []
-        inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
-        if isinstance(inner, dict):
-            leagues = inner.get("leagues") or []
-            for league in leagues:
-                comp_id = league.get("competition_id")
-                if comp_id:
-                    competitions.append(str(comp_id))
-
-        for comp_id in competitions:
-            params_comp = {
-                "resource": "sportevents",
-                "platform": "mobile",
-                "mode": 1,
-                "sport_id": od_sport_id,
-                "sub_type_id": "",
-                "day": day_str,
-                "competition_id": comp_id,
-            }
-            comp_data = _get(SBOOK_ODI, params=params_comp, _throttle=True)
-            if not comp_data:
-                continue
-            raw_events = _unwrap_upcoming_response(comp_data, od_sport_id)
+        raw_events = _unwrap_upcoming_response(overview_data, od_sport_id)
+        if raw_events:
+            # Direct matches
             for raw in raw_events:
                 if max_matches and count >= max_matches:
                     return
                 m = _normalise_match(raw, od_sport_id, is_live=False)
                 if not m:
                     continue
-
                 if fetch_full_markets and m.get("betradar_id"):
                     full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
                     if full:
                         m["markets"].update(full)
                         m["market_count"] = len(m["markets"])
                     time.sleep(sleep_between)
-
                 count += 1
                 yield m
+        else:
+            # Competition‑level
+            competitions = []
+            inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
+            if isinstance(inner, dict):
+                leagues = inner.get("leagues") or []
+                for league in leagues:
+                    comp_id = league.get("competition_id")
+                    if comp_id:
+                        competitions.append(str(comp_id))
+
+            for comp_id in competitions:
+                params_comp = {
+                    "resource": "sportevents",
+                    "platform": "mobile",
+                    "mode": 1,
+                    "sport_id": od_sport_id,
+                    "sub_type_id": "",
+                    "day": day_str,
+                    "competition_id": comp_id,
+                }
+                comp_data = _get(SBOOK_ODI, params=params_comp, _throttle=True)
+                if not comp_data:
+                    continue
+                comp_events = _unwrap_upcoming_response(comp_data, od_sport_id)
+                for raw in comp_events:
+                    if max_matches and count >= max_matches:
+                        return
+                    m = _normalise_match(raw, od_sport_id, is_live=False)
+                    if not m:
+                        continue
+                    if fetch_full_markets and m.get("betradar_id"):
+                        full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
+                        if full:
+                            m["markets"].update(full)
+                            m["market_count"] = len(m["markets"])
+                        time.sleep(sleep_between)
+                    count += 1
+                    yield m
 
 def fetch_live_stream(
     sport_slug: str,
@@ -756,7 +778,7 @@ def get_cached_upcoming(redis_client: Any, sport_slug: str) -> list[dict] | None
 def cache_upcoming(redis_client: Any, sport_slug: str, matches: list[dict], ttl: int = 300) -> None:
     pass
 
-def get_cached_live(redis_client: Any, od_sport_id: int) -> list[dict] | None:
+def get_cached_live(redis_client: Any, od_sport_id: int | str) -> list[dict] | None:
     return None
 
 class OdiBetsHarvesterPlugin:
