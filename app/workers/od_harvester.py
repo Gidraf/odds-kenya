@@ -150,12 +150,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int | str) -> list[dict]:
-    """
-    Extract match list from OdiBets response.
-    Supports:
-      - flat list (esoccer)
-      - nested leagues structure (soccer, basketball, etc.)
-    """
+    """Extract match list from OdiBets response. Supports both league and flat structures."""
     if isinstance(data, list):
         return data
     if not isinstance(data, dict):
@@ -164,11 +159,11 @@ def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int | str) -
     if isinstance(inner, list):
         return inner
     if isinstance(inner, dict):
-        # First, try direct "matches" key (esoccer)
+        # 1. Direct "matches" key (esoccer, etc.)
         direct_matches = inner.get("matches")
         if isinstance(direct_matches, list) and direct_matches:
             return direct_matches
-        # Then, leagues structure
+        # 2. Leagues structure (soccer, basketball, etc.)
         leagues: list[dict] = inner.get("leagues") or []
         raw_events: list[dict] = []
         for league in leagues:
@@ -184,7 +179,8 @@ def _unwrap_upcoming_response(data: dict | list, fallback_sport_id: int | str) -
                 raw_events.append(m)
         if raw_events:
             return raw_events
-        for key in ("events", "matches", "results", "sport_events", "sportevents"):
+        # 3. Other possible keys
+        for key in ("events", "results", "sport_events", "sportevents"):
             if isinstance(inner.get(key), list) and inner[key]:
                 return inner[key]
         return []
