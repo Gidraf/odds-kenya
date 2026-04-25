@@ -1,7 +1,7 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester – COMPETITION‑LEVEL FETCHING + OFFSET for batching.
+OdiBets upcoming + live harvester – COMPETITION‑LEVEL FETCHING (slower but complete).
 """
 
 from __future__ import annotations
@@ -86,7 +86,6 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int) -> tuple[int, str]:
     logger.warning("Unknown OdiBets sport string: %s, using fallback %d", str_val, fallback_od_id)
     return fallback_od_id, od_sport_to_slug(fallback_od_id)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # API ENDPOINTS + HEADERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -120,7 +119,6 @@ _UPC_DATA_KEY    = "od:upcoming:{sport_slug}:data"
 _UPC_HASH_KEY    = "od:upcoming:{sport_slug}:hash"
 _UPC_CHAN_KEY    = "od:upcoming:{sport_slug}:updates"
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # HTTP HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -140,7 +138,6 @@ def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle:
         if attempt == 0:
             time.sleep(0.5)
     return None
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RESPONSE UNWRAPPING
@@ -196,7 +193,6 @@ def _unwrap_live_response(data: dict | list) -> list[dict]:
         if isinstance(candidate, list) and candidate:
             return candidate
     return []
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MARKET PARSING (unchanged)
@@ -315,7 +311,6 @@ def _parse_all_markets(
 
     return result
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # SMART MARKET FETCHER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -381,7 +376,6 @@ def fetch_full_markets_for_match(event_id: str | int, od_sport_id: int = 1) -> d
 
     logger.debug("OD fetch_full_markets_for_match: %s → %d slugs", event_id, len(all_markets))
     return all_markets
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MATCH NORMALISATION
@@ -464,64 +458,27 @@ def _normalise_match(raw: dict, od_sport_id: int, is_live: bool = False) -> dict
         logger.debug("OD match normalise error: %s | raw=%s", exc, str(raw)[:200])
         return None
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS FOR BATCH FETCHING
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _fetch_competition(od_sport_id: int, day_str: str, comp_id: str) -> list[dict]:
-    """Fetch matches for a single competition on a given day."""
-    params_comp = {
-        "resource": "sportevents",
-        "platform": "mobile",
-        "mode": 1,
-        "sport_id": od_sport_id,
-        "sub_type_id": "",
-        "day": day_str,
-        "competition_id": comp_id,
-    }
-    data = _get(SBOOK_ODI, params=params_comp, _throttle=True)
-    if not data:
-        return []
-    return _unwrap_upcoming_response(data, od_sport_id)
-
-def _fetch_markets_for_match(match: dict) -> dict:
-    """Fetch full markets for a single match (used in map)."""
-    br_id = match.get("betradar_id")
-    if not br_id:
-        return match
-    full = fetch_full_markets_for_match(br_id, match.get("od_sport_id", 1))
-    if full:
-        match["markets"].update(full)
-        match["market_count"] = len(match["markets"])
-    return match
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (with offset and max_matches)
+# UPCOMING MATCHES (COMPETITION‑LEVEL FETCHING – SLOWER BUT COMPLETE)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
     sport_slug: str = "soccer",
     days: int = 30,
-    offset: int = 0,
-    max_matches: int | None = None,
     fetch_full_markets: bool = True,
+    max_matches: int | None = None,
     max_workers: int = 8,
     **kwargs,
 ) -> list[dict]:
-    """
-    Fetch upcoming matches for a sport, with optional offset and limit.
-    """
     od_sport_id = slug_to_od_sport_id(sport_slug)
     all_matches: list[dict] = []
     start_date = _date.today()
 
-    for day_offset in range(days):
-        day = start_date + timedelta(days=day_offset)
+    for offset in range(days):
+        day = start_date + timedelta(days=offset)
         day_str = day.isoformat()
 
-        # Get competitions for this day
+        # Step 1: Get the day overview to know which competitions exist
         params_overview = {
             "resource": "sportevents",
             "platform": "mobile",
@@ -532,8 +489,10 @@ def fetch_upcoming_matches(
         }
         overview_data = _get(SBOOK_ODI, params=params_overview, _throttle=True)
         if not overview_data:
+            logger.warning("OD upcoming %s %s: no overview response", sport_slug, day_str)
             continue
 
+        # Extract competition IDs from the overview
         competitions = []
         inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
         if isinstance(inner, dict):
@@ -544,41 +503,75 @@ def fetch_upcoming_matches(
                     competitions.append(str(comp_id))
 
         if not competitions:
+            logger.warning("OD upcoming %s %s: no competitions found", sport_slug, day_str)
             continue
 
-        # Fetch each competition in parallel
+        logger.info("OD upcoming %s %s: fetching %d competitions", sport_slug, day_str, len(competitions))
+
+        # Step 2: Fetch each competition's matches in parallel
         day_matches: list[dict] = []
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(competitions))) as ex:
-            futures = {ex.submit(_fetch_competition, od_sport_id, day_str, comp_id): comp_id for comp_id in competitions}
+
+        def fetch_competition(comp_id: str) -> list[dict]:
+            params_comp = {
+                "resource": "sportevents",
+                "platform": "mobile",
+                "mode": 1,
+                "sport_id": od_sport_id,
+                "sub_type_id": "",
+                "day": day_str,
+                "competition_id": comp_id,
+            }
+            data = _get(SBOOK_ODI, params=params_comp, _throttle=True)
+            if not data:
+                return []
+            return _unwrap_upcoming_response(data, od_sport_id)
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(competitions))) as executor:
+            futures = {executor.submit(fetch_competition, comp_id): comp_id for comp_id in competitions}
             for future in as_completed(futures):
                 comp_matches = future.result()
                 day_matches.extend(comp_matches)
 
         # Deduplicate by parent_match_id (or game_id)
         seen = set()
+        unique_matches = []
         for m in day_matches:
             mid = m.get("parent_match_id") or m.get("game_id")
             if mid and mid not in seen:
                 seen.add(mid)
-                all_matches.append(m)
-            elif not mid:
-                all_matches.append(m)
+                unique_matches.append(m)
 
-    # Apply offset and limit
-    if offset > 0:
-        all_matches = all_matches[offset:]
-    if max_matches is not None:
-        all_matches = all_matches[:max_matches]
+        logger.info("OD upcoming %s %s: fetched %d unique matches from %d competitions", sport_slug, day_str, len(unique_matches), len(competitions))
 
-    logger.info("OD upcoming %s (next %d days): %d matches (offset=%d, limit=%s)",
-                sport_slug, days, len(all_matches), offset, max_matches)
+        for raw in unique_matches:
+            if not isinstance(raw, dict):
+                continue
+            m = _normalise_match(raw, od_sport_id, is_live=False)
+            if m:
+                all_matches.append(m)
+            if max_matches and len(all_matches) >= max_matches:
+                break
+
+        if max_matches and len(all_matches) >= max_matches:
+            break
+
+    logger.info("OD upcoming %s (next %d days): %d total matches", sport_slug, days, len(all_matches))
 
     if fetch_full_markets and all_matches:
+        def _fetch(m: dict) -> dict:
+            br_id = m.get("betradar_id")
+            if not br_id:
+                return m
+            full = fetch_full_markets_for_match(br_id, m.get("od_sport_id", od_sport_id))
+            if full:
+                m["markets"].update(full)
+                m["market_count"] = len(m["markets"])
+            return m
+
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            all_matches = list(pool.map(_fetch_markets_for_match, all_matches))
+            all_matches = list(pool.map(_fetch, all_matches))
 
     return all_matches
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE MATCHES (unchanged)
@@ -621,9 +614,8 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     logger.info("OD live: %d matches (sport=%s)", len(matches), sport_slug or "all")
     return matches
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (unchanged)
+# STREAMING GENERATORS (updated for competition-level fetching)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -638,8 +630,8 @@ def fetch_upcoming_stream(
     start_date = _date.today()
     count = 0
 
-    for offset_day in range(days):
-        day = start_date + timedelta(days=offset_day)
+    for offset in range(days):
+        day = start_date + timedelta(days=offset)
         day_str = day.isoformat()
 
         params_overview = {
@@ -709,7 +701,6 @@ def fetch_live_stream(
                 m["market_count"] = len(m["markets"])
             time.sleep(sleep_between)
         yield m
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ALIASES & STUBS (compatibility)
