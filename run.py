@@ -802,5 +802,90 @@ def fast_od_harvest(days, batch_size, max_workers, full_markets):
     print(f"\n💾 Full data saved to {out_file}")
 
 
+
+@flask_app.cli.command("dump-od-raw")
+@click.option("--sport", default=None, help="Sport slug (e.g., soccer, basketball, tennis). Omit for all sports.")
+@click.option("--days", default=1, help="Days ahead to fetch")
+@click.option("--max-matches", default=5, help="Max matches per sport")
+@click.option("--output-dir", default="od_raw_dumps", help="Directory to save JSON files")
+def dump_od_raw(sport, days, max_matches, output_dir):
+    """
+    Dump raw OdiBets API responses for upcoming matches (before normalization).
+    Useful for creating custom mappers.
+    """
+    import os
+    import json
+    from datetime import datetime
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.workers.od_harvester import slug_to_od_sport_id, _get, SBOOK_ODI, _unwrap_upcoming_response
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Determine sports list
+    if sport:
+        sports = [sport]
+    else:
+        from app.workers.od_harvester import OD_SPORT_IDS
+        sports = list(OD_SPORT_IDS.keys())
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def dump_sport(sport_slug):
+        od_id = slug_to_od_sport_id(sport_slug)
+        day_str = _date.today().isoformat()
+        params = {
+            "resource": "sportevents",
+            "platform": "mobile",
+            "mode": 1,
+            "sport_id": od_id,
+            "sub_type_id": "",
+            "day": day_str,
+        }
+        data = _get(SBOOK_ODI, params=params, _throttle=True)
+        if not data:
+            print(f"⚠️ No data for {sport_slug}")
+            return
+
+        raw_events = _unwrap_upcoming_response(data, od_id)
+        if not raw_events:
+            print(f"⚠️ No events for {sport_slug}")
+            return
+
+        # Take only first max_matches
+        raw_events = raw_events[:max_matches]
+
+        # Also fetch full markets for each match (by calling the match detail endpoint)
+        for ev in raw_events:
+            parent_id = ev.get("parent_match_id") or ev.get("game_id")
+            if parent_id:
+                detail_params = {
+                    "resource": "sportevent",
+                    "id": str(parent_id),
+                    "category_id": "",
+                    "sub_type_id": "",
+                    "builder": 0,
+                    "sportsbook": "sportsbook",
+                    "ua": HEADERS["user-agent"],
+                }
+                detail_data = _get(SBOOK_V1, params=detail_params)
+                ev["_full_markets_raw"] = detail_data
+
+        out_file = os.path.join(output_dir, f"od_raw_{sport_slug}_{timestamp}.json")
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(raw_events, f, default=str, indent=2)
+        print(f"✅ {sport_slug}: saved {len(raw_events)} raw matches to {out_file}")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(dump_sport, s): s for s in sports}
+        for future in as_completed(futures):
+            s = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"❌ {s} error: {e}")
+
+    print(f"\n📁 Raw data saved to directory: {output_dir}")
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
