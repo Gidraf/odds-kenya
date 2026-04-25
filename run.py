@@ -904,5 +904,113 @@ def dump_od_raw(sport, days, max_matches, output_dir):
 
     print(f"\n📁 Raw data saved to directory: {output_dir}")
 
+@flask_app.cli.command("fetch-od-complete")
+@click.option("--max-days", default=60, help="Maximum days ahead to search")
+@click.option("--output-dir", default="od_complete_dumps", help="Directory to save JSON files")
+def fetch_od_complete(max_days, output_dir):
+    """
+    Fetch OdiBets upcoming matches for EVERY sport in OD_SPORT_IDS.
+    Searches day by day (starting today) up to `max_days` until matches are found.
+    For each sport, collects all matches across all days (up to max_days) and saves a JSON.
+    """
+    import os
+    import json
+    import time
+    from datetime import datetime, date as _date, timedelta
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.workers.od_harvester import (
+        slug_to_od_sport_id, _get, SBOOK_ODI, _unwrap_upcoming_response,
+        fetch_full_markets_for_match, OD_SPORT_IDS
+    )
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results = {}
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "authorization": "Bearer",
+        "content-type": "application/json",
+        "origin": "https://odibets.com",
+        "referer": "https://odibets.com/",
+        "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
+    }
+
+    def fetch_sport_complete(sport_slug, od_sport_id):
+        print(f"🔍 {sport_slug} (id={od_sport_id}) – searching up to {max_days} days...")
+        all_matches = []
+        start_date = _date.today()
+        day_count = 0
+        for offset in range(max_days):
+            day = start_date + timedelta(days=offset)
+            day_str = day.isoformat()
+            params = {
+                "resource": "sportevents",
+                "platform": "mobile",
+                "mode": 1,
+                "sport_id": od_sport_id,
+                "sub_type_id": "",
+                "day": day_str,
+            }
+            data = _get(SBOOK_ODI, params=params, _throttle=True)
+            if not data:
+                continue
+            raw_events = _unwrap_upcoming_response(data, od_sport_id)
+            if not raw_events:
+                continue
+            # For each match, fetch full markets
+            for ev in raw_events[:5]:  # limit to 5 per day for speed (change to None for all)
+                parent_id = ev.get("parent_match_id") or ev.get("game_id")
+                if parent_id:
+                    detail_params = {
+                        "resource": "sportevent",
+                        "id": str(parent_id),
+                        "category_id": "",
+                        "sub_type_id": "",
+                        "builder": 0,
+                        "sportsbook": "sportsbook",
+                        "ua": headers["user-agent"],
+                    }
+                    # Use local _get to avoid throttling delays (we can call directly)
+                    # We'll use the same _get function but we need to import it
+                    from app.workers.od_harvester import _get as od_get
+                    detail_data = od_get(SBOOK_V1, params=detail_params, _throttle=True)
+                    ev["_full_markets_raw"] = detail_data
+                all_matches.append(ev)
+            day_count += 1
+            if all_matches:
+                print(f"  ✅ {sport_slug} – found {len(raw_events)} matches on {day_str} (total so far: {len(all_matches)})")
+                # We continue searching further days to collect more matches
+                # (but stop at max_days)
+        if not all_matches:
+            print(f"  ⚠️ {sport_slug} – no matches found in {max_days} days")
+        return all_matches
+
+    # Run for all sports in OD_SPORT_IDS
+    for sport_slug, od_id in OD_SPORT_IDS.items():
+        matches = fetch_sport_complete(sport_slug, od_id)
+        results[sport_slug] = matches
+        out_file = os.path.join(output_dir, f"od_complete_{sport_slug}_{timestamp}.json")
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(matches, f, default=str, indent=2)
+        print(f"💾 Saved {len(matches)} matches to {out_file}")
+
+    # Summary table
+    print("\n" + "="*80)
+    print("📊 ODIBETS COMPLETE HARVEST SUMMARY")
+    print("-"*80)
+    print(f"{'Sport':<20} {'Matches found':<15}")
+    print("-"*40)
+    total_matches = 0
+    for sport, matches in sorted(results.items()):
+        cnt = len(matches)
+        total_matches += cnt
+        print(f"{sport:<20} {cnt:<15}")
+    print("-"*40)
+    print(f"{'TOTAL':<20} {total_matches:<15}")
+    print("="*80)
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
