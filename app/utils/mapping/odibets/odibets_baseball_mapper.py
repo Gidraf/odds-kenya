@@ -15,6 +15,7 @@ class OdiBetsBaseballMapper:
         "264": "odd_even",                  # Odd/even (incl. extra innings)
         "268": "extra_innings",             # Will there be an extra inning
         "274": "f5_winner",                 # Innings 1 to 5 - 1x2
+        "276": "f5_total",                  # Innings 1 to 5 - total (added)
         "287": "first_inning_winner",       # Inning 1 - 1x2
     }
 

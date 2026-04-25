@@ -41,7 +41,7 @@ OD_SPORT_IDS: dict[str, int] = {
     "mma":               117,
     "boxing":            10,
     "darts":             22,
-    "esoccer":           137,
+    "esoccer":           "esoccer",
 }
 
 OD_SPORT_SLUGS: dict[int, str] = {v: k for k, v in OD_SPORT_IDS.items()}
