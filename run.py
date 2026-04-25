@@ -976,6 +976,45 @@ def fetch_od_complete(days, sport_workers, comp_workers, output_dir):
     print(f"{'TOTAL':<20} {total:<10}")
     print("="*80)
 
-    
+@flask_app.cli.command("debug-od-esoccer")
+def debug_od_esoccer():
+    from app.workers.od_harvester import _get, SBOOK_ODI
+    from datetime import date
+    import json
+    day_str = date.today().isoformat()
+    params = {
+        "resource": "sportevents",
+        "platform": "mobile",
+        "mode": 1,
+        "sport_id": "esoccer",
+        "sub_type_id": "",
+        "day": day_str,
+    }
+    data = _get(SBOOK_ODI, params=params, _throttle=False)
+    if not data:
+        print("❌ No response from API")
+        return
+    print("✅ Response received")
+    print(f"Top-level keys: {list(data.keys())}")
+    inner = data.get("data")
+    if not inner:
+        print("No 'data' key")
+        return
+    print(f"'data' keys: {list(inner.keys())}")
+    matches = inner.get("matches")
+    if matches:
+        print(f"✅ Found {len(matches)} esoccer matches in 'data.matches'")
+        # print first match keys as example
+        if matches:
+            print("First match keys:", list(matches[0].keys()))
+    else:
+        print("No 'matches' key found in data")
+    leagues = inner.get("leagues")
+    if leagues:
+        total = sum(len(l.get("matches", [])) for l in leagues)
+        print(f"Found {total} matches inside 'leagues'")
+    else:
+        print("No 'leagues' key found")
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
