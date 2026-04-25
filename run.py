@@ -922,6 +922,8 @@ def fetch_od_complete(max_days, output_dir):
         slug_to_od_sport_id, _get, SBOOK_ODI, _unwrap_upcoming_response,
         fetch_full_markets_for_match, OD_SPORT_IDS
     )
+    API_BASE  = "https://api.odi.site"
+    SBOOK_V1  = f"{API_BASE}/sportsbook/v1"
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
