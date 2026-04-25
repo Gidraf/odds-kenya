@@ -802,7 +802,6 @@ def fast_od_harvest(days, batch_size, max_workers, full_markets):
     print(f"\n💾 Full data saved to {out_file}")
 
 
-
 @flask_app.cli.command("dump-od-raw")
 @click.option("--sport", default=None, help="Sport slug (e.g., soccer, basketball, tennis). Omit for all sports.")
 @click.option("--days", default=1, help="Days ahead to fetch")
@@ -815,9 +814,10 @@ def dump_od_raw(sport, days, max_matches, output_dir):
     """
     import os
     import json
-    from datetime import datetime
+    import httpx
+    from datetime import datetime, date as _date
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from app.workers.od_harvester import slug_to_od_sport_id, _get, SBOOK_ODI, _unwrap_upcoming_response
+    from app.workers.od_harvester import slug_to_od_sport_id, _get, SBOOK_ODI, SBOOK_V1, _unwrap_upcoming_response
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -830,6 +830,17 @@ def dump_od_raw(sport, days, max_matches, output_dir):
         sports = list(OD_SPORT_IDS.keys())
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Headers for detail call (same as in od_harvester)
+    HEADERS = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "authorization": "Bearer",
+        "content-type": "application/json",
+        "origin": "https://odibets.com",
+        "referer": "https://odibets.com/",
+        "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
+    }
 
     def dump_sport(sport_slug):
         od_id = slug_to_od_sport_id(sport_slug)
@@ -855,7 +866,7 @@ def dump_od_raw(sport, days, max_matches, output_dir):
         # Take only first max_matches
         raw_events = raw_events[:max_matches]
 
-        # Also fetch full markets for each match (by calling the match detail endpoint)
+        # Fetch full markets for each match (by calling the match detail endpoint)
         for ev in raw_events:
             parent_id = ev.get("parent_match_id") or ev.get("game_id")
             if parent_id:
@@ -868,8 +879,14 @@ def dump_od_raw(sport, days, max_matches, output_dir):
                     "sportsbook": "sportsbook",
                     "ua": HEADERS["user-agent"],
                 }
-                detail_data = _get(SBOOK_V1, params=detail_params)
-                ev["_full_markets_raw"] = detail_data
+                try:
+                    r = httpx.get(SBOOK_V1, params=detail_params, headers=HEADERS, timeout=15.0)
+                    if r.status_code == 200:
+                        ev["_full_markets_raw"] = r.json()
+                    else:
+                        ev["_full_markets_raw"] = f"HTTP {r.status_code}"
+                except Exception as e:
+                    ev["_full_markets_raw"] = f"Error: {e}"
 
         out_file = os.path.join(output_dir, f"od_raw_{sport_slug}_{timestamp}.json")
         with open(out_file, "w", encoding="utf-8") as f:
