@@ -520,8 +520,39 @@ def fetch_upcoming_matches(
 ) -> list[dict]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
     all_matches: list[dict] = []
-    start_date = _date.today()
 
+    # SPECIAL CASE: esoccer – the API returns all upcoming matches without a day parameter
+    if sport_slug == "esoccer":
+        params = {
+            "resource": "sportevents",
+            "platform": "mobile",
+            "mode": 1,
+            "sport_id": od_sport_id,
+            "sub_type_id": "",
+        }
+        overview_data = _get(SBOOK_ODI, params=params, _throttle=True)
+        if overview_data:
+            raw_events = _unwrap_upcoming_response(overview_data, od_sport_id)
+            all_matches = raw_events
+
+        # Apply offset and limit
+        if offset > 0:
+            all_matches = all_matches[offset:]
+        if max_matches is not None:
+            all_matches = all_matches[:max_matches]
+
+        logger.info("OD upcoming %s: %d matches (offset=%d, limit=%s)",
+                    sport_slug, len(all_matches), offset, max_matches)
+
+        if fetch_full_markets and all_matches:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                all_matches = list(pool.map(_fetch_markets_for_match, all_matches))
+        return all_matches
+
+    # ----------------------------------------------------------------------
+    # Original day‑by‑day logic for all other sports
+    # ----------------------------------------------------------------------
+    start_date = _date.today()
     for day_offset in range(days):
         day = start_date + timedelta(days=day_offset)
         day_str = day.isoformat()
@@ -538,13 +569,11 @@ def fetch_upcoming_matches(
         if not overview_data:
             continue
 
-        # For esoccer (or any sport that returns direct matches), we can extract matches directly
         raw_events = _unwrap_upcoming_response(overview_data, od_sport_id)
         if raw_events:
-            # If we have direct matches, add them (no competition breakdown needed)
             all_matches.extend(raw_events)
         else:
-            # Otherwise, use competition-level fetching (same as before)
+            # Competition-level fetching (if needed)
             competitions = []
             inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
             if isinstance(inner, dict):
@@ -553,10 +582,8 @@ def fetch_upcoming_matches(
                     comp_id = league.get("competition_id")
                     if comp_id:
                         competitions.append(str(comp_id))
-
             if not competitions:
                 continue
-
             day_matches: list[dict] = []
             with ThreadPoolExecutor(max_workers=min(max_workers, len(competitions))) as ex:
                 futures = {ex.submit(_fetch_competition, od_sport_id, day_str, comp_id): comp_id for comp_id in competitions}
@@ -579,7 +606,6 @@ def fetch_upcoming_matches(
             all_matches = list(pool.map(_fetch_markets_for_match, all_matches))
 
     return all_matches
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE MATCHES (unchanged)
