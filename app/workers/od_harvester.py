@@ -1,9 +1,10 @@
 """
 app/workers/od_harvester.py
 ============================
-OdiBets upcoming + live harvester – supports all sports including esoccer.
+Optimized OdiBets upcoming + live harvester.
 - Esoccer: single request (no day, no pagination) – unchanged.
-- All other sports: resource=sport endpoint with day loop + pagination.
+- Other sports: parallel day‑by‑day fetching with larger page size (200) and no throttling.
+- Thread‑local HTTP client for connection reuse.
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int | str) -> tuple[int | str
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# API ENDPOINTS + HEADERS
+# API ENDPOINTS + HEADERS + THREAD‑LOCAL HTTP CLIENT
 # ══════════════════════════════════════════════════════════════════════════════
 
 API_BASE  = "https://api.odi.site"
@@ -116,26 +117,21 @@ HEADERS: dict[str, str] = {
     "sec-fetch-site":     "cross-site",
 }
 
-# Redis key patterns (unchanged)
-_LIVE_DATA_KEY   = "od:live:{sport_id}:data"
-_LIVE_HASH_KEY   = "od:live:{sport_id}:hash"
-_LIVE_CHAN_KEY   = "od:live:{sport_id}:updates"
-_LIVE_SPORTS_KEY = "od:live:sports"
-_UPC_DATA_KEY    = "od:upcoming:{sport_slug}:data"
-_UPC_HASH_KEY    = "od:upcoming:{sport_slug}:hash"
-_UPC_CHAN_KEY    = "od:upcoming:{sport_slug}:updates"
+# Thread‑local storage for HTTP clients (one per thread)
+_thread_local = threading.local()
 
+def _get_client() -> httpx.Client:
+    """Return a thread‑local HTTP client (reused across requests in the same thread)."""
+    if not hasattr(_thread_local, "client"):
+        _thread_local.client = httpx.Client(headers=HEADERS, timeout=15.0)
+    return _thread_local.client
 
-# ══════════════════════════════════════════════════════════════════════════════
-# HTTP HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle: bool = False) -> dict | list | None:
-    if _throttle:
-        time.sleep(random.uniform(0.05, 0.15))
+def _get(url: str, params: dict | None = None, timeout: float = 15.0) -> dict | list | None:
+    """No throttling, uses a thread‑local client."""
+    client = _get_client()
     for attempt in range(2):
         try:
-            r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout)
+            r = client.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except httpx.HTTPStatusError as exc:
@@ -467,19 +463,14 @@ def _normalise_match(raw: dict, od_sport_id: int | str, is_live: bool = False) -
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGINATION HELPERS (for non-esoccer sports)
+# OPTIMIZED FETCHING HELPERS (parallel days, larger page size)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _fetch_day_matches_paginated(
-    od_sport_id: int | str,
-    day_str: str,
-    fetch_full_markets: bool,
-    max_workers: int = 8
-) -> list[dict]:
-    """Fetch all matches for a single day using pagination (resource=sport)."""
-    all_raw_matches: list[dict] = []
+def _fetch_raw_matches_for_day(od_sport_id: int | str, day_str: str) -> list[dict]:
+    """Fetch all raw matches for a single day using pagination (no market enrichment)."""
+    all_raw: list[dict] = []
     page = 1
-    per_page = 100
+    per_page = 200  # larger page size reduces number of requests
 
     while True:
         params = {
@@ -500,7 +491,7 @@ def _fetch_day_matches_paginated(
             "page": page,
             "per_page": per_page,
         }
-        data = _get(SBOOK_V1, params=params, _throttle=True)
+        data = _get(SBOOK_V1, params=params)
         if not data:
             break
 
@@ -508,21 +499,22 @@ def _fetch_day_matches_paginated(
         if not matches:
             break
 
-        all_raw_matches.extend(matches)
+        all_raw.extend(matches)
 
         total = meta.get("total", 0)
         current_page = meta.get("page", page)
         per_page_actual = meta.get("per_page", per_page)
-
         if total == 0 or current_page * per_page_actual >= total:
             break
         page += 1
 
-    if not all_raw_matches:
-        return []
+    return all_raw
 
+def _process_raw_matches(raw_matches: list[dict], od_sport_id: int | str,
+                         fetch_full_markets: bool, max_workers: int) -> list[dict]:
+    """Normalise and optionally enrich markets for a batch of raw matches."""
     normalised = []
-    for raw in all_raw_matches:
+    for raw in raw_matches:
         m = _normalise_match(raw, od_sport_id, is_live=False)
         if m:
             normalised.append(m)
@@ -535,7 +527,7 @@ def _fetch_day_matches_paginated(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES – MAIN FUNCTION (esoccer special, others paginated)
+# UPCOMING MATCHES – MAIN FUNCTION (esoccer special, others parallel paginated)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _fetch_markets_for_match(match: dict) -> dict:
@@ -554,7 +546,8 @@ def fetch_upcoming_matches(
     offset: int = 0,
     max_matches: int | None = None,
     fetch_full_markets: bool = True,
-    max_workers: int = 8,
+    max_workers: int = 20,
+    concurrent_days: int = 5,
     **kwargs,
 ) -> list[dict]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
@@ -577,52 +570,51 @@ def fetch_upcoming_matches(
             "cs": "",
             "hs": "",
         }
-        data = _get(SBOOK_V1, params=params, _throttle=True)
+        data = _get(SBOOK_V1, params=params)
         if not data:
             return []
         raw_events = _unwrap_esoccer_response(data)
-        matches = []
-        for raw in raw_events:
-            m = _normalise_match(raw, od_sport_id, is_live=False)
-            if m:
-                matches.append(m)
+        matches = _process_raw_matches(raw_events, od_sport_id, fetch_full_markets, max_workers)
 
         if offset > 0:
             matches = matches[offset:]
         if max_matches is not None:
             matches = matches[:max_matches]
 
-        if fetch_full_markets and matches:
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                matches = list(pool.map(_fetch_markets_for_match, matches))
-
         logger.info("OD upcoming esoccer: %d matches (offset=%d, limit=%s)",
                     len(matches), offset, max_matches)
         return matches
 
-    # === ALL OTHER SPORTS: paginated, day by day ===
-    all_matches: list[dict] = []
+    # === ALL OTHER SPORTS: parallel day fetching ===
     start_date = _date.today()
+    day_strings = [(start_date + timedelta(days=i)).isoformat() for i in range(days)]
 
-    for day_offset in range(days):
-        day = start_date + timedelta(days=day_offset)
-        day_str = day.isoformat()
+    # Step 1: fetch raw matches for all days concurrently
+    all_raw_matches_by_day: list[list[dict]] = []
+    with ThreadPoolExecutor(max_workers=concurrent_days) as executor:
+        futures = {executor.submit(_fetch_raw_matches_for_day, od_sport_id, ds): ds for ds in day_strings}
+        for future in as_completed(futures):
+            try:
+                day_raw = future.result()
+                all_raw_matches_by_day.append(day_raw)
+            except Exception as exc:
+                logger.error("Error fetching day %s: %s", futures[future], exc)
 
-        day_matches = _fetch_day_matches_paginated(od_sport_id, day_str, fetch_full_markets, max_workers)
-        if day_matches:
-            all_matches.extend(day_matches)
+    # Flatten all raw matches
+    all_raw_matches = [m for day_list in all_raw_matches_by_day for m in day_list]
 
-        if max_matches and len(all_matches) >= max_matches + offset:
-            break
+    # Step 2: normalise and optionally enrich markets in parallel
+    matches = _process_raw_matches(all_raw_matches, od_sport_id, fetch_full_markets, max_workers)
 
+    # Apply offset and limit
     if offset > 0:
-        all_matches = all_matches[offset:]
+        matches = matches[offset:]
     if max_matches is not None:
-        all_matches = all_matches[:max_matches]
+        matches = matches[:max_matches]
 
     logger.info("OD upcoming %s (next %d days): %d matches (offset=%d, limit=%s)",
-                sport_slug, days, len(all_matches), offset, max_matches)
-    return all_matches
+                sport_slug, days, len(matches), offset, max_matches)
+    return matches
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -668,7 +660,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (esoccer special, others paginated)
+# STREAMING GENERATORS (esoccer special, others day‑by‑day but with larger pages)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -676,7 +668,7 @@ def fetch_upcoming_stream(
     days: int = 30,
     max_matches: int | None = None,
     fetch_full_markets: bool = True,
-    sleep_between: float = 0.3,
+    sleep_between: float = 0.0,   # removed artificial sleep
     **kwargs,
 ) -> Generator[dict, None, None]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
@@ -700,7 +692,7 @@ def fetch_upcoming_stream(
             "cs": "",
             "hs": "",
         }
-        data = _get(SBOOK_V1, params=params, _throttle=True)
+        data = _get(SBOOK_V1, params=params)
         if data:
             raw_events = _unwrap_esoccer_response(data)
             for raw in raw_events:
@@ -714,19 +706,18 @@ def fetch_upcoming_stream(
                     if full:
                         m["markets"].update(full)
                         m["market_count"] = len(m["markets"])
-                    time.sleep(sleep_between)
                 count += 1
                 yield m
         return
 
-    # === ALL OTHER SPORTS: paginated day by day ===
+    # === ALL OTHER SPORTS: sequential days, each day with pagination ===
     start_date = _date.today()
     for day_offset in range(days):
         day = start_date + timedelta(days=day_offset)
         day_str = day.isoformat()
 
         page = 1
-        per_page = 100
+        per_page = 200
         while True:
             params = {
                 "resource": "sport",
@@ -746,7 +737,7 @@ def fetch_upcoming_stream(
                 "page": page,
                 "per_page": per_page,
             }
-            data = _get(SBOOK_V1, params=params, _throttle=True)
+            data = _get(SBOOK_V1, params=params)
             if not data:
                 break
 
@@ -765,7 +756,6 @@ def fetch_upcoming_stream(
                     if full:
                         m["markets"].update(full)
                         m["market_count"] = len(m["markets"])
-                    time.sleep(sleep_between)
                 count += 1
                 yield m
 
@@ -779,7 +769,7 @@ def fetch_upcoming_stream(
 def fetch_live_stream(
     sport_slug: str,
     fetch_full_markets: bool = True,
-    sleep_between: float = 0.3,
+    sleep_between: float = 0.0,
     **kwargs,
 ) -> Generator[dict, None, None]:
     matches = fetch_live_matches(sport_slug)
@@ -789,7 +779,6 @@ def fetch_live_stream(
             if full:
                 m["markets"].update(full)
                 m["market_count"] = len(m["markets"])
-            time.sleep(sleep_between)
         yield m
 
 
