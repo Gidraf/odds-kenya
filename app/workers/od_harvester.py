@@ -2,12 +2,19 @@
 app/workers/od_harvester.py
 ============================
 Optimized OdiBets upcoming + live harvester.
-- Shared httpx.Client with connection pool (thread-safe).
-- Global request semaphore caps total concurrent HTTP calls regardless of
-  how many sports / workers are running simultaneously in the CLI.
-- 429 / 503 responses trigger exponential back-off instead of a hard fail.
-- Sub-type market fetches parallelised inside fetch_full_markets_for_match.
-- Deduplication by betradar_id before expensive market enrichment.
+
+Key fixes vs previous version
+──────────────────────────────
+1. Pagination guard: breaks when the API returns fewer results than requested
+   (definitive last-page signal) OR when max_pages is reached.  The old code
+   relied on meta.total which the API returns as a database-wide count, not a
+   per-query count — causing infinite pagination (page 2463+) and OOM kills.
+2. Shared httpx.Client with connection pool (thread-safe).
+3. Global request semaphore caps total concurrent HTTP calls regardless of how
+   many sports / workers are running simultaneously.
+4. 429 / 503 → exponential back-off instead of hard fail.
+5. Sub-type market fetches parallelised inside fetch_full_markets_for_match.
+6. Deduplication by betradar_id before market enrichment.
 """
 
 from __future__ import annotations
@@ -84,7 +91,7 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int | str) -> tuple[int | str
         return od_id, od_sport_to_slug(od_id)
     except (TypeError, ValueError):
         pass
-    str_val = str(raw_sport).lower().strip()
+    str_val   = str(raw_sport).lower().strip()
     canonical = _OD_STRING_SPORT_MAP.get(str_val)
     if canonical:
         return slug_to_od_sport_id(canonical), canonical
@@ -96,9 +103,8 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int | str) -> tuple[int | str
 # API ENDPOINTS + HEADERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-API_BASE  = "https://api.odi.site"
-SBOOK_V1  = f"{API_BASE}/sportsbook/v1"
-SBOOK_ODI = f"{API_BASE}/odi/sportsbook"
+API_BASE = "https://api.odi.site"
+SBOOK_V1 = f"{API_BASE}/sportsbook/v1"
 
 HEADERS: dict[str, str] = {
     "accept":             "application/json, text/plain, */*",
@@ -142,57 +148,35 @@ def _get_client() -> httpx.Client:
 
 
 # ── Global request semaphore ─────────────────────────────────────────────────
-# Caps the total number of in-flight HTTP calls across ALL sports at once.
-# Without this: 12 sports × 8 market-workers × ~15 sub-types = 1440 queued
-# requests that all try to grab one of 150 connections → timeouts for large
-# sports like soccer and basketball.
 _REQUEST_SEMAPHORE = threading.Semaphore(60)
 
 def configure_concurrency(max_concurrent_requests: int = 60) -> None:
-    """
-    Tune the global HTTP concurrency cap before starting a harvest.
-    Lower = safer when many sports run in parallel.
-    Higher = faster when harvesting a single sport.
-    """
+    """Tune the global HTTP concurrency cap before starting a harvest."""
     global _REQUEST_SEMAPHORE
     _REQUEST_SEMAPHORE = threading.Semaphore(max_concurrent_requests)
 
 
 def _get(url: str, params: dict | None = None, timeout: float = 20.0) -> dict | list | None:
-    """
-    Semaphore-gated, retry-aware GET.
-    - Acquires the global semaphore before sending (back-pressure across sports).
-    - On 429 / 503 backs off and retries up to 3 times total.
-    """
     client = _get_client()
-
     for attempt in range(3):
         with _REQUEST_SEMAPHORE:
             try:
                 r = client.get(url, params=params, timeout=timeout)
-
                 if r.status_code in (429, 503):
                     wait = float(r.headers.get("Retry-After", 2 ** (attempt + 1)))
-                    logger.warning(
-                        "OD rate-limited (%s) %s – waiting %.1fs (attempt %d)",
-                        r.status_code, url, wait, attempt + 1,
-                    )
+                    logger.warning("OD rate-limited (%s) – waiting %.1fs", r.status_code, wait)
                     time.sleep(wait)
                     continue
-
                 r.raise_for_status()
                 return r.json()
-
             except httpx.HTTPStatusError as exc:
                 logger.warning("OD HTTP %s %s (attempt %d)", exc.response.status_code, url, attempt + 1)
             except httpx.TimeoutException:
                 logger.warning("OD timeout %s (attempt %d)", url, attempt + 1)
             except Exception as exc:
                 logger.warning("OD request error %s (attempt %d): %s", url, attempt + 1, exc)
-
         if attempt < 2:
             time.sleep(0.5 * (attempt + 1))
-
     return None
 
 
@@ -246,6 +230,78 @@ def _unwrap_esoccer_response(data: dict | list) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SAFE PAGINATOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Hard cap: if we somehow get more than this many pages for a single
+# sport+day combination, something is wrong with the API response.
+# At per_page=200 this allows up to 10,000 matches per day per sport.
+MAX_PAGES_PER_DAY = 50
+
+
+def _fetch_raw_matches_for_day(od_sport_id: int | str, day_str: str) -> list[dict]:
+    """
+    Fetch all raw matches for a single sport + day.
+
+    Termination conditions (first one wins):
+      1. API returns an empty matches list.
+      2. API returns fewer matches than per_page (last page).   ← KEY FIX
+      3. Hard page cap (MAX_PAGES_PER_DAY) reached.
+      4. API request fails.
+
+    The old code used meta.total for termination, but the API returns a
+    database-wide total, not a per-query total, causing page 2463+ loops.
+    """
+    all_raw:  list[dict] = []
+    page      = 1
+    per_page  = 200
+
+    while page <= MAX_PAGES_PER_DAY:
+        params = {
+            "resource":       "sport",
+            "sport_id":       od_sport_id,
+            "sportsbook":     "sportsbook",
+            "ua":             HEADERS["user-agent"],
+            "day":            day_str,
+            "hour":           "",
+            "day_tmp":        "",
+            "country_id":     "",
+            "sort_by":        "",
+            "sub_type_id":    "",
+            "competition_id": "",
+            "filter":         "",
+            "cs":             "",
+            "hs":             "",
+            "page":           page,
+            "per_page":       per_page,
+        }
+        data = _get(SBOOK_V1, params=params)
+        if not data:
+            break
+
+        matches, _ = _unwrap_sport_response(data)
+        if not matches:
+            break  # empty page → done
+
+        all_raw.extend(matches)
+
+        # Fewer results than requested → this was the last page
+        if len(matches) < per_page:
+            break
+
+        page += 1
+
+    if page > MAX_PAGES_PER_DAY:
+        logger.warning(
+            "OD pagination cap hit for sport_id=%s day=%s (page %d, %d matches so far). "
+            "The API may be returning an inflated total — results may be incomplete.",
+            od_sport_id, day_str, page, len(all_raw),
+        )
+
+    return all_raw
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MARKET PARSING
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -290,11 +346,11 @@ def _flat_outcomes_from_market(mkt: dict) -> list[tuple[dict, str]]:
     return results
 
 def _translate_team_names(display_str: str, home: str, away: str) -> str:
-    ds_lower = display_str.lower().strip()
-    if not ds_lower:
+    ds = display_str.lower().strip()
+    if not ds:
         return ""
-    if ds_lower in ("1", "x", "2", "yes", "no", "over", "under", "odd", "even", "none"):
-        return ds_lower
+    if ds in ("1", "x", "2", "yes", "no", "over", "under", "odd", "even", "none"):
+        return ds
     replacements = [
         (home.lower().replace(" ", "_"), "1"),
         (away.lower().replace(" ", "_"), "2"),
@@ -304,9 +360,9 @@ def _translate_team_names(display_str: str, home: str, away: str) -> str:
     ]
     replacements.sort(key=lambda x: len(x[0]), reverse=True)
     for t_name, t_val in replacements:
-        if len(t_name) > 2 and t_name in ds_lower:
-            ds_lower = ds_lower.replace(t_name, t_val)
-    return ds_lower
+        if len(t_name) > 2 and t_name in ds:
+            ds = ds.replace(t_name, t_val)
+    return ds
 
 def _parse_all_markets(
     markets_raw: list[dict],
@@ -356,13 +412,10 @@ def _fetch_one_sub_type(
     home_team: str,
     away_team: str,
 ) -> dict[str, dict[str, float]]:
-    params = {**base_params, "sub_type_id": sid}
-    data = _get(SBOOK_V1, params=params)
+    data = _get(SBOOK_V1, params={**base_params, "sub_type_id": sid})
     if not data or not isinstance(data, dict):
         return {}
-    inner = data.get("data")
-    if not isinstance(inner, dict):
-        inner = data
+    inner   = data.get("data") if isinstance(data.get("data"), dict) else data
     markets = inner.get("markets") or []
     return _parse_all_markets(markets, sport_slug, home_team, away_team) if markets else {}
 
@@ -375,22 +428,19 @@ def fetch_full_markets_for_match(
     all_markets: dict[str, dict[str, float]] = {}
 
     base_params = {
-        "resource": "sportevent",
-        "id": str(event_id),
+        "resource":   "sportevent",
+        "id":         str(event_id),
         "category_id": "",
         "sub_type_id": "",
-        "builder": 0,
+        "builder":    0,
         "sportsbook": "sportsbook",
-        "ua": HEADERS["user-agent"],
+        "ua":         HEADERS["user-agent"],
     }
     data = _get(SBOOK_V1, params=base_params)
     if not data or not isinstance(data, dict):
         return {}
 
-    inner = data.get("data")
-    if not isinstance(inner, dict):
-        inner = data
-
+    inner     = data.get("data") if isinstance(data.get("data"), dict) else data
     info      = inner.get("info") or {}
     home_team = str(info.get("home_team") or "")
     away_team = str(info.get("away_team") or "")
@@ -418,7 +468,7 @@ def fetch_full_markets_for_match(
                 for slug, outcomes in future.result().items():
                     all_markets.setdefault(slug, {}).update(outcomes)
             except Exception as exc:
-                logger.warning("OD sub_type fetch error (sid=%s): %s", futures[future], exc)
+                logger.warning("OD sub_type fetch error sid=%s: %s", futures[future], exc)
 
     logger.debug("OD fetch_full_markets_for_match: %s → %d slugs", event_id, len(all_markets))
     return all_markets
@@ -452,9 +502,8 @@ def _normalise_match(raw: dict, od_sport_id: int | str, is_live: bool = False) -
         bet_status    = str(raw.get("bet_status") or raw.get("b_status") or "")
 
         score_parts = (
-            current_score.split(":") if ":" in current_score
-            else current_score.split("-") if "-" in current_score
-            else []
+            current_score.split(":") if ":" in current_score else
+            current_score.split("-") if "-" in current_score else []
         )
         score_home = score_parts[0].strip() if len(score_parts) >= 2 else None
         score_away = score_parts[1].strip() if len(score_parts) >= 2 else None
@@ -508,37 +557,8 @@ def _normalise_match(raw: dict, od_sport_id: int | str, is_live: bool = False) -
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FETCH HELPERS
+# PROCESS + ENRICH
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _fetch_raw_matches_for_day(od_sport_id: int | str, day_str: str) -> list[dict]:
-    all_raw: list[dict] = []
-    page = 1
-    per_page = 200
-    while True:
-        params = {
-            "resource": "sport", "sport_id": od_sport_id,
-            "sportsbook": "sportsbook", "ua": HEADERS["user-agent"],
-            "day": day_str, "hour": "", "day_tmp": "", "country_id": "",
-            "sort_by": "", "sub_type_id": "", "competition_id": "",
-            "filter": "", "cs": "", "hs": "",
-            "page": page, "per_page": per_page,
-        }
-        data = _get(SBOOK_V1, params=params)
-        if not data:
-            break
-        matches, meta = _unwrap_sport_response(data)
-        if not matches:
-            break
-        all_raw.extend(matches)
-        total           = meta.get("total", 0)
-        current_page    = meta.get("page", page)
-        per_page_actual = meta.get("per_page", per_page)
-        if total == 0 or current_page * per_page_actual >= total:
-            break
-        page += 1
-    return all_raw
-
 
 def _fetch_markets_for_match(match: dict) -> dict:
     br_id = match.get("betradar_id")
@@ -605,6 +625,7 @@ def fetch_upcoming_matches(
 ) -> list[dict]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
 
+    # === ESOCCER: single request, no pagination ===
     if sport_slug == "esoccer":
         params = {
             "resource": "sport", "sport_id": od_sport_id,
@@ -617,14 +638,17 @@ def fetch_upcoming_matches(
         if not data:
             return []
         raw_events = _unwrap_esoccer_response(data)
-        matches = _process_raw_matches(raw_events, od_sport_id, fetch_full_markets, max_workers, skip_enrich_threshold)
-        if offset > 0:
+        matches = _process_raw_matches(
+            raw_events, od_sport_id, fetch_full_markets, max_workers, skip_enrich_threshold
+        )
+        if offset:
             matches = matches[offset:]
         if max_matches is not None:
             matches = matches[:max_matches]
         logger.info("OD upcoming esoccer: %d matches", len(matches))
         return matches
 
+    # === ALL OTHER SPORTS: parallel day fetching ===
     start_date  = _date.today()
     day_strings = [(start_date + timedelta(days=i)).isoformat() for i in range(days)]
 
@@ -637,13 +661,15 @@ def fetch_upcoming_matches(
             except Exception as exc:
                 logger.error("Error fetching day %s: %s", futures[future], exc)
 
-    matches = _process_raw_matches(all_raw, od_sport_id, fetch_full_markets, max_workers, skip_enrich_threshold)
-    if offset > 0:
+    matches = _process_raw_matches(
+        all_raw, od_sport_id, fetch_full_markets, max_workers, skip_enrich_threshold
+    )
+    if offset:
         matches = matches[offset:]
     if max_matches is not None:
         matches = matches[:max_matches]
 
-    logger.info("OD upcoming %s (next %d days): %d matches", sport_slug, days, len(matches))
+    logger.info("OD upcoming %s (%d days): %d matches", sport_slug, days, len(matches))
     return matches
 
 
@@ -658,11 +684,9 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
     }
     if sport_slug:
         params["sport_id"] = slug_to_od_sport_id(sport_slug)
-
     data = _get(SBOOK_V1, params=params, timeout=10.0)
     if not data:
         return []
-
     matches: list[dict] = []
     for raw in _unwrap_live_response(data):
         if not isinstance(raw, dict):
@@ -675,7 +699,6 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
         m = _normalise_match(raw, raw_sport_id, is_live=True)
         if m:
             matches.append(m)
-
     logger.info("OD live: %d matches (sport=%s)", len(matches), sport_slug or "all")
     return matches
 
@@ -721,43 +744,21 @@ def fetch_upcoming_stream(
 
     start_date = _date.today()
     for day_offset in range(days):
-        day_str  = (start_date + timedelta(days=day_offset)).isoformat()
-        page     = 1
-        per_page = 200
-        while True:
-            params = {
-                "resource": "sport", "sport_id": od_sport_id,
-                "sportsbook": "sportsbook", "ua": HEADERS["user-agent"],
-                "day": day_str, "hour": "", "day_tmp": "", "country_id": "",
-                "sort_by": "", "sub_type_id": "", "competition_id": "",
-                "filter": "", "cs": "", "hs": "",
-                "page": page, "per_page": per_page,
-            }
-            data = _get(SBOOK_V1, params=params)
-            if not data:
-                break
-            matches, meta = _unwrap_sport_response(data)
-            if not matches:
-                break
-            for raw in matches:
-                if max_matches and count >= max_matches:
-                    return
-                m = _normalise_match(raw, od_sport_id, is_live=False)
-                if not m:
-                    continue
-                if fetch_full_markets and m.get("betradar_id"):
-                    full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
-                    if full:
-                        m["markets"].update(full)
-                        m["market_count"] = len(m["markets"])
-                count += 1
-                yield m
-            total           = meta.get("total", 0)
-            current_page    = meta.get("page", page)
-            per_page_actual = meta.get("per_page", per_page)
-            if total == 0 or current_page * per_page_actual >= total:
-                break
-            page += 1
+        for raw in _fetch_raw_matches_for_day(
+            od_sport_id, (start_date + timedelta(days=day_offset)).isoformat()
+        ):
+            if max_matches and count >= max_matches:
+                return
+            m = _normalise_match(raw, od_sport_id, is_live=False)
+            if not m:
+                continue
+            if fetch_full_markets and m.get("betradar_id"):
+                full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
+                if full:
+                    m["markets"].update(full)
+                    m["market_count"] = len(m["markets"])
+            count += 1
+            yield m
 
 
 def fetch_live_stream(
@@ -798,7 +799,7 @@ class OdiBetsLivePoller:
         self._running = False
 
     @property
-    def alive(self):
+    def alive(self) -> bool:
         return False
 
 _live_poller = None
