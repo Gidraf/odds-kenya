@@ -905,44 +905,34 @@ def dump_od_raw(sport, days, max_matches, output_dir):
     print(f"\n📁 Raw data saved to directory: {output_dir}")
 
 @flask_app.cli.command("fetch-od-complete")
-@click.option("--days",            default=30,   help="Number of days ahead to search")
+@click.option("--days",            default=30,   help="Days ahead to fetch")
 @click.option("--sport-workers",   default=4,    help="Sports to harvest in parallel")
 @click.option("--market-workers",  default=8,    help="Market-enrichment threads per sport")
-@click.option("--concurrent-days", default=5,    help="Day-fetch threads per sport")
-@click.option("--max-requests",    default=60,   help="Global cap on concurrent HTTP requests")
-@click.option("--output-dir",      default="od_complete_dumps", help="Directory for JSON output")
-@click.option("--no-markets",      is_flag=True, default=False, help="Skip full-market enrichment (faster)")
+@click.option("--concurrent-days", default=10,   help="Concurrent day×competition fetch tasks per sport")
+@click.option("--max-requests",    default=60,   help="Global concurrent HTTP cap")
+@click.option("--output-dir",      default="od_complete_dumps")
+@click.option("--no-markets",      is_flag=True, default=False, help="Skip market enrichment")
 def fetch_od_complete(days, sport_workers, market_workers, concurrent_days, max_requests, output_dir, no_markets):
-    """
-    Fetch OdiBets upcoming matches for ALL sports in parallel.
-    Streams each sport's output to disk as it completes — no full in-memory
-    accumulation — so large sports (soccer, tennis) can't cause OOM kills.
-    """
-    import os
-    import json
-    import time
+    """Fetch OdiBets upcoming matches for ALL sports. Streams output to disk."""
+    import os, json, time
     from datetime import datetime
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from app.workers.od_harvester import (
-        fetch_upcoming_matches,
-        OD_SPORT_IDS,
-        configure_concurrency,
+        fetch_upcoming_matches, OD_SPORT_IDS, configure_concurrency
     )
 
-    configure_concurrency(min(max_requests, sport_workers * market_workers * 2))
+    configure_concurrency(min(max_requests, sport_workers * concurrent_days))
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    print(f"⚙️  Harvesting {len(OD_SPORT_IDS)} sports")
-    print(f"⚙️  sport_workers={sport_workers}  market_workers={market_workers}  "
-          f"concurrent_days={concurrent_days}  max_requests={max_requests}  "
+    print(f"⚙️  {len(OD_SPORT_IDS)} sports | sport_workers={sport_workers} "
+          f"market_workers={market_workers} concurrent_days={concurrent_days} "
           f"fetch_markets={'no' if no_markets else 'yes'}")
 
-    summary: dict[str, int]  = {}
-    errors:  dict[str, str]  = {}
+    summary: dict[str, int] = {}
+    errors:  dict[str, str] = {}
 
     def fetch_and_save(sport_slug: str) -> tuple[str, int]:
-        """Fetch one sport and stream-write to file. Never raises."""
         out_file = os.path.join(output_dir, f"od_complete_{sport_slug}_{timestamp}.json")
         t0 = time.perf_counter()
         count = 0
@@ -951,14 +941,10 @@ def fetch_od_complete(days, sport_workers, market_workers, concurrent_days, max_
             matches = fetch_upcoming_matches(
                 sport_slug=sport_slug,
                 days=days,
-                offset=0,
-                max_matches=None,
                 fetch_full_markets=not no_markets,
                 max_workers=market_workers,
                 concurrent_days=concurrent_days,
             )
-            # Stream to file: write match-by-match inside a JSON array so we
-            # never hold the whole list in memory beyond what fetch already built.
             with open(out_file, "w", encoding="utf-8") as f:
                 f.write("[\n")
                 for i, m in enumerate(matches):
@@ -967,128 +953,39 @@ def fetch_od_complete(days, sport_workers, market_workers, concurrent_days, max_
                     json.dump(m, f, default=str)
                     count += 1
                 f.write("\n]\n")
-
-            elapsed = time.perf_counter() - t0
-            print(f"  ✅ {sport_slug}: {count} matches in {elapsed:.1f}s → {out_file}")
+            print(f"  ✅ {sport_slug}: {count} matches in {time.perf_counter()-t0:.1f}s")
         except Exception as exc:
-            elapsed = time.perf_counter() - t0
-            err_msg = f"{type(exc).__name__}: {exc}"
-            errors[sport_slug] = err_msg
-            print(f"  ❌ {sport_slug} failed after {elapsed:.1f}s: {err_msg}")
-            # Write an empty array so the file always exists
+            errors[sport_slug] = f"{type(exc).__name__}: {exc}"
+            print(f"  ❌ {sport_slug} failed: {errors[sport_slug]}")
             try:
-                with open(out_file, "w", encoding="utf-8") as f:
-                    f.write("[]\n")
+                open(out_file, "w").write("[]\n")
             except Exception:
                 pass
-
         return sport_slug, count
 
-    # ── Run all sports in parallel ────────────────────────────────────────────
     with ThreadPoolExecutor(max_workers=sport_workers) as executor:
-        future_to_slug = {
-            executor.submit(fetch_and_save, slug): slug
-            for slug in OD_SPORT_IDS.keys()
-        }
+        future_to_slug = {executor.submit(fetch_and_save, slug): slug for slug in OD_SPORT_IDS}
         for future in as_completed(future_to_slug):
             slug = future_to_slug[future]
             try:
                 slug, count = future.result()
             except Exception as exc:
-                # Defensive: fetch_and_save should never raise, but just in case
                 count = 0
                 errors[slug] = str(exc)
-                print(f"  💥 {slug} executor error: {exc}")
             summary[slug] = count
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("📊 ODIBETS COMPLETE HARVEST SUMMARY")
-    print("-" * 70)
-    print(f"{'Sport':<22} {'Matches':>8}  Status")
-    print("-" * 55)
+    print("\n" + "=" * 65)
+    print("📊 ODIBETS HARVEST SUMMARY")
+    print("-" * 65)
     total = 0
-    for slug in sorted(summary.keys()):
+    for slug in sorted(summary):
         cnt    = summary[slug]
         total += cnt
-        if slug in errors:
-            status = f"❌  {errors[slug][:35]}"
-        elif cnt == 0:
-            status = "⚠️   0 matches (no events or API empty)"
-        else:
-            status = "✅"
-        print(f"  {slug:<20} {cnt:>8}  {status}")
-    print("-" * 55)
-    print(f"  {'TOTAL':<20} {total:>8}")
-    print("=" * 70)
-
-    if errors:
-        print(f"\n⚠️  {len(errors)} sport(s) had errors.")
-    """
-    Fetch OdiBets upcoming matches for ALL sports in parallel.
-    Searches up to `days` ahead, saves a JSON file per sport.
-    """
-    import os
-    import json
-    import time
-    from datetime import datetime
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from app.workers.od_harvester import (
-        fetch_upcoming_matches,
-        OD_SPORT_IDS
-    )
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results = {}
-
-    def fetch_sport(sport_slug):
-        print(f"🔍 {sport_slug} – fetching...")
-        t0 = time.perf_counter()
-        try:
-            matches = fetch_upcoming_matches(
-                sport_slug=sport_slug,
-                days=days,
-                offset=0,
-                max_matches=None,
-                fetch_full_markets=True,
-                max_workers=comp_workers,      # market enrichment concurrency
-                concurrent_days=concurrent_days # day parallelism
-            )
-        except Exception as e:
-            print(f"  ❌ {sport_slug} error: {e}")
-            matches = []
-        elapsed = time.perf_counter() - t0
-        print(f"✅ {sport_slug}: {len(matches)} matches in {elapsed:.2f}s")
-        return sport_slug, matches
-
-    with ThreadPoolExecutor(max_workers=sport_workers) as executor:
-        futures = {executor.submit(fetch_sport, slug): slug for slug in OD_SPORT_IDS.keys()}
-        for future in as_completed(futures):
-            slug, matches = future.result()
-            results[slug] = matches
-            out_file = os.path.join(output_dir, f"od_complete_{slug}_{timestamp}.json")
-            with open(out_file, "w", encoding="utf-8") as f:
-                json.dump(matches, f, default=str, indent=2)
-            print(f"💾 Saved {len(matches)} matches to {out_file}")
-
-    # Print summary
-    print("\n" + "="*80)
-    print("📊 ODIBETS COMPLETE HARVEST SUMMARY")
-    print("-"*80)
-    print(f"{'Sport':<20} {'Matches':<10}")
-    print("-"*40)
-    total = 0
-    for slug in sorted(results.keys()):
-        cnt = len(results[slug])
-        total += cnt
-        print(f"{slug:<20} {cnt:<10}")
-    print("-"*40)
-    print(f"{'TOTAL':<20} {total:<10}")
-    print("="*80)
-
+        status = f"❌ {errors[slug][:35]}" if slug in errors else ("⚠️  0" if cnt == 0 else "✅")
+        print(f"  {slug:<22} {cnt:>7}  {status}")
+    print("-" * 45)
+    print(f"  {'TOTAL':<22} {total:>7}")
+    print("=" * 65)
     
 @flask_app.cli.command("debug-od-esoccer")
 def debug_od_esoccer():
