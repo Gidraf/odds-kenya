@@ -2,7 +2,8 @@
 app/workers/od_harvester.py
 ============================
 OdiBets upcoming + live harvester – supports all sports including esoccer.
-Now uses the resource=sport endpoint with full pagination for upcoming matches.
+- Esoccer: single request (no day, no pagination) – unchanged.
+- All other sports: resource=sport endpoint with day loop + pagination.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from app.workers.mappers.betika import get_market_slug, normalize_outcome
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORRECT SPORT ID MAPS (from OdiBets API)
+# SPORT ID MAPS (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 OD_SPORT_IDS: dict[str, int | str] = {
@@ -68,7 +69,6 @@ _OD_STRING_SPORT_MAP: dict[str, str] = {
 }
 
 def slug_to_od_sport_id(slug: str) -> int | str:
-    """Return sport ID (int for most, string for esoccer)."""
     if slug == "esoccer":
         return "esoccer"
     return OD_SPORT_IDS.get(slug, 1)
@@ -98,7 +98,7 @@ def _resolve_sport(raw_sport: Any, fallback_od_id: int | str) -> tuple[int | str
 
 API_BASE  = "https://api.odi.site"
 SBOOK_V1  = f"{API_BASE}/sportsbook/v1"
-SBOOK_ODI = f"{API_BASE}/odi/sportsbook"  # kept for live matches only
+SBOOK_ODI = f"{API_BASE}/odi/sportsbook"
 
 HEADERS: dict[str, str] = {
     "accept":             "application/json, text/plain, */*",
@@ -116,7 +116,7 @@ HEADERS: dict[str, str] = {
     "sec-fetch-site":     "cross-site",
 }
 
-# Redis key patterns (compatibility)
+# Redis key patterns (unchanged)
 _LIVE_DATA_KEY   = "od:live:{sport_id}:data"
 _LIVE_HASH_KEY   = "od:live:{sport_id}:hash"
 _LIVE_CHAN_KEY   = "od:live:{sport_id}:updates"
@@ -148,14 +148,11 @@ def _get(url: str, params: dict | None = None, timeout: float = 15.0, _throttle:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESPONSE UNWRAPPING (resource=sport specific)
+# RESPONSE UNWRAPPING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _unwrap_sport_response(data: dict | list) -> tuple[list[dict], dict]:
-    """
-    Extract matches and meta from the response of 'resource=sport' endpoint.
-    Returns (matches_list, meta_dict).
-    """
+    """Extract matches and meta from resource=sport response."""
     if not isinstance(data, dict):
         return [], {}
     inner = data.get("data")
@@ -184,6 +181,22 @@ def _unwrap_live_response(data: dict | list) -> list[dict]:
         if isinstance(candidate, list) and candidate:
             return candidate
     return []
+
+def _unwrap_esoccer_response(data: dict | list) -> list[dict]:
+    """Special unwrapper for esoccer (same as before)."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        matches = inner.get("matches")
+        if isinstance(matches, list):
+            return matches
+    matches = data.get("matches")
+    if isinstance(matches, list):
+        return matches
+    return _unwrap_sport_response(data)[0]  # fallback
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -454,19 +467,19 @@ def _normalise_match(raw: dict, od_sport_id: int | str, is_live: bool = False) -
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGINATION HANDLER FOR UPCOMING MATCHES (NEW)
+# PAGINATION HELPERS (for non-esoccer sports)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _fetch_day_matches(
+def _fetch_day_matches_paginated(
     od_sport_id: int | str,
     day_str: str,
     fetch_full_markets: bool,
     max_workers: int = 8
 ) -> list[dict]:
-    """Fetch ALL matches for a given day using pagination."""
+    """Fetch all matches for a single day using pagination (resource=sport)."""
     all_raw_matches: list[dict] = []
     page = 1
-    per_page = 100  # use a reasonable page size; API may have a max, but we'll adapt
+    per_page = 100
 
     while True:
         params = {
@@ -508,14 +521,12 @@ def _fetch_day_matches(
     if not all_raw_matches:
         return []
 
-    # Normalise all matches
     normalised = []
     for raw in all_raw_matches:
         m = _normalise_match(raw, od_sport_id, is_live=False)
         if m:
             normalised.append(m)
 
-    # Optionally fetch full markets
     if fetch_full_markets and normalised:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             normalised = list(pool.map(_fetch_markets_for_match, normalised))
@@ -524,8 +535,18 @@ def _fetch_day_matches(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (NEW IMPLEMENTATION)
+# UPCOMING MATCHES – MAIN FUNCTION (esoccer special, others paginated)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _fetch_markets_for_match(match: dict) -> dict:
+    br_id = match.get("betradar_id")
+    if not br_id:
+        return match
+    full = fetch_full_markets_for_match(br_id, match.get("od_sport_id", 1))
+    if full:
+        match["markets"].update(full)
+        match["market_count"] = len(match["markets"])
+    return match
 
 def fetch_upcoming_matches(
     sport_slug: str = "soccer",
@@ -536,11 +557,50 @@ def fetch_upcoming_matches(
     max_workers: int = 8,
     **kwargs,
 ) -> list[dict]:
-    """
-    Fetch upcoming matches using the resource=sport endpoint with pagination.
-    Days: number of days to look ahead (starting from today).
-    """
     od_sport_id = slug_to_od_sport_id(sport_slug)
+
+    # === ESPECIAL CASE: ESOCEER ===
+    if sport_slug == "esoccer":
+        params = {
+            "resource": "sport",
+            "sport_id": od_sport_id,
+            "sportsbook": "sportsbook",
+            "ua": HEADERS["user-agent"],
+            "day": "",
+            "hour": "",
+            "day_tmp": "",
+            "country_id": "",
+            "sort_by": "",
+            "sub_type_id": "",
+            "competition_id": "",
+            "filter": "",
+            "cs": "",
+            "hs": "",
+        }
+        data = _get(SBOOK_V1, params=params, _throttle=True)
+        if not data:
+            return []
+        raw_events = _unwrap_esoccer_response(data)
+        matches = []
+        for raw in raw_events:
+            m = _normalise_match(raw, od_sport_id, is_live=False)
+            if m:
+                matches.append(m)
+
+        if offset > 0:
+            matches = matches[offset:]
+        if max_matches is not None:
+            matches = matches[:max_matches]
+
+        if fetch_full_markets and matches:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                matches = list(pool.map(_fetch_markets_for_match, matches))
+
+        logger.info("OD upcoming esoccer: %d matches (offset=%d, limit=%s)",
+                    len(matches), offset, max_matches)
+        return matches
+
+    # === ALL OTHER SPORTS: paginated, day by day ===
     all_matches: list[dict] = []
     start_date = _date.today()
 
@@ -548,15 +608,13 @@ def fetch_upcoming_matches(
         day = start_date + timedelta(days=day_offset)
         day_str = day.isoformat()
 
-        day_matches = _fetch_day_matches(od_sport_id, day_str, fetch_full_markets, max_workers)
+        day_matches = _fetch_day_matches_paginated(od_sport_id, day_str, fetch_full_markets, max_workers)
         if day_matches:
             all_matches.extend(day_matches)
 
-        # Early stop if we already have enough matches (before applying offset)
         if max_matches and len(all_matches) >= max_matches + offset:
             break
 
-    # Apply offset and limit
     if offset > 0:
         all_matches = all_matches[offset:]
     if max_matches is not None:
@@ -568,7 +626,7 @@ def fetch_upcoming_matches(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE MATCHES (unchanged, still uses old endpoint – works fine)
+# LIVE MATCHES (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
@@ -610,7 +668,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (updated to use the new paginated fetching)
+# STREAMING GENERATORS (esoccer special, others paginated)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -622,15 +680,51 @@ def fetch_upcoming_stream(
     **kwargs,
 ) -> Generator[dict, None, None]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
-    start_date = _date.today()
     count = 0
 
+    # === ESPECIAL CASE: ESOCEER ===
+    if sport_slug == "esoccer":
+        params = {
+            "resource": "sport",
+            "sport_id": od_sport_id,
+            "sportsbook": "sportsbook",
+            "ua": HEADERS["user-agent"],
+            "day": "",
+            "hour": "",
+            "day_tmp": "",
+            "country_id": "",
+            "sort_by": "",
+            "sub_type_id": "",
+            "competition_id": "",
+            "filter": "",
+            "cs": "",
+            "hs": "",
+        }
+        data = _get(SBOOK_V1, params=params, _throttle=True)
+        if data:
+            raw_events = _unwrap_esoccer_response(data)
+            for raw in raw_events:
+                if max_matches and count >= max_matches:
+                    return
+                m = _normalise_match(raw, od_sport_id, is_live=False)
+                if not m:
+                    continue
+                if fetch_full_markets and m.get("betradar_id"):
+                    full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
+                    if full:
+                        m["markets"].update(full)
+                        m["market_count"] = len(m["markets"])
+                    time.sleep(sleep_between)
+                count += 1
+                yield m
+        return
+
+    # === ALL OTHER SPORTS: paginated day by day ===
+    start_date = _date.today()
     for day_offset in range(days):
         day = start_date + timedelta(days=day_offset)
         day_str = day.isoformat()
 
-        # Reuse _fetch_day_matches but without market enrichment (we'll do it in the loop)
-        # To avoid double enrichment, we fetch raw matches first.
         page = 1
         per_page = 100
         while True:
