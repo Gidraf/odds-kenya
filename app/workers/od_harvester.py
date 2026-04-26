@@ -2,6 +2,10 @@
 app/workers/od_harvester.py
 ============================
 OdiBets upcoming + live harvester – supports all sports including esoccer (string sport_id).
+Modified: esoccer now uses the exact endpoint from the provided curl:
+  - URL: https://api.odi.site/sportsbook/v1
+  - Parameters: resource=sport, sport_id=esoccer, day=, hour=, day_tmp=, ...
+All other sports stay unchanged.
 """
 
 from __future__ import annotations
@@ -206,6 +210,25 @@ def _unwrap_live_response(data: dict | list) -> list[dict]:
         if isinstance(candidate, list) and candidate:
             return candidate
     return []
+
+def _unwrap_esoccer_response(data: dict | list) -> list[dict]:
+    """Extract matches from the response of 'resource=sport' endpoint (used for esoccer)."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    # Typical structure: {"data": {"matches": [...]}} or {"matches": [...]}
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        matches = inner.get("matches")
+        if isinstance(matches, list):
+            return matches
+    # Fallback: direct "matches" key
+    matches = data.get("matches")
+    if isinstance(matches, list):
+        return matches
+    # Last resort: try the generic unwrapper (covers other possible structures)
+    return _unwrap_upcoming_response(data, fallback_sport_id="esoccer")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -506,7 +529,7 @@ def _fetch_markets_for_match(match: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (with offset and max_matches)
+# UPCOMING MATCHES (esoccer uses new endpoint, others unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
@@ -521,18 +544,27 @@ def fetch_upcoming_matches(
     od_sport_id = slug_to_od_sport_id(sport_slug)
     all_matches: list[dict] = []
 
-    # SPECIAL CASE: esoccer – the API returns all upcoming matches without a day parameter
+    # SPECIAL CASE: esoccer – use sportsbook/v1?resource=sport with empty day/hour/day_tmp
     if sport_slug == "esoccer":
         params = {
-            "resource": "sportevents",
-            "platform": "mobile",
-            "mode": 1,
-            "sport_id": od_sport_id,
+            "resource": "sport",
+            "sport_id": od_sport_id,          # "esoccer"
+            "sportsbook": "sportsbook",
+            "ua": HEADERS["user-agent"],
+            "day": "",
+            "hour": "",
+            "day_tmp": "",
+            "country_id": "",
+            "sort_by": "",
             "sub_type_id": "",
+            "competition_id": "",
+            "filter": "",
+            "cs": "",
+            "hs": "",
         }
-        overview_data = _get(SBOOK_ODI, params=params, _throttle=True)
-        if overview_data:
-            raw_events = _unwrap_upcoming_response(overview_data, od_sport_id)
+        data = _get(SBOOK_V1, params=params, _throttle=True)
+        if data:
+            raw_events = _unwrap_esoccer_response(data)
             all_matches = raw_events
 
         # Apply offset and limit
@@ -541,8 +573,8 @@ def fetch_upcoming_matches(
         if max_matches is not None:
             all_matches = all_matches[:max_matches]
 
-        logger.info("OD upcoming %s: %d matches (offset=%d, limit=%s)",
-                    sport_slug, len(all_matches), offset, max_matches)
+        logger.info("OD upcoming esoccer: %d matches (offset=%d, limit=%s)",
+                    len(all_matches), offset, max_matches)
 
         if fetch_full_markets and all_matches:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -650,7 +682,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING GENERATORS (unchanged)
+# STREAMING GENERATORS (esoccer uses new endpoint, others unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(
@@ -662,9 +694,49 @@ def fetch_upcoming_stream(
     **kwargs,
 ) -> Generator[dict, None, None]:
     od_sport_id = slug_to_od_sport_id(sport_slug)
-    start_date = _date.today()
     count = 0
 
+    # SPECIAL CASE: esoccer – use the new endpoint and stream matches directly
+    if sport_slug == "esoccer":
+        params = {
+            "resource": "sport",
+            "sport_id": od_sport_id,
+            "sportsbook": "sportsbook",
+            "ua": HEADERS["user-agent"],
+            "day": "",
+            "hour": "",
+            "day_tmp": "",
+            "country_id": "",
+            "sort_by": "",
+            "sub_type_id": "",
+            "competition_id": "",
+            "filter": "",
+            "cs": "",
+            "hs": "",
+        }
+        data = _get(SBOOK_V1, params=params, _throttle=True)
+        if data:
+            raw_events = _unwrap_esoccer_response(data)
+            for raw in raw_events:
+                if max_matches and count >= max_matches:
+                    return
+                m = _normalise_match(raw, od_sport_id, is_live=False)
+                if not m:
+                    continue
+                if fetch_full_markets and m.get("betradar_id"):
+                    full = fetch_full_markets_for_match(m["betradar_id"], m.get("od_sport_id", od_sport_id))
+                    if full:
+                        m["markets"].update(full)
+                        m["market_count"] = len(m["markets"])
+                    time.sleep(sleep_between)
+                count += 1
+                yield m
+        return
+
+    # ----------------------------------------------------------------------
+    # Original day‑by‑day streaming for all other sports
+    # ----------------------------------------------------------------------
+    start_date = _date.today()
     for offset_day in range(days):
         day = start_date + timedelta(days=offset_day)
         day_str = day.isoformat()
@@ -683,7 +755,6 @@ def fetch_upcoming_stream(
 
         raw_events = _unwrap_upcoming_response(overview_data, od_sport_id)
         if raw_events:
-            # Direct matches
             for raw in raw_events:
                 if max_matches and count >= max_matches:
                     return
@@ -699,7 +770,7 @@ def fetch_upcoming_stream(
                 count += 1
                 yield m
         else:
-            # Competition‑level
+            # Competition‑level fetching
             competitions = []
             inner = overview_data.get("data") if isinstance(overview_data, dict) else {}
             if isinstance(inner, dict):
