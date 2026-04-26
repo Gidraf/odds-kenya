@@ -590,7 +590,7 @@ def fetch_upcoming_matches(
     max_workers: int = 12,       # market enrichment concurrency
     concurrent_days: int = 8,    # parallel day fetches
     concurrent_comps: int = 15,  # parallel competition fetches per day
-    skip_enrich_threshold: int = 3,  # kept for compatibility but ignored
+    skip_enrich_threshold: int = 3,
     **kwargs,
 ) -> list[dict]:
     api_id = _probe(sport_slug)
@@ -601,7 +601,7 @@ def fetch_upcoming_matches(
         if not data: return []
         raw, _ = _unwrap(data)
         return _finalise(raw, sport_slug, fetch_full_markets, max_workers,
-                         offset, max_matches)
+                         skip_enrich_threshold, offset, max_matches)
 
     # ── Generate day list ─────────────────────────────────────────────────
     today      = _date.today()
@@ -632,7 +632,7 @@ def fetch_upcoming_matches(
     logger.info("OD upcoming %s (%d days): %d raw matches before enrich",
                 sport_slug, days, len(all_raw))
     return _finalise(all_raw, sport_slug, fetch_full_markets, max_workers,
-                     offset, max_matches)
+                     skip_enrich_threshold, offset, max_matches)
 
 
 def _finalise(
@@ -640,36 +640,37 @@ def _finalise(
     sport_slug: str,
     fetch_full_markets: bool,
     max_workers: int,
+    skip_enrich_threshold: int,
     offset: int,
     max_matches: int | None,
 ) -> list[dict]:
-    """Normalise and optionally enrich ALL matches (no threshold skipping)."""
     normalised: list[dict] = []
     seen: set[str] = set()
     for r in raw:
         m = _normalise(r, sport_slug)
-        if not m:
-            continue
+        if not m: continue
         if m["od_match_id"] not in seen:
             seen.add(m["od_match_id"])
             normalised.append(m)
 
     if fetch_full_markets and normalised:
-        # Enrich EVERY match – do not skip based on initial market count
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            normalised = list(pool.map(_enrich, normalised))
+        needs = [m for m in normalised if m["market_count"] < skip_enrich_threshold]
+        rich  = [m for m in normalised if m["market_count"] >= skip_enrich_threshold]
+        if needs:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                enriched = list(pool.map(_enrich, needs))
+        else:
+            enriched = []
+        normalised = enriched + rich
 
-    if offset:
-        normalised = normalised[offset:]
-    if max_matches is not None:
-        normalised = normalised[:max_matches]
+    if offset:      normalised = normalised[offset:]
+    if max_matches: normalised = normalised[:max_matches]
     return normalised
 
 
 def _enrich(match: dict) -> dict:
     br = match.get("betradar_id")
-    if not br:
-        return match
+    if not br: return match
     full = fetch_full_markets_for_match(br, match.get("sport", "soccer"))
     if full:
         match["markets"].update(full)
@@ -731,36 +732,25 @@ def fetch_live(sport_slug: str | None = None, **kwargs) -> list[dict]:
 
 class OdiBetsLivePoller:
     def __init__(self, redis_client: Any, interval: float = 2.0):
-        self.redis = redis_client
-        self.interval = interval
-        self._running = False
-    def start(self):
-        self._running = True
-    def stop(self):
-        self._running = False
+        self.redis = redis_client; self.interval = interval; self._running = False
+    def start(self): self._running = True
+    def stop(self):  self._running = False
     @property
-    def alive(self) -> bool:
-        return False
+    def alive(self) -> bool: return False
 
 _live_poller = None
-def get_live_poller():
-    return _live_poller
+def get_live_poller(): return _live_poller
 def init_live_poller(redis_client: Any, interval: float = 2.0):
     global _live_poller
     if _live_poller is None:
-        _live_poller = OdiBetsLivePoller(redis_client, interval)
-        _live_poller.start()
+        _live_poller = OdiBetsLivePoller(redis_client, interval); _live_poller.start()
     return _live_poller
-def get_cached_upcoming(r: Any, s: str) -> list[dict] | None:
-    return None
-def cache_upcoming(r: Any, s: str, m: list[dict], ttl: int = 300) -> None:
-    pass
-def get_cached_live(r: Any, i: Any) -> list[dict] | None:
-    return None
+def get_cached_upcoming(r: Any, s: str) -> list[dict] | None: return None
+def cache_upcoming(r: Any, s: str, m: list[dict], ttl: int = 300) -> None: pass
+def get_cached_live(r: Any, i: Any) -> list[dict] | None: return None
 
 class OdiBetsHarvesterPlugin:
-    bookie_id = "odibets"
-    bookie_name = "OdiBets"
+    bookie_id = "odibets"; bookie_name = "OdiBets"
     sport_slugs = list(OD_SPORT_IDS.keys())
     def fetch_upcoming(self, sport_slug: str, days: int = 30, **kwargs) -> list[dict]:
         return fetch_upcoming_matches(sport_slug, days=days, **kwargs)
