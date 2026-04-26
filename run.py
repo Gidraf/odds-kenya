@@ -907,9 +907,10 @@ def dump_od_raw(sport, days, max_matches, output_dir):
 @flask_app.cli.command("fetch-od-complete")
 @click.option("--days", default=30, help="Number of days ahead to search")
 @click.option("--sport-workers", default=12, help="Parallel sports workers")
-@click.option("--comp-workers", default=10, help="Parallel competitions per sport")
+@click.option("--comp-workers", default=10, help="Parallel competitions per sport (now used for market fetching)")
+@click.option("--concurrent-days", default=5, help="Number of days to fetch concurrently (non-esoccer sports)")
 @click.option("--output-dir", default="od_complete_dumps", help="Directory for JSON output")
-def fetch_od_complete(days, sport_workers, comp_workers, output_dir):
+def fetch_od_complete(days, sport_workers, comp_workers, concurrent_days, output_dir):
     """
     Fetch OdiBets upcoming matches for ALL sports in parallel.
     Searches up to `days` ahead, saves a JSON file per sport.
@@ -917,10 +918,9 @@ def fetch_od_complete(days, sport_workers, comp_workers, output_dir):
     import os
     import json
     import time
-    from datetime import datetime, date as _date, timedelta
+    from datetime import datetime
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from app.workers.od_harvester import (
-        slug_to_od_sport_id,
         fetch_upcoming_matches,
         OD_SPORT_IDS
     )
@@ -935,14 +935,14 @@ def fetch_od_complete(days, sport_workers, comp_workers, output_dir):
         print(f"🔍 {sport_slug} – fetching...")
         t0 = time.perf_counter()
         try:
-            # Pass the max_workers for competition level
             matches = fetch_upcoming_matches(
                 sport_slug=sport_slug,
                 days=days,
                 offset=0,
                 max_matches=None,
                 fetch_full_markets=True,
-                max_workers=comp_workers
+                max_workers=comp_workers,      # market enrichment concurrency
+                concurrent_days=concurrent_days # day parallelism
             )
         except Exception as e:
             print(f"  ❌ {sport_slug} error: {e}")
@@ -976,6 +976,7 @@ def fetch_od_complete(days, sport_workers, comp_workers, output_dir):
     print(f"{'TOTAL':<20} {total:<10}")
     print("="*80)
 
+    
 @flask_app.cli.command("debug-od-esoccer")
 def debug_od_esoccer():
     from app.workers.od_harvester import _get, SBOOK_ODI
