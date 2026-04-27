@@ -1,207 +1,143 @@
 """
-app/workers/mappers/odibets_basketball_mapper.py
-=================================================
-OdiBets Basketball market mapper – maps sub_type_id + specifiers to canonical slugs.
-Also supports mapping from the market name string directly (as seen in the JSON).
+app/workers/mappers/odibet_basketball.py
+=========================================
+OdiBets Basketball market mapper.
+Converts OdiBets-specific market slugs (as produced by od_harvester.py)
+into canonical market slugs + specifiers for internal use.
 """
 
-from typing import Dict, Optional
+from __future__ import annotations
+
 import re
+from typing import Dict, Optional, Tuple
 
 
-class OdiBetsBasketballMapper:
-    """Maps OdiBets Basketball market IDs and specifiers or name strings to internal canonical slugs."""
+class OdibetBasketballMapper:
+    """Maps OdiBets Basketball JSON market slugs to canonical slugs + specifiers."""
 
-    STATIC_MARKETS: Dict[str, str] = {
-        "1":     "1x2",                       # 1X2 (3-way)
-        "11":    "draw_no_bet",               # Draw no bet
-        "47":    "basketball_ht_ft",          # Halftime/fulltime
-        "60":    "first_half_1x2",            # 1st half - 1x2
-        "64":    "first_half_draw_no_bet",    # 1st half - draw no bet
-        "74":    "first_half_odd_even",       # 1st half - odd/even
-        "83":    "second_half_1x2",           # 2nd half - 1x2
-        "86":    "second_half_draw_no_bet",   # 2nd half - draw no bet
-        "94":    "second_half_odd_even",      # 2nd half - odd/even
-        "219":   "basketball_moneyline",      # Winner (incl. overtime) -> 2-way
-        "220":   "overtime",                  # Will there be overtime
-        "229":   "odd_even",                  # Odd/even (incl. overtime)
-        "234":   "highest_scoring_quarter",   # Highest scoring quarter
-        "298":   "point_range",               # Point range (variant=sr:point)
-        "304":   "quarter_odd_even",          # {!quarternr} quarter - odd/even
-    }
-
-    # Direct mapping for simple name‑based markets (no line extraction)
-    STATIC_NAME_MARKETS: Dict[str, str] = {
-        "basketball_1x2": "1x2",
-        "basketball_moneyline": "basketball_moneyline",
+    # Direct mapping for simple markets (no specifiers)
+    STATIC_MARKETS: Dict[str, Tuple[str, Dict[str, str]]] = {
+        "basketball_1x2":               ("1x2", {"period": "full"}),
+        "basketball_moneyline":         ("basketball_moneyline", {"period": "full"}),
+        "basketball_draw_no_bet":       ("draw_no_bet", {"period": "full"}),
+        "basketball_ht_ft":             ("ht_ft", {"period": "full"}),
+        "first_half_basketball_1x2":    ("first_half_1x2", {"period": "first_half"}),
+        "basketball_":                  None,  # ambiguous, skip
+        "first_quarter_winning_margin": ("quarter_winning_margin", {"quarter": "1"}),
     }
 
     @staticmethod
-    def format_line(spec_value: str) -> str:
-        """Format a specifier value to a canonical line string."""
-        if spec_value == "0":
+    def format_line(value: float) -> str:
+        """Convert a numeric line into a URL-safe slug fragment."""
+        if value == 0:
             return "0_0"
-        val_str = spec_value.replace(".", "_")
-        if spec_value.startswith("-"):
-            val_str = "minus_" + val_str[1:]
-        return val_str
+        val_str = f"{value:g}".replace(".", "_")
+        return val_str.replace("-", "minus_") if value < 0 else val_str
 
     @classmethod
-    def _map_by_name(cls, market_name: str) -> Optional[str]:
-        """Map a market name string (e.g., from JSON keys) to a canonical slug."""
-        # 1. Static name mappings
-        if market_name in cls.STATIC_NAME_MARKETS:
-            return cls.STATIC_NAME_MARKETS[market_name]
+    def get_market_info(
+        cls, market_slug: str
+    ) -> Optional[Tuple[str, Dict[str, str]]]:
+        """
+        Parse an OdiBets market slug and return (canonical_slug, specifiers).
+        Specifiers may include 'line', 'handicap', 'period', 'quarter', 'team', 'include_ot'.
 
-        # 2. Over/Under total points (incl. overtime)
-        #    pattern: over_under_basketball_points_incl_ot_<line>
-        #    line format: 162_5 → 162.5
-        ou_match = re.match(
-            r"over_under_basketball_points_incl_ot_(\d+)_(\d+)",
-            market_name
-        )
-        if ou_match:
-            whole = ou_match.group(1)
-            dec = ou_match.group(2)
-            line_val = f"{whole}.{dec}"
-            return f"total_points_{line_val}"
+        Example:
+            "over_under_basketball_points_215_5" → ("total_points", {"line": "215.5", "period": "full"})
+            "basketball__minus_10_5"             → ("point_spread", {"handicap": "-10.5", "period": "full"})
+            "first_half_basketball_spread_minus_7_5" → ("point_spread", {"handicap": "-7.5", "period": "first_half"})
+            "basketball__1"                      → ("quarter_winner", {"quarter": "1"})
+        """
+        # ----- Static mappings -----
+        if market_slug in cls.STATIC_MARKETS:
+            return cls.STATIC_MARKETS[market_slug]
 
-        # 3. Point spread (handicap)
-        #    pattern: basketball__{sign}_{whole}_{dec}
-        #    sign = minus or plus
-        spread_match = re.match(
-            r"basketball__(minus|plus)_(\d+)_(\d+)",
-            market_name
-        )
+        # ----- Full Game Total Points (Over/Under) -----
+        # Patterns:
+        #   over_under_basketball_points_215_5
+        #   over_under_basketball_points_incl_ot_215_5
+        total_match = re.match(r"over_under_basketball_points(?:_incl_ot)?_([\d_]+)$", market_slug)
+        if total_match:
+            include_ot = "_incl_ot" in market_slug
+            line = float(total_match.group(1).replace("_", "."))
+            spec = {"line": str(line), "period": "full"}
+            if include_ot:
+                spec["include_ot"] = "true"
+            return ("total_points", spec)
+
+        # ----- Full Game Point Spread (Handicap) -----
+        # Patterns:
+        #   basketball__minus_10_5   (handicap -10.5)
+        #   basketball__minus_1_5
+        #   basketball__minus_0_5
+        # Also basketball__minus_3_5 etc.
+        spread_match = re.match(r"basketball__minus_([\d_]+)$", market_slug)
         if spread_match:
-            sign = spread_match.group(1)      # "minus" or "plus"
-            whole = spread_match.group(2)
-            dec = spread_match.group(3)
-            # For the canonical slug we use the same format as the old specifier-based method:
-            # e.g. "minus_17.5" or "plus_10.5"
-            line_str = f"{sign}_{whole}.{dec}"
-            return f"point_spread_{line_str}"
+            handicap_str = spread_match.group(1).replace("_", ".")
+            handicap = -float(handicap_str)  # negative because "minus"
+            return ("point_spread", {"handicap": str(handicap), "period": "full"})
 
-        # Unknown market name
+        # Also possible positive handicap? Not seen but could be "basketball__plus_"
+        plus_spread_match = re.match(r"basketball__plus_([\d_]+)$", market_slug)
+        if plus_spread_match:
+            handicap_str = plus_spread_match.group(1).replace("_", ".")
+            handicap = float(handicap_str)
+            return ("point_spread", {"handicap": str(handicap), "period": "full"})
+
+        # ----- First Half Point Spread -----
+        fh_spread_match = re.match(r"first_half_basketball_spread_minus_([\d_]+)$", market_slug)
+        if fh_spread_match:
+            handicap_str = fh_spread_match.group(1).replace("_", ".")
+            handicap = -float(handicap_str)
+            return ("point_spread", {"handicap": str(handicap), "period": "first_half"})
+
+        # ----- Quarter Winner (1X2) -----
+        # Patterns: basketball__1, basketball__2, basketball__3, basketball__4
+        quarter_match = re.match(r"basketball__([1-4])$", market_slug)
+        if quarter_match:
+            quarter_num = quarter_match.group(1)
+            return ("quarter_winner", {"quarter": quarter_num})
+
+        # ----- Team Totals (including overtime) -----
+        # Home team: basketball_home_team_total_incl_ot_112_5
+        home_total_match = re.match(r"basketball_home_team_total_incl_ot_([\d_]+)$", market_slug)
+        if home_total_match:
+            line = float(home_total_match.group(1).replace("_", "."))
+            return ("team_total_points", {"team": "home", "line": str(line), "period": "full", "include_ot": "true"})
+
+        # Away team total
+        away_total_match = re.match(r"basketball_away_team_total_incl_ot_([\d_]+)$", market_slug)
+        if away_total_match:
+            line = float(away_total_match.group(1).replace("_", "."))
+            return ("team_total_points", {"team": "away", "line": str(line), "period": "full", "include_ot": "true"})
+
+        # ----- Combined Market: Moneyline + Total -----
+        # Pattern: basketball_moneyline_and_total_215_5
+        combo_match = re.match(r"basketball_moneyline_and_total_([\d_]+)$", market_slug)
+        if combo_match:
+            line = float(combo_match.group(1).replace("_", "."))
+            # This market has outcomes like "1_under", "1_over", "2_under", "2_over"
+            # We'll return a special slug; the actual canonicalization will split.
+            return ("moneyline_and_total", {"line": str(line), "period": "full"})
+
+        # ----- Points Range Market (e.g., "basketball__250_5") -----
+        # Pattern: basketball__250_5  (could be any number)
+        range_match = re.match(r"basketball__([\d_]+)$", market_slug)
+        if range_match and "_" in range_match.group(1):
+            # This is likely the points range market; outcomes are bands like "151_160", "161_170", etc.
+            # We'll map to a generic "total_points_range" market.
+            return ("total_points_range", {"period": "full"})
+
+        # ----- Unknown market -----
         return None
 
     @classmethod
-    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> Optional[str]:
-        """
-        Returns the canonical market slug.
-        Args:
-            sub_type_id: OdiBets sub_type_id (as string)
-            specifiers: dict of parsed specifiers (e.g., {"total": "210.5", "hcp": "10.5"})
-            market_name: fallback name – if provided, we attempt to map by name first (new mode)
-        """
-        # If a market name is given, try to map it directly (supports JSON data)
-        if market_name:
-            slug = cls._map_by_name(market_name)
-            if slug:
-                return slug
-            # If not recognised by name, fall through to the old ID-based logic?
+    def get_canonical_slug(cls, market_slug: str) -> Optional[str]:
+        """Return just the canonical slug (without specifiers)."""
+        info = cls.get_market_info(market_slug)
+        return info[0] if info else None
 
-        sid = str(sub_type_id)
 
-        # Static markets
-        if sid in cls.STATIC_MARKETS:
-            return cls.STATIC_MARKETS[sid]
-
-        # Euro Handicap (sub_type_id 14)
-        if sid == "14":
-            hcp = specifiers.get("hcp")
-            if hcp:
-                # format "8:0" → "8_0"
-                line = hcp.replace(":", "_")
-                return f"european_handicap_{line}"
-            return "european_handicap"
-
-        # Over/Under (incl. overtime) – sub_type_id 18 (full match) and 90 (2nd half)
-        if sid in ("18", "90"):
-            total = specifiers.get("total")
-            if total:
-                line = cls.format_line(total)
-                if sid == "18":
-                    return f"total_points_{line}"
-                else:  # 2nd half total
-                    return f"second_half_total_points_{line}"
-            return "total_points" if sid == "18" else "second_half_total_points"
-
-        # Handicap (incl. overtime) – sub_type_id 223 (full match)
-        if sid == "223":
-            hcp = specifiers.get("hcp")
-            if hcp:
-                line = cls.format_line(hcp)
-                return f"point_spread_{line}"
-            return "point_spread"
-
-        # Team totals (incl. overtime) – sub_type_id 228 for away team (competitor2)
-        if sid == "228":
-            total = specifiers.get("total")
-            if total:
-                line = cls.format_line(total)
-                return f"away_total_points_{line}"
-            return "away_total_points"
-
-        # Quarter markets – sub_type_id 235 (1x2), 236 (total), 301 (winning margin),
-        # 302 (draw no bet), 303 (handicap)
-        if sid == "235":
-            quarternr = specifiers.get("quarternr")
-            if quarternr:
-                return f"quarter_{quarternr}_winner"
-            return "quarter_winner"
-        if sid == "236":
-            quarternr = specifiers.get("quarternr")
-            total = specifiers.get("total")
-            if total and quarternr:
-                line = cls.format_line(total)
-                return f"quarter_{quarternr}_total_{line}"
-            return "quarter_total"
-        if sid == "301":
-            quarternr = specifiers.get("quarternr")
-            if quarternr:
-                return f"quarter_{quarternr}_winning_margin"
-            return "quarter_winning_margin"
-        if sid == "302":
-            quarternr = specifiers.get("quarternr")
-            if quarternr:
-                return f"quarter_{quarternr}_draw_no_bet"
-            return "quarter_draw_no_bet"
-        if sid == "303":
-            quarternr = specifiers.get("quarternr")
-            hcp = specifiers.get("hcp")
-            if hcp and quarternr:
-                line = cls.format_line(hcp)
-                return f"quarter_{quarternr}_spread_{line}"
-            return "quarter_spread"
-
-        # 1st half handicap – sub_type_id 66
-        if sid == "66":
-            hcp = specifiers.get("hcp")
-            if hcp:
-                line = cls.format_line(hcp)
-                return f"first_half_spread_{line}"
-            return "first_half_spread"
-
-        # 2nd half handicap – sub_type_id 88
-        if sid == "88":
-            hcp = specifiers.get("hcp")
-            if hcp:
-                line = cls.format_line(hcp)
-                return f"second_half_spread_{line}"
-            return "second_half_spread"
-
-        # Winner & total combo – sub_type_id 292
-        if sid == "292":
-            total = specifiers.get("total")
-            if total:
-                line = cls.format_line(total)
-                return f"winner_and_total_{line}"
-            return "winner_and_total"
-
-        # 2nd half 1x2 (incl. overtime) – sub_type_id 293
-        if sid == "293":
-            return "second_half_1x2_ot"
-
-        # Unknown market
-        return None
+# Optional: generic dispatcher for all sports
+def get_od_basketball_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
+    return OdibetBasketballMapper.get_market_info(market_slug)

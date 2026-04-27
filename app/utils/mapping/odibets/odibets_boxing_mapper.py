@@ -1,90 +1,134 @@
 """
-app/workers/mappers/odibets_boxing_mapper.py
-=============================================
-OdiBets Boxing market mapper – maps sub_type_id + specifiers to canonical slugs.
-Also supports direct name mapping (e.g., "boxing_moneyline").
+app/workers/mappers/odibet_boxing.py
+=====================================
+OdiBets Boxing market mapper.
+Converts OdiBets-specific market slugs (as produced by od_harvester.py)
+into canonical market slugs + specifiers for internal use.
 """
 
-from typing import Dict, Optional
+from __future__ import annotations
+
 import re
+from typing import Dict, Optional, Tuple
 
 
-class OdiBetsBoxingMapper:
-    """Maps OdiBets Boxing market IDs and specifiers or name strings to internal canonical slugs."""
+class OdibetBoxingMapper:
+    """Maps OdiBets Boxing JSON market slugs to canonical slugs + specifiers."""
 
-    STATIC_MARKETS: Dict[str, str] = {
-        "1":   "boxing_1x2",          # 1X2 (3-way)
-        "186": "boxing_winner",       # Winner (2-way)
-        "911": "knockdown_scored",    # Will there be a knockdown
-    }
-
-    # Direct name‑to‑slug mappings (for JSON where market name is the key)
-    STATIC_NAME_MARKETS: Dict[str, str] = {
-        "boxing_moneyline": "boxing_winner",   # OdiBets name → canonical slug
+    # Direct mapping for simple markets (no specifiers)
+    STATIC_MARKETS: Dict[str, Tuple[str, Dict[str, str]]] = {
+        "boxing_1x2":                            ("boxing_winner", {"period": "full"}),
+        "boxing_moneyline":                      ("boxing_winner", {"period": "full", "two_way": "true"}),
+        "boxing_":                               ("fight_distance", {}),  # yes/no -> fight goes the distance
     }
 
     @staticmethod
-    def format_line(spec_value: str) -> str:
-        """Format a specifier value to a canonical line string."""
-        if spec_value == "0":
-            return "0_0"
-        val_str = spec_value.replace(".", "_")
-        if spec_value.startswith("-"):
-            val_str = "minus_" + val_str[1:]
-        return val_str
+    def format_round_number(round_num: int) -> str:
+        """Convert round number to string, e.g., 1 -> '1'."""
+        return str(round_num)
 
     @classmethod
-    def _map_by_name(cls, market_name: str) -> Optional[str]:
-        """Map a market name string (e.g., from JSON keys) to a canonical slug."""
-        # 1. Static name mappings
-        if market_name in cls.STATIC_NAME_MARKETS:
-            return cls.STATIC_NAME_MARKETS[market_name]
+    def get_market_info(
+        cls, market_slug: str
+    ) -> Optional[Tuple[str, Dict[str, str]]]:
+        """
+        Parse an OdiBets market slug and return (canonical_slug, specifiers).
 
-        # 2. Additional patterns can be added here if more name‑based markets appear
-        #    (e.g., over_under_rounds_X_X, winner_in_round_X)
+        Examples:
+            "boxing__sr_winning_method_ko_decision" -> ("method_of_victory", {})
+            "boxing__sr_winner_and_rounds_12"       -> ("round_betting", {"total_rounds": "12"})
+            "boxing__sr_winner_and_round_range_12"  -> ("round_group", {"total_rounds": "12"})
+        """
+        # ----- Static mappings -----
+        if market_slug in cls.STATIC_MARKETS:
+            return cls.STATIC_MARKETS[market_slug]
+
+        # ----- Method of Victory (KO/Decision) -----
+        if market_slug == "boxing__sr_winning_method_ko_decision":
+            return ("method_of_victory", {})
+
+        # ----- Winner + Exact Round -----
+        # Pattern: boxing__sr_winner_and_rounds_12  (12 = total rounds in fight)
+        exact_round_match = re.match(r"boxing__sr_winner_and_rounds_(\d+)$", market_slug)
+        if exact_round_match:
+            total_rounds = exact_round_match.group(1)
+            return ("round_betting", {"total_rounds": total_rounds})
+
+        # ----- Winner + Round Range -----
+        # Pattern: boxing__sr_winner_and_round_range_12
+        range_match = re.match(r"boxing__sr_winner_and_round_range_(\d+)$", market_slug)
+        if range_match:
+            total_rounds = range_match.group(1)
+            return ("round_group", {"total_rounds": total_rounds})
+
+        # ----- Unknown market -----
         return None
 
     @classmethod
-    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> Optional[str]:
+    def get_canonical_slug(cls, market_slug: str) -> Optional[str]:
+        """Return just the canonical slug (without specifiers)."""
+        info = cls.get_market_info(market_slug)
+        return info[0] if info else None
+
+    @classmethod
+    def transform_outcome(cls, market_slug: str, outcome_key: str) -> str:
         """
-        Returns the canonical market slug.
-        Args:
-            sub_type_id: OdiBets sub_type_id (as string)
-            specifiers: dict of parsed specifiers (e.g., {"total": "7.5"})
-            market_name: optional market name (used when sub_type_id is not available)
+        Convert OdiBets outcome keys to canonical outcome names.
+        Used when building the final outcomes dict.
         """
-        # If a market name is given, try to map it directly (supports JSON data)
-        if market_name:
-            slug = cls._map_by_name(market_name)
-            if slug:
-                return slug
-            # If not recognised by name, fall through to the old ID‑based logic
+        # For method_of_victory market
+        if market_slug == "boxing__sr_winning_method_ko_decision":
+            mapping = {
+                "1_by_ko":       "home_ko",
+                "2_by_ko":       "away_ko",
+                "1_by_decision": "home_decision",
+                "2_by_decision": "away_decision",
+                "X":             "draw",
+            }
+            return mapping.get(outcome_key, outcome_key)
 
-        sid = str(sub_type_id)
+        # For winner + exact round market
+        if market_slug.startswith("boxing__sr_winner_and_rounds_"):
+            # outcomes: "1_1", "1_2", ..., "2_12", "1_decision", "2_decision", "X"
+            if outcome_key == "X":
+                return "draw"
+            if "_" in outcome_key:
+                parts = outcome_key.split("_")
+                if len(parts) == 2:
+                    fighter, value = parts
+                    if value.isdigit():
+                        return f"home_round_{value}" if fighter == "1" else f"away_round_{value}"
+                    elif value == "decision":
+                        return f"home_decision" if fighter == "1" else "away_decision"
+            return outcome_key
 
-        # Static markets
-        if sid in cls.STATIC_MARKETS:
-            return cls.STATIC_MARKETS[sid]
+        # For winner + round range market
+        if market_slug.startswith("boxing__sr_winner_and_round_range_"):
+            # outcomes: "1_1_3", "1_4_6", "2_1_3", "1_decision", etc.
+            if outcome_key == "X":
+                return "draw"
+            if "_" in outcome_key:
+                parts = outcome_key.split("_")
+                if len(parts) == 2:
+                    fighter, value = parts
+                    if value == "decision":
+                        return f"home_decision" if fighter == "1" else "away_decision"
+                    # Could be range like "1_3" but actually pattern is "1_1_3"?
+                elif len(parts) == 3:
+                    fighter, start, end = parts
+                    if start.isdigit() and end.isdigit():
+                        return f"home_rounds_{start}_{end}" if fighter == "1" else f"away_rounds_{start}_{end}"
+            return outcome_key
 
-        # Over/Under Rounds – sub_type_id 18
-        if sid == "18":
-            total = specifiers.get("total")
-            if total:
-                line = cls.format_line(total)
-                return f"over_under_rounds_{line}"
-            return "over_under_rounds"
+        # For fight distance market
+        if market_slug == "boxing_":
+            # outcome_key is "yes" or "no"
+            return outcome_key
 
-        # Method of victory – sub_type_id 910
-        if sid == "910":
-            return "method_of_victory"
+        # Default: keep original
+        return outcome_key
 
-        # Winner & exact round – sub_type_id 912
-        if sid == "912":
-            return "round_betting"
 
-        # Winner & round range – sub_type_id 913
-        if sid == "913":
-            return "winner_and_round_range"
-
-        # Unknown market
-        return None
+# Generic dispatcher
+def get_od_boxing_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
+    return OdibetBoxingMapper.get_market_info(market_slug)

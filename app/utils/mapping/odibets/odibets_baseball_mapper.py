@@ -1,102 +1,141 @@
 """
-app/workers/mappers/odibets_baseball_mapper.py
-===============================================
-OdiBets Baseball market mapper – maps sub_type_id + specifiers to canonical slugs.
-
-Supports all markets listed in the provided example:
-- over_under_baseball_runs_<line>
-- baseball_spread_<line>
-- baseball_moneyline
-- Maintains existing markets (F5, first inning, odd/even, extra innings, etc.)
+app/workers/mappers/odibet.py
+==============================
+OdiBets Baseball market mapper.
+Converts OdiBets-specific market slugs (as produced by od_harvester.py)
+into canonical market slugs + specifiers for internal use.
 """
 
-from typing import Dict
+from __future__ import annotations
 
-class OdiBetsBaseballMapper:
-    """Maps OdiBets Baseball market IDs and specifiers to internal canonical slugs."""
+import re
+from typing import Dict, Optional, Tuple
 
+
+class OdibetBaseballMapper:
+    """Maps OdiBets Baseball JSON market slugs to canonical slugs + specifiers."""
+
+    # Direct mapping for simple markets (no specifiers)
     STATIC_MARKETS: Dict[str, str] = {
-        "1":   "baseball_1x2",              # 1X2 (3-way)
-        "251": "baseball_moneyline",        # Winner (incl. extra innings) -> 2-way
-        "264": "odd_even",                  # Odd/even (incl. extra innings)
-        "268": "extra_innings",             # Will there be an extra inning
-        "274": "f5_winner",                 # Innings 1 to 5 - 1x2
-        "276": "f5_total",                  # Innings 1 to 5 - total (added)
-        "287": "first_inning_winner",       # Inning 1 - 1x2
+        "baseball_1x2":          "1x2",                      # 3-way match result (draw exists)
+        "baseball_moneyline":    "baseball_moneyline",       # 2-way winner (no draw)
+        "baseball_odd_even":     "odd_even",                 # Odd/Even total runs
+        "baseball_f5_1x2":       "f5_winner",                # Winner after 5 innings (3-way)
+        "baseball_f5_spread_0_0": "f5_winner",               # Actually F5 winner? No spread? We'll map
+        "baseball_1st_inning_1x2_1": "first_inning_score",   # 1st inning 1X2
     }
 
     @staticmethod
-    def format_line(spec_value: str) -> str:
-        """Format a specifier value to a canonical line string."""
-        if spec_value == "0":
+    def format_line(value: float) -> str:
+        """Convert a numeric line into a URL-safe slug fragment."""
+        if value == 0:
             return "0_0"
-        # Replace '.' with '_', handle negative numbers
-        val_str = spec_value.replace(".", "_")
-        if spec_value.startswith("-"):
-            val_str = "minus_" + val_str[1:]
-        return val_str
+        val_str = f"{value:g}".replace(".", "_")
+        return val_str.replace("-", "minus_") if value < 0 else val_str
 
     @classmethod
-    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> str | None:
+    def get_market_info(
+        cls, market_slug: str
+    ) -> Optional[Tuple[str, Dict[str, str]]]:
         """
-        Returns the canonical market slug.
-        Args:
-            sub_type_id: OdiBets sub_type_id (as string)
-            specifiers: dict of parsed specifiers (e.g., {"total": "6.5", "hcp": "1.5"})
-            market_name: fallback name (not used here, kept for consistency)
+        Parse an OdiBets market slug and return (canonical_slug, specifiers).
+        Specifiers may include 'line', 'handicap', 'period', 'team'.
+
+        Example:
+            "over_under_baseball_runs_7_5" -> ("total_runs", {"line": "7.5", "period": "full"})
+            "baseball_spread_minus_1_5"    -> ("run_line", {"handicap": "-1.5", "period": "full"})
+            "baseball_f5_spread_0_5"       -> ("run_line", {"handicap": "0.5", "period": "f5"})
         """
-        sid = str(sub_type_id)
+        # ----- 1X2 (full game) -----
+        if market_slug == "baseball_1x2":
+            return ("1x2", {"period": "full"})
 
-        # Static markets
-        if sid in cls.STATIC_MARKETS:
-            return cls.STATIC_MARKETS[sid]
+        # ----- Moneyline (full game) -----
+        if market_slug == "baseball_moneyline":
+            return ("baseball_moneyline", {"period": "full"})
 
-        # Handicap / Run Line (sub_type_id 256) -> baseball_spread_<line>
-        if sid == "256":
-            hcp = specifiers.get("hcp")
-            if hcp:
-                line = cls.format_line(hcp)
-                return f"baseball_spread_{line}"
-            return "baseball_spread"
+        # ----- Odd/Even (full game) -----
+        if market_slug == "baseball_odd_even":
+            return ("odd_even", {"period": "full"})
 
-        # Total runs / Over/Under (sub_type_id 258) -> over_under_baseball_runs_<line>
-        if sid == "258":
-            total = specifiers.get("total")
-            if total:
-                line = cls.format_line(total)
-                return f"over_under_baseball_runs_{line}"
-            return "over_under_baseball_runs"
+        # ----- Full Game Run Line (Spread) -----
+        # Patterns: baseball_spread_1_5  → handicap -1.5
+        #           baseball_spread_minus_0_5 → -0.5
+        spread_match = re.match(r"baseball_spread_([\d_]+)$", market_slug)
+        if spread_match:
+            handicap_str = spread_match.group(1).replace("_", ".")
+            if handicap_str.startswith("minus"):
+                handicap = -float(handicap_str[5:])
+            else:
+                handicap = float(handicap_str)
+            return ("run_line", {"handicap": str(handicap), "period": "full"})
 
-        # Team totals (sub_type_id 260 for home/competitor1, 261 for away/competitor2)
-        if sid == "260":
-            total = specifiers.get("total")
-            if total:
-                line = cls.format_line(total)
-                return f"home_total_runs_{line}"
-            return "home_total_runs"
-        if sid == "261":
-            total = specifiers.get("total")
-            if total:
-                line = cls.format_line(total)
-                return f"away_total_runs_{line}"
-            return "away_total_runs"
+        # ----- Full Game Total Runs (Over/Under) -----
+        total_match = re.match(r"over_under_baseball_runs_([\d_]+)$", market_slug)
+        if total_match:
+            line = float(total_match.group(1).replace("_", "."))
+            return ("total_runs", {"line": str(line), "period": "full"})
 
-        # Innings 1 to 5 - handicap (sub_type_id 275)
-        if sid == "275":
-            hcp = specifiers.get("hcp")
-            if hcp:
-                line = cls.format_line(hcp)
-                return f"f5_handicap_{line}"
-            return "f5_handicap"
+        # ----- Home Team Total Runs -----
+        home_total_match = re.match(r"baseball_home_team_total_([\d_]+)$", market_slug)
+        if home_total_match:
+            line = float(home_total_match.group(1).replace("_", "."))
+            return ("team_total_runs", {"team": "home", "line": str(line), "period": "full"})
 
-        # Inning total (sub_type_id 288)
-        if sid == "288":
-            total = specifiers.get("total")
-            inning = specifiers.get("inningnr", "1")
-            if total:
-                line = cls.format_line(total)
-                return f"inning_{inning}_total_{line}"
-            return f"inning_{inning}_total"
+        # ----- Away Team Total Runs -----
+        away_total_match = re.match(r"baseball_away_team_total_([\d_]+)$", market_slug)
+        if away_total_match:
+            line = float(away_total_match.group(1).replace("_", "."))
+            return ("team_total_runs", {"team": "away", "line": str(line), "period": "full"})
 
-        # Unknown market
+        # ----- First 5 Innings Winner (already 3-way) -----
+        if market_slug == "baseball_f5_1x2":
+            return ("f5_winner", {"period": "f5"})
+
+        # ----- First 5 Innings Run Line (Spread) -----
+        f5_spread_match = re.match(r"baseball_f5_spread_([\d_]+)$", market_slug)
+        if f5_spread_match:
+            handicap_str = f5_spread_match.group(1).replace("_", ".")
+            if handicap_str.startswith("minus"):
+                handicap = -float(handicap_str[5:])
+            else:
+                handicap = float(handicap_str)
+            return ("run_line", {"handicap": str(handicap), "period": "f5"})
+
+        # ----- First 5 Innings Total Runs -----
+        f5_total_match = re.match(r"over_under_baseball_f5_runs_([\d_]+)$", market_slug)
+        if f5_total_match:
+            line = float(f5_total_match.group(1).replace("_", "."))
+            return ("total_runs", {"line": str(line), "period": "f5"})
+
+        # ----- 1st Inning 1X2 -----
+        inning_1x2_match = re.match(r"baseball_(\d+)(?:st|nd|rd|th)_inning_1x2_\d+$", market_slug)
+        if inning_1x2_match:
+            inning_num = inning_1x2_match.group(1)
+            return ("first_inning_score" if inning_num == "1" else "inning_winner",
+                    {"inning": inning_num})
+
+        # ----- 1st Inning Total Runs -----
+        inning_total_match = re.match(r"over_under_baseball_(\d+)(?:st|nd|rd|th)_inning_runs_([\d_]+)$", market_slug)
+        if inning_total_match:
+            inning_num = inning_total_match.group(1)
+            line = float(inning_total_match.group(2).replace("_", "."))
+            return ("inning_total_runs", {"inning": inning_num, "line": str(line)})
+
+        # ----- Unknown market -----
         return None
+
+    @classmethod
+    def get_canonical_slug(cls, market_slug: str) -> Optional[str]:
+        """Return just the canonical slug (without specifiers)."""
+        info = cls.get_market_info(market_slug)
+        return info[0] if info else None
+
+
+# Optional: a generic function that dispatches by sport
+def get_od_market_info(sport: str, market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
+    """Dispatch to sport-specific mapper."""
+    if sport == "baseball":
+        return OdibetBaseballMapper.get_market_info(market_slug)
+    # Add other sports here (soccer, basketball, etc.)
+    return None

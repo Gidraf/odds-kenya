@@ -1027,5 +1027,101 @@ def debug_od_esoccer():
     else:
         print("No 'leagues' key found")
 
+import click
+import os
+import json
+import time
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from app.workers.bt_harvester import (
+    fetch_upcoming_matches,
+    CANONICAL_SPORT_IDS,
+    slug_to_bt_sport_id,
+)
+
+
+@flask_app.cli.command("fetch-bt-complete")
+@click.option("--days",            default=30,   help="Days ahead to fetch (Betika maps to period_id: 9 = all upcoming)")
+@click.option("--sport-workers",   default=4,    help="Sports to harvest in parallel")
+@click.option("--market-workers",  default=8,    help="Market‑enrichment threads per sport")
+@click.option("--max-pages",       default=30,   help="Max pages per sport (each page = 50 matches)")
+@click.option("--output-dir",      default="bt_complete_dumps", help="Directory to save JSON files")
+@click.option("--no-markets",      is_flag=True, default=False, help="Skip deep market enrichment (only inline odds)")
+def fetch_bt_complete(days, sport_workers, market_workers, max_pages, output_dir, no_markets):
+    """
+    Fetch Betika upcoming matches for ALL sports.
+    Saves each sport’s raw matches to a separate JSON file for mapper development.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Get all sport slugs from Betika's mapping (exclude esport variants if you like)
+    sport_slugs = [slug for slug in CANONICAL_SPORT_IDS.keys()
+                   if not slug.startswith("esport")]   # optional: filter out extra esports
+
+    print(f"⚙️  {len(sport_slugs)} sports | sport_workers={sport_workers} "
+          f"market_workers={market_workers} fetch_full_markets={'no' if no_markets else 'yes'}")
+
+    summary: dict[str, int] = {}
+    errors:  dict[str, str] = {}
+
+    def fetch_and_save(sport_slug: str) -> tuple[str, int]:
+        out_file = os.path.join(output_dir, f"bt_complete_{sport_slug}_{timestamp}.json")
+        t0 = time.perf_counter()
+        count = 0
+        print(f"  🔍 {sport_slug} – starting…")
+        try:
+            matches = fetch_upcoming_matches(
+                sport_slug=sport_slug,
+                days=days,
+                max_pages=max_pages,
+                fetch_full=not no_markets,
+                max_workers=market_workers,
+            )
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write("[\n")
+                for i, m in enumerate(matches):
+                    if i > 0:
+                        f.write(",\n")
+                    json.dump(m, f, default=str)
+                    count += 1
+                f.write("\n]\n")
+            print(f"  ✅ {sport_slug}: {count} matches in {time.perf_counter()-t0:.1f}s")
+        except Exception as exc:
+            errors[sport_slug] = f"{type(exc).__name__}: {exc}"
+            print(f"  ❌ {sport_slug} failed: {errors[sport_slug]}")
+            # Write empty array so file exists
+            try:
+                with open(out_file, "w") as f:
+                    f.write("[]\n")
+            except Exception:
+                pass
+        return sport_slug, count
+
+    with ThreadPoolExecutor(max_workers=sport_workers) as executor:
+        future_to_slug = {executor.submit(fetch_and_save, slug): slug for slug in sport_slugs}
+        for future in as_completed(future_to_slug):
+            slug = future_to_slug[future]
+            try:
+                slug, count = future.result()
+            except Exception as exc:
+                count = 0
+                errors[slug] = str(exc)
+            summary[slug] = count
+
+    print("\n" + "=" * 65)
+    print("📊 BETIKA HARVEST SUMMARY")
+    print("-" * 65)
+    total = 0
+    for slug in sorted(summary):
+        cnt    = summary[slug]
+        total += cnt
+        status = f"❌ {errors[slug][:35]}" if slug in errors else ("⚠️  0" if cnt == 0 else "✅")
+        print(f"  {slug:<22} {cnt:>7}  {status}")
+    print("-" * 45)
+    print(f"  {'TOTAL':<22} {total:>7}")
+    print("=" * 65)
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
