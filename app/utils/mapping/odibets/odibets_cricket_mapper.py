@@ -2,15 +2,22 @@
 app/workers/mappers/odibets_cricket_mapper.py
 ==============================================
 OdiBets Cricket market mapper – maps sub_type_id + specifiers to canonical slugs.
+Also supports direct name mapping (e.g., "cricket_winner_incl_super_over").
 """
 
-from typing import Dict
+from typing import Dict, Optional
+
 
 class OdiBetsCricketMapper:
-    """Maps OdiBets Cricket market IDs and specifiers to internal canonical slugs."""
+    """Maps OdiBets Cricket market IDs and specifiers or name strings to internal canonical slugs."""
 
     STATIC_MARKETS: Dict[str, str] = {
         "340": "cricket_match_winner",   # Winner (incl. super over)
+    }
+
+    # Direct name‑to‑slug mappings (for JSON where market name is the key)
+    STATIC_NAME_MARKETS: Dict[str, str] = {
+        "cricket_winner_incl_super_over": "cricket_match_winner",
     }
 
     @staticmethod
@@ -24,14 +31,26 @@ class OdiBetsCricketMapper:
         return val_str
 
     @classmethod
-    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> str | None:
+    def _map_by_name(cls, market_name: str) -> Optional[str]:
+        """Map a market name string (e.g., from JSON keys) to a canonical slug."""
+        return cls.STATIC_NAME_MARKETS.get(market_name)
+
+    @classmethod
+    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> Optional[str]:
         """
         Returns the canonical market slug.
         Args:
             sub_type_id: OdiBets sub_type_id (as string)
             specifiers: dict of parsed specifiers (not used here)
-            market_name: fallback name (not used)
+            market_name: optional market name (used when sub_type_id is not available)
         """
+        # If a market name is given, try to map it directly (supports JSON data)
+        if market_name:
+            slug = cls._map_by_name(market_name)
+            if slug:
+                return slug
+            # If not recognised by name, fall through to ID‑based logic
+
         sid = str(sub_type_id)
 
         # Static markets

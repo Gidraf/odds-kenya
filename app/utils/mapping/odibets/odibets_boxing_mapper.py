@@ -2,17 +2,25 @@
 app/workers/mappers/odibets_boxing_mapper.py
 =============================================
 OdiBets Boxing market mapper – maps sub_type_id + specifiers to canonical slugs.
+Also supports direct name mapping (e.g., "boxing_moneyline").
 """
 
-from typing import Dict
+from typing import Dict, Optional
+import re
+
 
 class OdiBetsBoxingMapper:
-    """Maps OdiBets Boxing market IDs and specifiers to internal canonical slugs."""
+    """Maps OdiBets Boxing market IDs and specifiers or name strings to internal canonical slugs."""
 
     STATIC_MARKETS: Dict[str, str] = {
         "1":   "boxing_1x2",          # 1X2 (3-way)
         "186": "boxing_winner",       # Winner (2-way)
         "911": "knockdown_scored",    # Will there be a knockdown
+    }
+
+    # Direct name‑to‑slug mappings (for JSON where market name is the key)
+    STATIC_NAME_MARKETS: Dict[str, str] = {
+        "boxing_moneyline": "boxing_winner",   # OdiBets name → canonical slug
     }
 
     @staticmethod
@@ -26,14 +34,32 @@ class OdiBetsBoxingMapper:
         return val_str
 
     @classmethod
-    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> str | None:
+    def _map_by_name(cls, market_name: str) -> Optional[str]:
+        """Map a market name string (e.g., from JSON keys) to a canonical slug."""
+        # 1. Static name mappings
+        if market_name in cls.STATIC_NAME_MARKETS:
+            return cls.STATIC_NAME_MARKETS[market_name]
+
+        # 2. Additional patterns can be added here if more name‑based markets appear
+        #    (e.g., over_under_rounds_X_X, winner_in_round_X)
+        return None
+
+    @classmethod
+    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> Optional[str]:
         """
         Returns the canonical market slug.
         Args:
             sub_type_id: OdiBets sub_type_id (as string)
             specifiers: dict of parsed specifiers (e.g., {"total": "7.5"})
-            market_name: fallback name (not used)
+            market_name: optional market name (used when sub_type_id is not available)
         """
+        # If a market name is given, try to map it directly (supports JSON data)
+        if market_name:
+            slug = cls._map_by_name(market_name)
+            if slug:
+                return slug
+            # If not recognised by name, fall through to the old ID‑based logic
+
         sid = str(sub_type_id)
 
         # Static markets
@@ -50,20 +76,15 @@ class OdiBetsBoxingMapper:
 
         # Method of victory – sub_type_id 910
         if sid == "910":
-            # The specifiers contain "variant=sr:winning_method:ko_decision"
-            # We return a static slug because outcomes are parsed separately.
             return "method_of_victory"
 
         # Winner & exact round – sub_type_id 912
         if sid == "912":
-            # Outcomes contain details like "1 & 5", "2 & 12", etc.
-            # We return a static slug; the actual round is part of the outcome name.
             return "round_betting"
 
         # Winner & round range – sub_type_id 913
         if sid == "913":
-            # Round ranges like 1-3, 4-6, 7-9, 10-12, plus decision
             return "winner_and_round_range"
 
-        # Unknown market – fallback to generic
+        # Unknown market
         return None

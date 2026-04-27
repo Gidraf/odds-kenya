@@ -2,8 +2,11 @@
 app/workers/od_harvester.py
 ============================
 OdiBets upcoming + live harvester.
-Fixed: always capture 1X2 market (sub_type_id=1) for every sport.
-Esoccer remains single no‑day request.
+Fixed: all markets are loaded for every sport.
+- 1X2 market is always captured (sub_type_id=1).
+- Handicap, total, and other parametrised markets get unique slugs
+  based on specifiers (e.g., "total=9.5", "hcp=-1.5", "inningnr=1").
+- Concurrent sub‑type fetching merges all markets without overwriting.
 """
 
 from __future__ import annotations
@@ -244,7 +247,7 @@ def _cache_probe(slug: str, working: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MARKET PARSING – FIXED for 1X2
+# MARKET PARSING – FIXED: unique slugs per specifier
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_specifiers(s: str) -> dict:
@@ -287,6 +290,46 @@ def _translate(ds: str, home: str, away: str) -> str:
             ds = ds.replace(src, tgt)
     return ds
 
+def _make_unique_slug(
+    sport: str,
+    sub_type_id: str,
+    specifiers: str,
+    market_name: str,
+) -> str:
+    """
+    Build a unique market slug using external mapper first.
+    If mapper returns None, generate a fallback that includes the
+    important specifiers (hcp, total, inningnr, etc.) so that
+    different lines (e.g., total 9.5 vs 7.5) become separate markets.
+    """
+    spec_dict = _parse_specifiers(specifiers)
+    # Try the external mapper (e.g., from betika) first
+    slug = get_market_slug(sport, sub_type_id, spec_dict, fallback_name=market_name)
+    if slug is not None:
+        return slug
+
+    # Fallback: generate a slug that incorporates the differentiating specifiers
+    safe_name = market_name.lower().replace(" ", "_") if market_name else sub_type_id
+    # Determine the most relevant specifier for this market type
+    spec_part = ""
+    if "hcp" in spec_dict:
+        hcp_val = spec_dict["hcp"].replace(".", "_").replace("-", "minus")
+        spec_part = f"_hcp_{hcp_val}"
+    elif "total" in spec_dict:
+        total_val = spec_dict["total"].replace(".", "_")
+        spec_part = f"_total_{total_val}"
+    elif "inningnr" in spec_dict:
+        spec_part = f"_inning_{spec_dict['inningnr']}"
+    elif "periodnr" in spec_dict:
+        spec_part = f"_period_{spec_dict['periodnr']}"
+    elif "playerid" in spec_dict:   # for player props if present
+        spec_part = f"_player_{spec_dict['playerid']}"
+
+    base = f"{sport}_{safe_name}" if sport != "soccer" else safe_name
+    if spec_part:
+        return f"{base}{spec_part}"
+    return base
+
 def _parse_markets(raw: list[dict], sport: str, home: str, away: str) -> dict[str, dict[str, float]]:
     result: dict[str, dict[str, float]] = {}
     for mkt in raw:
@@ -296,10 +339,10 @@ def _parse_markets(raw: list[dict], sport: str, home: str, away: str) -> dict[st
 
         sid  = str(mkt.get("sub_type_id") or mkt.get("type_id") or "")
         name = str(mkt.get("odd_type") or mkt.get("name") or mkt.get("type_name") or "")
+        mkt_spec = str(mkt.get("specifiers") or "")
 
         # --- SPECIAL CASE: 1X2 market (sub_type_id = "1") ---
         if sid == "1":
-            # Build slug: "1x2" for soccer, else "<sport>_1x2"
             slug = "1x2" if sport == "soccer" else f"{sport}_1x2"
             for o, _ in _outcomes(mkt):
                 if str(o.get("active") or "") in ("0", "false"): continue
@@ -310,16 +353,14 @@ def _parse_markets(raw: list[dict], sport: str, home: str, away: str) -> dict[st
                     continue
                 if val <= 1.0: continue
                 outcome_key = str(o.get("outcome_key") or "X").upper()
-                # Normalize: "1" -> "1", "X" -> "X", "2" -> "2"
                 if outcome_key not in ("1", "X", "2"):
-                    # Fallback to translation (e.g., team name to "1"/"2")
                     display = str(o.get("outcome_name") or outcome_key)
                     outcome_key = _translate(display, home, away)
                 result.setdefault(slug, {})[outcome_key] = val
             continue
 
-        # --- ALL OTHER MARKETS ---
-        for o, spec in _outcomes(mkt):
+        # --- ALL OTHER MARKETS: each line becomes its own market entry ---
+        for o, outcome_spec in _outcomes(mkt):
             if str(o.get("active") or "") in ("0", "false"): continue
             if str(o.get("status") or "") == "0": continue
             try:
@@ -328,13 +369,9 @@ def _parse_markets(raw: list[dict], sport: str, home: str, away: str) -> dict[st
                 continue
             if val <= 1.0: continue
 
-            parsed_specs = _parse_specifiers(spec)
-            # Use the external mapper; if it returns None, fallback to generic slug
-            slug = get_market_slug(sport, sid, parsed_specs, fallback_name=name)
-            if slug is None:
-                # Generate a simple slug as fallback
-                safe_name = name.lower().replace(" ", "_") if name else sid
-                slug = f"{sport}_{safe_name}" if sport != "soccer" else safe_name
+            # Prefer outcome-specific specifiers, otherwise use market specifiers
+            effective_spec = outcome_spec if outcome_spec else mkt_spec
+            slug = _make_unique_slug(sport, sid, effective_spec, name)
 
             display = str(o.get("outcome_key") or o.get("odd_key") or o.get("outcome_name") or o.get("odd_def") or "")
             key = normalize_outcome(sport, _translate(display, home, away))
@@ -344,8 +381,8 @@ def _parse_markets(raw: list[dict], sport: str, home: str, away: str) -> dict[st
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MARKET ENRICHMENT (unchanged)
-# ══════════════════════════════════════════════════════════════════════════════
+# MARKET ENRICHMENT
+# ═════─────────────────────────────────────────────────────────────────────────
 
 def _fetch_sub_type(sid: str, params: dict, sport: str, home: str, away: str) -> dict:
     data = _get(SBOOK_V1, params={**params, "sub_type_id": sid})
@@ -373,11 +410,14 @@ def fetch_full_markets_for_match(
     away  = str(info.get("away_team") or "")
     sport = _resolve_sport(info.get("s_binomen") or info.get("sport_id"), sport_slug)
 
+    # parse markets from the initial response
     for slug, outcomes in _parse_markets(d.get("markets") or [], sport, home, away).items():
         all_markets.setdefault(slug, {}).update(outcomes)
 
+    # fetch all sub_types listed in markets_list
     sub_ids = {str(m["sub_type_id"]) for m in (d.get("markets_list") or []) if m.get("sub_type_id")}
-    if not sub_ids: return all_markets
+    if not sub_ids:
+        return all_markets
 
     with ThreadPoolExecutor(max_workers=min(sub_type_workers, len(sub_ids))) as pool:
         futures = {pool.submit(_fetch_sub_type, sid, base, sport, home, away): sid for sid in sub_ids}
@@ -391,7 +431,7 @@ def fetch_full_markets_for_match(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MATCH NORMALISATION (unchanged)
+# MATCH NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _normalise(raw: dict, sport_slug: str, is_live: bool = False) -> dict | None:
@@ -452,7 +492,7 @@ def _normalise(raw: dict, sport_slug: str, is_live: bool = False) -> dict | None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PER-DAY FETCHER (unchanged, your working implementation)
+# PER-DAY FETCHER
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _DayCollector:
@@ -533,7 +573,7 @@ def _fetch_day_complete(sport_id: str, day: str, concurrent_comps: int = 15) -> 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPCOMING MATCHES (esoccer unchanged, others with your parallel days)
+# UPCOMING MATCHES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_matches(
@@ -619,7 +659,7 @@ def _enrich(match: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIVE MATCHES (unchanged)
+# LIVE MATCHES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
@@ -642,7 +682,7 @@ def fetch_live_matches(sport_slug: str | None = None) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STREAMING + ALIASES (unchanged)
+# STREAMING + ALIASES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_upcoming_stream(sport_slug: str = "soccer", days: int = 30,
@@ -672,7 +712,7 @@ def fetch_live(sport_slug: str | None = None, **kwargs) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PLUGIN & COMPATIBILITY LAYER (unchanged)
+# PLUGIN & COMPATIBILITY LAYER
 # ══════════════════════════════════════════════════════════════════════════════
 
 class OdiBetsLivePoller:

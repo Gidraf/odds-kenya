@@ -2,12 +2,15 @@
 app/workers/mappers/odibets_basketball_mapper.py
 =================================================
 OdiBets Basketball market mapper – maps sub_type_id + specifiers to canonical slugs.
+Also supports mapping from the market name string directly (as seen in the JSON).
 """
 
-from typing import Dict
+from typing import Dict, Optional
+import re
+
 
 class OdiBetsBasketballMapper:
-    """Maps OdiBets Basketball market IDs and specifiers to internal canonical slugs."""
+    """Maps OdiBets Basketball market IDs and specifiers or name strings to internal canonical slugs."""
 
     STATIC_MARKETS: Dict[str, str] = {
         "1":     "1x2",                       # 1X2 (3-way)
@@ -27,6 +30,12 @@ class OdiBetsBasketballMapper:
         "304":   "quarter_odd_even",          # {!quarternr} quarter - odd/even
     }
 
+    # Direct mapping for simple name‑based markets (no line extraction)
+    STATIC_NAME_MARKETS: Dict[str, str] = {
+        "basketball_1x2": "1x2",
+        "basketball_moneyline": "basketball_moneyline",
+    }
+
     @staticmethod
     def format_line(spec_value: str) -> str:
         """Format a specifier value to a canonical line string."""
@@ -38,14 +47,60 @@ class OdiBetsBasketballMapper:
         return val_str
 
     @classmethod
-    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> str | None:
+    def _map_by_name(cls, market_name: str) -> Optional[str]:
+        """Map a market name string (e.g., from JSON keys) to a canonical slug."""
+        # 1. Static name mappings
+        if market_name in cls.STATIC_NAME_MARKETS:
+            return cls.STATIC_NAME_MARKETS[market_name]
+
+        # 2. Over/Under total points (incl. overtime)
+        #    pattern: over_under_basketball_points_incl_ot_<line>
+        #    line format: 162_5 → 162.5
+        ou_match = re.match(
+            r"over_under_basketball_points_incl_ot_(\d+)_(\d+)",
+            market_name
+        )
+        if ou_match:
+            whole = ou_match.group(1)
+            dec = ou_match.group(2)
+            line_val = f"{whole}.{dec}"
+            return f"total_points_{line_val}"
+
+        # 3. Point spread (handicap)
+        #    pattern: basketball__{sign}_{whole}_{dec}
+        #    sign = minus or plus
+        spread_match = re.match(
+            r"basketball__(minus|plus)_(\d+)_(\d+)",
+            market_name
+        )
+        if spread_match:
+            sign = spread_match.group(1)      # "minus" or "plus"
+            whole = spread_match.group(2)
+            dec = spread_match.group(3)
+            # For the canonical slug we use the same format as the old specifier-based method:
+            # e.g. "minus_17.5" or "plus_10.5"
+            line_str = f"{sign}_{whole}.{dec}"
+            return f"point_spread_{line_str}"
+
+        # Unknown market name
+        return None
+
+    @classmethod
+    def get_market_slug(cls, sub_type_id: str, specifiers: Dict[str, str], market_name: str = "") -> Optional[str]:
         """
         Returns the canonical market slug.
         Args:
             sub_type_id: OdiBets sub_type_id (as string)
             specifiers: dict of parsed specifiers (e.g., {"total": "210.5", "hcp": "10.5"})
-            market_name: fallback name (not used)
+            market_name: fallback name – if provided, we attempt to map by name first (new mode)
         """
+        # If a market name is given, try to map it directly (supports JSON data)
+        if market_name:
+            slug = cls._map_by_name(market_name)
+            if slug:
+                return slug
+            # If not recognised by name, fall through to the old ID-based logic?
+
         sid = str(sub_type_id)
 
         # Static markets

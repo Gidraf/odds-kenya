@@ -2,6 +2,12 @@
 app/workers/mappers/odibets_baseball_mapper.py
 ===============================================
 OdiBets Baseball market mapper – maps sub_type_id + specifiers to canonical slugs.
+
+Supports all markets listed in the provided example:
+- over_under_baseball_runs_<line>
+- baseball_spread_<line>
+- baseball_moneyline
+- Maintains existing markets (F5, first inning, odd/even, extra innings, etc.)
 """
 
 from typing import Dict
@@ -45,21 +51,21 @@ class OdiBetsBaseballMapper:
         if sid in cls.STATIC_MARKETS:
             return cls.STATIC_MARKETS[sid]
 
-        # Handicap / Run Line (sub_type_id 256)
+        # Handicap / Run Line (sub_type_id 256) -> baseball_spread_<line>
         if sid == "256":
             hcp = specifiers.get("hcp")
             if hcp:
                 line = cls.format_line(hcp)
-                return f"run_line_{line}"
-            return "run_line"
+                return f"baseball_spread_{line}"
+            return "baseball_spread"
 
-        # Total runs (sub_type_id 258)
+        # Total runs / Over/Under (sub_type_id 258) -> over_under_baseball_runs_<line>
         if sid == "258":
             total = specifiers.get("total")
             if total:
                 line = cls.format_line(total)
-                return f"total_runs_{line}"
-            return "total_runs"
+                return f"over_under_baseball_runs_{line}"
+            return "over_under_baseball_runs"
 
         # Team totals (sub_type_id 260 for home/competitor1, 261 for away/competitor2)
         if sid == "260":
