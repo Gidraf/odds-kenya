@@ -1,66 +1,99 @@
+# Inside app/workers/mappers/betika.py
+
 import logging
 
 logger = logging.getLogger(__name__)
 
-class SportpesaCricketMapper:
-    """Maps SportPesa Cricket JSON to internal canonical slugs."""
-    
-    # SportPesa (Sportradar) static market IDs for Cricket
-    STATIC_MARKETS = {
-        1:   "cricket_1x2",                    # 3-Way Match Result (Usually for Test Matches)
-        10:  "cricket_double_chance",          # Double Chance
-        11:  "cricket_draw_no_bet",            # Draw No Bet
-        340: "cricket_winner_incl_super_over", # Winner (Incl. Super Over)
-        342: "cricket_will_there_be_a_tie",    # Will There Be A Tie
-        382: "cricket_moneyline",              # Standard 2-Way Winner
+class BetikaCricketMapper:
+    """Maps Betika Cricket JSON to internal canonical slugs."""
+
+    MARKET_MAP = {
+        # Static Markets (No lines/specifiers)
+        "1":   "cricket_1x2",                     # 3-Way Match Result
+        "10":  "cricket_double_chance",           # Double Chance
+        "11":  "cricket_draw_no_bet",             # Draw No Bet
+        "340": "cricket_winner_incl_super_over",  # Winner (incl. Super Over)
+        "342": "cricket_will_there_be_a_tie",     # Will There Be A Tie
+        "382": "cricket_moneyline",               # Standard 2-Way Winner
+
+        # Dynamic Markets (Require line/specifier appended)
+        "875": "cricket_home_total_at_1st_dismissal",  # Home team runs at 1st dismissal
+        "876": "cricket_away_total_at_1st_dismissal",  # Away team runs at 1st dismissal
+        "18":  "over_under_cricket_runs",              # Total runs (match)
+        "19":  "cricket_home_team_total",              # Home team total runs (innings)
+        "20":  "cricket_away_team_total",              # Away team total runs (innings)
+        "229": "over_under_cricket_runs",              # Alternative total runs ID
+        "228": "cricket_ah_run_line",                  # Asian handicap / run line
     }
 
     @staticmethod
-    def format_line(spec_value: float) -> str:
-        """Formats float specifiers into canonical lines (e.g., 22.5 -> '22_5')."""
-        if spec_value == 0:
-            return "0_0"
-        val_str = f"{spec_value:g}".replace(".", "_")
-        return val_str.replace("-", "minus_") if spec_value < 0 else val_str
+    def format_line(raw_line: str) -> str:
+        """Formats string specifiers into canonical lines (e.g., '23.5' -> '23_5')."""
+        if not raw_line:
+            return ""
+
+        try:
+            val = float(raw_line)
+            if val == 0:
+                return "0_0"
+            val_str = f"{val:g}".replace(".", "_")
+            return val_str.replace("-", "minus_") if val < 0 else val_str
+        except ValueError:
+            return str(raw_line).replace(":", "_").replace("-", "_")
 
     @classmethod
-    def get_market_slug(cls, sp_id: int, spec_value: float = 0.0) -> str | None:
+    def get_market_slug(cls, sub_type_id: str, parsed_specifiers: dict, fallback_name: str = "") -> str:
+        base_slug = cls.MARKET_MAP.get(str(sub_type_id))
+
+        # Fallback if ID is unknown
+        if not base_slug:
+            clean_name = fallback_name.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+            base_slug = f"cricket_{clean_name}"
+
+        if not parsed_specifiers:
+            return base_slug
+
+        # Extract the line value (total runs or handicap)
+        raw_line = (
+            parsed_specifiers.get("total") or
+            parsed_specifiers.get("hcp") or
+            parsed_specifiers.get("variant")
+        )
+
+        line_str = cls.format_line(str(raw_line)) if raw_line else ""
+
+        # Special handling for team 1st dismissal totals
+        if sub_type_id in ("875", "876"):
+            # The specifier usually contains the line (e.g., 23.5)
+            return f"{base_slug}_{line_str}" if line_str else base_slug
+
+        return f"{base_slug}_{line_str}" if line_str else base_slug
+
+    @staticmethod
+    def normalize_outcome(display: str) -> str:
         """
-        Routes the SportPesa market ID and its specifier to your standard internal slug.
+        Cleans Betika's verbose display strings into standard outcome keys.
+        Examples:
+          '1' -> '1'
+          '2' -> '2'
+          'OVER 23.5' -> 'over'
         """
-        # 1. Check if it's a known static market (no line appended)
-        if sp_id in cls.STATIC_MARKETS:
-            return cls.STATIC_MARKETS[sp_id]
+        d = display.upper().strip()
 
-        # 2. Format the line for dynamic markets
-        line_str = cls.format_line(spec_value)
+        # Strip out line annotations in parenthesis e.g., "OVER (23.5)" -> "OVER"
+        if "(" in d and d.endswith(")"):
+            d = d.split("(")[0].strip()
 
-        # 3. Dynamic Markets Routing
-        
-        # Total Match Runs (Over/Under) - SP usually uses 18, 52, or 229
-        if sp_id in [18, 52, 229]:
-            return f"over_under_cricket_runs_{line_str}"
-            
-        # Asian Handicap / Run Line
-        elif sp_id in [16, 228]:
-            if spec_value == 0:
-                return "cricket_ah_0_0"
-            prefix = "plus" if spec_value > 0 else "minus"
-            val = str(abs(spec_value)).replace(".", "_")
-            return f"cricket_ah_{prefix}_{val}"
-            
-        # Team Total Runs (Over/Under)
-        elif sp_id == 19:
-            return f"cricket_home_total_runs_{line_str}"
-        elif sp_id == 20:
-            return f"cricket_away_total_runs_{line_str}"
+        mapping = {
+            "1": "1", "X": "X", "2": "2",
+            "YES": "yes", "NO": "no",
+        }
+        if d in mapping:
+            return mapping[d]
 
-        # 1st Innings - Total at 1st Dismissal (Matches Betika's ID schema)
-        elif sp_id == 875:
-            return f"cricket_home_total_at_1st_dismissal_{line_str}"
-        elif sp_id == 876:
-            return f"cricket_away_total_at_1st_dismissal_{line_str}"
+        if d.startswith("OVER"):
+            return "over"
+        if d.startswith("UNDER"):
+            return "under"
 
-        # Unmapped/Unknown Market
-        logger.debug(f"Unmapped SportPesa Cricket Market ID: {sp_id} with line {spec_value}")
-        return None
+        return d.lower().replace(" ", "_").replace("-", "_")

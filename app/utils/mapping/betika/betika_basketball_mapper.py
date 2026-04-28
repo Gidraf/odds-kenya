@@ -1,6 +1,4 @@
-import logging
-
-logger = logging.getLogger(__name__)
+# In app/workers/mappers/betika.py
 
 class BetikaBasketballMapper:
     """Maps Betika Basketball JSON to internal canonical slugs."""

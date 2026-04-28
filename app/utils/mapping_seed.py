@@ -4,17 +4,7 @@ app/seeds/market_seeds.py
 Comprehensive market definitions organised by sport.
 Run with: python -m flask seed-markets   (or call seed_all_markets() directly)
 
-Usage
-─────
-    from app.seeds.market_seeds import seed_all_markets
-    seed_all_markets()          # idempotent — skips existing names
-
-Or as a Flask CLI command (register in app/__init__.py):
-    @app.cli.command("seed-markets")
-    def seed_markets_cmd():
-        from app.seeds.market_seeds import seed_all_markets
-        seed_all_markets()
-        print("Done.")
+Updated to include all market slugs used by Betika and OdiBets harvesters.
 """
 
 from __future__ import annotations
@@ -35,6 +25,7 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Double Chance",        "double_chance",       "Home/Draw, Home/Away, or Draw/Away"),
         ("Half Time Result",     "half_time_result",    "Result at half-time only"),
         ("To Qualify",           "to_qualify",          "Which team progresses in a cup/knockout tie"),
+        ("European Handicap",    "european_handicap",   "3-way handicap (e.g., 0:1, 1:0)"),
     ],
 
     # ── Football (Soccer) ────────────────────────────────────────────────────
@@ -94,6 +85,29 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Player Assists",              "player_assists",               "Named player to register an assist"),
         ("Player Shots On Target",      "player_shots_on_target",       "Player shots on target over/under"),
         ("Player Cards",                "player_cards",                 "Player total cards over/under"),
+        # Added for Betika completeness
+        ("Home Team Exact Goals",       "home_exact_goals",             "Exact number of goals scored by home team"),
+        ("Away Team Exact Goals",       "away_exact_goals",             "Exact number of goals scored by away team"),
+        ("Home Team Odd/Even",          "home_odd_even",                "Home team total goals odd or even"),
+        ("Away Team Odd/Even",          "away_odd_even",                "Away team total goals odd or even"),
+        ("Team Clean Sheet",            "clean_sheet",                  "Named team keeps a clean sheet"),
+        ("Team Win To Nil",             "win_to_nil",                   "Named team wins without conceding"),
+        ("First Half Corner Range",     "first_half_corner_range",      "Number of corners in first half in bands"),
+        ("First Half First Corner",     "first_half_first_corner",      "Which team wins the first corner of first half"),
+        ("First Goal & 1X2",            "first_goal_and_1x2",           "Combined: first goal scorer + match result"),
+        ("First Half Double Chance & BTTS", "first_half_double_chance_btts", "Combined double chance and BTTS in first half"),
+        ("Second Half 1X2 & BTTS",      "second_half_1x2_btts",         "Combined result and BTTS in second half"),
+        ("Second Half 1X2 & Total",     "second_half_1x2_over_under",   "Combined result and total goals in second half"),
+        ("Double Chance & BTTS",        "double_chance_btts",           "Combined double chance and BTTS"),
+        ("Double Chance & Total",       "double_chance_over_under",     "Combined double chance and total goals"),
+        ("Multigoals",                  "multigoals",                   "Goal range betting (e.g., 1-2, 3-4)"),
+        ("HT/FT & Total",               "ht_ft_over_under",             "Combined half-time/full-time and total goals"),
+        ("Team Multigoals",             "team_multigoals",              "Goal range for a specific team"),
+        ("Both Halves Over/Under 1.5",  "both_halves_over_under",       "Over/under 1.5 goals in each half"),
+        ("Both Halves BTTS",            "both_halves_btts",             "BTTS in both halves"),
+        ("Team Scores Both Halves",     "team_score_both_halves",       "Named team scores in both halves"),
+        ("Team Wins Both Halves",       "win_both_halves",              "Named team wins both halves"),
+        ("Team Highest Scoring Half",   "team_highest_scoring_half",    "Which half the named team scores more"),
     ],
 
     # ── Basketball ───────────────────────────────────────────────────────────
@@ -117,6 +131,34 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Team Total Points",           "team_total_points",            "Named team's total points over/under"),
         ("Quarter Total Points",        "quarter_total_points",         "Total points in a specific quarter"),
         ("Winning Margin",              "winning_margin_basketball",    "Exact margin band for the winner"),
+        # Added for Betika completeness
+        ("1X2 (3-Way)",                 "basketball_1x2",               "Home / Draw / Away (includes draw)"),
+        ("Double Chance",               "basketball_double_chance",     "Home/Draw, Home/Away, Draw/Away"),
+        ("Draw No Bet",                 "basketball_draw_no_bet",       "Stake back on draw"),
+        ("First Half 1X2",              "first_half_basketball_1x2",    "1st half result (3-way)"),
+        ("First Quarter Last Point",    "first_quarter_last_point",     "Which team scores the last point of 1Q"),
+        ("First Free Throw Scored",     "basketball_first_free_throw_scored", "Team/player to score first free throw"),
+        ("Total Points (incl OT)",      "over_under_basketball_points_incl_ot", "Total points including overtime"),
+        ("First Half Spread",           "first_half_basketball_spread", "Point spread in first half"),
+        ("First Half Total",            "first_half_over_under_basketball_points", "Total points in first half"),
+        ("First Half Home Total",       "first_half_basketball_home_team_total", "Home team points in first half"),
+        ("First Half Away Total",       "first_half_basketball_away_team_total", "Away team points in first half"),
+        ("Home Team Total (incl OT)",   "basketball_home_team_total_incl_ot", "Home team points including OT"),
+        ("Away Team Total (incl OT)",   "basketball_away_team_total_incl_ot", "Away team points including OT"),
+        ("Race To X Points",            "basketball_race_to_points",    "First to reach a points total (incl OT)"),
+        ("1st Quarter Total",           "first_quarter_over_under_basketball_points", "Total points in 1st quarter"),
+        ("Winning Margin (incl OT)",    "basketball_winning_margin_incl_ot", "Winning margin including OT"),
+        ("Moneyline & Total",           "basketball_moneyline_and_total", "Combined winner and total points"),
+        ("1st Quarter Winning Margin",  "first_quarter_winning_margin", "Winning margin in 1st quarter"),
+        ("Multigoals",                  "basketball_multigoals",        "Points range betting"),
+        ("1st Quarter Home Total",      "first_quarter_basketball_home_team_total", "Home team points in 1st quarter"),
+        ("1st Quarter Away Total",      "first_quarter_basketball_away_team_total", "Away team points in 1st quarter"),
+        ("Home Max Consecutive Points", "basketball_home_max_consecutive_points", "Home team's longest scoring run"),
+        ("Away Max Consecutive Points", "basketball_away_max_consecutive_points", "Away team's longest scoring run"),
+        ("Any Team Max Consecutive Points", "basketball_any_team_max_consecutive_points", "Longest scoring run by either team"),
+        ("Home To Lead By X",           "basketball_home_to_lead_by_points", "Home team leads by X points at any time"),
+        ("Away To Lead By X",           "basketball_away_to_lead_by_points", "Away team leads by X points at any time"),
+        ("Any Team To Lead By X",       "basketball_any_team_to_lead_by_points", "Either team leads by X points"),
     ],
 
     # ── Tennis ───────────────────────────────────────────────────────────────
@@ -161,6 +203,15 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Innings Runs - 6 Overs",      "powerplay_runs",               "Runs in powerplay overs"),
         ("Fifty Scored",                "fifty_scored",                 "Will a batsman score 50+"),
         ("Century Scored",              "century_scored",               "Will a batsman score 100+"),
+        # Added for Betika completeness
+        ("1X2 (3-Way)",                 "cricket_1x2",                  "Home / Draw / Away"),
+        ("Double Chance",               "cricket_double_chance",        "Home/Draw, Home/Away, Draw/Away"),
+        ("Draw No Bet",                 "cricket_draw_no_bet",          "Stake back on draw"),
+        ("Winner (incl Super Over)",    "cricket_winner_incl_super_over", "Winner including Super Over"),
+        ("Will There Be A Tie",         "cricket_will_there_be_a_tie",  "Yes/No for tied match"),
+        ("Home Total at 1st Dismissal", "cricket_home_total_at_1st_dismissal", "Runs scored when first wicket falls (home)"),
+        ("Away Total at 1st Dismissal", "cricket_away_total_at_1st_dismissal", "Runs scored when first wicket falls (away)"),
+        ("Asian Handicap (Run Line)",   "cricket_ah_run_line",          "Run line with quarter lines"),
     ],
 
     # ── American Football ────────────────────────────────────────────────────
@@ -203,6 +254,12 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Winning Margin",              "baseball_winning_margin",      "Exact run margin band"),
         ("Extra Innings",               "extra_innings",                "Does the game go to extra innings"),
         ("Series Winner",               "baseball_series_winner",       "Who wins the series"),
+        # Added for Betika completeness
+        ("1X2 (3-Way)",                 "baseball_1x2",                 "Home / Draw / Away (draw exists)"),
+        ("Odd/Even",                    "baseball_odd_even",            "Total runs odd or even"),
+        ("1st 5 Innings 1X2",           "baseball_f5_1x2",              "Winner after 5 innings (3-way)"),
+        ("1st Inning 1X2",              "baseball_1st_inning_1x2",      "Result of the 1st inning (3-way)"),
+        ("Inning Total Runs",           "inning_total_runs",            "Total runs in a specific inning"),
     ],
 
     # ── Hockey (Ice) ─────────────────────────────────────────────────────────
@@ -225,9 +282,17 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Correct Score",               "hockey_correct_score",         "Exact final score"),
         ("Winning Margin",              "hockey_winning_margin",        "Margin band for the winner"),
         ("Period Handicap",             "period_handicap",              "Handicap for a specific period"),
+        # Added for Betika completeness
+        ("First Goal",                  "hockey_first_goal",            "Which team scores first (or none)"),
+        ("Odd/Even",                    "hockey_odd_even",              "Total goals odd or even"),
+        ("Highest Scoring Period",      "hockey_highest_scoring_period","Which period has most goals"),
+        ("HT/FT",                       "hockey_ht_ft",                 "Leader after 1st period and full game"),
+        ("Result & Total",              "hockey_result_and_total",      "1X2 + total goals combo"),
+        ("1st Period Home Total",       "hockey_p1_home_total",         "Home team goals in 1st period"),
+        ("1st Period Away Total",       "hockey_p1_away_total",         "Away team goals in 1st period"),
     ],
 
-    # ── Rugby (Union & League) ────────────────────────────────────────────────
+    # ── Rugby Union ──────────────────────────────────────────────────────────
     "Rugby Union": [
         ("Match Result",                "rugby_result",                 "Home / Draw / Away"),
         ("Asian Handicap",              "rugby_handicap",               "Points spread"),
@@ -245,6 +310,13 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Player To Be First Try",      "player_first_try",             "Named player gets the first try"),
         ("Total Conversions",           "total_conversions",            "Total conversions over/under"),
         ("Total Penalties",             "total_penalties_rugby",        "Penalty kicks over/under"),
+        # Added for Betika completeness
+        ("1X2 (3-Way)",                 "rugby_1x2",                    "Home / Draw / Away (same as match result)"),
+        ("First Half 1X2",              "first_half_rugby_1x2",         "Half-time result (3-way)"),
+        ("First Half Double Chance",    "first_half_double_chance",     "Double chance at half-time"),
+        ("First Half Handicap",         "first_half_rugby_handicap",    "Point spread at half-time"),
+        ("First Half Total",            "first_half_over_under_rugby_pts","Total points in first half"),
+        ("Highest Scoring Half",        "rugby_highest_scoring_half",   "Which half has more points"),
     ],
 
     "Rugby League": [
@@ -256,6 +328,10 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Total Tries",                 "rleague_total_tries",          "Total tries over/under"),
         ("Winning Margin",              "rleague_winning_margin",       "Winning margin band"),
         ("Half Time Result",            "rleague_ht_result",            "Result at half-time"),
+        # Added for consistency
+        ("1X2 (3-Way)",                 "rleague_1x2",                  "Home / Draw / Away"),
+        ("First Half 1X2",              "first_half_rleague_1x2",       "Half-time result"),
+        ("First Half Total",            "first_half_over_under_rleague_pts","Total points in first half"),
     ],
 
     # ── Boxing & MMA ─────────────────────────────────────────────────────────
@@ -269,6 +345,9 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Knockdown Scored",            "knockdown_scored",             "Will a knockdown be scored"),
         ("Draw Or Technical Draw",      "boxing_draw",                  "Fight ends in a draw"),
         ("Winner & Method",             "winner_and_method",            "Combined winner + method"),
+        # Added for Betika compatibility
+        ("1X2 (3-Way)",                 "boxing_1x2",                   "Home / Draw / Away (rare)"),
+        ("Moneyline",                   "boxing_moneyline",             "2-way winner (alias)"),
     ],
 
     "MMA": [
@@ -280,6 +359,8 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Round Group Betting",         "mma_round_group",              "Fighter wins in rounds 1-2, 3+"),
         ("Winning Method & Round",      "mma_method_round",             "Combined method + round"),
         ("Performance Bonus",           "mma_bonus",                    "Which fighter earns a bonus"),
+        # Added for Betika compatibility
+        ("1X2 (3-Way)",                 "mma_1x2",                      "Home / Draw / Away (rare)"),
     ],
 
     # ── Volleyball ───────────────────────────────────────────────────────────
@@ -293,6 +374,15 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Handicap Sets",               "volleyball_handicap",          "Set handicap"),
         ("Will There Be A 5th Set",     "volleyball_5th_set",           "Does the match go to a deciding set"),
         ("Team To Win A Set",           "volleyball_team_win_set",      "Named team wins at least one set"),
+        # Added for Betika completeness
+        ("1X2 (3-Way)",                 "volleyball_1x2",               "Home / Draw / Away (rare)"),
+        ("First Set Winner",            "first_set_winner",             "Winner of the first set"),
+        ("Odd/Even",                    "volleyball_odd_even",          "Total points odd or even"),
+        ("Highest Scoring Set",         "volleyball_highest_scoring_set","Which set has most points"),
+        ("Point Handicap",              "volleyball_point_handicap",    "Handicap on total points"),
+        ("First Set Point Handicap",    "first_set_point_handicap",     "Point handicap in first set"),
+        ("First Set Total Points",      "first_set_total_points",       "Over/under points in first set"),
+        ("Exact Sets",                  "volleyball_exact_sets",        "Number of sets played (3,4,5)"),
     ],
 
     # ── Darts ────────────────────────────────────────────────────────────────
@@ -307,6 +397,12 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Set Handicap",                "darts_set_handicap",           "Set handicap"),
         ("Leg Handicap",                "darts_leg_handicap",           "Leg handicap"),
         ("Will Match Go To Final Set",  "darts_final_set",              "Does the match reach the deciding set"),
+        # Added for Betika completeness
+        ("1X2 (3-Way)",                 "darts_1x2",                    "Home / Draw / Away (rare)"),
+        ("Double Chance",               "darts_double_chance",          "Home/Draw, Home/Away, Draw/Away"),
+        ("Draw No Bet",                 "darts_draw_no_bet",            "Stake back on draw"),
+        ("Total Legs",                  "over_under_darts_total_legs",  "Over/under total legs played"),
+        ("Player Total Legs",           "darts_player_total_legs",      "Named player leg count over/under"),
     ],
 
     # ── Snooker ──────────────────────────────────────────────────────────────
@@ -321,6 +417,9 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Player To Make First Century","first_century",                "First player to make a 100+ break"),
         ("147 Made",                    "maximum_break",                "Will a maximum 147 be made"),
         ("Will Match Go To Final Frame","snooker_final_frame",          "Does match reach the deciding frame"),
+        # Added for Betika compatibility
+        ("1X2 (3-Way)",                 "snooker_1x2",                  "Home / Draw / Away (rare)"),
+        ("First Frame Winner",          "first_frame_winner",           "Winner of the first frame"),
     ],
 
     # ── Table Tennis ─────────────────────────────────────────────────────────
@@ -332,6 +431,12 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Total Points",                "tt_total_points",              "Total match points over/under"),
         ("Set Winner",                  "tt_set_winner",                "Winner of a specific set"),
         ("Will There Be A Deciding Set","tt_final_set",                 "Does the match go to a deciding set"),
+        # Added for Betika completeness
+        ("1X2 (3-Way)",                 "tt_1x2",                       "Home / Draw / Away (rare)"),
+        ("Point Handicap",              "tt_point_handicap",            "Point handicap on total"),
+        ("Exact Games",                 "tt_exact_games",               "Number of games played (3,4,5)"),
+        ("First Game Winner",           "tt_first_game_winner",         "Winner of the first game"),
+        ("First Game Total Points",     "tt_first_game_total_points",   "Over/under points in first game"),
     ],
 
     # ── Golf ─────────────────────────────────────────────────────────────────
@@ -381,7 +486,7 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Number Of Runners",           "num_runners",                  "How many horses complete the race"),
     ],
 
-    # ── Esports ──────────────────────────────────────────────────────────────
+    # ── Esports (also includes eFootball) ────────────────────────────────────
     "Esports": [
         ("Match Winner",                "esports_winner",               "Outright match winner"),
         ("Map Winner",                  "map_winner",                   "Winner of a specific map/game"),
@@ -397,6 +502,92 @@ MARKETS_BY_SPORT: dict[str | None, list[tuple[str, str, str]]] = {
         ("Pistol Round Winner",         "pistol_round",                 "Winner of pistol round (CS)"),
         ("Knife Round Winner",          "knife_round",                  "Knife round winner (CS)"),
         ("Ace Scored",                  "ace_scored",                   "Will an ace be scored (CS)"),
+        # Added for eFootball (Betika)
+        ("1X2 (3-Way)",                 "efootball_1x2",                "Match result (3-way)"),
+        ("Double Chance",               "efootball_double_chance",      "Double chance"),
+        ("Draw No Bet",                 "efootball_draw_no_bet",        "Draw no bet"),
+        ("Asian Handicap",              "efootball_asian_handicap",     "2-way handicap"),
+        ("European Handicap",           "efootball_european_handicap",  "3-way handicap"),
+        ("Total Goals",                 "over_under_efootball_goals",   "Over/under goals"),
+        ("Home Team Total",             "efootball_home_team_total",    "Home team goals over/under"),
+        ("Away Team Total",             "efootball_away_team_total",    "Away team goals over/under"),
+        ("Exact Goals",                 "efootball_exact_goals",        "Exact number of goals"),
+        ("BTTS",                        "efootball_btts",               "Both teams to score"),
+        ("1X2 & BTTS",                  "efootball_1x2_btts",           "Combined result and BTTS"),
+        ("BTTS & Total",                "efootball_over_under_btts",    "Combined BTTS and total goals"),
+        ("Correct Score",               "efootball_correct_score",      "Exact final score"),
+        ("HT/FT",                       "efootball_ht_ft",              "Half-time / full-time"),
+        ("First Half 1X2",              "first_half_efootball_1x2",     "Half-time result"),
+        ("First Half BTTS",             "first_half_efootball_btts",    "Both teams score in first half"),
+        ("10 Minutes 1X2",              "efootball_10_minutes_1x2",     "Result in first 10 minutes"),
+        ("Multigoals",                  "efootball_multigoals",         "Goal range betting"),
+    ],
+
+    # ── New Sports from Betika (Floorball, Futsal, Handball, Aussie Rules) ───
+    "Floorball": [
+        ("1X2",                         "floorball_1x2",                "Home / Draw / Away"),
+        ("Double Chance",               "floorball_double_chance",      "Double chance"),
+        ("Draw No Bet",                 "floorball_draw_no_bet",        "Draw no bet"),
+        ("HT/FT",                       "floorball_ht_ft",              "Half-time / full-time"),
+        ("First Half 1X2",              "first_half_floorball_1x2",     "Half-time result"),
+        ("Odd/Even",                    "floorball_odd_even",           "Total goals odd/even"),
+        ("Winning Margin",              "floorball_winning_margin",     "Margin of victory"),
+        ("Handicap",                    "floorball_handicap",           "Asian handicap"),
+        ("Total Goals",                 "over_under_floorball_goals",   "Over/under total goals"),
+        ("Home Team Total",             "floorball_home_team_total",    "Home team goals over/under"),
+        ("Away Team Total",             "floorball_away_team_total",    "Away team goals over/under"),
+        ("1X2 & Total",                 "floorball_1x2_over_under",     "Combined result and total goals"),
+        ("First Half Handicap",         "first_half_floorball_handicap","Half-time point spread"),
+        ("First Half Total",            "first_half_over_under_floorball_goals", "First half total goals"),
+    ],
+
+    "Futsal": [
+        ("1X2",                         "futsal_1x2",                   "Home / Draw / Away"),
+        ("Double Chance",               "futsal_double_chance",         "Double chance"),
+        ("Draw No Bet",                 "futsal_draw_no_bet",           "Draw no bet"),
+        ("HT/FT",                       "futsal_ht_ft",                 "Half-time / full-time"),
+        ("First Half 1X2",              "first_half_futsal_1x2",        "Half-time result"),
+        ("Odd/Even",                    "futsal_odd_even",              "Total goals odd/even"),
+        ("Winning Margin",              "futsal_winning_margin",        "Margin of victory"),
+        ("Handicap",                    "futsal_handicap",              "Asian handicap"),
+        ("Total Goals",                 "over_under_futsal_goals",      "Over/under total goals"),
+        ("Home Team Total",             "futsal_home_team_total",       "Home team goals over/under"),
+        ("Away Team Total",             "futsal_away_team_total",       "Away team goals over/under"),
+        ("1X2 & Total",                 "futsal_1x2_over_under",        "Combined result and total goals"),
+        ("First Half Handicap",         "first_half_futsal_handicap",   "Half-time point spread"),
+        ("First Half Total",            "first_half_over_under_futsal_goals", "First half total goals"),
+    ],
+
+    "Handball": [
+        ("1X2",                         "handball_1x2",                 "Home / Draw / Away"),
+        ("Double Chance",               "handball_double_chance",       "Double chance"),
+        ("Draw No Bet",                 "handball_draw_no_bet",         "Draw no bet"),
+        ("Winning Margin",              "handball_winning_margin",      "Margin of victory"),
+        ("HT/FT",                       "handball_ht_ft",               "Half-time / full-time"),
+        ("Highest Scoring Half",        "handball_highest_scoring_half","Which half has more goals"),
+        ("Odd/Even",                    "handball_odd_even",            "Total goals odd/even"),
+        ("Handicap",                    "handball_spread",              "Asian handicap (goals)"),
+        ("Total Goals",                 "over_under_handball_goals",    "Total goals over/under"),
+        ("Home Team Total",             "handball_home_team_total",     "Home team goals over/under"),
+        ("Away Team Total",             "handball_away_team_total",     "Away team goals over/under"),
+        ("1X2 & Total",                 "handball_1x2_over_under",      "Combined result and total goals"),
+        ("First Half 1X2",              "first_half_handball_1x2",      "Half-time result"),
+        ("First Half Double Chance",    "first_half_handball_double_chance","Half-time double chance"),
+        ("First Half Handicap",         "first_half_handball_spread",   "Half-time spread"),
+        ("First Half Total",            "first_half_over_under_handball_goals","First half total goals"),
+        ("First Half Odd/Even",         "first_half_handball_odd_even", "First half goals odd/even"),
+    ],
+
+    "Aussie Rules": [
+        ("1X2",                         "aussie_rules_1x2",             "Home / Draw / Away"),
+        ("Double Chance",               "aussie_rules_double_chance",   "Double chance"),
+        ("Winner (2-Way)",              "aussie_rules_winner",          "Outright winner (no draw)"),
+        ("First Half 1X2",              "aussie_rules_first_half_1x2",  "Half-time result"),
+        ("Odd/Even",                    "aussie_rules_odd_even",        "Total points odd/even"),
+        ("Total Points",                "over_under_aussie_rules_points","Total points over/under"),
+        ("Home Team Total",             "aussie_rules_home_team_total", "Home team points over/under"),
+        ("Away Team Total",             "aussie_rules_away_team_total", "Away team points over/under"),
+        ("First Half Total",            "first_half_over_under_aussie_rules_points", "First half points over/under"),
     ],
 }
 
@@ -426,6 +617,10 @@ PRIMARY_RESULT_MARKET_SLUGS: dict[str | None, list[str]] = {
     "Motorsport":       ["race_winner"],
     "Horse Racing":     ["horse_win"],
     "Esports":          ["esports_winner"],
+    "Floorball":        ["floorball_1x2"],
+    "Futsal":           ["futsal_1x2"],
+    "Handball":         ["handball_1x2"],
+    "Aussie Rules":     ["aussie_rules_winner", "aussie_rules_1x2"],
 }
 
 
@@ -447,7 +642,6 @@ def get_markets_for_sport(sport_name: str | None = None) -> list[dict]:
         elif sport_key is not None and sport_key.lower() != sport_name.lower():
             continue
 
-        is_primary = False
         primary_slugs: list[str] = (
             PRIMARY_RESULT_MARKET_SLUGS.get(sport_key)
             or PRIMARY_RESULT_MARKET_SLUGS.get(None)

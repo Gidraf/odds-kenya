@@ -4,25 +4,34 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class BetikaMMAMapper:
-    """Maps Betika MMA JSON to internal canonical slugs."""
+class BetikaFutsalMapper:
+    """Maps Betika Futsal JSON to internal canonical slugs."""
 
     MARKET_MAP = {
         # Static Markets (No lines/specifiers)
-        "1":   "mma_1x2",          # 1X2 (3-way, very rare in MMA)
-        "186": "mma_winner",       # Winner (2-way, most common)
+        "1":   "futsal_1x2",                # 1X2 (3-way)
+        "10":  "futsal_double_chance",      # Double Chance
+        "11":  "futsal_draw_no_bet",        # Draw No Bet
+        "47":  "futsal_ht_ft",              # Halftime/Fulltime
+        "60":  "first_half_futsal_1x2",     # 1st half 1X2
+        "264": "futsal_odd_even",           # Odd/Even total goals
 
         # Dynamic Markets (Require line/specifier appended)
-        "18":  "over_under_mma_rounds",   # Total rounds (over/under)
-        "15":  "mma_winning_margin",      # Method of victory or round band (if available)
+        "15":  "futsal_winning_margin",     # Winning margin (banded)
+        "16":  "futsal_handicap",           # Asian handicap / spread
+        "18":  "over_under_futsal_goals",   # Total goals (over/under)
+        "19":  "futsal_home_team_total",    # Home team total goals
+        "20":  "futsal_away_team_total",    # Away team total goals
+        "37":  "futsal_1x2_over_under",     # 1X2 + total goals combo
+        "66":  "first_half_futsal_handicap",# 1st half handicap
+        "68":  "first_half_over_under_futsal_goals", # 1st half total goals
     }
 
     @staticmethod
     def format_line(raw_line: str) -> str:
-        """Formats specifiers into canonical lines (e.g., '2.5' -> '2_5')."""
+        """Formats specifiers into canonical lines (e.g., '6.5' -> '6_5')."""
         if not raw_line:
             return ""
-
         try:
             val = float(raw_line)
             if val == 0:
@@ -39,12 +48,12 @@ class BetikaMMAMapper:
         # Fallback if ID is unknown
         if not base_slug:
             clean_name = fallback_name.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
-            base_slug = f"mma_{clean_name}"
+            base_slug = f"futsal_{clean_name}"
 
         if not parsed_specifiers:
             return base_slug
 
-        # Extract the line value (total rounds, handicap, etc.)
+        # Extract the line value (total goals, handicap, etc.)
         raw_line = (
             parsed_specifiers.get("total") or
             parsed_specifiers.get("hcp") or
@@ -60,19 +69,18 @@ class BetikaMMAMapper:
         """
         Cleans Betika's verbose display strings into standard outcome keys.
         Examples:
-          '1' -> '1'
-          '2' -> '2'
-          'OVER 2.5' -> 'over'
+          '1' -> '1', '2' -> '2', 'X' -> 'X'
+          'OVER 6.5' -> 'over'
         """
         d = display.upper().strip()
 
-        # Strip out handicap/line annotations in parenthesis
         if "(" in d and d.endswith(")"):
             d = d.split("(")[0].strip()
 
         mapping = {
             "1": "1", "X": "X", "2": "2",
             "YES": "yes", "NO": "no",
+            "1/X": "1X", "X/2": "X2", "1/2": "12",
         }
         if d in mapping:
             return mapping[d]
@@ -81,5 +89,8 @@ class BetikaMMAMapper:
             return "over"
         if d.startswith("UNDER"):
             return "under"
+
+        if "/" in d and len(d) == 3:
+            return d
 
         return d.lower().replace(" ", "_").replace("-", "_")

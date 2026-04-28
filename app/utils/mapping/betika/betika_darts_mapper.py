@@ -4,25 +4,34 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class BetikaMMAMapper:
-    """Maps Betika MMA JSON to internal canonical slugs."""
+class BetikaDartsMapper:
+    """Maps Betika Darts JSON to internal canonical slugs."""
 
     MARKET_MAP = {
         # Static Markets (No lines/specifiers)
-        "1":   "mma_1x2",          # 1X2 (3-way, very rare in MMA)
-        "186": "mma_winner",       # Winner (2-way, most common)
+        "186": "darts_winner",        # Winner (2-Way Moneyline)
+        "1":   "darts_1x2",           # 1X2 (3-Way)
+        "10":  "darts_double_chance", # Double Chance
+        "11":  "darts_draw_no_bet",   # Draw No Bet
 
         # Dynamic Markets (Require line/specifier appended)
-        "18":  "over_under_mma_rounds",   # Total rounds (over/under)
-        "15":  "mma_winning_margin",      # Method of victory or round band (if available)
+        "18":  "over_under_darts_total_legs",     # Total legs over/under
+        "19":  "darts_home_player_total_legs",    # Home player leg total
+        "20":  "darts_away_player_total_legs",    # Away player leg total
+        "188": "darts_correct_score",             # Correct score (sets/legs)
+        "189": "darts_set_handicap",              # Set handicap
+        "192": "darts_leg_handicap",              # Leg handicap
+        "190": "darts_player_180s_over_under",    # Player 180s over/under
+        "191": "darts_total_180s",                # Total 180s in match
+        "193": "darts_first_180",                 # First player to hit 180
+        "194": "darts_highest_checkout",          # Highest checkout
     }
 
     @staticmethod
     def format_line(raw_line: str) -> str:
-        """Formats specifiers into canonical lines (e.g., '2.5' -> '2_5')."""
+        """Formats specifiers into canonical lines (e.g., '5.5' -> '5_5')."""
         if not raw_line:
             return ""
-
         try:
             val = float(raw_line)
             if val == 0:
@@ -39,12 +48,12 @@ class BetikaMMAMapper:
         # Fallback if ID is unknown
         if not base_slug:
             clean_name = fallback_name.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
-            base_slug = f"mma_{clean_name}"
+            base_slug = f"darts_{clean_name}"
 
         if not parsed_specifiers:
             return base_slug
 
-        # Extract the line value (total rounds, handicap, etc.)
+        # Extract the line value (total legs, handicap, etc.)
         raw_line = (
             parsed_specifiers.get("total") or
             parsed_specifiers.get("hcp") or
@@ -62,11 +71,11 @@ class BetikaMMAMapper:
         Examples:
           '1' -> '1'
           '2' -> '2'
-          'OVER 2.5' -> 'over'
+          'OVER 5.5' -> 'over'
         """
         d = display.upper().strip()
 
-        # Strip out handicap/line annotations in parenthesis
+        # Strip out line annotations in parenthesis
         if "(" in d and d.endswith(")"):
             d = d.split("(")[0].strip()
 

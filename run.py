@@ -1123,5 +1123,99 @@ def fetch_bt_complete(days, sport_workers, market_workers, max_pages, output_dir
     print(f"  {'TOTAL':<22} {total:>7}")
     print("=" * 65)
 
+
+# In your Flask CLI module (e.g., app/cli.py or app/__init__.py)
+
+import click
+import os
+import json
+import time
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from app.workers.sp_harvester import fetch_upcoming, SP_SPORT_ID
+
+
+@flask_app.cli.command("fetch-sp-complete")
+@click.option("--days",           default=7,    help="Days ahead to fetch (SportPesa defaults to 7)")
+@click.option("--sport-workers",  default=4,    help="Sports to harvest in parallel")
+@click.option("--max-matches",    default=None, type=int, help="Max matches per sport (default = all)")
+@click.option("--output-dir",     default="sp_complete_dumps", help="Directory to save JSON files")
+@click.option("--no-markets",     is_flag=True, default=False, help="Skip full market enrichment (only inline odds)")
+def fetch_sp_complete(days, sport_workers, max_matches, output_dir, no_markets):
+    """
+    Fetch SportPesa upcoming matches for ALL supported sports.
+    Saves each sport's matches to a separate JSON file for mapper development.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Get all unique sport slugs from SportPesa mapping
+    sport_slugs = list(SP_SPORT_ID.keys())
+
+    print(f"⚙️  {len(sport_slugs)} sports | sport_workers={sport_workers} "
+          f"max_matches={max_matches or 'unlimited'} fetch_full_markets={'no' if no_markets else 'yes'}")
+
+    summary: dict[str, int] = {}
+    errors:  dict[str, str] = {}
+
+    def fetch_and_save(sport_slug: str) -> tuple[str, int]:
+        out_file = os.path.join(output_dir, f"sp_complete_{sport_slug}_{timestamp}.json")
+        t0 = time.perf_counter()
+        count = 0
+        print(f"  🔍 {sport_slug} – starting…")
+        try:
+            matches = fetch_upcoming(
+                sport_slug=sport_slug,
+                days=days,
+                max_matches=max_matches,
+                fetch_full_markets=not no_markets,
+                # Optional: tweak sleep between market calls if needed
+                sleep_between=0.2,
+            )
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write("[\n")
+                for i, m in enumerate(matches):
+                    if i > 0:
+                        f.write(",\n")
+                    json.dump(m, f, default=str)
+                    count += 1
+                f.write("\n]\n")
+            print(f"  ✅ {sport_slug}: {count} matches in {time.perf_counter()-t0:.1f}s")
+        except Exception as exc:
+            errors[sport_slug] = f"{type(exc).__name__}: {exc}"
+            print(f"  ❌ {sport_slug} failed: {errors[sport_slug]}")
+            # Write empty array so file exists
+            try:
+                with open(out_file, "w") as f:
+                    f.write("[]\n")
+            except Exception:
+                pass
+        return sport_slug, count
+
+    with ThreadPoolExecutor(max_workers=sport_workers) as executor:
+        future_to_slug = {executor.submit(fetch_and_save, slug): slug for slug in sport_slugs}
+        for future in as_completed(future_to_slug):
+            slug = future_to_slug[future]
+            try:
+                slug, count = future.result()
+            except Exception as exc:
+                count = 0
+                errors[slug] = str(exc)
+            summary[slug] = count
+
+    print("\n" + "=" * 65)
+    print("📊 SPORTPESA HARVEST SUMMARY")
+    print("-" * 65)
+    total = 0
+    for slug in sorted(summary):
+        cnt = summary[slug]
+        total += cnt
+        status = f"❌ {errors[slug][:35]}" if slug in errors else ("⚠️  0" if cnt == 0 else "✅")
+        print(f"  {slug:<22} {cnt:>7}  {status}")
+    print("-" * 45)
+    print(f"  {'TOTAL':<22} {total:>7}")
+    print("=" * 65)
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
