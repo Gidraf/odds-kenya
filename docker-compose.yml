@@ -76,6 +76,12 @@ services:
   # -------------------------------------------------------------------------
   # Celery Worker for Analytics (Playwright scraping – low concurrency)
   # -------------------------------------------------------------------------
+
+  celery-beat:
+    build: .
+    command: celery -A app.workers.celery_app beat --loglevel=info --logfile=/app/logs/celery-beat.log
+    volumes:
+      - app-logs:/app/logs
   celery-analytics:
     build: .
     restart: always
