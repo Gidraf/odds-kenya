@@ -1,139 +1,14 @@
-"""
-app/workers/celery_tasks.py
-============================
-Celery helpers (Redis, upsert, etc.) – NO Celery instance created.
-Import celery_app from .celery_app and use that.
-Includes worker_ready signal to start live pollers.
-"""
-
+# app/workers/celery_tasks.py
 from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone, timedelta
 
 from celery.signals import worker_ready
 
-from app import create_app
 from app.extensions import init_celery
-
-# Import the single Celery instance
 from app.workers.celery_app import celery_app as celery
-
-LIVE_ENABLED: bool = False
-
-# =============================================================================
-# TASK ROUTES (copy your existing routes – truncated for brevity)
-# =============================================================================
-TASK_ROUTES: dict[str, dict] = {
-    "harvest.bookmaker_sport":             {"queue": "harvest"},
-    "harvest.all_upcoming":                {"queue": "harvest"},
-    "harvest.merge_broadcast":             {"queue": "harvest"},
-    "harvest.value_bets":                  {"queue": "ev_arb"},
-    "harvest.cleanup":                     {"queue": "harvest"},
-    "tasks.sp.harvest_sport":              {"queue": "harvest"},
-    "tasks.sp.harvest_all_upcoming":       {"queue": "harvest"},
-    "tasks.sp.harvest_all_live":           {"queue": "live"},
-    "tasks.sp.cross_bk_enrich":           {"queue": "harvest"},
-    "tasks.sp.enrich_analytics":          {"queue": "harvest"},
-    "tasks.sp.get_match_analytics":       {"queue": "harvest"},
-    "tasks.sp.harvest_page":              {"queue": "harvest"},
-    "tasks.sp.merge_pages":               {"queue": "results"},
-    "tasks.sp.harvest_sport_paged":       {"queue": "harvest"},
-    "tasks.sp.harvest_all_paged":         {"queue": "harvest"},
-    "tasks.bt_od.harvest_sport":          {"queue": "harvest"},
-    "tasks.bt_od.harvest_all":            {"queue": "harvest"},
-    "tasks.bt.harvest_sport":              {"queue": "harvest"},
-    "tasks.bt.harvest_page":              {"queue": "harvest"},
-    "tasks.bt.merge_pages":               {"queue": "results"},
-    "tasks.bt.harvest_sport_paged":       {"queue": "harvest"},
-    "tasks.bt.harvest_all_paged":         {"queue": "harvest"},
-    "tasks.bt.enrich_sport":              {"queue": "harvest"},
-    "tasks.bt.harvest_all_upcoming":       {"queue": "harvest"},
-    "tasks.bt.harvest_all_live":           {"queue": "live"},
-    "tasks.od.harvest_sport":              {"queue": "harvest"},
-    "tasks.od.harvest_date_chunk":        {"queue": "harvest"},
-    "tasks.od.merge_pages":               {"queue": "results"},
-    "tasks.od.harvest_sport_paged":       {"queue": "harvest"},
-    "tasks.od.harvest_all_paged":         {"queue": "harvest"},
-    "tasks.od.harvest_all_upcoming":       {"queue": "harvest"},
-    "tasks.od.harvest_all_live":           {"queue": "live"},
-    "tasks.b2b.harvest_sport":             {"queue": "harvest"},
-    "tasks.b2b.harvest_all_upcoming":      {"queue": "harvest"},
-    "tasks.b2b.harvest_all_live":          {"queue": "live"},
-    "tasks.b2b_page.harvest_page":         {"queue": "harvest"},
-    "tasks.b2b_page.harvest_all_upcoming": {"queue": "harvest"},
-    "tasks.b2b_page.harvest_all_live":     {"queue": "live"},
-    "tasks.b2b.harvest_bk_sport":         {"queue": "harvest"},
-    "tasks.b2b.merge_sport":              {"queue": "results"},
-    "tasks.b2b.harvest_all_paged":        {"queue": "harvest"},
-    "tasks.b2b.harvest_all_live_paged":   {"queue": "live"},
-    "tasks.sbo.harvest_sport":             {"queue": "harvest"},
-    "tasks.sbo.harvest_all_upcoming":      {"queue": "harvest"},
-    "tasks.sbo.harvest_all_live":          {"queue": "live"},
-    "tasks.sp.poll_all_event_details":     {"queue": "live"},
-    "tasks.ops.compute_ev_arb":            {"queue": "ev_arb"},
-    "tasks.ops.update_match_results":      {"queue": "results"},
-    "tasks.ops.dispatch_notifications":    {"queue": "notify"},
-    "tasks.ops.publish_ws_event":          {"queue": "notify"},
-    "tasks.ops.health_check":              {"queue": "default"},
-    "tasks.ops.healthcheck":               {"queue": "default"},
-    "tasks.ops.expire_subscriptions":      {"queue": "default"},
-    "tasks.ops.cache_finished_games":      {"queue": "results"},
-    "tasks.ops.send_async_email":          {"queue": "notify"},
-    "tasks.ops.send_message":              {"queue": "notify"},
-    "tasks.ops.persist_combined_batch":    {"queue": "results"},
-    "tasks.ops.persist_all_sports":        {"queue": "results"},
-    "tasks.ops.build_health_report":       {"queue": "default"},
-    "tasks.ops.publish_bk_snapshot":       {"queue": "harvest"},
-    "tasks.align.sport":                   {"queue": "results"},
-    "tasks.align.all_sports":             {"queue": "results"},
-    "tasks.harvest.all_paged":            {"queue": "harvest"},
-    "tasks.ops.beat.harvest_all_paged":   {"queue": "harvest"},
-    "tasks.ops.beat.b2b_live":            {"queue": "harvest"},
-    "tasks.ops.beat.alignment":           {"queue": "results"},
-    "tasks.ops.beat.prune":               {"queue": "default"},
-}
-
-_BK_NAME_TO_SLUG: dict[str, str] = {
-    "sportpesa": "sp", "betika": "bt", "odibets": "od",
-    "1xbet": "1xbet", "22bet": "22bet", "betwinner": "betwinner",
-    "melbet": "melbet", "megapari": "megapari", "helabet": "helabet",
-    "paripesa": "paripesa", "sbo": "sbo",
-}
-
-_BK_SLUG_TO_NAME: dict[str, str] = {
-    "sp": "SportPesa", "bt": "Betika", "od": "OdiBets",
-    "1xbet": "1xBet", "22bet": "22Bet", "betwinner": "Betwinner",
-    "melbet": "Melbet", "megapari": "Megapari", "helabet": "Helabet",
-    "paripesa": "Paripesa", "sbo": "SBO",
-}
-
-# Initialise Celery with Flask app (once)
-flask_app = create_app()
-init_celery(flask_app)
-celery.conf.update(
-    task_acks_late             = True,
-    worker_prefetch_multiplier = 1,
-    task_reject_on_worker_lost = True,
-    task_default_queue         = "default",
-    worker_max_tasks_per_child = 1000,
-    task_serializer            = "json",
-    result_serializer          = "json",
-    accept_content             = ["json"],
-    task_routes                = TASK_ROUTES,
-    include=[
-        "app.workers.tasks_ops",
-        "app.workers.tasks_upcoming",
-        "app.workers.tasks_live",
-        "app.workers.tasks_market_align",
-        "app.workers.tasks_bt_od",
-        "app.workers.tasks_harvest_pages",
-        "app.workers.tasks_harvest_b2b",
-        "app.workers.tasks_align",
-    ],
-)
 
 _log = logging.getLogger(__name__)
 
@@ -183,7 +58,7 @@ def _publish(channel: str, data: dict) -> None:
         pass
 
 # =============================================================================
-# SPORT NAME NORMALISATION
+# SPORT NORMALISATION
 # =============================================================================
 _SPORT_NORM: dict[str, str] = {
     "football": "Soccer", "Football": "Soccer", "soccer": "Soccer", "Soccer": "Soccer",
@@ -209,8 +84,21 @@ def _normalise_sport_name(raw: str) -> str:
     return _SPORT_NORM.get(raw, _SPORT_NORM.get(raw.lower(), raw))
 
 # =============================================================================
-# BOOKMAKER AUTO-CREATION
+# BOOKMAKER HELPERS
 # =============================================================================
+_BK_NAME_TO_SLUG: dict[str, str] = {
+    "sportpesa": "sp", "betika": "bt", "odibets": "od",
+    "1xbet": "1xbet", "22bet": "22bet", "betwinner": "betwinner",
+    "melbet": "melbet", "megapari": "megapari", "helabet": "helabet",
+    "paripesa": "paripesa", "sbo": "sbo",
+}
+_BK_SLUG_TO_NAME: dict[str, str] = {
+    "sp": "SportPesa", "bt": "Betika", "od": "OdiBets",
+    "1xbet": "1xBet", "22bet": "22Bet", "betwinner": "Betwinner",
+    "melbet": "Melbet", "megapari": "Megapari", "helabet": "Helabet",
+    "paripesa": "Paripesa", "sbo": "SBO",
+}
+
 def _get_or_create_bookmaker(bk_name: str) -> int | None:
     try:
         from app.models.bookmakers_model import Bookmaker
@@ -234,9 +122,6 @@ def _get_or_create_bookmaker(bk_name: str) -> int | None:
         _log.warning("[bookmaker] create failed for %s: %s", bk_name, exc)
         return None
 
-# =============================================================================
-# BETRADAR ID EXTRACTION
-# =============================================================================
 def _extract_betradar_id(m: dict) -> str:
     raw = (
         m.get("betradar_id")  or m.get("betradarId")   or
@@ -245,9 +130,20 @@ def _extract_betradar_id(m: dict) -> str:
     val = str(raw).strip()
     return "" if val in ("0", "None", "null", "") else val
 
-# =============================================================================
-# FUZZY MATCH LOOKUP
-# =============================================================================
+def _parse_start_time(raw) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, datetime):
+            return raw
+        if isinstance(raw, str):
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if isinstance(raw, (int, float)):
+            return datetime.fromtimestamp(float(raw))
+    except Exception:
+        pass
+    return None
+
 def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
     if not home or not away:
         return None
@@ -274,17 +170,6 @@ def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
 # =============================================================================
 # UPSERT PIPELINE
 # =============================================================================
-def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
-    from app.workers.tasks_ops import compute_ev_arb
-    try:
-        bk_id = _get_or_create_bookmaker(bk_name)
-        for m in matches:
-            mid = _upsert_unified_match(_to_upsert_shape(m), bk_id, bk_name)
-            if mid:
-                compute_ev_arb.apply_async(args=[mid], queue="ev_arb", countdown=1)
-    except Exception as exc:
-        _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
-
 def _to_upsert_shape(m: dict) -> dict:
     betradar_id  = _extract_betradar_id(m)
     join_key_raw = str(m.get("join_key") or "")
@@ -404,19 +289,16 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
             pass
         return None
 
-def _parse_start_time(raw) -> datetime | None:
-    if not raw:
-        return None
+def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
+    from app.workers.tasks_ops import compute_ev_arb
     try:
-        if isinstance(raw, datetime):
-            return raw
-        if isinstance(raw, str):
-            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if isinstance(raw, (int, float)):
-            return datetime.fromtimestamp(float(raw))
-    except Exception:
-        pass
-    return None
+        bk_id = _get_or_create_bookmaker(bk_name)
+        for m in matches:
+            mid = _upsert_unified_match(_to_upsert_shape(m), bk_id, bk_name)
+            if mid:
+                compute_ev_arb.apply_async(args=[mid], queue="ev_arb", countdown=1)
+    except Exception as exc:
+        _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
 
 # =============================================================================
 # WORKER READY SIGNAL – start live pollers
@@ -428,8 +310,6 @@ def start_live_pollers(**kwargs):
     from app.extensions import get_redis_client
 
     redis_client = get_redis_client()
-    # OdiBets live poller (REST polling with delta detection)
     init_live_poller(redis_client, interval=2.0)
-    # SportPesa WebSocket live harvester
     start_harvester_thread()
     _log.info("[worker_ready] Live pollers started (OD, SP).")

@@ -26,7 +26,7 @@ x-common-env: &common-env
 services:
 
   # -------------------------------------------------------------------------
-  # Flask Web Application (Gunicorn)
+  # Flask Web Application (Gunicorn) – live pollers enabled
   # -------------------------------------------------------------------------
   web:
     build: .
@@ -45,20 +45,21 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       <<: *common-env
+      ENABLE_HARVESTER: "1"              # starts live pollers only here
 
   # -------------------------------------------------------------------------
-  # Celery Worker + Beat (main worker for harvest, live, results, etc.)
+  # Celery Worker (no beat, no live pollers)
   # -------------------------------------------------------------------------
-  celery:
+  celery-worker:
     build: .
     restart: always
     command: >
-      celery -A app.workers.celery_app worker -B
+      celery -A app.workers.celery_app worker
       --queues=harvest,live,results,notify,ev_arb,default
       --concurrency=4
       --loglevel=info
-      --logfile=/app/logs/celery.log
-      --hostname=celery@%h
+      --logfile=/app/logs/celery-worker.log
+      --hostname=worker@%h
     env_file: .env
     networks:
       - app-network
@@ -71,19 +72,35 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       <<: *common-env
-      CELERY_WORKER_CONCURRENCY: 4
+      CELERY_INLINE: "0"
 
   # -------------------------------------------------------------------------
-  # Celery Worker for Analytics (Playwright scraping – low concurrency)
+  # Celery Beat (scheduler only)
   # -------------------------------------------------------------------------
-
   celery-beat:
     build: .
-    command: celery -A app.workers.celery_app beat --loglevel=info --logfile=/app/logs/celery-beat.log
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    restart: always
+    command: >
+      celery -A app.workers.celery_app beat
+      --loglevel=info
+      --logfile=/app/logs/celery-beat.log
+      --scheduler celery.beat:PersistentScheduler
+    env_file: .env
+    networks:
+      - app-network
+    depends_on:
+      redis6382:
+        condition: service_healthy
     volumes:
       - app-logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *common-env
+
+  # -------------------------------------------------------------------------
+  # Celery Analytics Worker (low concurrency for Playwright)
+  # -------------------------------------------------------------------------
   celery-analytics:
     build: .
     restart: always
