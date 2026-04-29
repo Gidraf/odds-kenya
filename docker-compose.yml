@@ -80,6 +80,8 @@ services:
   celery-beat:
     build: .
     command: celery -A app.workers.celery_app beat --loglevel=info --logfile=/app/logs/celery-beat.log
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - app-logs:/app/logs
   celery-analytics:
