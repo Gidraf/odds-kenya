@@ -1,8 +1,8 @@
 class SportpesaAmericanFootballMapper:
-    """Maps SportPesa American Football (NFL) JSON to internal slugs."""
+    """Maps SportPesa American Football JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        382: "nfl_moneyline", # Money Line
+        382: "match_winner",                # Moneyline (2‑way)
     }
 
     @staticmethod
@@ -19,13 +19,12 @@ class SportpesaAmericanFootballMapper:
 
         line_str = cls.format_line(spec_value)
 
-        # --- TOTALS (OVER/UNDER) ---
+        # --- POINT SPREAD (Handicap) ---
+        if sp_id == 228:
+            return f"nfl_point_spread_{line_str}"
+
+        # --- TOTAL POINTS (Over/Under) ---
         if sp_id == 229:
-            return f"over_under_nfl_pts_{line_str}"
-            
-        # --- HANDICAPS (Point Spreads) ---
-        # Note: Added 228 here proactively since it's the standard SportPesa US sports spread ID
-        elif sp_id == 228:
-            return f"nfl_spread_{line_str}"
+            return f"nfl_total_points_{line_str}"
 
         return None

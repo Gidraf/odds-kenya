@@ -1,125 +1,72 @@
-class SportpesaFootballMapper:
-    """
-    Maps SportPesa's raw JSON market IDs and specValues to your internal database slugs.
-    """
+class SportpesaSoccerMapper:
+    """Maps SportPesa Football/Soccer JSON to internal slugs."""
     
-    # 1. STATIC MARKETS (No specValue required)
     STATIC_MARKETS = {
-        10:  "match_winner",             # 3 Way
-        46:  "double_chance",            # Double Chance
-        43:  "btts",                     # Both Teams To Score (Base Market)
-        47:  "draw_no_bet",              # Draw No Bet
-        42:  "first_half_1x2",           # 3 Way - First Half
-        328: "first_half_btts",          # BTTS - First Half
-        203: "first_half_correct_score", # Correct Score - First Half
-        207: "highest_scoring_half",     # Half with most goals
-        44:  "ht_ft",                    # Half Time/Full Time
-        332: "correct_score",            # Correct Score
-        258: "exact_goals",              # Total Goals Exactly
-        45:  "odd_even",                 # Odd/Even
-        202: "goal_groups",              # Number of Goals in Groups
+        1:   "1x2",                       # Full time 3‑way
+        10:  "double_chance",             # Double chance
+        11:  "draw_no_bet",               # Draw no bet
+        8:   "first_team_to_score",       # First team to score
+        29:  "btts",                      # Both teams to score
+        35:  "btts_and_result",           # BTTS + match result
+        45:  "correct_score",             # Full time correct score
+        47:  "ht_ft",                     # Half time / Full time
+        60:  "first_half_1x2",            # First half 3‑way
+        75:  "first_half_btts",           # First half BTTS
+        71:  "first_half_correct_score",  # First half correct score
+        21:  "exact_goals",               # Exact number of goals (0,1,2,3,…)
+        264: "odd_even",                  # Odd/even total goals
+        432: "highest_scoring_half",      # Highest scoring half
+        105: "goal_groups",               # Goal range groups (0-1, 2-3, 4-5, 6+)
     }
 
     @staticmethod
     def format_line(spec_value: float) -> str:
-        """Helper to convert 2.5 to '2_5' or -0.25 to 'minus_0_25'."""
         if spec_value == 0:
             return "0_0"
-        
         val_str = f"{spec_value:g}".replace(".", "_")
-        if spec_value < 0:
-            return val_str.replace("-", "minus_")
-        return val_str
+        return val_str.replace("-", "minus_") if spec_value < 0 else val_str
 
     @classmethod
     def get_market_slug(cls, sp_id: int, spec_value: float) -> str | None:
-        """
-        Returns the base internal market slug for a given SportPesa market.
-        """
-        
-        # 1. Static Markets (Simple Lookup)
         if sp_id in cls.STATIC_MARKETS:
             return cls.STATIC_MARKETS[sp_id]
 
-        # ---------------------------------------------------------
-        # 2. DYNAMIC MARKETS (Requires parsing the specValue)
-        # ---------------------------------------------------------
         line_str = cls.format_line(spec_value)
 
-        # Total Goals Over/Under - Full Time
-        if sp_id == 52:
-            return f"over_under_{line_str}"
-            
-        # Total Goals Over/Under - Half Time
-        elif sp_id == 54:
-            return f"first_half_over_under_{line_str}"
+        # --- FULL MATCH TOTAL GOALS (Over/Under) ---
+        if sp_id == 18:
+            return f"over_under_goals_{line_str}"
 
-        # Total Goals Home Team (id: 353)
-        elif sp_id == 353:
-            return f"home_over_under_{line_str}"
+        # --- HOME TEAM TOTAL GOALS ---
+        if sp_id == 19:
+            return f"home_goals_{line_str}"
 
-        # Total Goals Away Team (id: 352)
-        elif sp_id == 352:
-            return f"away_over_under_{line_str}"
+        # --- AWAY TEAM TOTAL GOALS ---
+        if sp_id == 20:
+            return f"away_goals_{line_str}"
 
-        # Asian Handicap - Full Time (id: 51)
-        elif sp_id == 51:
+        # --- ASIAN HANDICAP (2‑way) ---
+        if sp_id == 16:
             return f"asian_handicap_{line_str}"
 
-        # Asian Handicap - Half Time (id: 53)
-        elif sp_id == 53:
+        # --- RESULT + TOTAL GOALS (1X2 + Over/Under) ---
+        if sp_id == 37:
+            return f"result_and_over_under_{line_str}"
+
+        # --- FIRST HALF TOTAL GOALS (Over/Under) ---
+        if sp_id == 68:
+            return f"first_half_over_under_{line_str}"
+
+        # --- FIRST HALF ASIAN HANDICAP ---
+        if sp_id == 66:
             return f"first_half_asian_handicap_{line_str}"
 
-        # Euro Handicap (id: 55)
-        elif sp_id == 55:
-            prefix = "plus" if spec_value > 0 else "minus"
-            val = int(abs(spec_value))
-            return f"european_handicap_{prefix}_{val}"
+        # --- EUROPEAN HANDICAP (3‑way) ---
+        if sp_id == 14:
+            # JSON shows: european_handicap_minus_3, european_handicap_plus_1
+            if spec_value < 0:
+                return f"european_handicap_minus_{abs(int(spec_value))}"
+            else:
+                return f"european_handicap_plus_{int(spec_value)}"
 
-        # Result + Over/Under Combo (id: 208)
-        elif sp_id == 208:
-            return f"1x2_over_under_{line_str}"
-            
-        # Result + BTTS Combo (id: 386)
-        elif sp_id == 386:
-            return "1x2_btts"
-
-        # Unknown Market
-        return f"unknown_{sp_id}"
-
-    @classmethod
-    def get_exhaustive_selection_slug(cls, sp_id: int, spec_value: float, selection_name: str) -> str | None:
-        """
-        Use this IF you created separate distinct markets for EVERY single selection 
-        (e.g., separating "Over 2.5" and "Under 2.5" into distinct database rows).
-        """
-        line_str = cls.format_line(spec_value)
-        name_upper = selection_name.upper()
-
-        # O/U Full Time mapping
-        if sp_id == 52:
-            if "OVER" in name_upper:
-                return f"over_{line_str}_goals"
-            elif "UNDER" in name_upper:
-                return f"under_{line_str}_goals"
-
-        # BTTS Mapping
-        if sp_id == 43:
-            if "YES" in name_upper:
-                return "btts_yes"
-            elif "NO" in name_upper:
-                return "btts_no"
-
-        # Goals Bands (id: 202)
-        if sp_id == 202:
-            if "0 OR 1" in name_upper or "0-1" in name_upper:
-                return "goals_band_0_1"
-            if "2 OR 3" in name_upper or "2-3" in name_upper:
-                return "goals_band_2_3"
-            if "4 OR 5" in name_upper or "4-5" in name_upper:
-                return "goals_band_4_5"
-            if "6 OR MORE" in name_upper or "6+" in name_upper:
-                return "goals_band_6_plus"
-
-        # Fallback to standard base market
-        return cls.get_market_slug(sp_id, spec_value)
+        return None

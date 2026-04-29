@@ -1,14 +1,14 @@
 class SportpesaRugbyMapper:
-    """Maps SportPesa Rugby JSON to internal slugs."""
+    """Maps SportPesa Rugby Union JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        10:  "rugby_1x2",                  # 3 Way - Full Time
-        42:  "rugby_first_half_1x2",       # 3 Way - First Half
-        45:  "rugby_odd_even_pts",         # Odd/Even Point - Full Time
-        46:  "rugby_double_chance",        # Double Chance - Full Time
-        44:  "rugby_ht_ft",                # Half Time/Full Time
-        207: "rugby_highest_scoring_half", # Highest scoring half
-        379: "rugby_winning_margin",       # Winning margin
+        1:   "rugby_result",                # Full match 3‑way
+        60:  "first_half_result",           # First half 3‑way
+        10:  "double_chance",               # Double chance
+        264: "odd_even",                    # Odd/even total points
+        432: "highest_scoring_half",        # Highest scoring half
+        47:  "rugby_ht_ft",                 # Half time / Full time
+        15:  "winning_margin",              # Winning margin (banded)
     }
 
     @staticmethod
@@ -25,14 +25,12 @@ class SportpesaRugbyMapper:
 
         line_str = cls.format_line(spec_value)
 
-        # --- HANDICAPS / SPREADS ---
-        if sp_id == 51:
-            return f"rugby_spread_{line_str}" # Handicap - Full Time
-        elif sp_id == 53:
-            return f"rugby_first_half_spread_{line_str}" # Handicap - First Half
+        # --- ASIAN HANDICAP (point spread) ---
+        if sp_id == 16:
+            return f"asian_handicap_{line_str}"
 
-        # --- TOTALS (OVER/UNDER) ---
-        elif sp_id == 60:
-            return f"over_under_rugby_pts_{line_str}" # Total points - Full Time
+        # --- TOTAL POINTS (Over/Under) ---
+        if sp_id == 18 or sp_id == 229:
+            return f"rugby_total_points_{line_str}"
 
         return None

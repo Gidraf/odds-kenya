@@ -2,7 +2,10 @@ class SportpesaCricketMapper:
     """Maps SportPesa Cricket JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        382: "cricket_winner", # 2 Way - incl.Super Over
+        382: "match_winner",                # Money Line (2‑way)
+        340: "cricket_winner_incl_super_over",  # Winner incl. Super Over
+        342: "cricket_will_there_be_a_tie",    # Will There Be A Tie
+        341: "cricket_1x2",                 # 1X2 (3‑way, for Test matches)
     }
 
     @staticmethod
@@ -17,9 +20,26 @@ class SportpesaCricketMapper:
         if sp_id in cls.STATIC_MARKETS:
             return cls.STATIC_MARKETS[sp_id]
 
-        # In case they add runs totals later (usually ID 52 or 229 on SportPesa)
         line_str = cls.format_line(spec_value)
-        if sp_id in [52, 229]:
-            return f"over_under_cricket_runs_{line_str}"
+
+        # --- TOTAL MATCH RUNS (Over/Under) ---
+        if sp_id == 18 or sp_id == 229:
+            return f"total_runs_match_{line_str}"
+
+        # --- TEAM TOTAL RUNS (Innings) ---
+        if sp_id == 19:
+            return f"home_team_total_runs_{line_str}"
+        if sp_id == 20:
+            return f"away_team_total_runs_{line_str}"
+
+        # --- TOP BATSMAN / TOP BOWLER ---
+        if sp_id == 15:
+            return "top_batsman"
+        if sp_id == 16:
+            return "top_bowler"
+
+        # --- METHOD OF DISMISSAL ---
+        if sp_id == 21:
+            return "method_of_dismissal"
 
         return None

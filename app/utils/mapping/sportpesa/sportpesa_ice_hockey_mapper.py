@@ -2,11 +2,11 @@ class SportpesaIceHockeyMapper:
     """Maps SportPesa Ice Hockey JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        10:  "hockey_1x2",                  # 3 Way - Full Time (Regulation)
-        378: "hockey_moneyline",            # 2 Way Winner OT-incl.
-        2:   "hockey_correct_score",        # Correct Score - Full Time
-        210: "hockey_p1_winner",            # 1st period Winner
-        227: "hockey_highest_scoring_period"# Highest scoring period
+        1:   "1x2",                       # Regulation result (3‑way)
+        186: "match_winner_ot",           # Moneyline (2‑way, includes OT/shootout)
+        199: "correct_score",             # Correct final score (market_2)
+        60:  "first_period_winner",       # 1st period 1X2
+        432: "highest_scoring_period",    # Which period has most goals
     }
 
     @staticmethod
@@ -23,19 +23,8 @@ class SportpesaIceHockeyMapper:
 
         line_str = cls.format_line(spec_value)
 
-        # --- TOTALS (OVER/UNDER) ---
-        if sp_id == 60:
-            return f"over_under_hockey_goals_{line_str}" # Total Goals (Reg)
-        elif sp_id == 377:
-            return f"over_under_hockey_goals_ot_{line_str}" # Total Goals (OT incl)
-        elif sp_id == 212:
-            return f"hockey_p1_over_under_goals_{line_str}" # 1st Period Totals
-
-        # --- HANDICAPS ---
-        elif sp_id == 55:
-            # Euro handicaps are integers (e.g., -2, 1)
-            prefix = "plus" if spec_value > 0 else "minus"
-            val = int(abs(spec_value))
-            return f"hockey_european_handicap_{prefix}_{val}"
+        # --- OVER / UNDER GOALS ---
+        if sp_id == 229 or sp_id == 18:
+            return f"over_under_goals_{line_str}"
 
         return None

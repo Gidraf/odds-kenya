@@ -6,6 +6,8 @@ Betika upcoming + live harvester.
 DEFAULTS:
   • days = 30  (upcoming matches for the next 30 days, via period_id=9)
   • max_pages = 30  (to fetch all matches)
+
+UPDATED: Uses shared outcome normaliser (app.workers.mappers.shared.normalize_outcome)
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ from typing import Any, Generator
 
 import httpx
 
-from app.workers.mappers.betika import get_market_slug, normalize_outcome
+from app.workers.mappers.betika import get_market_slug
+from app.workers.mappers.shared import normalize_outcome   # <-- CHANGE
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +115,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 8.0) -> dict | N
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MARKET PARSING
+# MARKET PARSING – using shared outcome normaliser
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_all_inline_markets(raw_mkts: list[dict], sport_slug: str) -> dict[str, dict[str, float]]:
@@ -129,8 +132,10 @@ def _parse_all_inline_markets(raw_mkts: list[dict], sport_slug: str) -> dict[str
             if val <= 1.0:
                 continue
             parsed_specs = o.get("parsed_special_bet_value") or {}
+            # Generate market slug using Betika‑specific mapper
             slug = get_market_slug(sport_slug, sid, parsed_specs, fallback_name=name)
-            outcome_key = normalize_outcome(sport_slug, o.get("display", ""))
+            # Normalise outcome using shared function (passing the market slug as context)
+            outcome_key = normalize_outcome(slug, o.get("display", ""))
             if slug not in result:
                 result[slug] = {}
             result[slug][outcome_key] = val

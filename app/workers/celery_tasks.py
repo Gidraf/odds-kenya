@@ -1,16 +1,10 @@
 """
-app/workers/celery_tasks.py  (patched)
-========================================
-Central Celery app + shared helpers.
-
-KEY FIX: _upsert_and_chain now imports compute_ev_arb from tasks_ops
-         (was broken: the function didn't exist there).
+app/workers/celery_tasks.py
+============================
+Celery helpers (Redis, upsert, etc.) – NO Celery instance created.
+Import celery_app from .celery_app and use that.
+Includes worker_ready signal to start live pollers.
 """
-# ── This file is a DROP-IN PATCH — copy it over the original ──────────────────
-# It preserves ALL existing symbols/behaviour while fixing:
-#   1. compute_ev_arb import in _upsert_and_chain
-#   2. _to_upsert_shape extended fallback chain
-#   3. Adds _publish helper used by tasks_ops
 
 from __future__ import annotations
 
@@ -19,11 +13,19 @@ import logging
 import os
 from datetime import datetime, timezone, timedelta
 
+from celery.signals import worker_ready
+
 from app import create_app
-from app.extensions import celery as celery_service, init_celery
+from app.extensions import init_celery
+
+# Import the single Celery instance
+from app.workers.celery_app import celery_app as celery
 
 LIVE_ENABLED: bool = False
 
+# =============================================================================
+# TASK ROUTES (copy your existing routes – truncated for brevity)
+# =============================================================================
 TASK_ROUTES: dict[str, dict] = {
     "harvest.bookmaker_sport":             {"queue": "harvest"},
     "harvest.all_upcoming":                {"queue": "harvest"},
@@ -108,57 +110,41 @@ _BK_SLUG_TO_NAME: dict[str, str] = {
     "paripesa": "Paripesa", "sbo": "SBO",
 }
 
-
-def make_celery(app=None):
-    if app is None:
-        app = create_app()
-    init_celery(app)
-    celery_service.conf.update(
-        task_acks_late             = True,
-        worker_prefetch_multiplier = 1,
-        task_reject_on_worker_lost = True,
-        task_default_queue         = "default",
-        worker_max_tasks_per_child = 1000,
-        task_serializer            = "json",
-        result_serializer          = "json",
-        accept_content             = ["json"],
-        task_routes                = TASK_ROUTES,
-        include=[
-            "app.workers.tasks_ops",
-            "app.workers.tasks_upcoming",
-            "app.workers.tasks_live",
-            "app.workers.tasks_market_align",
-            "app.workers.tasks_bt_od",
-            "app.workers.tasks_harvest_pages",
-            "app.workers.tasks_harvest_b2b",
-            "app.workers.tasks_align",
-        ],
-    )
-    return celery_service
-
-
+# Initialise Celery with Flask app (once)
 flask_app = create_app()
-celery    = make_celery(flask_app)
+init_celery(flask_app)
+celery.conf.update(
+    task_acks_late             = True,
+    worker_prefetch_multiplier = 1,
+    task_reject_on_worker_lost = True,
+    task_default_queue         = "default",
+    worker_max_tasks_per_child = 1000,
+    task_serializer            = "json",
+    result_serializer          = "json",
+    accept_content             = ["json"],
+    task_routes                = TASK_ROUTES,
+    include=[
+        "app.workers.tasks_ops",
+        "app.workers.tasks_upcoming",
+        "app.workers.tasks_live",
+        "app.workers.tasks_market_align",
+        "app.workers.tasks_bt_od",
+        "app.workers.tasks_harvest_pages",
+        "app.workers.tasks_harvest_b2b",
+        "app.workers.tasks_align",
+    ],
+)
 
 _log = logging.getLogger(__name__)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # REDIS HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-
+# =============================================================================
 def _redis(db: int = 2):
     import redis as _r
-    url  = celery.conf.broker_url or "redis://localhost:6379/0"
+    url = celery.conf.broker_url or "redis://localhost:6379/0"
     base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
-    return _r.Redis.from_url(
-        f"{base}/{db}",
-        decode_responses=False,
-        socket_timeout=5,
-        socket_connect_timeout=5,
-        retry_on_timeout=True,
-    )
-
+    return _r.Redis.from_url(f"{base}/{db}", decode_responses=False, socket_timeout=5)
 
 def cache_set(key: str, data, ttl: int = 600) -> bool:
     try:
@@ -167,14 +153,12 @@ def cache_set(key: str, data, ttl: int = 600) -> bool:
     except Exception:
         return False
 
-
 def cache_get(key: str):
     try:
         raw = _redis().get(key)
         return json.loads(raw) if raw else None
     except Exception:
         return None
-
 
 def cache_delete(key: str) -> bool:
     try:
@@ -183,17 +167,14 @@ def cache_delete(key: str) -> bool:
     except Exception:
         return False
 
-
 def cache_keys(pattern: str) -> list[str]:
     try:
         return [k.decode() if isinstance(k, bytes) else k for k in _redis().keys(pattern)]
     except Exception:
         return []
 
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
 
 def _publish(channel: str, data: dict) -> None:
     try:
@@ -201,11 +182,9 @@ def _publish(channel: str, data: dict) -> None:
     except Exception:
         pass
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # SPORT NAME NORMALISATION
-# ══════════════════════════════════════════════════════════════════════════════
-
+# =============================================================================
 _SPORT_NORM: dict[str, str] = {
     "football": "Soccer", "Football": "Soccer", "soccer": "Soccer", "Soccer": "Soccer",
     "basketball": "Basketball", "Basketball": "Basketball",
@@ -224,17 +203,14 @@ _SPORT_NORM: dict[str, str] = {
     "baseball": "Baseball", "Baseball": "Baseball",
 }
 
-
 def _normalise_sport_name(raw: str) -> str:
     if not raw:
         return raw
     return _SPORT_NORM.get(raw, _SPORT_NORM.get(raw.lower(), raw))
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # BOOKMAKER AUTO-CREATION
-# ══════════════════════════════════════════════════════════════════════════════
-
+# =============================================================================
 def _get_or_create_bookmaker(bk_name: str) -> int | None:
     try:
         from app.models.bookmakers_model import Bookmaker
@@ -258,11 +234,9 @@ def _get_or_create_bookmaker(bk_name: str) -> int | None:
         _log.warning("[bookmaker] create failed for %s: %s", bk_name, exc)
         return None
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # BETRADAR ID EXTRACTION
-# ══════════════════════════════════════════════════════════════════════════════
-
+# =============================================================================
 def _extract_betradar_id(m: dict) -> str:
     raw = (
         m.get("betradar_id")  or m.get("betradarId")   or
@@ -271,11 +245,9 @@ def _extract_betradar_id(m: dict) -> str:
     val = str(raw).strip()
     return "" if val in ("0", "None", "null", "") else val
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # FUZZY MATCH LOOKUP
-# ══════════════════════════════════════════════════════════════════════════════
-
+# =============================================================================
 def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
     if not home or not away:
         return None
@@ -299,31 +271,19 @@ def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
         _log.debug("[fuzzy_find] error: %s", exc)
         return None
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# UPSERT PIPELINE  — FIXED _upsert_and_chain import
-# ══════════════════════════════════════════════════════════════════════════════
-
+# =============================================================================
+# UPSERT PIPELINE
+# =============================================================================
 def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
-    """
-    Write odds to DB and chain EV/arb computation.
-    FIX: imports compute_ev_arb from tasks_ops (not a circular import because
-    tasks_ops imports celery from celery_tasks, not _upsert_and_chain).
-    """
-    # Lazy import to avoid circular at module load time
-    from app.workers.tasks_ops import compute_ev_arb  # ← FIXED
-
+    from app.workers.tasks_ops import compute_ev_arb
     try:
         bk_id = _get_or_create_bookmaker(bk_name)
         for m in matches:
             mid = _upsert_unified_match(_to_upsert_shape(m), bk_id, bk_name)
             if mid:
-                compute_ev_arb.apply_async(
-                    args=[mid], queue="ev_arb", countdown=1
-                )
+                compute_ev_arb.apply_async(args=[mid], queue="ev_arb", countdown=1)
     except Exception as exc:
         _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
-
 
 def _to_upsert_shape(m: dict) -> dict:
     betradar_id  = _extract_betradar_id(m)
@@ -347,7 +307,6 @@ def _to_upsert_shape(m: dict) -> dict:
         "markets":     m.get("markets") or m.get("best_odds") or {},
         "bookmakers":  m.get("bookmakers") or {},
     }
-
 
 def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
     try:
@@ -445,8 +404,7 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
             pass
         return None
 
-
-def _parse_start_time(raw) -> "datetime | None":
+def _parse_start_time(raw) -> datetime | None:
     if not raw:
         return None
     try:
@@ -459,3 +417,19 @@ def _parse_start_time(raw) -> "datetime | None":
     except Exception:
         pass
     return None
+
+# =============================================================================
+# WORKER READY SIGNAL – start live pollers
+# =============================================================================
+@worker_ready.connect
+def start_live_pollers(**kwargs):
+    from app.workers.od_harvester import init_live_poller
+    from app.workers.sp_live_harvester import start_harvester_thread
+    from app.extensions import get_redis_client
+
+    redis_client = get_redis_client()
+    # OdiBets live poller (REST polling with delta detection)
+    init_live_poller(redis_client, interval=2.0)
+    # SportPesa WebSocket live harvester
+    start_harvester_thread()
+    _log.info("[worker_ready] Live pollers started (OD, SP).")

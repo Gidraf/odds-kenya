@@ -1,13 +1,9 @@
-class SportpesaTennisMapper:
-    """Maps SportPesa Tennis JSON to internal slugs."""
+class SportpesaVolleyballMapper:
+    """Maps SportPesa Volleyball JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        382: "tennis_match_winner",       # 2 Way - Who will win?
-        204: "first_set_winner",          # First Set Winner
-        231: "second_set_winner",         # 2nd Set Winner
-        233: "tennis_correct_score_sets", # Correct Score (per set)
-        433: "tennis_s1_and_match_winner",# 1st Set/Match Winner
-        45:  "tennis_odd_even_games",     # Odd/Even Number of Games
+        382: "match_winner",                # Moneyline (2‑way)
+        337: "volleyball_set_betting",      # Correct set score (3:0, 3:1, etc.)
     }
 
     @staticmethod
@@ -24,24 +20,8 @@ class SportpesaTennisMapper:
 
         line_str = cls.format_line(spec_value)
 
-        # --- HANDICAPS ---
-        if sp_id == 51:
-            return f"tennis_game_handicap_{line_str}" # Full Match Game Handicap
-        elif sp_id == 439:
-            return f"tennis_set_handicap_{line_str}" # Set Handicap (-1.5 / +1.5)
-        elif sp_id == 339:
-            return f"tennis_s1_game_handicap_{line_str}" # 1st Set Game Handicap
-
-        # --- TOTAL GAMES (OVER/UNDER) ---
-        elif sp_id == 226:
-            return f"over_under_tennis_games_{line_str}" # Full Match Games
-        elif sp_id == 340:
-            return f"over_under_s1_games_{line_str}" # 1st Set Total Games
-
-        # --- PLAYER TOTAL GAMES ---
-        elif sp_id == 353:
-            return f"p1_over_under_games_{line_str}" # Player 1 Total Games
-        elif sp_id == 352:
-            return f"p2_over_under_games_{line_str}" # Player 2 Total Games
+        # --- TOTAL POINTS (Over/Under) ---
+        if sp_id == 229 or sp_id == 18:
+            return f"over_under_goals_{line_str}"
 
         return None

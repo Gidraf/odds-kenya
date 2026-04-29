@@ -2,8 +2,8 @@ class SportpesaBaseballMapper:
     """Maps SportPesa Baseball JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        382: "baseball_moneyline", # Money Line
-        381: "baseball_1x2",       # 1X2 (3-Way Moneyline)
+        382: "match_winner",      # Money Line (2‑way)
+        381: "1x2",               # 1X2 (3‑Way Moneyline)
     }
 
     @staticmethod
@@ -22,10 +22,10 @@ class SportpesaBaseballMapper:
 
         # --- HANDICAPS (Run Lines) ---
         if sp_id == 228:
-            return f"baseball_spread_{line_str}"
+            return f"asian_handicap_{line_str}"
 
         # --- TOTALS (OVER/UNDER) ---
         elif sp_id == 229:
-            return f"over_under_baseball_runs_{line_str}"
+            return f"over_under_goals_{line_str}"
 
         return None

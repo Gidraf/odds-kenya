@@ -2,7 +2,9 @@ class SportpesaHandballMapper:
     """Maps SportPesa Handball JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        10: "handball_1x2", # 3 Way Winner
+        1:   "1x2",                       # Full match 3‑way
+        60:  "first_half_1x2",            # 1st half 3‑way
+        432: "highest_scoring_half",      # Which half has more goals
     }
 
     @staticmethod
@@ -19,10 +21,9 @@ class SportpesaHandballMapper:
 
         line_str = cls.format_line(spec_value)
 
-        # --- TOTALS (OVER/UNDER) ---
-        if sp_id == 52:
-            return f"over_under_handball_goals_{line_str}" # Full Time Totals
-        elif sp_id == 54:
-            return f"first_half_over_under_handball_goals_{line_str}" # 1st Half Totals
+        # --- OVER / UNDER GOALS (full match & half) ---
+        # The same ID (18 or 229) is used for all totals, differentiated by line value
+        if sp_id == 18 or sp_id == 229:
+            return f"over_under_goals_{line_str}"
 
         return None

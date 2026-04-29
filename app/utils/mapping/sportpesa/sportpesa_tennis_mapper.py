@@ -2,12 +2,12 @@ class SportpesaTennisMapper:
     """Maps SportPesa Tennis JSON to internal slugs."""
     
     STATIC_MARKETS = {
-        382: "tennis_match_winner",       # 2 Way - Who will win?
-        204: "first_set_winner",          # First Set Winner
-        231: "second_set_winner",         # 2nd Set Winner
-        233: "tennis_correct_score_sets", # Correct Score (per set)
-        433: "tennis_s1_and_match_winner",# 1st Set/Match Winner
-        45:  "tennis_odd_even_games",     # Odd/Even Number of Games
+        382: "match_winner",                # Moneyline (2‑way)
+        204: "first_set_winner",            # Winner of 1st set
+        231: "second_set_winner",           # Winner of 2nd set
+        188: "set_betting",                 # Correct set score (e.g., 2:0, 2:1)
+        264: "odd_even",                    # Odd/even total games
+        433: "first_set_match_winner",      # 1st set winner + match winner combo
     }
 
     @staticmethod
@@ -24,24 +24,20 @@ class SportpesaTennisMapper:
 
         line_str = cls.format_line(spec_value)
 
-        # --- HANDICAPS ---
-        if sp_id == 51:
-            return f"tennis_game_handicap_{line_str}" # Full Match Game Handicap
-        elif sp_id == 439:
-            return f"tennis_set_handicap_{line_str}" # Set Handicap (-1.5 / +1.5)
-        elif sp_id == 339:
-            return f"tennis_s1_game_handicap_{line_str}" # 1st Set Game Handicap
+        # --- GAME HANDICAP (Asian Handicap on games) ---
+        if sp_id == 228:
+            return f"asian_handicap_{line_str}"
 
-        # --- TOTAL GAMES (OVER/UNDER) ---
-        elif sp_id == 226:
-            return f"over_under_tennis_games_{line_str}" # Full Match Games
-        elif sp_id == 340:
-            return f"over_under_s1_games_{line_str}" # 1st Set Total Games
+        # --- TOTAL GAMES (Over/Under) ---
+        if sp_id == 229:
+            return f"over_under_goals_{line_str}"
 
-        # --- PLAYER TOTAL GAMES ---
-        elif sp_id == 353:
-            return f"p1_over_under_games_{line_str}" # Player 1 Total Games
-        elif sp_id == 352:
-            return f"p2_over_under_games_{line_str}" # Player 2 Total Games
+        # --- PLAYER 1 TOTAL GAMES (Over/Under) ---
+        if sp_id == 19:
+            return f"player1_games_{line_str}"
+
+        # --- PLAYER 2 TOTAL GAMES (Over/Under) ---
+        if sp_id == 20:
+            return f"player2_games_{line_str}"
 
         return None
