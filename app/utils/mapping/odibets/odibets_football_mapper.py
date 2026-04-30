@@ -10,7 +10,7 @@ import re
 from typing import Dict, Optional, Tuple
 
 
-class OdibetSoccerMapper:
+class OdibetsSoccerMapper:
     """Maps OdiBets Soccer JSON market slugs to canonical slugs + specifiers."""
 
     # Direct mapping for simple markets (no specifiers)

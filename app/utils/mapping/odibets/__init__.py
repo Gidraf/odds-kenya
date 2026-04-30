@@ -18,10 +18,10 @@ from .odibets_boxing_mapper import OdibetsBoxingMapper
 from .odibets_cricket_mapper import OdibetsCricketMapper
 from .odibets_darts_mapper import OdibetsDartsMapper
 from .odibets_esoccer_mapper import OdibetsEsoccerMapper
-from .odibets_football_mapper import OdibetsFootballMapper      # or OdibetsSoccerMapper
+from .odibets_football_mapper import OdibetsSoccerMapper      # or OdibetsSoccerMapper
 from .odibets_handball_mapper import OdibetsHandballMapper
 from .odibets_ice_hockey_mapper import OdibetsIceHockeyMapper
-from .odibets_mma_mapper import OdibetsMMAMapper
+# from .odibets_mma_mapper import OdibetsMMAMapper
 from .odibets_rugby_mapper import OdibetsRugbyMapper
 from .odibets_table_tennis_mapper import OdibetsTableTennisMapper
 from .odibets_tennis_mapper import OdibetsTennisMapper
@@ -40,12 +40,12 @@ register_sport("cricket",         OdibetsCricketMapper)
 register_sport("darts",           OdibetsDartsMapper)
 register_sport("esoccer",         OdibetsEsoccerMapper)
 register_sport("efootball",       OdibetsEsoccerMapper)   # alias
-register_sport("soccer",          OdibetsFootballMapper)
-register_sport("football",        OdibetsFootballMapper)
+register_sport("soccer",          OdibetsSoccerMapper)
+register_sport("football",        OdibetsSoccerMapper)
 register_sport("handball",        OdibetsHandballMapper)
 register_sport("ice-hockey",      OdibetsIceHockeyMapper)
 register_sport("hockey",          OdibetsIceHockeyMapper)
-register_sport("mma",             OdibetsMMAMapper)
+register_sport("mma",             None)
 register_sport("rugby",           OdibetsRugbyMapper)
 register_sport("rugby-union",     OdibetsRugbyMapper)
 register_sport("rugby-league",    OdibetsRugbyMapper)

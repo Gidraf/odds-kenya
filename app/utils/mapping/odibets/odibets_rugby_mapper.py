@@ -10,7 +10,7 @@ import re
 from typing import Dict, Optional, Tuple
 
 
-class OdibetRugbyMapper:
+class OdibetsRugbyMapper:
     """Maps OdiBets Rugby JSON market slugs to canonical slugs + specifiers."""
 
     STATIC_MARKETS: Dict[str, Tuple[str, Dict[str, str]]] = {
