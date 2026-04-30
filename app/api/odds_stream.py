@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 # ── Blueprints ────────────────────────────────────────────────────────────────
 bp_stream  = Blueprint("odds_stream",  __name__)          # /odds/...
-bp_monitor = Blueprint("odds_monitor", __name__, url_prefix="/api/monitor")
+bp_monitor = Blueprint("odds_monitor-new", __name__, url_prefix="/api/monitor")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 _TIER_RANK = {"free": 0, "basic": 1, "pro": 2, "premium": 3, "admin": 4}
