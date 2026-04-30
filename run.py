@@ -1290,7 +1290,7 @@ def merge_matches(matches_by_bk: Dict[str, List[dict]]) -> List[dict]:
 # -----------------------------------------------------------------------------
 # CLI: Harvest single bookmaker
 # -----------------------------------------------------------------------------
-@flask_app.cli.add_command(harvest_bookmaker)
+@flask_app.cli.command("harvest_bookmaker")
 @click.option("--bookmaker", required=True, type=click.Choice(["bt", "od", "sp"]),
               help="Bookmaker to harvest")
 @click.option("--sport", default=None, help="Sport slug (if omitted, harvest all sports)")
@@ -1636,15 +1636,6 @@ VIEW_TEMPLATE = """
 </html>
 """
 
-# # -----------------------------------------------------------------------------
-# # Register commands with the Flask app
-# # -----------------------------------------------------------------------------
-# def register_harvest_commands(app):
-#     """Call this from create_app to attach CLI commands and the view."""
-#     app.cli.add_command(harvest_bookmaker)
-#     app.cli.add_command(harvest_unified)
-#     app.cli.add_command(harvest_all)
-#     register_harvest_view(app)
 
 
 
