@@ -1290,7 +1290,7 @@ def merge_matches(matches_by_bk: Dict[str, List[dict]]) -> List[dict]:
 # -----------------------------------------------------------------------------
 # CLI: Harvest single bookmaker
 # -----------------------------------------------------------------------------
-@flask_app.cli.command("harvest_bookmaker")
+@flask_app.cli.command("harvest-bookmaker")
 @click.option("--bookmaker", required=True, type=click.Choice(["bt", "od", "sp"]),
               help="Bookmaker to harvest")
 @click.option("--sport", default=None, help="Sport slug (if omitted, harvest all sports)")
@@ -1366,7 +1366,7 @@ def harvest_bookmaker(bookmaker, sport, days, max_matches, output_dir):
 # -----------------------------------------------------------------------------
 # CLI: Harvest unified (all bookmakers) and merge
 # -----------------------------------------------------------------------------
-@flask_app.cli.command("harvest_unified")
+@flask_app.cli.command("harvest-unified")
 @click.option("--days", default=7, help="Days ahead")
 @click.option("--max-matches", default=None, type=int, help="Max matches per sport per bookmaker")
 @click.option("--output-dir", default="harvest_dumps", help="Directory to save JSON")
@@ -1412,7 +1412,7 @@ def harvest_unified(days, max_matches, output_dir, sport):
 # CLI: Harvest all (bookmakers individually + unified)
 # -----------------------------------------------------------------------------
 
-@flask_app.cli.command("harvest_all")
+@flask_app.cli.command("harvest-all")
 @click.option("--days", default=7, help="Days ahead")
 @click.option("--max-matches", default=None, type=int, help="Max matches per sport per bookmaker")
 @click.option("--output-dir", default="harvest_dumps", help="Directory")
