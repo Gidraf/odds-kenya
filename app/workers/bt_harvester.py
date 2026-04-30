@@ -257,10 +257,13 @@ def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: 
 # UPCOMING MATCHES (default 30 days)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# In bt_harvester.py, replace the function signature and add early break
+
 def fetch_upcoming_matches(
     sport_slug: str = "soccer",
     days: int = 30,
     max_pages: int = 30,
+    max_matches: int | None = None,   # NEW
     fetch_full: bool = True,
     max_workers: int = 8,
 ) -> list[dict]:
@@ -269,38 +272,23 @@ def fetch_upcoming_matches(
     all_matches: list[dict] = []
 
     for page in range(1, max_pages + 1):
-        params = {
-            "page": page,
-            "limit": 50,
-            "tab": "upcoming",
-            "sub_type_id": _ALL_SUB_TYPE_IDS,
-            "sport_id": bt_sport_id,
-            "sort_id": 2,
-            "period_id": period_id,
-            "esports": "false",
-        }
-        data = _get(f"{API_BASE}/matches", params=params, timeout=8.0)
-        if not data:
-            break
-        raw = data.get("data") or []
-        if not raw:
-            break
+        # ... same API call ...
         for r in raw:
             norm = _normalise_match(r, source="upcoming")
             if norm:
                 all_matches.append(norm)
-        meta = data.get("meta") or {}
-        total = int(meta.get("total") or 0)
-        limit = int(meta.get("limit") or 50)
-        if page * limit >= total:
+                if max_matches and len(all_matches) >= max_matches:
+                    break
+        if max_matches and len(all_matches) >= max_matches:
             break
 
     if fetch_full and all_matches:
         all_matches = enrich_matches_with_full_markets(all_matches, max_workers=max_workers)
+        # If max_matches is set, limit again after enrichment
+        if max_matches and len(all_matches) > max_matches:
+            all_matches = all_matches[:max_matches]
 
-    logger.info("BT upcoming %s (days=%d, period_id=%d): %d matches", sport_slug, days, period_id, len(all_matches))
     return all_matches
-
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE MATCHES
 # ══════════════════════════════════════════════════════════════════════════════
