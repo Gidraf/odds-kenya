@@ -123,7 +123,7 @@ def create_app() -> Flask:
 
     flask_app.register_blueprint(bp_monitor) 
     flask_app.register_blueprint(bp_harvest_ctrl)  
-    flask_app.register_blueprint(bp_analytics)
+    # flask_app.register_blueprint(bp_analytics)
     # flask_app.register_blueprint(bp_match_refresh)  
     flask_app.register_blueprint(bp_live_sse)  
     flask_app.register_blueprint(bp_analytics_dash) 
