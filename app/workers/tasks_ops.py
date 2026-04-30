@@ -420,6 +420,26 @@ def on_worker_ready(sender, **kwargs):
         log.warning("[tasks_ops] startup dispatch failed: %s", exc)
 
 
+@worker_ready.connect
+def start_live_pollers(sender, **kwargs):
+    from app.workers.od_harvester import init_live_poller
+    from app.workers.bt_harvester import init_live_poller as init_bt_live
+    from app.workers.sp_live_harvester import start_harvester_thread as start_sp_live
+    from app.extensions import get_redis_client   # your redis getter
+
+    redis_client = get_redis_client()
+    
+    # OdiBets live poller (REST polling, delta detection)
+    init_live_poller(redis_client, interval=2.0)
+    
+    # Betika live poller (if you have one – you might need to implement similarly)
+    # init_bt_live(redis_client, interval=2.0)
+    
+    # SportPesa WebSocket live harvester
+    start_sp_live()
+    
+    log.info("[startup] Live pollers started (OD, SP).")
+
 def _dispatch_startup_harvests():
     from app.workers.tasks_harvest_pages import (
         sp_harvest_all_paged, bt_harvest_all_paged, od_harvest_all_paged,
