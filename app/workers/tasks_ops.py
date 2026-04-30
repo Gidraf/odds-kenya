@@ -397,9 +397,18 @@ def send_message(**kwargs):
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.persist_combined_batch",  soft_time_limit=120, time_limit=150)
-def persist_combined_batch(**kwargs):
-    return {"ok": True}
+@celery.task(
+    name="tasks.ops.persist_combined_batch",
+    bind=True, max_retries=3, default_retry_delay=10,
+    soft_time_limit=120, time_limit=150, acks_late=True,
+)
+def persist_combined_batch(self, match_dicts: list, sport_slug: str = "soccer", mode: str = "upcoming") -> dict:
+    try:
+        from app.workers.persist_hook import persist_from_serialized
+        return persist_from_serialized(match_dicts, sport_slug=sport_slug, mode=mode)
+    except Exception as exc:
+        log.error("persist_combined_batch failed [%s]: %s", sport_slug, exc)
+        raise self.retry(exc=exc)
 
 
 @celery.task(name="tasks.ops.persist_all_sports",      soft_time_limit=120, time_limit=150)
@@ -419,26 +428,18 @@ def on_worker_ready(sender, **kwargs):
     except Exception as exc:
         log.warning("[tasks_ops] startup dispatch failed: %s", exc)
 
+    try:
+        from app.workers.od_harvester import init_live_poller
+        from app.workers.sp_live_harvester import start_harvester_thread as start_sp_live
+        from app.extensions import get_redis_client
+        redis_client = get_redis_client()
+        init_live_poller(redis_client, interval=2.0)
+        start_sp_live()
+        log.info("[startup] Live pollers started (OD, SP).")
+    except Exception as exc:
+        log.warning("[startup] Live poller start failed: %s", exc)
 
-@worker_ready.connect
-def start_live_pollers(sender, **kwargs):
-    from app.workers.od_harvester import init_live_poller
-    from app.workers.bt_harvester import init_live_poller as init_bt_live
-    from app.workers.sp_live_harvester import start_harvester_thread as start_sp_live
-    from app.extensions import get_redis_client   # your redis getter
 
-    redis_client = get_redis_client()
-    
-    # OdiBets live poller (REST polling, delta detection)
-    init_live_poller(redis_client, interval=2.0)
-    
-    # Betika live poller (if you have one – you might need to implement similarly)
-    # init_bt_live(redis_client, interval=2.0)
-    
-    # SportPesa WebSocket live harvester
-    start_sp_live()
-    
-    log.info("[startup] Live pollers started (OD, SP).")
 
 def _dispatch_startup_harvests():
     from app.workers.tasks_harvest_pages import (

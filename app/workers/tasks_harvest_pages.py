@@ -226,31 +226,27 @@ def sp_harvest_all_paged() -> dict:
 )
 def bt_harvest_page(self, sport_slug: str, page: int,
                     page_size: int = HARVEST_PAGE_SIZE) -> dict:
-    import httpx
     from app.workers.bt_harvester import (
-        UPCOMING_URL, HEADERS, _normalise_match as _bt_norm, slug_to_bt_sport_id,
+        fetch_upcoming_matches, slug_to_bt_sport_id,
     )
     t0 = time.perf_counter()
-    bt_sport_id = slug_to_bt_sport_id(sport_slug)
-    params = {
-        "page": page, "limit": page_size, "tab": "upcoming",
-        "sub_type_id": "1,10,11,18,29,60,186,219,251,340,406",
-        "sport_id": bt_sport_id, "sort_id": 2, "period_id": 9, "esports": "false",
-    }
     try:
-        r   = httpx.get(UPCOMING_URL, params=params, headers=HEADERS, timeout=12.0)
-        r.raise_for_status()
-        data = r.json()
+        # fetch_upcoming_matches handles pagination internally; slice the page
+        all_matches = fetch_upcoming_matches(
+            sport_slug=sport_slug,
+            days=OD_DAYS_AHEAD,
+            max_pages=page,        # fetch up to this page
+            fetch_full=False,      # full markets done in merge step
+        )
+        offset = (page - 1) * page_size
+        matches = all_matches[offset: offset + page_size]
     except Exception as exc:
         raise self.retry(exc=exc, countdown=10)
 
-    raw_list = (data or {}).get("data") or []
-    matches  = [m for m in (_bt_norm(r, source="upcoming") for r in raw_list) if m]
-    done     = publish_page("bt", "upcoming", sport_slug, page, matches, HARVEST_N_PAGES)
-    latency  = int((time.perf_counter() - t0) * 1000)
+    done = publish_page("bt", "upcoming", sport_slug, page, matches, HARVEST_N_PAGES)
+    latency = int((time.perf_counter() - t0) * 1000)
     return {"sport": sport_slug, "page": page, "count": len(matches),
             "latency_ms": latency, "pages_done": done}
-
 
 @celery.task(
     name="tasks.bt.merge_pages",
@@ -328,27 +324,29 @@ def bt_harvest_all_paged() -> dict:
     soft_time_limit=120, time_limit=150, acks_late=True,
 )
 def od_harvest_date_chunk(self, sport_slug: str, dates: list[str], chunk_idx: int) -> dict:
-    from app.workers.od_harvester import fetch_upcoming_matches as od_fetch
-    t0      = time.perf_counter()
+    from app.workers.od_harvester import _probe, _fetch_day_complete, _normalise
+    t0 = time.perf_counter()
     matches: list[dict] = []
-    seen:   set[str]   = set()
+    seen: set[str] = set()
+    api_id = _probe(sport_slug)
     for day in dates:
         try:
-            for m in od_fetch(sport_slug, day=day):
-                mid = m.get("od_match_id") or m.get("od_event_id")
-                if mid and mid in seen:
+            raw_list = _fetch_day_complete(api_id, day)
+            for r in raw_list:
+                m = _normalise(r, sport_slug)
+                if not m:
                     continue
-                if mid:
+                mid = m.get("od_match_id") or m.get("od_event_id")
+                if mid and mid not in seen:
                     seen.add(mid)
-                matches.append(m)
+                    matches.append(m)
         except Exception as exc:
             logger.warning("[od:chunk] %s day=%s: %s", sport_slug, day, exc)
 
-    done    = publish_page("od", "upcoming", sport_slug, chunk_idx, matches, HARVEST_N_PAGES)
+    done = publish_page("od", "upcoming", sport_slug, chunk_idx, matches, HARVEST_N_PAGES)
     latency = int((time.perf_counter() - t0) * 1000)
     return {"sport": sport_slug, "chunk": chunk_idx, "count": len(matches),
             "latency_ms": latency}
-
 
 @celery.task(
     name="tasks.od.merge_pages",

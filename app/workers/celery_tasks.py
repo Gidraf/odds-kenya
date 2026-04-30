@@ -289,7 +289,57 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
             pass
         return None
 
+# app/workers/celery_tasks.py
+
 def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
+    """
+    Upsert all matches first, collect their DB IDs, then dispatch
+    compute_ev_arb in small batches with staggered countdowns so the
+    queue never gets a 500-task spike in one second.
+    """
+    from app.workers.tasks_ops import compute_ev_arb
+
+    BATCH_SIZE  = 25    # tasks per batch
+    BATCH_DELAY = 5     # extra seconds between each batch
+
+    try:
+        bk_id = _get_or_create_bookmaker(bk_name)
+
+        # ── 1. Upsert everything, collect IDs ──────────────────────────────
+        match_ids: list[int] = []
+        for m in matches:
+            mid = _upsert_unified_match(_to_upsert_shape(m), bk_id, bk_name)
+            if mid:
+                match_ids.append(mid)
+
+        if not match_ids:
+            return
+
+        # ── 2. Dispatch in batches, each batch delayed a bit more ──────────
+        for batch_num, i in enumerate(range(0, len(match_ids), BATCH_SIZE)):
+            batch     = match_ids[i : i + BATCH_SIZE]
+            countdown = 10 + (batch_num * BATCH_DELAY)   # 10s, 15s, 20s …
+
+            for mid in batch:
+                compute_ev_arb.apply_async(
+                    args=[mid],
+                    queue="ev_arb",
+                    countdown=countdown,
+                )
+
+        _log.info(
+            "[upsert_and_chain] %s: %d matches upserted, %d ev_arb tasks "
+            "dispatched in %d batches (batch_size=%d, delay=%ds)",
+            bk_name,
+            len(match_ids),
+            len(match_ids),
+            -(-len(match_ids) // BATCH_SIZE),   # ceiling division
+            BATCH_SIZE,
+            BATCH_DELAY,
+        )
+
+    except Exception as exc:
+        _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
     from app.workers.tasks_ops import compute_ev_arb
     try:
         bk_id = _get_or_create_bookmaker(bk_name)
@@ -300,11 +350,6 @@ def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
     except Exception as exc:
         _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
 
-# =============================================================================
-# WORKER READY SIGNAL – start live pollers
-# =============================================================================
-@worker_ready.connect
-def start_live_pollers(**kwargs):
     from app.workers.od_harvester import init_live_poller
     from app.workers.sp_live_harvester import start_harvester_thread
     from app.extensions import get_redis_client

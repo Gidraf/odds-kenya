@@ -1,16 +1,12 @@
 version: "3.9"
 
-# -----------------------------------------------------------------------------
-# Redis URL (percent‑encoded password)
-# -----------------------------------------------------------------------------
 x-redis-url: &redis-url "redis://:%40Winners1127@host.docker.internal:6382/0"
 
-# -----------------------------------------------------------------------------
-# Common environment variables for all services
-# -----------------------------------------------------------------------------
 x-common-env: &common-env
   REDIS_URL: *redis-url
-  REDIS_HOST: redis6382
+  REDIS_CACHE_URL: "redis://:%40Winners1127@host.docker.internal:6382/2"
+  CELERY_RESULT_BACKEND: "redis://:%40Winners1127@host.docker.internal:6382/1"
+  REDIS_HOST: host.docker.internal
   REDIS_PORT: "6382"
   REDIS_AUTH: "@Winners1127"
   DB_NAME: oddkenya
@@ -25,13 +21,10 @@ x-common-env: &common-env
 
 services:
 
-  # -------------------------------------------------------------------------
-  # Flask Web Application (Gunicorn) – live pollers enabled
-  # -------------------------------------------------------------------------
   web:
     build: .
     restart: always
-    command: gunicorn -k gevent -w 4 -b 0.0.0.0:5000 run:flask_app
+    command: gunicorn -k gevent -w 1 -b 0.0.0.0:5000 run:flask_app
     env_file: .env
     networks:
       - app-network
@@ -45,21 +38,24 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       <<: *common-env
-      ENABLE_HARVESTER: "1"              # starts live pollers only here
+      ENABLE_HARVESTER: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
-  # -------------------------------------------------------------------------
-  # Celery Worker (no beat, no live pollers)
-  # -------------------------------------------------------------------------
   celery-worker:
     build: .
     restart: always
     command: >
       celery -A app.workers.celery_app worker
-      --queues=harvest,live,results,notify,ev_arb,default
-      --concurrency=4
+      --queues=harvest,live,default
+      --concurrency=6
       --loglevel=info
       --logfile=/app/logs/celery-worker.log
-      --hostname=worker@%h
+      --hostname=worker-harvest@%h
     env_file: .env
     networks:
       - app-network
@@ -74,17 +70,40 @@ services:
       <<: *common-env
       CELERY_INLINE: "0"
 
-  # -------------------------------------------------------------------------
-  # Celery Beat (scheduler only)
-  # -------------------------------------------------------------------------
+  celery-worker-results:
+    build: .
+    restart: always
+    command: >
+      celery -A app.workers.celery_app worker
+      --queues=results,ev_arb,notify
+      --concurrency=8
+      --loglevel=info
+      --logfile=/app/logs/celery-worker-results.log
+      --hostname=worker-results@%h
+    env_file: .env
+    networks:
+      - app-network
+    depends_on:
+      redis6382:
+        condition: service_healthy
+    volumes:
+      - app-logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *common-env
+      CELERY_INLINE: "0"
+
   celery-beat:
     build: .
     restart: always
     command: >
+      sh -c "rm -f /app/celerybeat-schedule* &&
       celery -A app.workers.celery_app beat
       --loglevel=info
       --logfile=/app/logs/celery-beat.log
       --scheduler celery.beat:PersistentScheduler
+      --pidfile=/app/logs/celerybeat.pid"
     env_file: .env
     networks:
       - app-network
@@ -98,19 +117,16 @@ services:
     environment:
       <<: *common-env
 
-  # -------------------------------------------------------------------------
-  # Celery Analytics Worker (low concurrency for Playwright)
-  # -------------------------------------------------------------------------
   celery-analytics:
     build: .
     restart: always
     command: >
-      sh -c "rm -f celerybeat-schedule* && celery -A app.workers.celery_app worker
+      celery -A app.workers.celery_app worker
       --queues=analytics
       --concurrency=2
       --loglevel=info
       --logfile=/app/logs/celery-analytics.log
-      --hostname=analytics@%h"
+      --hostname=analytics@%h
     env_file: .env
     networks:
       - app-network
@@ -125,9 +141,6 @@ services:
       <<: *common-env
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
 
-  # -------------------------------------------------------------------------
-  # Redis (with password and persistence)
-  # -------------------------------------------------------------------------
   redis6382:
     image: redis:7
     container_name: redis6382
@@ -153,9 +166,6 @@ services:
       retries: 10
       start_period: 5s
 
-  # -------------------------------------------------------------------------
-  # Nginx Load Balancer / Reverse Proxy
-  # -------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
     container_name: nginx_lb

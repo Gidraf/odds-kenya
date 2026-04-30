@@ -105,11 +105,11 @@ def create_app() -> Flask:
     from app.api import bp_public, bp_matches, bp_live, bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers
     from app.views.odds.admin import bp_admin as debug_admin
 
-    flask_app.register_blueprint(bp_search)
-    flask_app.register_blueprint(authorization)
-    flask_app.register_blueprint(bookmarker)
-    flask_app.register_blueprint(bp_research)
-    flask_app.register_blueprint(odds_bp)
+    from app.api.odds_stream import bp_stream, bp_monitor
+    
+    
+    flask_app.register_blueprint(bp_stream)
+    flask_app.register_blueprint(bp_monitor)
     flask_app.register_blueprint(bp_sbo)
     flask_app.register_blueprint(mapping_bp)
     flask_app.register_blueprint(bp_vendor,     url_prefix="/api/vendors")
@@ -120,14 +120,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_story)
     flask_app.register_blueprint(bp_raw_stream)
     flask_app.register_blueprint(bp_interceptor)
-    # flask_app.register_blueprint(bp_sp)
-    # flask_app.register_blueprint(bp_sp_live)
-    flask_app.register_blueprint(bp_unified_odds)   # GET /api/odds/...
-    # flask_app.register_blueprint(bp_betika)          # GET /api/bt/...
-    # flask_app.register_blueprint(bp_od) 
-    flask_app.register_blueprint(bp_odds_customer)  # GET /api/od/... (OdiBets odds feed)
-    flask_app.register_blueprint(bp_combined) 
-    flask_app.register_blueprint(bp_data)
+
     flask_app.register_blueprint(bp_monitor) 
     flask_app.register_blueprint(bp_harvest_ctrl)  
     # flask_app.register_blueprint(bp_analytics)
