@@ -1217,5 +1217,436 @@ def fetch_sp_complete(days, sport_workers, max_matches, output_dir, no_markets):
     print(f"  {'TOTAL':<22} {total:>7}")
     print("=" * 65)
 
+
+import click
+import json
+import os
+import time
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from flask import Blueprint, render_template_string, request
+
+# Import harvesters
+from app.workers.bt_harvester import fetch_upcoming_matches as bt_fetch
+from app.workers.od_harvester import fetch_upcoming_matches as od_fetch
+from app.workers.sp_harvester import fetch_upcoming as sp_fetch
+
+# -----------------------------------------------------------------------------
+# Helper: merge matches from multiple bookmakers (same logic as frontend)
+# -----------------------------------------------------------------------------
+def _normalize_match(raw: dict, source: str) -> dict:
+    """Ensure match has join_key and other fields needed for merging."""
+    m = raw.copy()
+    m["source"] = source
+    m["join_key"] = str(m.get("parent_match_id") or m.get("match_id") or m.get("bt_parent_id") or m.get("od_parent_id") or "")
+    if not m["join_key"]:
+        m["join_key"] = f"{source}_{m.get('home_team','')}_{m.get('away_team','')}"
+    return m
+
+def merge_matches(matches_by_bk: Dict[str, List[dict]]) -> List[dict]:
+    """
+    Merges matches from multiple bookmakers (keys: 'bt', 'od', 'sp')
+    Returns a list of unified matches.
+    """
+    # Build index by join_key
+    unified: Dict[str, dict] = {}
+    for bk, matches in matches_by_bk.items():
+        for m in matches:
+            nm = _normalize_match(m, bk)
+            jk = nm["join_key"]
+            if jk not in unified:
+                unified[jk] = {
+                    "join_key": jk,
+                    "parent_match_id": nm.get("parent_match_id") or nm.get("bt_parent_id") or nm.get("od_parent_id") or "",
+                    "home_team": nm.get("home_team", ""),
+                    "away_team": nm.get("away_team", ""),
+                    "competition": nm.get("competition", ""),
+                    "sport": nm.get("sport", ""),
+                    "start_time": nm.get("start_time", ""),
+                    "bookmakers": {},
+                    "markets": {},
+                }
+            # Add bookmaker markets
+            unified[jk]["bookmakers"][bk] = {
+                "match_id": nm.get("bt_match_id") or nm.get("od_match_id") or nm.get("sp_game_id") or "",
+                "markets": nm.get("markets", {}),
+                "market_count": nm.get("market_count", 0)
+            }
+            # Merge markets into top-level (if needed later)
+            for mkt, outcomes in nm.get("markets", {}).items():
+                if mkt not in unified[jk]["markets"]:
+                    unified[jk]["markets"][mkt] = {}
+                unified[jk]["markets"][mkt][bk] = outcomes
+
+    # Convert to list
+    result = list(unified.values())
+    # Sort by start_time
+    result.sort(key=lambda x: x.get("start_time", ""))
+    return result
+
+# -----------------------------------------------------------------------------
+# CLI: Harvest single bookmaker
+# -----------------------------------------------------------------------------
+@flask_app.cli.add_command(harvest_bookmaker)
+@click.option("--bookmaker", required=True, type=click.Choice(["bt", "od", "sp"]),
+              help="Bookmaker to harvest")
+@click.option("--sport", default=None, help="Sport slug (if omitted, harvest all sports)")
+@click.option("--days", default=7, help="Days ahead (SportPesa max 7; Betika/OdiBets use this)")
+@click.option("--max-matches", default=None, type=int, help="Max matches per sport")
+@click.option("--output-dir", default="harvest_dumps", help="Directory to save JSON")
+def harvest_bookmaker(bookmaker, sport, days, max_matches, output_dir):
+    """
+    Fetch upcoming matches for a single bookmaker.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if sport:
+        sports = [sport]
+    else:
+        # Get all sports from the appropriate mapping
+        if bookmaker == "bt":
+            from app.workers.bt_harvester import CANONICAL_SPORT_IDS
+            sports = list(CANONICAL_SPORT_IDS.keys())
+        elif bookmaker == "od":
+            from app.workers.od_harvester import OD_SPORT_IDS
+            sports = list(OD_SPORT_IDS.keys())
+        else:  # sp
+            from app.workers.sp_harvester import SP_SPORT_ID
+            sports = list(SP_SPORT_ID.keys())
+        # Remove duplicates and unwanted
+        sports = [s for s in sports if not s.startswith("esport")]
+
+    print(f"📦 Harvesting {bookmaker.upper()} | sports: {len(sports)} | days={days} | max_matches={max_matches or 'all'}")
+    summary = {}
+    errors = {}
+
+    def _fetch_one(sport_slug):
+        try:
+            if bookmaker == "bt":
+                matches = bt_fetch(sport_slug, days=days, max_matches=max_matches, fetch_full=True)
+            elif bookmaker == "od":
+                matches = od_fetch(sport_slug, days=days, max_matches=max_matches, fetch_full_markets=True)
+            else:
+                matches = sp_fetch(sport_slug, days=days, max_matches=max_matches, fetch_full_markets=True)
+            return sport_slug, matches
+        except Exception as e:
+            return sport_slug, None, str(e)
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(_fetch_one, s) for s in sports]
+        for fut in as_completed(futures):
+            try:
+                res = fut.result()
+                if len(res) == 3:
+                    s, _, err = res
+                    errors[s] = err
+                    summary[s] = 0
+                else:
+                    s, matches = res
+                    summary[s] = len(matches)
+                    # Save per sport JSON
+                    out_file = os.path.join(output_dir, f"{bookmaker}_{s}_{timestamp}.json")
+                    with open(out_file, "w") as f:
+                        json.dump(matches, f, indent=2, default=str)
+                    print(f"  ✅ {bookmaker}/{s}: {len(matches)} matches -> {out_file}")
+            except Exception as e:
+                print(f"  ❌ error: {e}")
+
+    # Save summary
+    summary_file = os.path.join(output_dir, f"{bookmaker}_summary_{timestamp}.json")
+    with open(summary_file, "w") as f:
+        json.dump({"bookmaker": bookmaker, "timestamp": timestamp, "sports": summary, "errors": errors}, f, indent=2)
+    print(f"\n📊 Summary saved to {summary_file}")
+    print(f"Total matches: {sum(summary.values())}")
+
+# -----------------------------------------------------------------------------
+# CLI: Harvest unified (all bookmakers) and merge
+# -----------------------------------------------------------------------------
+@flask_app.cli.command("harvest_unified")
+@click.option("--days", default=7, help="Days ahead")
+@click.option("--max-matches", default=None, type=int, help="Max matches per sport per bookmaker")
+@click.option("--output-dir", default="harvest_dumps", help="Directory to save JSON")
+@click.option("--sport", default=None, help="Single sport (optional)")
+def harvest_unified(days, max_matches, output_dir, sport):
+    """Fetch all three bookmakers and merge their matches into unified JSON."""
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Determine sports list
+    if sport:
+        sports = [sport]
+    else:
+        from app.workers.bt_harvester import CANONICAL_SPORT_IDS
+        sports = list(CANONICAL_SPORT_IDS.keys())
+        sports = [s for s in sports if not s.startswith("esport")]
+
+    unified_matches = []
+    for s in sports:
+        print(f"🔍 Processing sport: {s}")
+        # Fetch each bookmaker
+        bt_matches = bt_fetch(s, days=days, max_matches=max_matches, fetch_full=True) if sport or True else []
+        od_matches = od_fetch(s, days=days, max_matches=max_matches, fetch_full_markets=True) if sport or True else []
+        sp_matches = sp_fetch(s, days=days, max_matches=max_matches, fetch_full_markets=True) if sport or True else []
+
+        matches_by_bk = {}
+        if bt_matches: matches_by_bk["bt"] = bt_matches
+        if od_matches: matches_by_bk["od"] = od_matches
+        if sp_matches: matches_by_bk["sp"] = sp_matches
+
+        merged = merge_matches(matches_by_bk)
+        unified_matches.extend(merged)
+        print(f"  • {s}: BT={len(bt_matches)} OD={len(od_matches)} SP={len(sp_matches)} → Unified={len(merged)}")
+
+    # Save unified JSON
+    out_file = os.path.join(output_dir, f"unified_{timestamp}.json")
+    with open(out_file, "w") as f:
+        json.dump(unified_matches, f, indent=2, default=str)
+    print(f"\n✅ Unified matches saved to {out_file} (total {len(unified_matches)})")
+    # Also save a smaller sample (first 2 matches per bookmaker merged) – but not needed
+
+# -----------------------------------------------------------------------------
+# CLI: Harvest all (bookmakers individually + unified)
+# -----------------------------------------------------------------------------
+
+@flask_app.cli.commadn("harvest_all")
+@click.option("--days", default=7, help="Days ahead")
+@click.option("--max-matches", default=None, type=int, help="Max matches per sport per bookmaker")
+@click.option("--output-dir", default="harvest_dumps", help="Directory")
+def harvest_all(days, max_matches, output_dir):
+    """Run all three bookmaker harvests and then unified."""
+    print("🚀 Harvesting all bookmakers...")
+    # Run each bookmaker command (by invoking functions)
+    # We'll just call the functions directly
+    # First harvest each bookmaker individually (they save per sport)
+    from click import Context
+    ctx = Context(harvest_bookmaker)
+    # For each bookmaker, run harvest_bookmaker with appropriate params
+    for bk in ["bt", "od", "sp"]:
+        print(f"\n--- Harvesting {bk.upper()} ---")
+        ctx.invoke(harvest_bookmaker, bookmaker=bk, sport=None, days=days, max_matches=max_matches, output_dir=output_dir)
+    # Then unified
+    print("\n--- Harvesting Unified ---")
+    ctx.invoke(harvest_unified, days=days, max_matches=max_matches, output_dir=output_dir, sport=None)
+    print("\n✅ All harvests complete.")
+
+# -----------------------------------------------------------------------------
+# Web endpoint: Browse saved JSON files
+# -----------------------------------------------------------------------------
+# We'll register a Blueprint later, but for simplicity, we create a view function
+# to be attached to the Flask app.
+
+def register_harvest_view(app):
+    @app.route("/harvest/view/<filename>")
+    def harvest_view(filename):
+        """
+        Display a saved JSON file (from harvest_dumps) with filtering.
+        Query parameters: ?competition=xxx&sport=yyy&team=zzz
+        """
+        base_dir = Path("harvest_dumps")
+        file_path = base_dir / filename
+        if not file_path.exists():
+            return f"File {filename} not found", 404
+
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        # data can be list of matches or dict with bookmaker summary
+        if isinstance(data, dict) and "bookmaker" in data:
+            matches = []  # summary, not matches
+            # For simplicity, we'll just show the summary
+            return render_template_string(SUMMARY_TEMPLATE, data=data, filename=filename)
+        elif isinstance(data, list):
+            matches = data
+        else:
+            return "Unsupported format", 400
+
+        # Extract filter params
+        comp_filter = request.args.get("competition", "").strip()
+        sport_filter = request.args.get("sport", "").strip()
+        team_filter = request.args.get("team", "").strip()
+
+        filtered = []
+        for m in matches:
+            if comp_filter and comp_filter.lower() not in m.get("competition", "").lower():
+                continue
+            if sport_filter and sport_filter.lower() not in m.get("sport", "").lower():
+                continue
+            if team_filter:
+                if team_filter.lower() not in m.get("home_team", "").lower() and team_filter.lower() not in m.get("away_team", "").lower():
+                    continue
+            filtered.append(m)
+
+        # Group by competition
+        by_comp = {}
+        for m in filtered:
+            comp = m.get("competition", "Unknown")
+            if comp not in by_comp:
+                by_comp[comp] = []
+            by_comp[comp].append(m)
+
+        # Sort competitions
+        sorted_comps = sorted(by_comp.keys())
+        # Get unique sport values
+        sports = sorted(set(m.get("sport", "") for m in filtered))
+        competitions = sorted(set(m.get("competition", "") for m in filtered))
+
+        return render_template_string(
+            VIEW_TEMPLATE,
+            filename=filename,
+            total=len(filtered),
+            sports=sports,
+            competitions=competitions,
+            by_comp=by_comp,
+            comp_filter=comp_filter,
+            sport_filter=sport_filter,
+            team_filter=team_filter,
+        )
+
+# HTML templates
+SUMMARY_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head><title>Harvest Summary - {{ filename }}</title>
+<style>
+body{font-family:sans-serif; background:#f4f4f4; margin:20px;}
+.container{max-width:1200px; margin:auto; background:white; padding:20px; border-radius:8px;}
+pre{background:#eee; padding:10px; overflow:auto;}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Harvest Summary: {{ filename }}</h1>
+<pre>{{ data|tojson(indent=2) }}</pre>
+</div>
+</body>
+</html>
+"""
+
+VIEW_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Harvest Viewer - {{ filename }}</title>
+    <style>
+        *{box-sizing:border-box;}
+        body{font-family:'Segoe UI',Arial,sans-serif; background:#0a0f1a; color:#e2e8f0; margin:0; padding:20px;}
+        .container{max-width:1600px; margin:0 auto;}
+        h1{color:#ccff00; margin-bottom:10px;}
+        .filters{background:#0f172a; padding:15px; border-radius:8px; margin-bottom:20px; display:flex; gap:15px; flex-wrap:wrap; align-items:end;}
+        .filter-group label{display:block; font-size:12px; color:#94a3b8; margin-bottom:4px;}
+        .filter-group input, .filter-group select{background:#1e293b; border:1px solid #334155; color:#e2e8f0; padding:6px 10px; border-radius:5px; font-size:13px;}
+        button{background:#1e293b; border:1px solid #334155; color:#ccff00; padding:6px 14px; border-radius:5px; cursor:pointer;}
+        button:hover{background:#334155;}
+        .comp-section{margin-bottom:25px; border:1px solid #1e293b; border-radius:8px; overflow:hidden;}
+        .comp-header{background:#0f172a; padding:10px 15px; font-weight:bold; font-size:16px; cursor:pointer; border-bottom:1px solid #1e293b;}
+        .comp-header:hover{background:#1e293b;}
+        .match-card{background:#0f172a; margin:5px 10px 10px 10px; border-radius:8px; padding:10px; border-left:4px solid #ccff00;}
+        .match-teams{font-weight:bold; font-size:14px;}
+        .match-meta{font-size:11px; color:#94a3b8; margin:5px 0;}
+        .markets{padding-top:8px; margin-top:8px; border-top:1px solid #1e293b;}
+        .market{margin-bottom:8px;}
+        .market-name{font-size:11px; font-weight:bold; color:#ccff00; text-transform:uppercase;}
+        .outcome-row{display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;}
+        .outcome{background:#1e293b; border-radius:4px; padding:3px 8px; font-size:11px;}
+        .outcome strong{color:#facc15;}
+        .bk-badge{font-size:9px; background:#334155; padding:1px 4px; border-radius:3px; margin-left:6px;}
+    </style>
+    <script>
+        function applyFilters(){ window.location.href = window.location.pathname + "?" + new URLSearchParams({
+            competition: document.getElementById('comp_filter').value,
+            sport: document.getElementById('sport_filter').value,
+            team: document.getElementById('team_filter').value
+        }).toString(); }
+        function clearFilters(){ window.location.href = window.location.pathname; }
+    </script>
+</head>
+<body>
+<div class="container">
+    <h1>📁 Harvest Viewer: {{ filename }}</h1>
+    <div class="filters">
+        <div class="filter-group">
+            <label>Competition</label>
+            <select id="comp_filter">
+                <option value="">All</option>
+                {% for c in competitions %}<option value="{{c}}" {% if c == comp_filter %}selected{% endif %}>{{c}}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Sport</label>
+            <select id="sport_filter">
+                <option value="">All</option>
+                {% for s in sports %}<option value="{{s}}" {% if s == sport_filter %}selected{% endif %}>{{s}}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Team name</label>
+            <input type="text" id="team_filter" placeholder="Team name" value="{{team_filter}}">
+        </div>
+        <div><button onclick="applyFilters()">Apply</button> <button onclick="clearFilters()">Clear</button></div>
+        <div style="margin-left:auto;">Total matches: {{ total }}</div>
+    </div>
+
+    <div>
+        {% for comp, matches in by_comp.items() %}
+        <div class="comp-section">
+            <div class="comp-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+                🏆 {{ comp }} ({{ matches|length }} matches)
+            </div>
+            <div style="display:block;">
+                {% for m in matches %}
+                <div class="match-card">
+                    <div class="match-teams">{{ m.home_team }} vs {{ m.away_team }}</div>
+                    <div class="match-meta">
+                        {{ m.sport }} | {{ m.start_time }} | 
+                        {% if m.is_live %}🟢 LIVE{% else %}📅 Upcoming{% endif %}
+                        | Bookmakers: {{ m.bookmakers.keys()|join(', ') }}
+                    </div>
+                    <div class="markets">
+                        {% for mkt, outcomes in m.markets.items() %}
+                        <div class="market">
+                            <div class="market-name">{{ mkt }}</div>
+                            <div class="outcome-row">
+                            {% for out, odds in outcomes.items() %}
+                                <div class="outcome">
+                                    <strong>{{ out }}</strong> 
+                                    {% if odds is mapping %}
+                                        {% for bk, odd in odds.items() %}
+                                            <span class="bk-badge">{{ bk.upper() }}</span> {{ odd|round(2) }}
+                                        {% endfor %}
+                                    {% else %}
+                                        {{ odds|round(2) }}
+                                    {% endif %}
+                                </div>
+                            {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+</body>
+</html>
+"""
+
+# # -----------------------------------------------------------------------------
+# # Register commands with the Flask app
+# # -----------------------------------------------------------------------------
+# def register_harvest_commands(app):
+#     """Call this from create_app to attach CLI commands and the view."""
+#     app.cli.add_command(harvest_bookmaker)
+#     app.cli.add_command(harvest_unified)
+#     app.cli.add_command(harvest_all)
+#     register_harvest_view(app)
+
+
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
