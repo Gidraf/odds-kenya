@@ -1789,5 +1789,32 @@ def cli_login(email, password):
 # ─── Registration helper ──────────────────────────────────────────────────────
 
 
+@flask_app.cli.command("push-bt-to-redis")
+@click.option("--sport", default="soccer")
+def push_bt_to_redis(sport):
+    """Fetch BT and push directly to Redis so the SSE stream picks it up."""
+    from app.workers.bt_harvester import fetch_upcoming_matches
+    from app.workers.redis_bus import publish_snapshot
+    matches = fetch_upcoming_matches(sport_slug=sport, days=30, fetch_full=True)
+    if matches:
+        publish_snapshot("bt", "upcoming", sport, matches)
+        click.echo(f"✓ Pushed {len(matches)} BT {sport} matches to Redis")
+    else:
+        click.echo("✗ No matches fetched")
+
+@flask_app.cli.command("push-od-to-redis")
+@click.option("--sport", default="soccer")
+def push_od_to_redis(sport):
+    """Fetch OD and push directly to Redis so the SSE stream picks it up."""
+    from app.workers.od_harvester import fetch_upcoming_matches
+    from app.workers.redis_bus import publish_snapshot
+    matches = fetch_upcoming_matches(sport_slug=sport, days=30)
+    if matches:
+        publish_snapshot("od", "upcoming", sport, matches)
+        click.echo(f"✓ Pushed {len(matches)} OD {sport} matches to Redis")
+    else:
+        click.echo("✗ No matches fetched")
+
+
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)
