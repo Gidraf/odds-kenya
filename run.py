@@ -1655,8 +1655,6 @@ flask accounts token <email> — print a fresh access token (24 h)
 flask accounts list          — show all test accounts + tiers
 flask accounts delete <email>— remove a specific test account
 """
-from __future__ import annotations
-
 import sys
 import click
 from flask import Flask
