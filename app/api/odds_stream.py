@@ -125,18 +125,158 @@ def _r():
     return _redis()
 
 
+# In app/api/odds_stream.py — replace _get_unified() with this:
+
 def _get_unified(mode: str, sport: str) -> list[dict]:
-    """Read the unified match list from Redis. Returns [] on miss."""
+    """
+    Read unified match list from Redis.
+    Priority:
+      1. odds:unified:{mode}:{sport}  — built by merge pipeline (best, all BKs)
+      2. Merge individual BK keys on the fly (fallback when unified is empty)
+    """
     try:
-        raw = _r().get(f"odds:unified:{mode}:{sport}")
-        if not raw:
-            return []
-        data = json.loads(raw)
-        return data.get("matches", []) if isinstance(data, dict) else (data or [])
+        r = _r()
+
+        # 1. Try the unified key first
+        raw = r.get(f"odds:unified:{mode}:{sport}")
+        if raw:
+            data = json.loads(raw)
+            matches = data.get("matches", []) if isinstance(data, dict) else data
+            if matches:
+                return matches
+
+        # 2. Fallback: merge per-BK cache keys on the fly
+        return _merge_bk_caches(r, mode, sport)
+
     except Exception as exc:
         log.debug("[stream] redis read error: %s", exc)
         return []
 
+
+_BK_CACHE_KEYS = [
+    ("sp",        "sp"),
+    ("bt",        "bt"),
+    ("od",        "od"),
+    ("1xbet",     "1xbet"),
+    ("22bet",     "22bet"),
+    ("betwinner", "betwinner"),
+    ("melbet",    "melbet"),
+    ("megapari",  "megapari"),
+    ("helabet",   "helabet"),
+    ("paripesa",  "paripesa"),
+]
+
+
+def _merge_bk_caches(r, mode: str, sport: str) -> list[dict]:
+    """
+    Read each BK's individual cache key and merge into unified match list.
+    Uses join_key / parent_match_id / betradar_id as the merge key.
+    Falls back to home+away team name matching.
+    """
+    # Index: join_key → position in result list
+    result:   list[dict] = []
+    by_jk:    dict[str, int] = {}
+    by_name:  dict[str, int] = {}
+
+    def _name_key(m: dict) -> str:
+        h = (m.get("home_team") or m.get("home_team_name") or "")[:12].lower()
+        a = (m.get("away_team") or m.get("away_team_name") or "")[:12].lower()
+        return f"{h}|{a}"
+
+    def _join_key(m: dict) -> str:
+        return str(
+            m.get("join_key") or m.get("parent_match_id") or
+            m.get("betradar_id") or m.get("match_id") or ""
+        )
+
+    for bk_slug, cache_prefix in _BK_CACHE_KEYS:
+        raw = r.get(f"{cache_prefix}:{mode}:{sport}")
+        if not raw:
+            continue
+        try:
+            data    = json.loads(raw)
+            matches = data.get("matches", []) if isinstance(data, dict) else data
+        except Exception:
+            continue
+
+        for m in (matches or []):
+            jk = _join_key(m)
+            nk = _name_key(m)
+
+            # Find existing entry in result
+            pos = by_jk.get(jk) if jk else None
+            if pos is None:
+                pos = by_name.get(nk)
+
+            if pos is not None:
+                # Merge this BK's markets into the existing entry
+                existing = result[pos]
+                existing.setdefault("bookmakers", {})
+                existing["bookmakers"][bk_slug] = {
+                    "bookmaker": bk_slug.upper(),
+                    "slug":      bk_slug,
+                    "markets":   m.get("markets") or m.get("bookmakers", {}).get(bk_slug, {}).get("markets") or {},
+                }
+                # Update bk_count
+                existing["bk_count"] = len(existing["bookmakers"])
+            else:
+                # New match — add it with this BK's data
+                entry = {
+                    "match_id":        m.get("match_id") or m.get("bt_match_id") or m.get("od_match_id") or "",
+                    "join_key":        jk,
+                    "parent_match_id": m.get("parent_match_id") or m.get("betradar_id") or jk,
+                    "home_team":       m.get("home_team") or m.get("home_team_name") or "",
+                    "away_team":       m.get("away_team") or m.get("away_team_name") or "",
+                    "competition":     m.get("competition") or m.get("competition_name") or "",
+                    "sport":           m.get("sport") or sport,
+                    "start_time":      m.get("start_time") or "",
+                    "status":          m.get("status") or "PRE_MATCH",
+                    "is_live":         m.get("is_live", False),
+                    "has_arb":         m.get("has_arb", False),
+                    "has_ev":          m.get("has_ev", False),
+                    "best_arb_pct":    m.get("best_arb_pct", 0),
+                    "market_slugs":    m.get("market_slugs") or [],
+                    "bookmakers": {
+                        bk_slug: {
+                            "bookmaker": bk_slug.upper(),
+                            "slug":      bk_slug,
+                            "markets":   m.get("markets") or m.get("bookmakers", {}).get(bk_slug, {}).get("markets") or {},
+                        }
+                    },
+                    "bk_count": 1,
+                }
+                pos = len(result)
+                result.append(entry)
+                if jk:
+                    by_jk[jk] = pos
+                by_name[nk] = pos
+
+    # Build best odds across all bookmakers for each match
+    for m in result:
+        m["best"]       = _build_best_odds(m["bookmakers"])
+        m["market_count"] = sum(
+            len(bd.get("markets", {}))
+            for bd in m["bookmakers"].values()
+        )
+
+    return result
+
+
+def _build_best_odds(bookmakers: dict) -> dict:
+    """Compute best price per market/outcome across all bookmakers."""
+    best: dict = {}
+    for bk_slug, bd in bookmakers.items():
+        for mkt, outcomes in (bd.get("markets") or {}).items():
+            if not isinstance(outcomes, dict):
+                continue
+            best.setdefault(mkt, {})
+            for outcome, p in outcomes.items():
+                price = float(p.get("price") or p.get("odd") or p or 0) if p else 0
+                if price > 1.0:
+                    existing = best[mkt].get(outcome)
+                    if not existing or price > existing.get("odd", 0):
+                        best[mkt][outcome] = {"odd": price, "bk": bk_slug}
+    return best
 
 def _strip_to_local(matches: list[dict]) -> list[dict]:
     """Return matches with only SP/BT/OD bookmaker data (basic tier)."""
