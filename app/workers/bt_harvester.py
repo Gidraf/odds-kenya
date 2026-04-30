@@ -24,9 +24,17 @@ from typing import Any, Generator
 import httpx
 
 from app.workers.mappers.betika import get_market_slug
-from app.workers.mappers.shared import normalize_outcome   # <-- CHANGE
+from app.workers.mappers.shared import normalize_outcome
 
 logger = logging.getLogger(__name__)
+
+# Enable console debug logging
+DEBUG = True
+def _log(msg: str):
+    if DEBUG:
+        print(f"[BT DEBUG] {msg}")
+    logger.debug(msg)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CORRECT SPORT ID MAPPING (from Betika live sports endpoint)
@@ -68,6 +76,7 @@ def slug_to_bt_sport_id(slug: str) -> int:
 def bt_sport_to_slug(sport_id: int) -> str:
     return BT_SPORT_ID_TO_SLUG.get(sport_id, "soccer")
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPER: map days to Betika period_id (days >= 3 → all upcoming)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -79,12 +88,14 @@ def days_to_period_id(days: int) -> int:
         return -2      # Next 48hrs
     return 9           # All upcoming (covers > 1 month)
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPREHENSIVE SUB_TYPE_ID LISTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 _ALL_SUB_TYPE_IDS = ",".join(str(i) for i in range(1, 501))
 _LIVE_SUB_TYPE_IDS = "1,186,340"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HTTP HELPERS
@@ -100,25 +111,32 @@ HEADERS: dict[str, str] = {
 }
 
 def _get(url: str, params: dict | None = None, timeout: float = 8.0) -> dict | None:
+    _log(f"REQUEST: GET {url} params={params}")
     for attempt in range(3):
         try:
             r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout)
+            _log(f"RESPONSE: status={r.status_code}, content-length={len(r.content)}")
             if not r.is_success:
-                logger.warning("BT HTTP %s %s (attempt %d)", r.status_code, url, attempt + 1)
+                _log(f"HTTP {r.status_code} -> {url}")
                 if r.status_code >= 500:
                     return None
                 continue
+            # Log first 500 chars of response body
+            resp_text = r.text[:500] + ("..." if len(r.text) > 500 else "")
+            _log(f"RESPONSE BODY (first 500): {resp_text}")
             return r.json()
         except httpx.RequestError as exc:
-            logger.warning("BT request error %s (attempt %d): %s", url, attempt + 1, exc)
+            _log(f"Request error: {exc}")
         time.sleep(0.5)
     return None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MARKET PARSING – using shared outcome normaliser
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_all_inline_markets(raw_mkts: list[dict], sport_slug: str) -> dict[str, dict[str, float]]:
+    _log(f"Parsing {len(raw_mkts)} inline markets for {sport_slug}")
     result: dict[str, dict[str, float]] = {}
     for mkt in raw_mkts:
         sid = str(mkt.get("sub_type_id", ""))
@@ -132,27 +150,31 @@ def _parse_all_inline_markets(raw_mkts: list[dict], sport_slug: str) -> dict[str
             if val <= 1.0:
                 continue
             parsed_specs = o.get("parsed_special_bet_value") or {}
-            # Generate market slug using Betika‑specific mapper
             slug = get_market_slug(sport_slug, sid, parsed_specs, fallback_name=name)
-            # Normalise outcome using shared function (passing the market slug as context)
             outcome_key = normalize_outcome(slug, o.get("display", ""))
             if slug not in result:
                 result[slug] = {}
             result[slug][outcome_key] = val
+    _log(f"Parsed {len(result)} unique market slugs from inline markets")
     return result
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FULL MARKETS (via /match endpoint)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_full_markets(parent_match_id: str | int, sport_slug: str) -> dict[str, dict[str, float]]:
+    _log(f"Fetching full markets for parent_match_id={parent_match_id}, sport={sport_slug}")
     data = _get(f"{API_BASE}/match", params={"parent_match_id": str(parent_match_id)})
     if not data:
+        _log(f"No data returned for match {parent_match_id}")
         return {}
     raw_mkts = data.get("data") or []
+    _log(f"Got {len(raw_mkts)} markets for match {parent_match_id}")
     return _parse_all_inline_markets(raw_mkts, sport_slug)
 
 def enrich_matches_with_full_markets(matches: list[dict], max_workers: int = 8) -> list[dict]:
+    _log(f"Enriching {len(matches)} matches with full markets (workers={max_workers})")
     def _fetch(match: dict) -> dict:
         pid = match.get("bt_parent_id")
         sport_slug = match.get("sport", "soccer")
@@ -165,19 +187,24 @@ def enrich_matches_with_full_markets(matches: list[dict], max_workers: int = 8) 
         return match
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        return list(pool.map(_fetch, matches))
+        enriched = list(pool.map(_fetch, matches))
+    _log(f"Enrichment completed")
+    return enriched
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MATCH NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: int | None = None) -> dict | None:
+    _log(f"Normalising match from {source}: raw keys = {list(raw.keys())}")
     try:
         bt_sport_id = override_sport_id or int(raw.get("sport_id") or 14)
         match_id = str(raw.get("match_id") or raw.get("game_id") or "")
         parent_id = str(raw.get("parent_match_id") or match_id)
         betradar_id = str(raw.get("parent_match_id") or "")
         if not match_id:
+            _log("Skipping: no match_id")
             return None
 
         home = str(raw.get("home_team") or "").strip()
@@ -190,6 +217,8 @@ def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: 
             start_time = start_time.replace(" ", "T")
 
         sport_slug = bt_sport_to_slug(bt_sport_id)
+        _log(f"Sport mapping: raw_sport_id={bt_sport_id} -> slug={sport_slug}")
+
         is_live = source == "live"
         match_time = str(raw.get("match_time") or "").strip()
         event_status = str(raw.get("event_status") or "").strip()
@@ -221,6 +250,7 @@ def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: 
             except (TypeError, ValueError):
                 pass
 
+        _log(f"Match {match_id} normalised with {len(markets)} markets")
         return {
             "bt_match_id": match_id,
             "bt_parent_id": parent_id,
@@ -250,50 +280,77 @@ def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: 
             "market_count": len(markets),
         }
     except Exception as exc:
+        _log(f"Normalisation error: {exc}")
         logger.debug("BT match normalise error: %s", exc)
         return None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UPCOMING MATCHES (default 30 days)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# In bt_harvester.py, replace the function signature and add early break
-
 def fetch_upcoming_matches(
     sport_slug: str = "soccer",
     days: int = 30,
     max_pages: int = 30,
-    max_matches: int | None = None,   # NEW
     fetch_full: bool = True,
     max_workers: int = 8,
 ) -> list[dict]:
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
     period_id = days_to_period_id(days)
+    _log(f"Fetching upcoming: sport={sport_slug} -> bt_sport_id={bt_sport_id}, period_id={period_id}")
     all_matches: list[dict] = []
 
     for page in range(1, max_pages + 1):
-        # ... same API call ...
+        _log(f"Fetching page {page}")
+        params = {
+            "page": page,
+            "limit": 50,
+            "tab": "upcoming",
+            "sub_type_id": _ALL_SUB_TYPE_IDS,
+            "sport_id": bt_sport_id,
+            "sort_id": 2,
+            "period_id": period_id,
+            "esports": "false",
+        }
+        data = _get(f"{API_BASE}/matches", params=params, timeout=8.0)
+        if not data:
+            _log("No data returned from API")
+            break
+        raw = data.get("data") or []
+        meta = data.get("meta") or {}
+        total = int(meta.get("total") or 0)
+        _log(f"Page {page}: total={total}, received {len(raw)} raw matches")
+        if not raw:
+            _log("No raw matches on this page, breaking")
+            break
         for r in raw:
             norm = _normalise_match(r, source="upcoming")
             if norm:
                 all_matches.append(norm)
-                if max_matches and len(all_matches) >= max_matches:
-                    break
-        if max_matches and len(all_matches) >= max_matches:
+        _log(f"After page {page}, collected {len(all_matches)} normalised matches total")
+        limit = int(meta.get("limit") or 50)
+        if page * limit >= total:
+            _log(f"Reached last page (page*limit={page*limit} >= total={total})")
             break
 
+    _log(f"Collected {len(all_matches)} matches before market enrichment")
     if fetch_full and all_matches:
+        _log("Starting full market enrichment")
         all_matches = enrich_matches_with_full_markets(all_matches, max_workers=max_workers)
-        # If max_matches is set, limit again after enrichment
-        if max_matches and len(all_matches) > max_matches:
-            all_matches = all_matches[:max_matches]
+        _log(f"After enrichment, {len(all_matches)} matches")
 
+    logger.info("BT upcoming %s (days=%d, period_id=%d): %d matches", sport_slug, days, period_id, len(all_matches))
+    _log(f"FINAL: returning {len(all_matches)} matches")
     return all_matches
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE MATCHES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
+    _log(f"Fetching live matches for bt_sport_id={bt_sport_id}")
     params: dict[str, Any] = {
         "page": 1,
         "limit": 1000,
@@ -305,9 +362,11 @@ def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
 
     data = _get(f"{API_BASE}/matches", params=params, timeout=6.0)
     if not data:
+        _log("No data from live API")
         return []
 
     raw_matches = data.get("data") or []
+    _log(f"Live API returned {len(raw_matches)} raw events")
     results: list[dict] = []
     for raw in raw_matches:
         raw_sport_id = raw.get("sport_id")
@@ -322,9 +381,10 @@ def fetch_live_matches(bt_sport_id: int | None = None) -> list[dict]:
         norm = _normalise_match(raw, source="live", override_sport_id=raw_sport_id)
         if norm:
             results.append(norm)
-
+    _log(f"Live matches normalised: {len(results)}")
     logger.info("BT live: %d matches (sport_id=%s)", len(results), bt_sport_id or "all")
     return results
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STREAMING GENERATORS
@@ -341,6 +401,7 @@ def fetch_upcoming_stream(
 ) -> Generator[dict, None, None]:
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
     period_id = days_to_period_id(days)
+    _log(f"Streaming upcoming: sport={sport_slug}")
     count = 0
     for page in range(1, max_pages + 1):
         params = {
@@ -378,12 +439,14 @@ def fetch_upcoming_stream(
         limit = int(meta.get("limit") or 50)
         if page * limit >= total:
             break
+    _log(f"Stream finished, yielded {count} matches")
 
 def fetch_live_stream(sport_slug: str, **kwargs) -> Generator[dict, None, None]:
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
     matches = fetch_live_matches(bt_sport_id)
     for m in matches:
         yield m
+
 
 __all__ = [
     "fetch_upcoming_matches",
