@@ -31,7 +31,7 @@ from sqlalchemy import func, desc
 
 from flask import Blueprint, Response, request, stream_with_context
 
-bp_monitor = Blueprint("monitor", __name__, url_prefix="/api/monitor")
+bp_monitor = Blueprint("monitor", __name__, url_prefix="/api/monitor/debug/")
 
 LOG_DIR    = Path(os.environ.get("LOG_DIR", "logs"))
 CELERY_LOG = LOG_DIR / "celery.log"
