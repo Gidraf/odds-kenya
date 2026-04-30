@@ -20,14 +20,14 @@ from .betika_boxing_mapper import BetikaBoxingMapper
 from .betika_cricket_mapper import BetikaCricketMapper
 from .betika_darts_mapper import BetikaDartsMapper
 from .betika_efootball_mapper import BetikaEFootballMapper
-from .betika_floorball_mapper import BetikaFloorballMapper
-from .betika_football_mapper import BetikaFootballMapper
+# from .betika_floorball_mapper import BetikaFloorballMapper
+from .betika_football_mapper import BetikaSoccerMapper
 from .betika_futsal_mapper import BetikaFutsalMapper
 from .betika_handball_mapper import BetikaHandballMapper
 from .betika_ice_hockey_mapper import BetikaIceHockeyMapper
 from .betika_mma_mapper import BetikaMMAMapper
 from .betika_rugby_mapper import BetikaRugbyMapper
-from .betika_snookers_mapper import BetikaSnookersMapper
+from .betika_snookers_mapper import BetikaSnookerMapper
 from .betika_table_tennis_mapper import BetikaTableTennisMapper
 from .betika_tennis_mapper import BetikaTennisMapper
 from .betika_volleyball_mapper import BetikaVolleyballMapper
@@ -46,9 +46,9 @@ register_sport("cricket",         BetikaCricketMapper)
 register_sport("darts",           BetikaDartsMapper)
 register_sport("efootball",       BetikaEFootballMapper)
 register_sport("esoccer",         BetikaEFootballMapper)   # alias
-register_sport("floorball",       BetikaFloorballMapper)
-register_sport("football",        BetikaFootballMapper)
-register_sport("soccer",          BetikaFootballMapper)
+register_sport("floorball",       None)
+register_sport("football",        BetikaSoccerMapper)
+register_sport("soccer",          BetikaSoccerMapper)
 register_sport("futsal",          BetikaFutsalMapper)
 register_sport("handball",        BetikaHandballMapper)
 register_sport("ice-hockey",      BetikaIceHockeyMapper)
@@ -57,7 +57,7 @@ register_sport("mma",             BetikaMMAMapper)
 register_sport("rugby",           BetikaRugbyMapper)
 register_sport("rugby-union",     BetikaRugbyMapper)
 register_sport("rugby-league",    BetikaRugbyMapper)
-register_sport("snooker",         BetikaSnookersMapper)
+register_sport("snooker",         BetikaSnookerMapper)
 register_sport("table-tennis",    BetikaTableTennisMapper)
 register_sport("tennis",          BetikaTennisMapper)
 register_sport("volleyball",      BetikaVolleyballMapper)

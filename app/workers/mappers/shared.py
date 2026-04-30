@@ -10,6 +10,11 @@ Exports
   slug_with_line(base, raw_line)                       → "over_under_goals_2.5"
   normalize_outcome(market_slug, raw_key, display="") → canonical outcome key
 
+Optional registration for sport-specific outcome normalisers:
+  register_sport(sport_slug, mapper_class) → stores mapper.normalize_outcome
+  get_sport_normalizer(sport_slug)         → returns callable or None
+  normalize_outcome_with_sport(market_slug, raw_key, display, sport)
+
 Lookup tables kept here (single source of truth):
   _OUT_EXACT       — shortName → canonical key (covers every SP shortName)
   _SP_COMBO        — OV_1, 1GG, XNG … combo outcomes
@@ -23,7 +28,42 @@ Nothing in this file is bookmaker-specific.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable, Dict, Optional
+
+# =============================================================================
+# REGISTRY FOR SPORT-SPECIFIC OUTCOME NORMALISERS
+# =============================================================================
+
+_OUTCOME_NORMALIZERS: Dict[str, Callable] = {}
+
+def register_sport(sport_slug: str, mapper_class: type) -> None:
+    """
+    Register a sport-specific mapper class that provides a `normalize_outcome` method.
+    The method should have signature: (market_slug: str, raw_key: str, display: str) -> str.
+    """
+    if hasattr(mapper_class, "normalize_outcome"):
+        _OUTCOME_NORMALIZERS[sport_slug.lower()] = mapper_class.normalize_outcome
+
+def get_sport_normalizer(sport_slug: str) -> Optional[Callable]:
+    """Return the registered outcome normaliser for the given sport, or None."""
+    return _OUTCOME_NORMALIZERS.get(sport_slug.lower())
+
+def normalize_outcome_with_sport(
+    market_slug: str,
+    raw_key: str,
+    display: str = "",
+    sport: Optional[str] = None,
+) -> str:
+    """
+    Use sport-specific normalizer if registered and sport provided,
+    otherwise fall back to generic `normalize_outcome`.
+    """
+    if sport:
+        normalizer = get_sport_normalizer(sport)
+        if normalizer:
+            return normalizer(market_slug, raw_key, display)
+    # Fallback to existing generic function
+    return normalize_outcome(market_slug, raw_key, display)
 
 
 # =============================================================================
