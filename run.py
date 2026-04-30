@@ -1412,7 +1412,7 @@ def harvest_unified(days, max_matches, output_dir, sport):
 # CLI: Harvest all (bookmakers individually + unified)
 # -----------------------------------------------------------------------------
 
-@flask_app.cli.commadn("harvest_all")
+@flask_app.cli.command("harvest_all")
 @click.option("--days", default=7, help="Days ahead")
 @click.option("--max-matches", default=None, type=int, help="Max matches per sport per bookmaker")
 @click.option("--output-dir", default="harvest_dumps", help="Directory")
