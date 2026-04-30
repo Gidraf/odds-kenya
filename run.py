@@ -1638,281 +1638,153 @@ VIEW_TEMPLATE = """
 
 
 
-"""
-app/cli/seed_accounts.py
-========================
-Flask CLI helpers for dev/QA — create tier test accounts and print
-ready-to-use JWT tokens without touching email verification.
-
-Registration (add to your app factory):
-    from app.cli.seed_accounts import register_cli
-    register_cli(app)
-
-Commands
---------
-flask accounts seed          — upsert all 5 test accounts
-flask accounts token <email> — print a fresh access token (24 h)
-flask accounts list          — show all test accounts + tiers
-flask accounts delete <email>— remove a specific test account
-"""
-import sys
-import click
-from flask import Flask
-from flask.cli import AppGroup
-
-# ─── Test account definitions ────────────────────────────────────────────────
+# ─── Test account definitions ─────────────────────────────────────────────────
 TEST_ACCOUNTS = [
-    {
-        "email":        "basic@oddskenya.com",
-        "display_name": "Basic Tester",
-        "password":     "Test1234!",
-        "tier":         "basic",
-    },
-    {
-        "email":        "pro@oddskenya.com",
-        "display_name": "Pro Tester",
-        "password":     "Test1234!",
-        "tier":         "pro",
-    },
-    {
-        "email":        "premium@oddskenya.com",
-        "display_name": "Premium Tester",
-        "password":     "Test1234!",
-        "tier":         "premium",
-    },
-    {
-        "email":        "enterprise@oddskenya.com",
-        "display_name": "Enterprise Tester",
-        "password":     "Test1234!",
-        "tier":         "premium",   # map enterprise → premium tier
-    },
-    {
-        "email":        "admin@oddskenya.com",
-        "display_name": "Admin Tester",
-        "password":     "Test1234!",
-        "tier":         "admin",
-    },
+    {"email": "basic@oddskenya.com",      "display_name": "Basic Tester",      "password": "Test1234!", "tier": "basic"},
+    {"email": "pro@oddskenya.com",        "display_name": "Pro Tester",        "password": "Test1234!", "tier": "pro"},
+    {"email": "premium@oddskenya.com",    "display_name": "Premium Tester",    "password": "Test1234!", "tier": "premium"},
+    {"email": "enterprise@oddskenya.com", "display_name": "Enterprise Tester", "password": "Test1234!", "tier": "premium"},
+    {"email": "admin@oddskenya.com",      "display_name": "Admin Tester",      "password": "Test1234!", "tier": "admin"},
 ]
 
-_TIER_COLOR = {
-    "basic":   "\033[94m",   # blue
-    "pro":     "\033[92m",   # green
-    "premium": "\033[93m",   # yellow
-    "admin":   "\033[95m",   # magenta
-}
-_RESET = "\033[0m"
-_BOLD  = "\033[1m"
-_RED   = "\033[91m"
-_DIM   = "\033[2m"
+_TIER_COLOR = {"basic": "\033[94m", "pro": "\033[92m", "premium": "\033[93m", "admin": "\033[95m"}
+_RESET = "\033[0m"; _BOLD = "\033[1m"; _RED = "\033[91m"; _DIM = "\033[2m"
 
-
-def _color(tier: str, text: str) -> str:
+def _color(tier, text):
     return f"{_TIER_COLOR.get(tier, '')}{text}{_RESET}"
 
-
-# ─── Core helpers ─────────────────────────────────────────────────────────────
-
-def _upsert_account(cfg: dict, verbose: bool = True) -> "Customer":  # type: ignore[name-defined]
+def _upsert_account(cfg, verbose=True):
     from app.extensions import db
     from app.models.customer import Customer
     from app.models.subscriptions import Subscription
 
-    email = cfg["email"].lower().strip()
-    user  = Customer.query.filter_by(email=email).first()
+    email  = cfg["email"].lower().strip()
+    tier   = cfg["tier"]
+    user   = Customer.query.filter_by(email=email).first()
 
     if user:
-        # Update tier and verify status — idempotent
+        # Refresh password + verification — never touch Customer.tier (it's on Subscription)
         user.is_active   = True
         user.is_verified = True
-        user.tier        = cfg["tier"]
         user.set_password(cfg["password"])
         action = "updated"
     else:
-        user = Customer(
-            email        = email,
-            display_name = cfg["display_name"],
-            is_active    = True,
-            is_verified  = True,   # ← bypass email verification
-            tier         = cfg["tier"],
-        )
+        # Build Customer with only the columns that actually exist on the model
+        kwargs = {"email": email, "is_active": True, "is_verified": True}
+        # display_name is optional — skip silently if the column doesn't exist
+        try:
+            user = Customer(display_name=cfg["display_name"], **kwargs)
+        except TypeError:
+            user = Customer(**kwargs)
         user.set_password(cfg["password"])
         db.session.add(user)
-        db.session.flush()   # get user.id for FK
-
-        # Create or update subscription to match the tier
-        Subscription.start_trial(user.id, cfg["tier"])
+        db.session.flush()   # need user.id before FK writes
         action = "created"
+
+    db.session.flush()
+
+    # Tier is stored on Subscription, not Customer
+    sub = Subscription.query.filter_by(user_id=user.id).first()
+    if sub:
+        sub.tier       = tier
+        sub.is_active  = True
+        sub.expires_at = None   # never expires for test accounts
+    else:
+        Subscription.start_trial(user.id, tier)
+        sub = Subscription.query.filter_by(user_id=user.id).first()
+        if sub:
+            sub.expires_at = None
 
     db.session.commit()
 
-    # Make sure subscription tier is in sync (for existing users)
-    sub = getattr(user, "subscription", None)
-    if sub and sub.tier != cfg["tier"]:
-        sub.tier = cfg["tier"]
-        db.session.commit()
-
     if verbose:
-        tag   = _color(cfg["tier"], f"[{cfg['tier'].upper():>9}]")
+        tag   = _color(tier, f"[{tier.upper():>9}]")
         label = "✓ created" if action == "created" else "↻ updated"
         click.echo(f"  {tag}  {label:12}  {email}")
 
-    return user
-
-
-def _issue_token_for(user_id: int) -> str:
+def _issue_token_for(user_id):
     from app.utils.customer_jwt_helpers import _issue_token
     return _issue_token(user_id, "access")
 
 
-# ─── CLI group ────────────────────────────────────────────────────────────────
+# ─── CLI commands (run as: flask seed-accounts / flask get-token / etc.) ──────
 
-
-@flask_app.cli.command("seed")
-@click.option("--quiet", "-q", is_flag=True, help="Suppress per-account output")
-def seed_accounts(quiet: bool):
-    """
-    Upsert all 5 test accounts (basic / pro / premium / enterprise / admin).
-    All accounts are pre-verified — no email confirmation needed.
-    """
+@flask_app.cli.command("seed-accounts")
+@click.option("--quiet", "-q", is_flag=True)
+def seed_accounts(quiet):
+    """Create/update all 5 tier test accounts (no email verification needed)."""
     click.echo(f"\n{_BOLD}Seeding test accounts…{_RESET}\n")
     for cfg in TEST_ACCOUNTS:
         _upsert_account(cfg, verbose=not quiet)
+    click.echo(f"\n{_BOLD}Done.{_RESET}  Password for all: {_DIM}Test1234!{_RESET}\n")
+    click.echo("  flask get-token pro@oddskenya.com")
+    click.echo("  flask list-accounts\n")
 
-    click.echo(f"\n{_BOLD}Done.{_RESET}  Default password for all accounts: {_DIM}Test1234!{_RESET}\n")
-    click.echo("  Get a token:  flask accounts token <email>")
-    click.echo("  List all:     flask accounts list\n")
-
-
-@flask_app.cli.command("token")
+@flask_app.cli.command("get-token")
 @click.argument("email")
-@click.option("--curl", is_flag=True, help="Print a ready-to-paste curl command")
-@click.option("--base-url", default="http://localhost:5000", show_default=True, help="Base URL for curl output")
-def get_token(email: str, curl: bool, base_url: str):
-    """
-    Print a fresh 24-hour access JWT for the given test account.
-
-    \b
-    Examples:
-      flask accounts token pro@oddskenya.com
-      flask accounts token pro@oddskenya.com --curl
-      flask accounts token pro@oddskenya.com --curl --base-url https://oddskenya.com
-    """
+@click.option("--curl", is_flag=True, help="Also print curl examples")
+@click.option("--base-url", default="http://localhost:5000", show_default=True)
+def get_token(email, curl, base_url):
+    """Print a fresh 24-hour JWT for a test account."""
     from app.models.customer import Customer
-
     user = Customer.query.filter_by(email=email.lower().strip()).first()
     if not user:
-        click.echo(f"\n{_RED}✗ Account not found: {email}{_RESET}")
-        click.echo("  Run  flask accounts seed  first.\n")
+        click.echo(f"\n{_RED}✗ Not found: {email}  →  run flask seed-accounts first{_RESET}\n")
         sys.exit(1)
-
     if not user.is_verified:
-        # Auto-fix: mark verified so the token is immediately usable
-        user.is_verified = True
         from app.extensions import db
+        user.is_verified = True
         db.session.commit()
-
     token = _issue_token_for(user.id)
-    tier  = user.tier or "basic"
-
+    tier  = (user.tier or "basic")
     click.echo(f"\n{_BOLD}Account:{_RESET}  {_color(tier, email)}  {_color(tier, f'[{tier.upper()}]')}")
-    click.echo(f"{_BOLD}Token:{_RESET}    (valid 24 h)\n")
-    click.echo(f"  {token}\n")
-
+    click.echo(f"{_BOLD}Token:{_RESET}    (valid 24 h)\n\n  {token}\n")
     if curl:
         click.echo(f"{_BOLD}curl examples:{_RESET}\n")
-        click.echo(
-            f"  # Upcoming soccer matches\n"
-            f"  curl -H 'Authorization: Bearer {token}' \\\n"
-            f"    '{base_url}/odds/snapshot/upcoming/soccer'\n"
-        )
-        click.echo(
-            f"  # SSE stream (token in query param — EventSource limitation)\n"
-            f"  curl -N '{base_url}/odds/stream/upcoming/soccer?token={token}'\n"
-        )
-        click.echo(
-            f"  # Arbitrage list\n"
-            f"  curl -H 'Authorization: Bearer {token}' \\\n"
-            f"    '{base_url}/api/v1/arbitrage'\n"
-        )
-        click.echo(
-            f"  # Monitor stats\n"
-            f"  curl -H 'Authorization: Bearer {token}' \\\n"
-            f"    '{base_url}/api/monitor/stats'\n"
-        )
+        click.echo(f"  curl -H 'Authorization: Bearer {token}' '{base_url}/odds/snapshot/upcoming/soccer'\n")
+        click.echo(f"  curl -N '{base_url}/odds/stream/upcoming/soccer?token={token}'\n")
+        click.echo(f"  curl -H 'Authorization: Bearer {token}' '{base_url}/api/monitor/stats'\n")
 
-
-@flask_app.command("list")
+@flask_app.cli.command("list-accounts")
 def list_accounts():
-    """List all test accounts with their tier and verification status."""
+    """Show all test accounts with tier and verification status."""
     from app.models.customer import Customer
-
-    test_emails = {cfg["email"] for cfg in TEST_ACCOUNTS}
-    users = Customer.query.filter(Customer.email.in_(test_emails)).all()
-
+    emails = {c["email"] for c in TEST_ACCOUNTS}
+    users  = Customer.query.filter(Customer.email.in_(emails)).all()
     if not users:
-        click.echo(f"\n{_DIM}No test accounts found. Run: flask accounts seed{_RESET}\n")
+        click.echo(f"\n{_DIM}No test accounts found — run flask seed-accounts{_RESET}\n")
         return
-
-    click.echo(f"\n  {'EMAIL':<35} {'TIER':<10} {'VERIFIED':<10} {'ACTIVE'}")
-    click.echo("  " + "─" * 65)
+    click.echo(f"\n  {'EMAIL':<35} {'TIER':<10} {'VERIFIED':<10} ACTIVE")
+    click.echo("  " + "─" * 62)
     for u in sorted(users, key=lambda x: x.email):
-        tier     = u.tier or "basic"
-        verified = "✓" if u.is_verified else "✗ (run flask accounts seed)"
-        active   = "✓" if u.is_active  else "✗"
-        click.echo(
-            f"  {_color(tier, u.email):<44} "
-            f"{_color(tier, tier):<19} "
-            f"{verified:<10} {active}"
-        )
+        tier = u.tier or "basic"
+        click.echo(f"  {_color(tier, u.email):<44} {_color(tier, tier):<19} {'✓' if u.is_verified else '✗':<10} {'✓' if u.is_active else '✗'}")
     click.echo()
 
-
-@flask_app.command("delete")
+@flask_app.cli.command("delete-account")
 @click.argument("email")
-@click.confirmation_option(prompt="This permanently deletes the account. Continue?")
-def delete_account(email: str):
-    """Permanently delete a test account."""
+@click.confirmation_option(prompt="Permanently delete this account?")
+def delete_account(email):
+    """Permanently remove a test account."""
     from app.extensions import db
     from app.models.customer import Customer
-
     user = Customer.query.filter_by(email=email.lower().strip()).first()
     if not user:
-        click.echo(f"\n{_RED}✗ Not found: {email}{_RESET}\n")
-        sys.exit(1)
-
+        click.echo(f"\n{_RED}✗ Not found: {email}{_RESET}\n"); sys.exit(1)
     db.session.delete(user)
     db.session.commit()
     click.echo(f"\n  ✓ Deleted {email}\n")
 
-
-# ─── Login shortcut (prints token from email+password) ───────────────────────
-
-@flask_app.command("login")
+@flask_app.cli.command("test-login")
 @click.argument("email")
 @click.option("--password", default="Test1234!", show_default=True)
-def cli_login(email: str, password: str):
-    """
-    Simulate a login and print the token — useful for scripting.
-
-    \b
-    flask accounts login pro@oddskenya.com
-    flask accounts login pro@oddskenya.com --password MyOtherPass
-    """
+def cli_login(email, password):
+    """Prints just the raw token — capture with TOKEN=$(flask test-login pro@oddskenya.com)."""
     from app.models.customer import Customer
-
     user = Customer.query.filter_by(email=email.lower().strip(), is_active=True).first()
-    if not user:
-        click.echo(f"\n{_RED}✗ Account not found or inactive: {email}{_RESET}\n")
-        sys.exit(1)
-
-    if not user.check_password(password):
-        click.echo(f"\n{_RED}✗ Wrong password for {email}{_RESET}\n")
-        sys.exit(1)
-
-    token = _issue_token_for(user.id)
-    # Compact output — easy to capture with $() in shell scripts
-    click.echo(token)
-
+    if not user or not user.check_password(password):
+        click.echo(f"{_RED}✗ Bad credentials{_RESET}", err=True); sys.exit(1)
+    click.echo(_issue_token_for(user.id))
 
 # ─── Registration helper ──────────────────────────────────────────────────────
 

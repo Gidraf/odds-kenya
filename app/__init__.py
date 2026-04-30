@@ -105,11 +105,11 @@ def create_app() -> Flask:
     from app.api import bp_public, bp_matches, bp_live, bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers
     from app.views.odds.admin import bp_admin as debug_admin
 
-    from app.api.odds_stream import bp_stream, bp_monitor
+    from app.api.odds_stream import bp_stream, bp_monitor as bp_monitor_new
     
     
     flask_app.register_blueprint(bp_stream)
-    flask_app.register_blueprint(bp_monitor)
+    flask_app.register_blueprint(bp_monitor_new)
     flask_app.register_blueprint(bp_sbo)
     flask_app.register_blueprint(mapping_bp)
     flask_app.register_blueprint(bp_vendor,     url_prefix="/api/vendors")
