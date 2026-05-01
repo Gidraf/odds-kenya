@@ -49,28 +49,41 @@ from app.workers.tasks_bt_od import _fetch_bt_sport, _fetch_od_sport
 
 logger = get_task_logger(__name__)
 
-_LOCAL_SPORTS = [
+
+
+_SP_SPORTS = [
+    "soccer",            # SP id=1   (1476 matches)
+    "basketball",        # SP id=2
+    "tennis",            # SP id=5
+    "ice-hockey",        # SP id=4
+    "volleyball",        # SP id=23
+    "cricket",           # SP id=21
+    "rugby",             # SP id=12
+    "table-tennis",      # SP id=20
+    "handball",          # SP id=6
+    "baseball",          # SP id=3
+    "mma",               # SP id=117
+    "boxing",            # SP id=10
+    "darts",             # SP id=22
+    "esoccer",           # SP id=126
+]
+ 
+_BT_SPORTS = [
     "soccer", "basketball", "tennis", "ice-hockey",
     "volleyball", "cricket", "rugby", "table-tennis",
+    "darts", "handball", "mma", "boxing",
 ]
-
-_ALL_SPORTS: list[str] = [
-    "soccer",
-    "basketball",
-    "tennis",
-    "cricket",
-    "rugby",
-    "ice-hockey",
-    "volleyball",
-    "handball",
-    "table-tennis",
-    "baseball",
-    "mma",
-    "boxing",
-    "darts",
-    "american-football",
-    "esoccer",
+ 
+_OD_SPORTS = [
+    "soccer", "basketball", "tennis", "ice-hockey",
+    "volleyball", "cricket", "rugby", "boxing",
+    "handball", "mma", "table-tennis", "darts",
+    "american-football", "esoccer",
 ]
+ 
+# Union — used by bt_od_harvest_all_upcoming and beat schedule
+_ALL_SPORTS = sorted(set(_SP_SPORTS + _BT_SPORTS + _OD_SPORTS))
+ 
 
 _B2B_HARVEST_SPORTS = [
     "soccer", "basketball", "tennis", "ice-hockey",
@@ -86,6 +99,7 @@ _SBO_SPORTS = [
     "volleyball", "cricket", "rugby", "boxing",
     "handball", "mma", "table-tennis",
 ]
+
 
 PAGE_SIZE         = 15
 MAX_PAGES         = 6
@@ -280,16 +294,25 @@ def _is_near_term(start_time_str: str, days: int = _NEAR_TERM_DAYS) -> bool:
 )
 def bt_od_harvest_sport(self, sport_slug: str) -> dict:
     """
-    Fetch BT + OD for one sport concurrently and publish each independently.
-    BT and OD are written to their own Redis keys so _merge_bk_caches finds them.
-    Cross-bk merging happens at read time — we never drop single-bk matches here.
+    Fetch BT + OD for one sport concurrently.
+ 
+    CRITICAL DESIGN DECISION:
+    Each bookmaker is written to its OWN Redis key independently.
+    We NEVER discard single-BK matches or require SP cache to exist.
+    Cross-BK merging happens at READ time in odds_stream._get_unified().
+ 
+    This means:
+    - darts, handball, mma etc. get BT+OD data even if SP has no cache
+    - BT-only matches are stored (not discarded because SP doesn't have them)
+    - OD-only matches are stored (same reason)
+    - The stream merges everything at query time
     """
     from app.workers.redis_bus import publish_snapshot
     t0 = time.perf_counter()
-
+ 
     bt_matches: list[dict] = []
     od_matches: list[dict] = []
-
+ 
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             bt_fut = pool.submit(_fetch_bt_sport, sport_slug)
@@ -300,49 +323,86 @@ def bt_od_harvest_sport(self, sport_slug: str) -> dict:
         raise
     except Exception as exc:
         raise self.retry(exc=exc)
-
-    # ── Write each BK to its own key so the stream can find it ───────────────
-    # publish_snapshot writes to odds:bt:upcoming:{sport} AND triggers
-    # _rebuild_unified_snapshot which updates odds:unified:upcoming:{sport}
+ 
+    # ── Betika — write independently ──────────────────────────────────────────
     if bt_matches:
+        # Write to both key formats so _merge_bks finds it
         cache_set(f"bt:upcoming:{sport_slug}", {
-            "source": "betika", "sport": sport_slug, "mode": "upcoming",
-            "match_count": len(bt_matches), "harvested_at": _now_iso(),
-            "matches": bt_matches,
+            "source":      "betika",
+            "sport":       sport_slug,
+            "mode":        "upcoming",
+            "match_count": len(bt_matches),
+            "harvested_at": _now_iso(),
+            "matches":     bt_matches,
         }, ttl=3600)
-        publish_snapshot("bt", "upcoming", sport_slug, bt_matches, meta={"source": "betika"})
+ 
+        # publish_snapshot writes odds:bt:upcoming:{sport} AND
+        # triggers _rebuild_unified_snapshot which updates odds:unified:upcoming:{sport}
+        # AND publishes to odds:all:upcoming:{sport}:updates (which the SSE listens to)
+        publish_snapshot("bt", "upcoming", sport_slug, bt_matches, meta={
+            "source": "betika",
+        })
+ 
         _upsert_and_chain(bt_matches, "Betika")
         _persist_bk_matches(bt_matches, "bt", sport_slug)
-
+ 
+        logger.info("[bt_od] %s BT: wrote %d matches to Redis + DB", sport_slug, len(bt_matches))
+ 
+    # ── OdiBets — write independently ─────────────────────────────────────────
     if od_matches:
         cache_set(f"od:upcoming:{sport_slug}", {
-            "source": "odibets", "sport": sport_slug, "mode": "upcoming",
-            "match_count": len(od_matches), "harvested_at": _now_iso(),
-            "matches": od_matches,
+            "source":      "odibets",
+            "sport":       sport_slug,
+            "mode":        "upcoming",
+            "match_count": len(od_matches),
+            "harvested_at": _now_iso(),
+            "matches":     od_matches,
         }, ttl=3600)
-        publish_snapshot("od", "upcoming", sport_slug, od_matches, meta={"source": "odibets"})
+ 
+        publish_snapshot("od", "upcoming", sport_slug, od_matches, meta={
+            "source": "odibets",
+        })
+ 
         _upsert_and_chain(od_matches, "OdiBets")
         _persist_bk_matches(od_matches, "od", sport_slug)
-
+ 
+        logger.info("[bt_od] %s OD: wrote %d matches to Redis + DB", sport_slug, len(od_matches))
+ 
+    if not bt_matches and not od_matches:
+        logger.warning("[bt_od] %s: both BT and OD returned empty", sport_slug)
+ 
     latency = int((time.perf_counter() - t0) * 1000)
-
+ 
     _publish(WS_CHANNEL, {
-        "event": "odds_updated", "source": "bt_od", "sport": sport_slug,
-        "bt_count": len(bt_matches), "od_count": len(od_matches),
-        "latency_ms": latency, "ts": _now_iso(),
+        "event":    "odds_updated",
+        "source":   "bt_od",
+        "sport":    sport_slug,
+        "bt_count": len(bt_matches),
+        "od_count": len(od_matches),
+        "latency_ms": latency,
+        "ts":       _now_iso(),
     })
-
-    logger.info(
-        "[bt_od] %s: bt=%d od=%d latency=%dms",
-        sport_slug, len(bt_matches), len(od_matches), latency,
-    )
+ 
     return {
-        "ok": True, "sport": sport_slug,
-        "bt_count": len(bt_matches), "od_count": len(od_matches),
+        "ok":       True,
+        "sport":    sport_slug,
+        "bt_count": len(bt_matches),
+        "od_count": len(od_matches),
         "latency_ms": latency,
     }
 
-
+@celery.task(
+    name="tasks.bt_od.harvest_all_upcoming",
+    soft_time_limit=60,
+    time_limit=90,
+)
+def bt_od_harvest_all_upcoming() -> dict:
+    """Dispatch bt_od_harvest_sport for every sport BT or OD covers."""
+    sigs = [bt_od_harvest_sport.s(s) for s in _ALL_SPORTS]
+    group(sigs).apply_async(queue="harvest")
+    logger.info("[bt_od:all] dispatched %d sports", len(sigs))
+    return {"dispatched": len(sigs), "sports": _ALL_SPORTS}
+ 
 # =============================================================================
 # REGISTRY PIPELINE
 # =============================================================================
@@ -769,7 +829,7 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
 
 @celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
 def sp_harvest_all_upcoming() -> dict:
-    sigs = [sp_harvest_sport.s(s, SP_MAX_MATCHES) for s in _LOCAL_SPORTS]
+    sigs = [sp_harvest_sport.s(s, SP_MAX_MATCHES) for s in _SP_SPORTS]
     group(sigs).apply_async(queue="harvest")
     return {"dispatched": len(sigs)}
 
@@ -1052,7 +1112,7 @@ def bt_enrich_sport(self, sport_slug: str, matches: list[dict]) -> dict:
 
 @celery.task(name="tasks.bt.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
 def bt_harvest_all_upcoming() -> dict:
-    sigs = [bt_harvest_sport.s(s, BT_MAX_MATCHES) for s in _LOCAL_SPORTS]
+    sigs = [bt_harvest_sport.s(s, BT_MAX_MATCHES) for s in _SP_SPORTS]
     group(sigs).apply_async(queue="harvest")
     return {"dispatched": len(sigs)}
 
@@ -1122,7 +1182,7 @@ def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
 
 @celery.task(name="tasks.od.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
 def od_harvest_all_upcoming() -> dict:
-    sigs = [od_harvest_sport.s(s) for s in _LOCAL_SPORTS]
+    sigs = [od_harvest_sport.s(s) for s in _SP_SPORTS]
     group(sigs).apply_async(queue="harvest")
     return {"dispatched": len(sigs)}
 
