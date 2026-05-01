@@ -758,7 +758,7 @@ function filterJobs(v){jSearch=v;renderJobs();}
 // ─── Report polling ───────────────────────────────────────────────────
 async function poll(){
   try{
-    const d=await(await fetch("/api/monitor/report")).json();
+    const d=await(await fetch("/api/monitor/debug/report")).json();
     if(!d.ok)return;
     const h=d.overall?.healthy;
     const p=document.getElementById("hpill");
@@ -775,7 +775,7 @@ async function poll(){
 }
 async function pollBeat(){
   try{
-    const d=await(await fetch("/api/monitor/beat")).json();
+    const d=await(await fetch("/api/monitor/debug/beat")).json();
     if(d.ok)renderBeat(d.tasks);
   }catch(e){}
 }
@@ -1103,7 +1103,7 @@ let currentDetail = null;
 
 async function loadSports() {
     try {
-        const res = await fetch('/api/monitor/sports');
+        const res = await fetch('/api/monitor/debug/sports');
         const data = await res.json();
         if (data.ok) {
             const select = document.getElementById('sport-select');
@@ -1121,7 +1121,7 @@ async function loadCompetitions() {
     const sport = document.getElementById('sport-select').value;
     const country = document.getElementById('country-select').value;
     const hasMatches = document.getElementById('has-matches-checkbox').checked;
-    let url = '/api/monitor/competitions?limit=200';
+    let url = '/api/monitor/debug/competitions?limit=200';
     if (sport) url += `&sport_name=${encodeURIComponent(sport)}`;
     if (country) url += `&country_name=${encodeURIComponent(country)}`;
     if (hasMatches) url += `&has_matches=true`;
@@ -1170,7 +1170,7 @@ async function loadCompetitionDetail(compId) {
     const area = document.getElementById('content-area');
     area.innerHTML = '<div class="loading">Loading competition details...</div>';
     try {
-        const res = await fetch(`/api/monitor/competition/${compId}`);
+        const res = await fetch(`/api/monitor/debug/competition/${compId}`);
         const data = await res.json();
         if (data.ok) {
             currentDetail = data;
@@ -1249,7 +1249,7 @@ async function loadTeamDetail(teamId) {
     const area = document.getElementById('content-area');
     area.innerHTML = '<div class="loading">Loading team details...</div>';
     try {
-        const res = await fetch(`/api/monitor/team/${teamId}`);
+        const res = await fetch(`/api/monitor/debug/team/${teamId}`);
         const data = await res.json();
         if (data.ok) {
             renderTeamDetail(data);
@@ -1283,7 +1283,7 @@ async function loadCountryDetail(countryId) {
     const area = document.getElementById('content-area');
     area.innerHTML = '<div class="loading">Loading country details...</div>';
     try {
-        const res = await fetch(`/api/monitor/country/${countryId}`);
+        const res = await fetch(`/api/monitor/debug/country/${countryId}`);
         const data = await res.json();
         if (data.ok) {
             renderCountryDetail(data);
@@ -1323,7 +1323,7 @@ async function loadTeamsList() {
     const area = document.getElementById('content-area');
     area.innerHTML = '<div class="loading">Loading top 100 teams...</div>';
     try {
-        const res = await fetch('/api/monitor/competitions?limit=1'); // fake to get sport filter
+        const res = await fetch('/api/monitor/debug/competitions?limit=1'); // fake to get sport filter
         // Actually we need a teams endpoint – use country filter? For simplicity, we'll load by sport from competition list
         // Better: load all competitions then extract unique teams? Not efficient.
         // We'll just redirect to a fallback: show note.
@@ -1343,7 +1343,7 @@ async function loadCountriesList() {
     const area = document.getElementById('content-area');
     area.innerHTML = '<div class="loading">Loading countries...</div>';
     try {
-        const res = await fetch('/api/monitor/competitions?limit=200');
+        const res = await fetch('/api/monitor/debug/competitions?limit=200');
         const data = await res.json();
         if (data.ok) {
             const countries = {};
