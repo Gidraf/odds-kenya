@@ -2244,7 +2244,7 @@ COUNTRIES = [
 
 def _seed_countries(reset: bool = False) -> dict[str, int]:
     """Seed countries table. Returns {code: id} map."""
-    from app.models.bookmakers_model import Country
+    from app.models.bookmakers_model import Countries as Country
     id_map: dict[str, int] = {}
     seeded = failed = 0
 

@@ -118,7 +118,7 @@ class Bookmaker(db.Model):
 # COUNTRY
 # =============================================================================
 
-class Country(db.Model):
+class Countries(db.Model):
     __tablename__ = "bk_countries"
 
     id           = db.Column(db.Integer,    primary_key=True)
@@ -165,12 +165,13 @@ class BookmakerCountry(db.Model):
     min_deposit    = db.Column(db.Numeric(12, 2))
     max_deposit    = db.Column(db.Numeric(12, 2))
     min_withdrawal = db.Column(db.Numeric(12, 2))
+    
 
     # Metadata
     notes          = db.Column(db.Text)
 
     bookmaker      = db.relationship("Bookmaker",       back_populates="countries")
-    country        = db.relationship("Country",         back_populates="bookmakers")
+    country        = db.relationship("Countries",         back_populates="bookmakers")
 
     __table_args__ = (
         db.UniqueConstraint("bookmaker_id", "country_id", name="uq_bk_country"),

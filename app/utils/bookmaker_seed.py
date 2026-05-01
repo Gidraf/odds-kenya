@@ -12,7 +12,7 @@ Usage:
   flask market-failures              # show top failing markets
   flask harvest-health               # show last harvest per BK/sport
 """
-from __future__ import annotations
+
 import click
 from flask import current_app
 from app.extensions import db
