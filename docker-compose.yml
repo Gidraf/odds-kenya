@@ -89,7 +89,6 @@ services:
     container_name: odds-kenya-web-1
     build: .
     command: >
-      command: >
       gunicorn -k gevent -w 1 -b 0.0.0.0:5000
       --timeout 300
       --keep-alive 5
