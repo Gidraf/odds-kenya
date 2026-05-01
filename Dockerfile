@@ -19,8 +19,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt gunicorn ge
 # ============================================================
 FROM python:3.11-slim
 
-# Create a non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Create a non-root user WITH a home directory
+# -m creates /home/appuser, -d sets the home directory
+RUN groupadd -r appuser && useradd -r -g appuser -m -d /home/appuser appuser
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -52,10 +53,11 @@ COPY --chown=appuser:appuser . .
 # Switch to non-root user
 USER appuser
 
-# Healthcheck
+# Healthcheck (assumes your app has a /health endpoint)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:5000/health || exit 1
 
 EXPOSE 5000
 
+# Run gunicorn with the correct application object: "flask_app" from run.py
 CMD ["gunicorn", "-k", "gevent", "-w", "4", "--graceful-timeout", "30", "-b", "0.0.0.0:5000", "run:flask_app"]
