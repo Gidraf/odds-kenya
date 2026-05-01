@@ -5,7 +5,7 @@ from app.extensions import init_celery
 
 def make_celery() -> Celery:
     from flask import current_app
-    _app = current_app._get_current_object()  # avoid proxy issues
+    _app = current_app()  # avoid proxy issues
     app = init_celery(_app)
     app.conf.update(
         task_serializer          = "json",
