@@ -1,7 +1,6 @@
 # app/workers/celery_app.py
 from __future__ import annotations
 import os
-f
 from app.extensions import init_celery
 
 def make_celery() -> Celery:
