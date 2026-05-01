@@ -395,9 +395,11 @@ def bt_od_harvest_sport(self, sport_slug: str) -> dict:
 
         sp_matches = _fetch_sp_cache(sport_slug)
 
-    except SoftTimeLimitExceeded:
+    except SoftTimeLimitExceeded as e:
+        logger.error(f"Failed to load bookmakers: {e}")
         raise
     except Exception as exc:
+        logger.error(f"Failed to load bookmakers: {e}")
         raise self.retry(exc=exc)
 
     # Match across bookmakers
