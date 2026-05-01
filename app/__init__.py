@@ -104,6 +104,7 @@ def create_app() -> Flask:
     from app.views.customer.bk_streams import bp_bk_streams
     from app.api import bp_public, bp_matches, bp_live, bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers
     from app.views.odds.admin import bp_admin as debug_admin
+    from app.api.notifications import bp_notify
 
     from app.api.odds_stream import bp_stream, bp_monitor as bp_monitor_new
     
@@ -139,13 +140,14 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_competitions)
     flask_app.register_blueprint(bp_bookmakers)
     flask_app.register_blueprint(debug_admin)
+    flask_app.register_blueprint(bp_notify)
     # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,
-            BookmakerEntityValue, BookmakerPayment, BookmakerEntityMap, BookmakerMatchLink
+            BookmakerEntityValue, BookmakerPayment, BookmakerEntityMap, BookmakerMatchLink, HarvestJob, Country, BookmakerCountry, MarketFailure, 
         )
         from app.models.research_model import (
             ResearchSession, ResearchFinding, ResearchEndpoint,

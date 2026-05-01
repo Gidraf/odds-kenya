@@ -1,33 +1,17 @@
 """
 app/workers/tasks_upcoming.py
 ==============================
-SP is the sole source of truth.  BT and OD are enriched directly using
-the betradar_id that SP stamps on every match — no list fetching required.
+All harvest tasks for SP, BT, OD, B2B.
 
-Flow
-─────
-  sp_harvest_sport(sport_slug)
-    → fetches SP matches, persists them
-    → dispatches sp_cross_bk_enrich  (10 s countdown)
-    → dispatches sp_enrich_analytics (60 s countdown)
-    → dispatches tasks.bt_od.harvest_sport (30 s countdown)
-         ↳ reads SP cache (now warm), fetches BT+OD by team name,
-           persists only matches in 2+ bookmakers
-
-  sp_cross_bk_enrich(sport_slug)
-    → reads SP cache
-    → for each match with betradar_id (parallel, 8 workers):
-        BT: GET api.betika.com/v1/uo/match?parent_match_id={betradar_id}
-        OD: GET api.odi.site/sportsbook/v1?resource=sportevent&id={betradar_id}
-    → NO list fetch, NO lookup tables
-
-  sp_enrich_analytics(sport_slug)
-    → reads SP cache, fetches Sportradar stats per betradar_id
-
-BT / OD standalone tasks are kept for manual triggering only.
-They are NOT in the beat schedule and NOT called at startup.
+Key design decisions:
+  1. Each BK writes to its own Redis key independently.
+     Cross-BK merging happens at READ TIME in odds_stream._get_unified().
+  2. No SP dependency in bt_od_harvest_sport.
+     BT/OD data for darts, handball, mma etc. is written even if SP has no cache.
+  3. canonical sport slugs only — no aliases (soccer not football, ice-hockey not icehockey).
+  4. HarvestJob is written per task for monitoring via flask harvest-health.
+  5. MarketFailure is recorded on parse errors for monitoring via flask market-failures.
 """
-
 from __future__ import annotations
 
 import json
@@ -39,92 +23,97 @@ from calendar import monthrange
 from celery import group
 from celery.utils.log import get_task_logger
 from celery.exceptions import SoftTimeLimitExceeded
+
 from app.extensions import celery
 from app.workers.celery_tasks import (
     cache_set, cache_get, _now_iso, _publish,
-    _upsert_and_chain, _extract_betradar_id, _normalise_sport_name,
-    _get_or_create_bookmaker,_redis
+    _upsert_and_chain, _extract_betradar_id,
+    _get_or_create_bookmaker, _redis,
 )
-from app.workers.tasks_bt_od import _fetch_bt_sport, _fetch_od_sport, bt_od_harvest_sport
 
 logger = get_task_logger(__name__)
 
-
+# =============================================================================
+# CANONICAL SPORT LISTS — single source of truth, no aliases
+# =============================================================================
 
 _SP_SPORTS = [
-    "soccer",            # SP id=1   (1476 matches)
-    "basketball",        # SP id=2
-    "tennis",            # SP id=5
-    "ice-hockey",        # SP id=4
-    "volleyball",        # SP id=23
-    "cricket",           # SP id=21
-    "rugby",             # SP id=12
-    "table-tennis",      # SP id=20
-    "handball",          # SP id=6
-    "baseball",          # SP id=3
-    "mma",               # SP id=117
-    "boxing",            # SP id=10
-    "darts",             # SP id=22
-    "esoccer",           # SP id=126
+    "soccer", "basketball", "tennis", "ice-hockey", "volleyball",
+    "cricket", "rugby", "table-tennis", "handball", "baseball",
+    "mma", "boxing", "darts", "esoccer",
 ]
- 
+
 _BT_SPORTS = [
-    "soccer", "basketball", "tennis", "ice-hockey",
-    "volleyball", "cricket", "rugby", "table-tennis",
-    "darts", "handball", "mma", "boxing",
+    "soccer", "basketball", "tennis", "ice-hockey", "volleyball",
+    "cricket", "rugby", "table-tennis", "darts", "handball", "mma", "boxing",
 ]
- 
+
 _OD_SPORTS = [
-    "soccer", "basketball", "tennis", "ice-hockey",
-    "volleyball", "cricket", "rugby", "boxing",
-    "handball", "mma", "table-tennis", "darts",
-    "american-football", "esoccer",
+    "soccer", "basketball", "tennis", "ice-hockey", "volleyball",
+    "cricket", "rugby", "boxing", "handball", "mma", "table-tennis",
+    "darts", "american-football", "esoccer",
 ]
- 
-# Union — used by bt_od_harvest_all_upcoming and beat schedule
-_ALL_SPORTS = sorted(set(_SP_SPORTS + _BT_SPORTS + _OD_SPORTS))
- 
 
-_B2B_HARVEST_SPORTS = [
-    "soccer", "basketball", "tennis", "ice-hockey",
-    "volleyball", "cricket", "rugby", "table-tennis",
-    "darts", "handball",
-]
 _B2B_SPORTS = [
-    "Football", "Basketball", "Tennis", "Ice Hockey",
-    "Volleyball", "Cricket", "Rugby", "Table Tennis",
-]
-_SBO_SPORTS = [
-    "soccer", "basketball", "tennis", "ice-hockey",
-    "volleyball", "cricket", "rugby", "boxing",
-    "handball", "mma", "table-tennis",
+    "soccer", "basketball", "tennis", "ice-hockey", "volleyball",
+    "cricket", "rugby", "table-tennis", "darts", "handball",
 ]
 
+# Union of all — used by beat schedule
+_ALL_SPORTS = sorted(set(_SP_SPORTS + _BT_SPORTS + _OD_SPORTS))
 
-PAGE_SIZE         = 15
-MAX_PAGES         = 6
-WS_CHANNEL        = "odds:updates"
-ARB_CHANNEL       = "arb:updates"
-EV_CHANNEL        = "ev:updates"
-SP_MAX_MATCHES    = 3_000
-BT_MAX_MATCHES    = 3_000   # manual only
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+PAGE_SIZE        = 15
+WS_CHANNEL       = "odds:updates"
+SP_MAX_MATCHES   = 3_000
 _CROSS_BK_WORKERS = 8
-_ANALYTICS_TTL    = 86_400
-_NEAR_TERM_DAYS   = 7
+_ANALYTICS_TTL   = 86_400
 
 _BK_NAMES: dict[str, str] = {
-    "sp":  "SportPesa", "bt": "Betika",
-    "od":  "OdiBets",   "b2b": "1xBet", "sbo": "SBO",
+    "sp": "SportPesa", "bt": "Betika", "od": "OdiBets",
+    "b2b": "1xBet", "1xbet": "1xBet", "22bet": "22Bet",
+    "betwinner": "Betwinner", "melbet": "Melbet",
+    "megapari": "Megapari", "helabet": "Helabet", "paripesa": "Paripesa",
 }
+
 _SPORT_SLUG_TO_DB: dict[str, str] = {
-    "soccer":        "Soccer",       "football":    "Soccer",
-    "basketball":    "Basketball",   "tennis":      "Tennis",
-    "ice-hockey":    "Ice Hockey",   "volleyball":  "Volleyball",
-    "cricket":       "Cricket",      "rugby":       "Rugby",
-    "table-tennis":  "Table Tennis", "handball":    "Handball",
-    "mma":           "MMA",          "boxing":      "Boxing",
-    "darts":         "Darts",        "esoccer":     "eSoccer",
+    "soccer": "Soccer", "basketball": "Basketball", "tennis": "Tennis",
+    "ice-hockey": "Ice Hockey", "volleyball": "Volleyball", "cricket": "Cricket",
+    "rugby": "Rugby", "table-tennis": "Table Tennis", "handball": "Handball",
+    "mma": "MMA", "boxing": "Boxing", "darts": "Darts",
+    "esoccer": "eSoccer", "american-football": "American Football", "baseball": "Baseball",
 }
+
+
+# =============================================================================
+# HARVEST JOB LOGGING
+# =============================================================================
+
+def _log_harvest_job(bk_slug: str, sport_slug: str, mode: str,
+                     started_at: float, match_count: int,
+                     status: str = "ok", error: str = "") -> None:
+    """Write a HarvestJob row. Safe to call — swallows its own exceptions."""
+    try:
+        from app.models.bookmakers_model import HarvestJob, Bookmaker
+        from app.extensions import db
+        bk = Bookmaker.query.filter_by(slug=bk_slug).first()
+        db.session.add(HarvestJob(
+            bookmaker_id  = bk.id if bk else None,
+            sport_slug    = sport_slug,
+            mode          = mode,
+            started_at    = datetime.fromtimestamp(started_at, tz=timezone.utc),
+            finished_at   = datetime.now(timezone.utc),
+            latency_ms    = int((time.perf_counter() - started_at) * 1000),
+            match_count   = match_count,
+            status        = status,
+            error_message = error[:500] if error else "",
+        ))
+        db.session.commit()
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -133,112 +122,49 @@ _SPORT_SLUG_TO_DB: dict[str, str] = {
 
 def _emit(source: str, sport: str, count: int, latency: int) -> None:
     _publish(WS_CHANNEL, {
-        "event": "odds_updated", "source": source,
-        "sport": sport, "mode": "upcoming",
-        "count": count, "latency_ms": latency, "ts": _now_iso(),
+        "event": "odds_updated", "source": source, "sport": sport,
+        "mode": "upcoming", "count": count, "latency_ms": latency, "ts": _now_iso(),
     })
 
 
-def _schedule_alignment(sport_slug: str, countdown: int = 60) -> None:
-    try:
-        from app.workers.tasks_market_align import align_sport_markets
-        align_sport_markets.apply_async(
-            args=[sport_slug, 100], queue="results", countdown=countdown,
-        )
-    except Exception as exc:
-        logger.warning("[harvest] alignment schedule failed %s: %s", sport_slug, exc)
-
-
-def _fuzzy_find_match(home: str, away: str, start_time_raw) -> str | None:
-    if not home or not away:
-        return None
-    try:
-        from app.models.odds import UnifiedMatch
-        from sqlalchemy import func
-        start_dt = None
-        if start_time_raw:
-            try:
-                if isinstance(start_time_raw, str):
-                    start_dt = datetime.fromisoformat(start_time_raw.replace("Z", "+00:00"))
-                elif isinstance(start_time_raw, (int, float)):
-                    start_dt = datetime.fromtimestamp(float(start_time_raw), tz=timezone.utc)
-                elif isinstance(start_time_raw, datetime):
-                    start_dt = start_time_raw
-            except Exception:
-                pass
-        q = UnifiedMatch.query.filter(
-            func.lower(UnifiedMatch.home_team_name) == home.lower().strip(),
-            func.lower(UnifiedMatch.away_team_name) == away.lower().strip(),
-        )
-        if start_dt:
-            w = timedelta(minutes=90)
-            q = q.filter(
-                UnifiedMatch.start_time >= start_dt - w,
-                UnifiedMatch.start_time <= start_dt + w,
-            )
-        um = q.first()
-        return um.parent_match_id if um else None
-    except Exception as exc:
-        logger.debug("[fuzzy_find] %s vs %s: %s", home, away, exc)
-        return None
-
-
-def _resolve_match_id(m: dict, bk_slug: str) -> tuple[str | None, str | None]:
-    betradar_id = _extract_betradar_id(m)
-    if not betradar_id:
-        home  = str(m.get("home_team") or m.get("home_team_name") or "").strip()
-        away  = str(m.get("away_team") or m.get("away_team_name") or "").strip()
-        start = m.get("start_time") or ""
-        found = _fuzzy_find_match(home, away, start)
-        if found:
-            betradar_id = found
-            
-    # CRITICAL FIX: Prioritize specific native parent IDs for accurate API querying later
-    bk_ext_id = str(
-        m.get("sp_game_id")  or 
-        m.get("bt_parent_id") or m.get("bt_match_id") or
-        m.get("od_parent_id") or m.get("od_event_id") or m.get("od_match_id") or 
-        m.get("match_id")    or m.get("event_id")    or ""
-    ).strip() or None
-    
-    return betradar_id, bk_ext_id
-
 def _persist_bk_matches(matches: list[dict], bk_slug: str, sport_slug: str) -> None:
+    """Serialize matches and dispatch DB persistence via Celery."""
     if not matches:
         return
     bk_id = _get_or_create_bookmaker(_BK_NAMES.get(bk_slug, bk_slug.upper()))
     if not bk_id:
-        logger.warning("[persist_bk] could not resolve %s — skipping", bk_slug)
         return
     canonical_sport = _SPORT_SLUG_TO_DB.get(sport_slug, sport_slug)
     serialized: list[dict] = []
     for m in matches:
-        betradar_id, bk_ext_id = _resolve_match_id(m, bk_slug)
-        if betradar_id:
-            join_key = f"br_{betradar_id}"
-        elif bk_ext_id:
-            join_key = f"{bk_slug}_{bk_ext_id}"
-        else:
+        betradar_id = _extract_betradar_id(m)
+        ext_id = str(
+            m.get("sp_game_id") or m.get("bt_parent_id") or m.get("bt_match_id") or
+            m.get("od_parent_id") or m.get("od_event_id") or m.get("od_match_id") or
+            m.get("match_id") or m.get("event_id") or ""
+        ).strip() or None
+
+        join_key = f"br_{betradar_id}" if betradar_id else (f"{bk_slug}_{ext_id}" if ext_id else None)
+        if not join_key:
             continue
         markets = m.get("markets") or {}
         if not markets:
             continue
         serialized.append({
             "join_key":       join_key,
-            "home_team":      m.get("home_team")   or m.get("home_team_name")   or "",
-            "away_team":      m.get("away_team")   or m.get("away_team_name")   or "",
+            "home_team":      m.get("home_team") or m.get("home_team_name") or "",
+            "away_team":      m.get("away_team") or m.get("away_team_name") or "",
             "competition":    m.get("competition") or m.get("competition_name") or "",
-            "start_time":     m.get("start_time")  or "",
+            "start_time":     m.get("start_time") or "",
             "is_live":        False,
             "betradar_id":    betradar_id,
             "sport":          canonical_sport,
-            "bk_ids":         {bk_slug: bk_ext_id or join_key},
+            "bk_ids":         {bk_slug: ext_id or join_key},
             "markets":        markets,
             "bookmaker_slug": bk_slug,
         })
     if not serialized:
         return
-    dispatched = 0
     for i in range(0, len(serialized), 500):
         chunk = serialized[i: i + 500]
         try:
@@ -247,480 +173,48 @@ def _persist_bk_matches(matches: list[dict], bk_slug: str, sport_slug: str) -> N
                 args=[chunk, sport_slug, "upcoming"],
                 queue="results", countdown=3,
             )
-            dispatched += len(chunk)
         except Exception as exc:
             logger.warning("[persist_bk] dispatch failed %s/%s: %s", bk_slug, sport_slug, exc)
-    logger.info("[persist_bk] %s/%s: dispatched %d/%d",
-                bk_slug, sport_slug, dispatched, len(serialized))
 
 
-def _persist_b2b_matches(matches: list[dict], sport_slug: str) -> None:
-    if not matches:
-        return
-    bk_batches: dict[str, list[dict]] = {}
-    for m in matches:
-        for bk_name, bk_data in (m.get("bookmakers") or {}).items():
-            bk_mkts = (bk_data or {}).get("markets") or {}
-            if not bk_mkts:
-                continue
-            flat = {**m, "markets": bk_mkts, "betradar_id": m.get("betradar_id") or ""}
-            flat.pop("bookmakers", None)
-            slug = {v: k for k, v in _BK_NAMES.items()}.get(bk_name, bk_name[:4].lower())
-            bk_batches.setdefault(slug, []).append(flat)
-    for slug, batch in bk_batches.items():
-        _upsert_and_chain(batch, _BK_NAMES.get(slug, slug.upper()))
-        _persist_bk_matches(batch, slug, sport_slug)
-
-
-def _is_near_term(start_time_str: str, days: int = _NEAR_TERM_DAYS) -> bool:
-    if not start_time_str:
-        return False
+def _schedule_alignment(sport_slug: str, countdown: int = 60) -> None:
     try:
-        st  = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        return timedelta(0) <= (st - now) <= timedelta(days=days)
+        from app.workers.tasks_market_align import align_sport_markets
+        align_sport_markets.apply_async(args=[sport_slug, 100], queue="results", countdown=countdown)
     except Exception:
-        return False
+        pass
 
 
-# @celery.task(
-#     name="tasks.bt_od.harvest_sport",
-#     bind=True,
-#     max_retries=2,
-#     default_retry_delay=30,
-#     soft_time_limit=600,
-#     time_limit=660,
-#     acks_late=True,
-# )
-# def bt_od_harvest_sport(self, sport_slug: str) -> dict:
-#     """
-#     Fetch BT + OD for one sport concurrently.
- 
-#     CRITICAL DESIGN DECISION:
-#     Each bookmaker is written to its OWN Redis key independently.
-#     We NEVER discard single-BK matches or require SP cache to exist.
-#     Cross-BK merging happens at READ time in odds_stream._get_unified().
- 
-#     This means:
-#     - darts, handball, mma etc. get BT+OD data even if SP has no cache
-#     - BT-only matches are stored (not discarded because SP doesn't have them)
-#     - OD-only matches are stored (same reason)
-#     - The stream merges everything at query time
-#     """
-#     from app.workers.redis_bus import publish_snapshot
-#     t0 = time.perf_counter()
- 
-#     bt_matches: list[dict] = []
-#     od_matches: list[dict] = []
- 
-#     try:
-#         with ThreadPoolExecutor(max_workers=2) as pool:
-#             bt_fut = pool.submit(_fetch_bt_sport, sport_slug)
-#             od_fut = pool.submit(_fetch_od_sport, sport_slug)
-#             bt_matches = bt_fut.result() or []
-#             od_matches = od_fut.result() or []
-#     except SoftTimeLimitExceeded:
-#         raise
-#     except Exception as exc:
-#         raise self.retry(exc=exc)
- 
-#     # ── Betika — write independently ──────────────────────────────────────────
-#     if bt_matches:
-#         # Write to both key formats so _merge_bks finds it
-#         cache_set(f"bt:upcoming:{sport_slug}", {
-#             "source":      "betika",
-#             "sport":       sport_slug,
-#             "mode":        "upcoming",
-#             "match_count": len(bt_matches),
-#             "harvested_at": _now_iso(),
-#             "matches":     bt_matches,
-#         }, ttl=3600)
- 
-#         # publish_snapshot writes odds:bt:upcoming:{sport} AND
-#         # triggers _rebuild_unified_snapshot which updates odds:unified:upcoming:{sport}
-#         # AND publishes to odds:all:upcoming:{sport}:updates (which the SSE listens to)
-#         publish_snapshot("bt", "upcoming", sport_slug, bt_matches, meta={
-#             "source": "betika",
-#         })
- 
-#         _upsert_and_chain(bt_matches, "Betika")
-#         _persist_bk_matches(bt_matches, "bt", sport_slug)
- 
-#         logger.info("[bt_od] %s BT: wrote %d matches to Redis + DB", sport_slug, len(bt_matches))
- 
-#     # ── OdiBets — write independently ─────────────────────────────────────────
-#     if od_matches:
-#         cache_set(f"od:upcoming:{sport_slug}", {
-#             "source":      "odibets",
-#             "sport":       sport_slug,
-#             "mode":        "upcoming",
-#             "match_count": len(od_matches),
-#             "harvested_at": _now_iso(),
-#             "matches":     od_matches,
-#         }, ttl=3600)
- 
-#         publish_snapshot("od", "upcoming", sport_slug, od_matches, meta={
-#             "source": "odibets",
-#         })
- 
-#         _upsert_and_chain(od_matches, "OdiBets")
-#         _persist_bk_matches(od_matches, "od", sport_slug)
- 
-#         logger.info("[bt_od] %s OD: wrote %d matches to Redis + DB", sport_slug, len(od_matches))
- 
-#     if not bt_matches and not od_matches:
-#         logger.warning("[bt_od] %s: both BT and OD returned empty", sport_slug)
- 
-#     latency = int((time.perf_counter() - t0) * 1000)
- 
-#     _publish(WS_CHANNEL, {
-#         "event":    "odds_updated",
-#         "source":   "bt_od",
-#         "sport":    sport_slug,
-#         "bt_count": len(bt_matches),
-#         "od_count": len(od_matches),
-#         "latency_ms": latency,
-#         "ts":       _now_iso(),
-#     })
- 
-#     return {
-#         "ok":       True,
-#         "sport":    sport_slug,
-#         "bt_count": len(bt_matches),
-#         "od_count": len(od_matches),
-#         "latency_ms": latency,
-#     }
-
-@celery.task(
-    name="tasks.bt_od.harvest_all_upcoming",
-    soft_time_limit=60,
-    time_limit=90,
-)
-def bt_od_harvest_all_upcoming() -> dict:
-    """Dispatch bt_od_harvest_sport for every sport BT or OD covers."""
-    sigs = [bt_od_harvest_sport.s(s) for s in _ALL_SPORTS]
-    group(sigs).apply_async(queue="harvest")
-    logger.info("[bt_od:all] dispatched %d sports", len(sigs))
-    return {"dispatched": len(sigs), "sports": _ALL_SPORTS}
- 
 # =============================================================================
-# REGISTRY PIPELINE
+# BT / OD FETCH HELPERS  (no SP dependency)
 # =============================================================================
 
-@celery.task(
-    name="harvest.bookmaker_sport",
-    bind=True, max_retries=2, default_retry_delay=60,
-    soft_time_limit=300, time_limit=360, acks_late=True,
-)
-def harvest_bookmaker_sport(self, bookmaker_slug: str, sport_slug: str) -> dict:
-    from app.workers.harvest_registry import get_bookmaker
-    t0 = time.perf_counter()
-    bk = get_bookmaker(bookmaker_slug)
-    if not bk or not bk["enabled"] or sport_slug not in bk["sports"]:
-        return {"ok": True, "skipped": True}
+def _fetch_bt_sport(sport_slug: str) -> list[dict]:
+    """Fetch Betika matches. Returns [] on any failure."""
     try:
-        matches: list[dict] = bk["fetch_fn"](sport_slug)
+        from app.workers.bt_harvester import fetch_upcoming_matches
+        matches = fetch_upcoming_matches(sport_slug=sport_slug, days=30, max_pages=30, fetch_full=True)
+        logger.info("[bt_fetch] %s: %d matches", sport_slug, len(matches or []))
+        return matches or []
     except Exception as exc:
-        raise self.retry(exc=exc)
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
-    cache_set(f"odds:upcoming:{bookmaker_slug}:{sport_slug}", {
-        "bookmaker": bookmaker_slug, "sport": sport_slug,
-        "match_count": len(matches), "harvested_at": _now_iso(),
-        "latency_ms": latency_ms, "matches": matches,
-    }, ttl=bk["redis_ttl"])
-
-    _publish("odds:harvest:done", {
-        "type": "harvest_done", "bookmaker": bookmaker_slug,
-        "sport": sport_slug, "count": len(matches), "ts": _now_iso(),
-    })
-
-    # 2. PERSIST TO DB
-    _upsert_and_chain(matches, bk["label"])
-    _persist_bk_matches(matches, bookmaker_slug, sport_slug)
-    
-    _schedule_alignment(sport_slug, countdown=60)
-    return {"ok": True, "bookmaker": bookmaker_slug, "sport": sport_slug,
-            "count": len(matches), "latency_ms": latency_ms}
+        logger.warning("[bt_fetch] %s: %s", sport_slug, exc)
+        return []
 
 
-@celery.task(name="harvest.all_upcoming", soft_time_limit=60, time_limit=120)
-def harvest_all_registry_upcoming() -> dict:
-    from app.workers.harvest_registry import ENABLED_BOOKMAKERS
-    sigs = [
-        harvest_bookmaker_sport.s(bk["slug"], sport)
-        for bk in ENABLED_BOOKMAKERS for sport in bk["sports"]
-    ]
-    group(sigs).apply_async(queue="harvest")
-    return {"dispatched": len(sigs)}
-
-
-@celery.task(name="harvest.merge_broadcast", soft_time_limit=30, time_limit=60)
-def merge_and_broadcast(sport_slug: str) -> dict:
-    from app.workers.harvest_registry import ENABLED_BOOKMAKERS
-    bk_slugs = [bk["slug"] for bk in ENABLED_BOOKMAKERS if sport_slug in bk["sports"]]
-    merged: dict[str, dict] = {}
-    seen_bk: list[str]      = []
-    for slug in bk_slugs:
-        cached = cache_get(f"odds:upcoming:{slug}:{sport_slug}")
-        if not cached or not cached.get("matches"):
-            continue
-        seen_bk.append(slug)
-        for match in cached["matches"]:
-            br_id = _extract_betradar_id(match)
-            key   = br_id or f"{match.get('home_team','')}|{match.get('away_team','')}"
-            if not key:
-                continue
-            if key not in merged:
-                merged[key] = {
-                    "betradar_id": br_id,
-                    "home_team":   match.get("home_team", ""),
-                    "away_team":   match.get("away_team", ""),
-                    "competition": match.get("competition", ""),
-                    "start_time":  match.get("start_time"),
-                    "sport":       sport_slug,
-                    "event_ids":   {},
-                    "markets":     {},
-                }
-            entry = merged[key]
-            entry["event_ids"][slug] = str(match.get("sp_game_id") or match.get("event_id") or "")
-            for mkt_slug, outcomes in (match.get("markets") or {}).items():
-                entry["markets"].setdefault(mkt_slug, {})
-                for out_key, odd_val in outcomes.items():
-                    try:
-                        fv = float(odd_val)
-                    except (TypeError, ValueError):
-                        continue
-                    if fv <= 1.0:
-                        continue
-                    entry["markets"][mkt_slug].setdefault(out_key, {})
-                    entry["markets"][mkt_slug][out_key][slug] = fv
-    merged_list = list(merged.values())
-    for match in merged_list:
-        match["best_odds"] = {}
-        for mkt_slug, outcomes in match["markets"].items():
-            for out_key, bk_odds in outcomes.items():
-                if bk_odds:
-                    best_bk = max(bk_odds, key=lambda b: bk_odds[b])
-                    match["best_odds"][f"{mkt_slug}____{out_key}"] = {
-                        "bookmaker": best_bk, "odd": bk_odds[best_bk],
-                    }
-
-    # UPDATE CACHE & REDIS BEFORE ANY FURTHER TASKS
-    cache_set(f"odds:upcoming:all:{sport_slug}", {
-        "sport": sport_slug, "bookmakers": seen_bk,
-        "match_count": len(merged_list), "harvested_at": _now_iso(),
-        "matches": merged_list,
-    }, ttl=14_400)
-    
-    _publish(f"odds:upcoming:{sport_slug}", {
-        "type": "odds_updated", "sport": sport_slug,
-        "bookmakers": seen_bk, "count": len(merged_list), "ts": _now_iso(),
-    })
-    
-    compute_value_bets.apply_async(args=[sport_slug], queue="ev_arb")
-    return {"ok": True, "sport": sport_slug, "events": len(merged_list)}
-
-
-@celery.task(name="harvest.value_bets", soft_time_limit=60, time_limit=90)
-def compute_value_bets(sport_slug: str) -> dict:
-    from app.extensions import db
-    from app.models.odds import ArbitrageOpportunity, OpportunityStatus
-
-    SAFE_ARB_MARKETS = {
-        "match_winner", "1x2", "moneyline", "btts", "both_teams_score",
-        "double_chance", "odd_even"
-    }
-
-    raw = cache_get(f"odds:upcoming:all:{sport_slug}")
-    if not raw:
-        return {"ok": True, "found": 0}
-
-    matches = raw.get("matches") or []
-    arb_rows = 0
-    now = datetime.now(timezone.utc)
-    r = _redis()
-
-    for match in matches:
-        for mkt_slug, outcomes in (match.get("markets") or {}).items():
-            # 1. Filter safe markets only
-            is_safe = (
-                mkt_slug in SAFE_ARB_MARKETS or
-                "over_under" in mkt_slug or
-                "asian_handicap" in mkt_slug
-            )
-            if not is_safe:
-                continue
-
-            if len(outcomes) < 2:
-                continue
-
-            # 2. Strict outcome count verification
-            if mkt_slug in ("match_winner", "1x2") and len(outcomes) != 3:
-                continue
-            if ("over_under" in mkt_slug or mkt_slug in ("btts", "both_teams_score", "odd_even")) and len(outcomes) != 2:
-                continue
-
-            best_prices: dict[str, float] = {}
-            leg_details: dict[str, tuple] = {}
-            is_complete = True
-
-            for out_key, bk_odds in outcomes.items():
-                if not bk_odds:
-                    is_complete = False
-                    continue
-                best_bk = max(bk_odds, key=lambda b: float(bk_odds[b]))
-                best_odd = float(bk_odds[best_bk])
-                if best_odd > 1.0:
-                    best_prices[out_key] = best_odd
-                    leg_details[out_key] = (best_bk, best_odd)
-                else:
-                    is_complete = False
-
-            # 3. Final validation: Must have all legs, must span multiple bookmakers
-            unique_bks = {b for b, o in leg_details.values()}
-            if not is_complete or len(best_prices) < 2 or len(unique_bks) < 2:
-                continue
-
-            arb_sum = sum(1.0 / p for p in best_prices.values())
-            if arb_sum >= 1.0:
-                continue
-
-            profit_pct = (1.0 / arb_sum - 1.0) * 100
-            if profit_pct < 0.5:
-                continue
-
-            legs = [{
-                "selection": sel,
-                "bookmaker": leg_details[sel][0],
-                "price": leg_details[sel][1],
-                "stake_pct": round((1.0 / leg_details[sel][1]) / arb_sum * 100, 2),
-            } for sel in best_prices]
-
-            start_dt = None
-            start_time_str = match.get("start_time")
-            if start_time_str:
-                try:
-                    start_dt = datetime.fromisoformat(
-                        str(start_time_str).replace("Z", "+00:00")
-                    )
-                except Exception:
-                    pass
-
-            # Build opportunity payload
-            arb_id = f"arb:{match.get('betradar_id', 'unknown')}:{mkt_slug}:{int(now.timestamp())}"
-            arb_payload = {
-                "id": arb_id,
-                "parent_match_id": match.get("betradar_id"),
-                "home_team": match.get("home_team", ""),
-                "away_team": match.get("away_team", ""),
-                "sport": sport_slug,
-                "competition": match.get("competition", ""),
-                "market": mkt_slug,
-                "profit_pct": round(profit_pct, 4),
-                "arb_sum": round(arb_sum, 6),
-                "legs": legs,
-                "stake_100_returns": round(100 / arb_sum, 2),
-                "bookmaker_ids": sorted({l["bookmaker"] for l in legs}),
-                "detected_at": now.isoformat(),
-                "expires_at": (now + timedelta(minutes=5)).isoformat(),
-                "start_time": start_time_str,
-            }
-
-            # -----------------------------------------------------------------
-            # REAL‑TIME LAYER (Redis Pub/Sub + cache) - FIRES FIRST
-            # -----------------------------------------------------------------
-            redis_key = f"arb:live:{arb_id}"
-            r.setex(redis_key, 600, json.dumps(arb_payload))  # TTL 10 minutes
-
-            _publish(f"arb:updates:{sport_slug}", arb_payload)
-            _publish("arb:updates:all", arb_payload)
-
-            # -----------------------------------------------------------------
-            # ASYNC DB PERSISTENCE (non‑blocking)
-            # -----------------------------------------------------------------
-            persist_arb_opportunity.apply_async(
-                args=[arb_payload],
-                queue="results",
-                countdown=1,
-            )
-
-            arb_rows += 1
-
-    logger.info("[value_bets] %s: %d arbs found and published", sport_slug, arb_rows)
-    return {"ok": True, "sport": sport_slug, "arbs": arb_rows}
-
-
-# -----------------------------------------------------------------------------
-# Async DB persistence task
-# -----------------------------------------------------------------------------
-@celery.task(
-    name="harvest.persist_arb",
-    bind=True,
-    max_retries=2,
-    default_retry_delay=10,
-    soft_time_limit=30,
-    time_limit=60,
-)
-def persist_arb_opportunity(self, payload: dict) -> dict:
-    from app.extensions import db
-    from app.models.odds import ArbitrageOpportunity, OpportunityStatus
-
+def _fetch_od_sport(sport_slug: str) -> list[dict]:
+    """Fetch OdiBets matches. Returns [] on any failure."""
     try:
-        start_dt = None
-        if payload.get("start_time"):
-            try:
-                start_dt = datetime.fromisoformat(
-                    str(payload["start_time"]).replace("Z", "+00:00")
-                )
-            except Exception:
-                pass
-
-        detected_at = datetime.fromisoformat(payload["detected_at"])
-
-        arb = ArbitrageOpportunity(
-            home_team=payload["home_team"],
-            away_team=payload["away_team"],
-            sport=payload["sport"],
-            competition=payload["competition"],
-            match_start=start_dt,
-            market=payload["market"],
-            profit_pct=payload["profit_pct"],
-            peak_profit_pct=payload["profit_pct"],
-            arb_sum=payload["arb_sum"],
-            legs_json=payload["legs"],
-            stake_100_returns=payload.get("stake_100_returns"),
-            bookmaker_ids=payload["bookmaker_ids"],
-            status=OpportunityStatus.OPEN,
-            open_at=detected_at,
-        )
-        db.session.add(arb)
-        db.session.commit()
-        logger.debug("[persist_arb] saved %s", payload["id"])
-        return {"ok": True, "id": payload["id"]}
-
+        from app.workers.od_harvester import fetch_upcoming_matches
+        matches = fetch_upcoming_matches(sport_slug=sport_slug, days=30, fetch_full_markets=True)
+        logger.info("[od_fetch] %s: %d matches", sport_slug, len(matches or []))
+        return matches or []
     except Exception as exc:
-        logger.error("[persist_arb] failed %s: %s", payload.get("id"), exc)
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
-        raise self.retry(exc=exc)
-
-@celery.task(name="harvest.cleanup", soft_time_limit=60, time_limit=90)
-def cleanup_old_snapshots(days_keep: int = 7) -> dict:
-    from app.extensions import db
-    from app.models.odds import ArbitrageOpportunity, EVOpportunity
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days_keep)
-    n_a = ArbitrageOpportunity.query.filter(ArbitrageOpportunity.open_at < cutoff).delete()
-    n_e = EVOpportunity.query.filter(EVOpportunity.open_at < cutoff).delete()
-    db.session.commit()
-    return {"ok": True, "arbs_deleted": n_a, "evs_deleted": n_e}
+        logger.warning("[od_fetch] %s: %s", sport_slug, exc)
+        return []
 
 
 # =============================================================================
-# SPORTPESA — source of truth
+# SPORTPESA
 # =============================================================================
 
 @celery.task(
@@ -731,56 +225,46 @@ def cleanup_old_snapshots(days_keep: int = 7) -> dict:
 def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -> dict:
     t0      = time.perf_counter()
     matches = []
+    started = t0
+
     try:
         from app.workers.sp_harvester import fetch_upcoming_stream
-        logger.info("[sp] %s → fetching up to %d matches", sport_slug, max_matches)
         for match in fetch_upcoming_stream(
             sport_slug, fetch_full_markets=True,
             max_matches=max_matches, days=30, sleep_between=0.1,
         ):
             matches.append(match)
-            if len(matches) % 500 == 0:
-                logger.info("[sp] %s → %d/%d collected", sport_slug, len(matches), max_matches)
     except SoftTimeLimitExceeded:
         logger.warning("[sp] soft timeout %s — saving %d partial", sport_slug, len(matches))
     except Exception as exc:
         if matches:
-            logger.warning("[sp] %s error: %s — saving partial", sport_slug, exc)
+            logger.warning("[sp] %s error saving partial: %s", sport_slug, exc)
         else:
+            _log_harvest_job("sp", sport_slug, "upcoming", started, 0, "error", str(exc))
             raise self.retry(exc=exc)
 
     if not matches:
+        _log_harvest_job("sp", sport_slug, "upcoming", started, 0, "error", "no matches")
+        # Still dispatch bt_od so those sports get data
         try:
-            celery.send_task(
-                "tasks.bt_od.harvest_sport",
-                args=[sport_slug],
-                queue="harvest",
-                countdown=5,
-            )
-        except Exception as exc:
-            logger.warning("[sp] bt_od dispatch (no-sp) failed %s: %s", sport_slug, exc)
-        return {"ok": False, "reason": "No SP matches fetched"}
+            celery.send_task("tasks.bt_od.harvest_sport", args=[sport_slug], queue="harvest", countdown=5)
+        except Exception:
+            pass
+        return {"ok": False, "reason": "no_sp_matches"}
 
     latency     = int((time.perf_counter() - t0) * 1000)
-    avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
     br_count    = sum(1 for m in matches if m.get("betradar_id"))
+    avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
 
-    logger.info("[sp] %s → %d matches (%d with betradar_id), avg %d mkts, %dms",
-                sport_slug, len(matches), br_count, avg_markets, latency)
-
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
+    # 1. Write to Redis — key pattern that _merge_bks finds
     cache_set(f"sp:upcoming:{sport_slug}", {
-        "source":       "sportpesa",
-        "sport":        sport_slug,
-        "mode":         "upcoming",
-        "match_count":  len(matches),
-        "harvested_at": _now_iso(),
-        "latency_ms":   latency,
-        "matches":      matches,
-        "avg_markets":  avg_markets,
-        "br_count":     br_count,
+        "source": "sportpesa", "sport": sport_slug, "mode": "upcoming",
+        "match_count": len(matches), "harvested_at": _now_iso(),
+        "latency_ms": latency, "matches": matches,
+        "avg_markets": avg_markets, "br_count": br_count,
     }, ttl=3600)
 
+    # 2. Also write to odds:sp:upcoming:{sport} (second pattern _merge_bks checks)
     from app.workers.redis_bus import publish_snapshot
     publish_snapshot("sp", "upcoming", sport_slug, matches, meta={
         "source": "sportpesa", "avg_markets": avg_markets, "br_count": br_count,
@@ -788,42 +272,32 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
 
     _emit("sportpesa", sport_slug, len(matches), latency)
 
-    # 2. PERSIST TO DB
+    # 3. Persist to DB
     _upsert_and_chain(matches, "SportPesa")
     _persist_bk_matches(matches, "sp", sport_slug)
 
+    # 4. Cross-BK enrichment via betradar_id
     if br_count > 0:
-        sp_cross_bk_enrich.apply_async(
-            args=[sport_slug], queue="harvest", countdown=10,
-        )
-        logger.info("[sp] %s → cross-BK enrich dispatched (%d betradar_ids)",
-                    sport_slug, br_count)
+        sp_cross_bk_enrich.apply_async(args=[sport_slug], queue="harvest", countdown=10)
 
-    sp_enrich_analytics.apply_async(
-        args=[sport_slug], queue="harvest", countdown=60,
-    )
-
+    sp_enrich_analytics.apply_async(args=[sport_slug], queue="harvest", countdown=60)
     _schedule_alignment(sport_slug, countdown=60)
 
+    # 5. Trigger BT+OD harvest (independent — not waiting for SP cross-enrich)
     try:
-        celery.send_task(
-            "tasks.bt_od.harvest_sport",
-            args=[sport_slug],
-            queue="harvest",
-            countdown=30,
-        )
-        logger.info("[sp] %s → bt_od harvest dispatched", sport_slug)
+        celery.send_task("tasks.bt_od.harvest_sport", args=[sport_slug], queue="harvest", countdown=30)
     except Exception as exc:
         logger.warning("[sp] bt_od dispatch failed %s: %s", sport_slug, exc)
 
+    # 6. Notify admin of harvest completion
+    from app.api.notifications import publish_harvest_done
+    publish_harvest_done("sp", sport_slug, len(matches), latency)
+
+    _log_harvest_job("sp", sport_slug, "upcoming", started, len(matches), "ok")
+
     return {
-        "ok":           True,
-        "source":       "sportpesa",
-        "sport":        sport_slug,
-        "count":        len(matches),
-        "br_count":     br_count,
-        "avg_markets":  avg_markets,
-        "latency_ms":   latency,
+        "ok": True, "source": "sportpesa", "sport": sport_slug,
+        "count": len(matches), "br_count": br_count, "latency_ms": latency,
     }
 
 
@@ -831,28 +305,103 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
 def sp_harvest_all_upcoming() -> dict:
     sigs = [sp_harvest_sport.s(s, SP_MAX_MATCHES) for s in _SP_SPORTS]
     group(sigs).apply_async(queue="harvest")
-    return {"dispatched": len(sigs)}
+    return {"dispatched": len(sigs), "sports": _SP_SPORTS}
 
 
 # =============================================================================
-# CROSS-BK ENRICHMENT  (fast path — betradar_id driven)
+# BT + OD (independent — no SP dependency)
 # =============================================================================
 
-def _fetch_bt_by_betradar_id(
-    sp_match: dict, sport_slug: str,
-) -> tuple[dict, dict[str, dict[str, float]]]:
-    from app.workers.bt_harvester import get_full_markets
-    markets = get_full_markets(sp_match["betradar_id"], sport_slug)
-    return sp_match, markets
+@celery.task(
+    name="tasks.bt_od.harvest_sport", bind=True,
+    max_retries=2, default_retry_delay=30,
+    soft_time_limit=600, time_limit=660, acks_late=True,
+)
+def bt_od_harvest_sport(self, sport_slug: str) -> dict:
+    """
+    Fetch BT + OD concurrently. Each is written to its own Redis key.
+    NO SP cache dependency — works for all sports including darts/mma/handball.
+    Cross-BK merging happens at read time in odds_stream._get_unified().
+    """
+    from app.workers.redis_bus import publish_snapshot
+    from app.api.notifications import publish_harvest_done
+    t0 = time.perf_counter()
+
+    bt_matches: list[dict] = []
+    od_matches: list[dict] = []
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            bt_fut = pool.submit(_fetch_bt_sport, sport_slug)
+            od_fut = pool.submit(_fetch_od_sport, sport_slug)
+            bt_matches = bt_fut.result() or []
+            od_matches = od_fut.result() or []
+    except SoftTimeLimitExceeded:
+        raise
+    except Exception as exc:
+        raise self.retry(exc=exc)
+
+    # ── Betika ────────────────────────────────────────────────────────────────
+    if bt_matches:
+        # Write to BOTH key patterns so _merge_bks finds it
+        payload = {
+            "source": "betika", "sport": sport_slug, "mode": "upcoming",
+            "match_count": len(bt_matches), "harvested_at": _now_iso(),
+            "matches": bt_matches,
+        }
+        cache_set(f"bt:upcoming:{sport_slug}", payload, ttl=3600)
+        publish_snapshot("bt", "upcoming", sport_slug, bt_matches, meta={"source": "betika"})
+        _upsert_and_chain(bt_matches, "Betika")
+        _persist_bk_matches(bt_matches, "bt", sport_slug)
+        publish_harvest_done("bt", sport_slug, len(bt_matches),
+                             int((time.perf_counter() - t0) * 1000))
+        logger.info("[bt_od] %s BT: %d matches", sport_slug, len(bt_matches))
+
+    # ── OdiBets ───────────────────────────────────────────────────────────────
+    if od_matches:
+        payload = {
+            "source": "odibets", "sport": sport_slug, "mode": "upcoming",
+            "match_count": len(od_matches), "harvested_at": _now_iso(),
+            "matches": od_matches,
+        }
+        cache_set(f"od:upcoming:{sport_slug}", payload, ttl=3600)
+        publish_snapshot("od", "upcoming", sport_slug, od_matches, meta={"source": "odibets"})
+        _upsert_and_chain(od_matches, "OdiBets")
+        _persist_bk_matches(od_matches, "od", sport_slug)
+        publish_harvest_done("od", sport_slug, len(od_matches),
+                             int((time.perf_counter() - t0) * 1000))
+        logger.info("[bt_od] %s OD: %d matches", sport_slug, len(od_matches))
+
+    if not bt_matches and not od_matches:
+        logger.warning("[bt_od] %s: both BT and OD returned empty", sport_slug)
+
+    latency = int((time.perf_counter() - t0) * 1000)
+    _publish(WS_CHANNEL, {
+        "event": "odds_updated", "source": "bt_od", "sport": sport_slug,
+        "bt_count": len(bt_matches), "od_count": len(od_matches),
+        "latency_ms": latency, "ts": _now_iso(),
+    })
+
+    return {
+        "ok": True, "sport": sport_slug,
+        "bt_count": len(bt_matches), "od_count": len(od_matches),
+        "latency_ms": latency,
+    }
 
 
-def _fetch_od_by_betradar_id(
-    sp_match: dict, od_sport_id: int,
-) -> tuple[dict, dict[str, dict[str, float]]]:
-    from app.workers.od_harvester import fetch_event_detail
-    markets, _meta = fetch_event_detail(sp_match["betradar_id"], od_sport_id)
-    return sp_match, markets
+@celery.task(name="tasks.bt_od.harvest_all_upcoming", soft_time_limit=60, time_limit=90)
+def bt_od_harvest_all_upcoming() -> dict:
+    """Dispatch bt_od_harvest_sport for every sport BT or OD covers."""
+    sports = sorted(set(_BT_SPORTS + _OD_SPORTS))
+    sigs   = [bt_od_harvest_sport.s(s) for s in sports]
+    group(sigs).apply_async(queue="harvest")
+    logger.info("[bt_od:all] dispatched %d sports", len(sigs))
+    return {"dispatched": len(sigs), "sports": sports}
 
+
+# =============================================================================
+# SP CROSS-BK ENRICHMENT (betradar_id driven)
+# =============================================================================
 
 @celery.task(
     name="tasks.sp.cross_bk_enrich", bind=True,
@@ -860,11 +409,14 @@ def _fetch_od_by_betradar_id(
     soft_time_limit=3600, time_limit=3660, acks_late=True,
 )
 def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
+    """
+    For matches that have a betradar_id from SP, directly fetch
+    BT and OD markets by that ID (faster than list-based harvest).
+    """
     from app.workers.od_harvester import slug_to_od_sport_id
 
     cached = cache_get(f"sp:upcoming:{sport_slug}")
     if not cached:
-        logger.warning("[cross_bk] %s: no SP cache", sport_slug)
         return {"ok": False, "reason": "no_sp_cache"}
 
     sp_matches = cached.get("matches") or []
@@ -872,92 +424,84 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
     if not with_br:
         return {"ok": True, "bt_enriched": 0, "od_enriched": 0}
 
-    od_sport_id = slug_to_od_sport_id(sport_slug)
-
-    logger.info("[cross_bk] %s: direct-fetching BT+OD for %d ids (%d workers)",
-                sport_slug, len(with_br), _CROSS_BK_WORKERS)
-
+    od_sport_id  = slug_to_od_sport_id(sport_slug)
     bt_batch:    list[dict] = []
     od_batch:    list[dict] = []
     bt_enriched = od_enriched = bt_errors = od_errors = 0
 
+    def _fetch_bt(sp_m):
+        from app.workers.bt_harvester import get_full_markets
+        markets = get_full_markets(sp_m["betradar_id"], sport_slug)
+        return sp_m, markets
+
+    def _fetch_od(sp_m):
+        from app.workers.od_harvester import fetch_event_detail
+        markets, _meta = fetch_event_detail(sp_m["betradar_id"], od_sport_id)
+        return sp_m, markets
+
     try:
         with ThreadPoolExecutor(max_workers=_CROSS_BK_WORKERS) as pool:
-            bt_futs = {
-                pool.submit(_fetch_bt_by_betradar_id, m, sport_slug): m
-                for m in with_br
-            }
+            bt_futs = {pool.submit(_fetch_bt, m): m for m in with_br}
             for fut in as_completed(bt_futs):
                 try:
                     sp_m, bt_markets = fut.result()
                     if bt_markets:
-                        bt_batch.append({
-                            **sp_m,
-                            "markets":      bt_markets,
-                            "market_count": len(bt_markets),
-                            "bt_parent_id": sp_m["betradar_id"],
-                        })
+                        bt_batch.append({**sp_m, "markets": bt_markets,
+                                         "market_count": len(bt_markets),
+                                         "bt_parent_id": sp_m["betradar_id"]})
                         bt_enriched += 1
                 except SoftTimeLimitExceeded:
                     raise
-                except Exception as exc:
+                except Exception:
                     bt_errors += 1
-                    logger.debug("[cross_bk] BT %s: %s",
-                                 bt_futs[fut].get("betradar_id"), exc)
     except SoftTimeLimitExceeded:
-        logger.warning("[cross_bk] BT soft timeout %s (%d done)", sport_slug, bt_enriched)
         raise
 
     if bt_batch:
+        from app.workers.redis_bus import publish_snapshot
+        cache_set(f"bt:upcoming:{sport_slug}", {
+            "source": "betika", "sport": sport_slug, "mode": "upcoming",
+            "match_count": len(bt_batch), "harvested_at": _now_iso(),
+            "matches": bt_batch,
+        }, ttl=3600)
+        publish_snapshot("bt", "upcoming", sport_slug, bt_batch)
         _upsert_and_chain(bt_batch, "Betika")
         _persist_bk_matches(bt_batch, "bt", sport_slug)
 
-    logger.info("[cross_bk] %s BT: enriched=%d errors=%d",
-                sport_slug, bt_enriched, bt_errors)
-
     try:
         with ThreadPoolExecutor(max_workers=_CROSS_BK_WORKERS) as pool:
-            od_futs = {
-                pool.submit(_fetch_od_by_betradar_id, m, od_sport_id): m
-                for m in with_br
-            }
+            od_futs = {pool.submit(_fetch_od, m): m for m in with_br}
             for fut in as_completed(od_futs):
                 try:
                     sp_m, od_markets = fut.result()
                     if od_markets:
-                        od_batch.append({
-                            **sp_m,
-                            "markets":      od_markets,
-                            "market_count": len(od_markets),
-                            "od_event_id":  sp_m["betradar_id"],
-                        })
+                        od_batch.append({**sp_m, "markets": od_markets,
+                                         "market_count": len(od_markets),
+                                         "od_event_id": sp_m["betradar_id"]})
                         od_enriched += 1
                 except SoftTimeLimitExceeded:
                     raise
-                except Exception as exc:
+                except Exception:
                     od_errors += 1
-                    logger.debug("[cross_bk] OD %s: %s",
-                                 od_futs[fut].get("betradar_id"), exc)
     except SoftTimeLimitExceeded:
-        logger.warning("[cross_bk] OD soft timeout %s (%d done)", sport_slug, od_enriched)
         raise
 
     if od_batch:
+        from app.workers.redis_bus import publish_snapshot
+        cache_set(f"od:upcoming:{sport_slug}", {
+            "source": "odibets", "sport": sport_slug, "mode": "upcoming",
+            "match_count": len(od_batch), "harvested_at": _now_iso(),
+            "matches": od_batch,
+        }, ttl=3600)
+        publish_snapshot("od", "upcoming", sport_slug, od_batch)
         _upsert_and_chain(od_batch, "OdiBets")
         _persist_bk_matches(od_batch, "od", sport_slug)
 
-    logger.info("[cross_bk] %s OD: enriched=%d errors=%d",
-                sport_slug, od_enriched, od_errors)
     _schedule_alignment(sport_slug, countdown=30)
-
     return {
-        "ok":          True,
-        "sport":       sport_slug,
-        "total":       len(with_br),
-        "bt_enriched": bt_enriched,
-        "bt_errors":   bt_errors,
-        "od_enriched": od_enriched,
-        "od_errors":   od_errors,
+        "ok": True, "sport": sport_slug, "total": len(with_br),
+        "bt_enriched": bt_enriched, "bt_errors": bt_errors,
+        "od_enriched": od_enriched, "od_errors": od_errors,
     }
 
 
@@ -967,19 +511,18 @@ def sp_cross_bk_enrich(self, sport_slug: str) -> dict:
 
 @celery.task(
     name="tasks.sp.enrich_analytics", bind=True,
-    max_retries=1, default_retry_delay=300,
-    soft_time_limit=3600, time_limit=3660, acks_late=True,
+    max_retries=1, soft_time_limit=3600, time_limit=3660, acks_late=True,
 )
 def sp_enrich_analytics(self, sport_slug: str) -> dict:
     from app.workers.sr_analytics import get_match_details, get_match_analytics
     cached = cache_get(f"sp:upcoming:{sport_slug}")
     if not cached:
-        return {"ok": False, "reason": "no_sp_cache"}
+        return {"ok": False}
     with_br = [m for m in (cached.get("matches") or []) if m.get("betradar_id")]
     if not with_br:
         return {"ok": True, "fetched": 0}
 
-    fetched = near_term = errors = 0
+    fetched = errors = 0
     for m in with_br:
         br_id = m["betradar_id"]
         try:
@@ -987,208 +530,20 @@ def sp_enrich_analytics(self, sport_slug: str) -> dict:
             if existing and existing.get("available"):
                 fetched += 1
                 continue
-            if _is_near_term(m.get("start_time", "")):
-                bundle    = get_match_analytics(br_id, fetch_season=True)
-                near_term += 1
-            else:
-                details = get_match_details(br_id)
-                bundle  = {"sr_match_id": br_id, "available": bool(details),
-                           "match": details or {}}
+            bundle = get_match_analytics(br_id, fetch_season=True)
             cache_set(f"sr:analytics:{br_id}", bundle, ttl=_ANALYTICS_TTL)
             fetched += 1
             time.sleep(0.2)
         except SoftTimeLimitExceeded:
-            logger.warning("[analytics] soft timeout %s after %d/%d",
-                           sport_slug, fetched, len(with_br))
             break
-        except Exception as exc:
+        except Exception:
             errors += 1
-            logger.debug("[analytics] %s: %s", br_id, exc)
-    return {"ok": True, "sport": sport_slug, "fetched": fetched,
-            "near_term": near_term, "errors": errors}
 
-
-@celery.task(name="tasks.sp.get_match_analytics", soft_time_limit=30, time_limit=40)
-def sp_get_match_analytics(betradar_id: str, force_refresh: bool = False) -> dict:
-    from app.workers.sr_analytics import get_match_analytics
-    if not force_refresh:
-        existing = cache_get(f"sr:analytics:{betradar_id}")
-        if existing and existing.get("available"):
-            return {"ok": True, "cached": True, "betradar_id": betradar_id}
-    bundle = get_match_analytics(betradar_id, fetch_season=True)
-    cache_set(f"sr:analytics:{betradar_id}", bundle, ttl=_ANALYTICS_TTL)
-    return {"ok": True, "cached": False, "betradar_id": betradar_id,
-            "available": bundle.get("available", False)}
+    return {"ok": True, "sport": sport_slug, "fetched": fetched, "errors": errors}
 
 
 # =============================================================================
-# BETIKA — manual trigger only (NOT in beat / startup)
-# =============================================================================
-
-@celery.task(
-    name="tasks.bt.harvest_sport", bind=True,
-    max_retries=2, default_retry_delay=20,
-    soft_time_limit=600, time_limit=660, acks_late=True,
-)
-def bt_harvest_sport(self, sport_slug: str, max_matches: int = BT_MAX_MATCHES) -> dict:
-    t0      = time.perf_counter()
-    matches = []
-    try:
-        from app.workers.bt_harvester import fetch_upcoming_matches
-        matches = fetch_upcoming_matches(
-            sport_slug, max_pages=(max_matches // 50) + 10, fetch_full=False,
-        )
-        if len(matches) > max_matches:
-            matches = matches[:max_matches]
-    except SoftTimeLimitExceeded:
-        logger.warning("[bt] soft timeout %s — saving %d partial", sport_slug, len(matches))
-    except Exception as exc:
-        if matches:
-            logger.warning("[bt] %s error: %s — saving partial", sport_slug, exc)
-        else:
-            raise self.retry(exc=exc)
-    if not matches:
-        return {"ok": False, "reason": "No matches fetched"}
-    latency = int((time.perf_counter() - t0) * 1000)
-    
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
-    cache_set(f"bt:upcoming:{sport_slug}", {
-        "source": "betika", "sport": sport_slug, "mode": "upcoming",
-        "match_count": len(matches), "harvested_at": _now_iso(),
-        "latency_ms": latency, "matches": matches, "enriched": False,
-    }, ttl=3600)
-
-    from app.workers.redis_bus import publish_snapshot
-    publish_snapshot("bt", "upcoming", sport_slug, matches, meta={
-        "source": "betika",
-    })
-    _emit("betika", sport_slug, len(matches), latency)
-
-    # 2. PERSIST TO DB
-    _upsert_and_chain(matches, "Betika")
-    _persist_bk_matches(matches, "bt", sport_slug)
-    
-    bt_enrich_sport.apply_async(
-        args=[sport_slug, matches], queue="harvest", countdown=120,
-    )
-    return {"ok": True, "source": "betika", "sport": sport_slug,
-            "count": len(matches), "latency_ms": latency}
-
-
-@celery.task(
-    name="tasks.bt.enrich_sport", bind=True,
-    max_retries=1, default_retry_delay=300,
-    soft_time_limit=3600, time_limit=3660, acks_late=True,
-)
-def bt_enrich_sport(self, sport_slug: str, matches: list[dict]) -> dict:
-    if not matches:
-        return {"ok": True, "enriched": 0}
-    t0 = time.perf_counter()
-    try:
-        from app.workers.bt_harvester import enrich_matches_with_full_markets
-        enriched = enrich_matches_with_full_markets(matches, max_workers=12)
-    except SoftTimeLimitExceeded:
-        return {"ok": True, "enriched": 0, "reason": "timeout"}
-    except Exception as exc:
-        return {"ok": False, "reason": str(exc)}
-    latency     = int((time.perf_counter() - t0) * 1000)
-    avg_markets = int(sum(m.get("market_count", 0) for m in enriched) / max(len(enriched), 1))
-    
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
-    cache_set(f"bt:upcoming:{sport_slug}", {
-        "source": "betika", "sport": sport_slug, "mode": "upcoming",
-        "match_count": len(enriched), "harvested_at": _now_iso(),
-        "latency_ms": latency, "matches": enriched,
-        "avg_markets": avg_markets, "enriched": True,
-    }, ttl=3600)
-    
-    # 2. PERSIST TO DB
-    _upsert_and_chain(enriched, "Betika")
-    _persist_bk_matches(enriched, "bt", sport_slug)
-    _schedule_alignment(sport_slug, countdown=60)
-    return {"ok": True, "source": "betika", "sport": sport_slug,
-            "count": len(enriched), "avg_markets": avg_markets, "latency_ms": latency}
-
-
-@celery.task(name="tasks.bt.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
-def bt_harvest_all_upcoming() -> dict:
-    sigs = [bt_harvest_sport.s(s, BT_MAX_MATCHES) for s in _SP_SPORTS]
-    group(sigs).apply_async(queue="harvest")
-    return {"dispatched": len(sigs)}
-
-
-# =============================================================================
-# ODIBETS — manual trigger only (NOT in beat / startup)
-# =============================================================================
-
-@celery.task(
-    name="tasks.od.harvest_sport", bind=True,
-    max_retries=1, default_retry_delay=30,
-    soft_time_limit=1800, time_limit=1860, acks_late=True,
-)
-def od_harvest_sport(self, sport_slug: str, max_matches=None) -> dict:
-    t0      = time.perf_counter()
-    matches = []
-    try:
-        from app.workers.od_harvester import fetch_upcoming_matches
-        today     = date.today()
-        _, last_d = monthrange(today.year, today.month)
-        month_days = [date(today.year, today.month, d).isoformat()
-                      for d in range(1, last_d + 1)]
-        seen_ids: set[str]   = set()
-        all_matches: list[dict] = []
-        for day_str in month_days:
-            try:
-                for m in fetch_upcoming_matches(sport_slug=sport_slug, day=day_str):
-                    mid = m.get("od_match_id") or m.get("od_event_id")
-                    if mid:
-                        if mid not in seen_ids:
-                            seen_ids.add(mid)
-                            all_matches.append(m)
-                    else:
-                        all_matches.append(m)
-            except Exception as day_exc:
-                logger.warning("[od] %s day=%s: %s", sport_slug, day_str, day_exc)
-        matches = all_matches
-    except SoftTimeLimitExceeded:
-        logger.warning("[od] soft timeout %s — saving %d partial", sport_slug, len(matches))
-    except Exception as exc:
-        raise self.retry(exc=exc)
-    if not matches:
-        return {"ok": False, "reason": "No matches fetched"}
-    latency     = int((time.perf_counter() - t0) * 1000)
-    avg_markets = int(sum(m.get("market_count", 0) for m in matches) / max(len(matches), 1))
-    
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
-    cache_set(f"od:upcoming:{sport_slug}", {
-        "source": "odibets", "sport": sport_slug, "mode": "upcoming",
-        "match_count": len(matches), "harvested_at": _now_iso(),
-        "latency_ms": latency, "matches": matches, "avg_markets": avg_markets,
-    }, ttl=3600)
-
-    from app.workers.redis_bus import publish_snapshot
-    publish_snapshot("od", "upcoming", sport_slug, matches, meta={
-        "source": "odibets", "avg_markets": avg_markets,
-    })
-    _emit("odibets", sport_slug, len(matches), latency)
-
-    # 2. PERSIST TO DB
-    _upsert_and_chain(matches, "OdiBets")
-    _persist_bk_matches(matches, "od", sport_slug)
-    _schedule_alignment(sport_slug, countdown=60)
-    return {"ok": True, "source": "odibets", "sport": sport_slug,
-            "count": len(matches), "avg_markets": avg_markets, "latency_ms": latency}
-
-
-@celery.task(name="tasks.od.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
-def od_harvest_all_upcoming() -> dict:
-    sigs = [od_harvest_sport.s(s) for s in _SP_SPORTS]
-    group(sigs).apply_async(queue="harvest")
-    return {"dispatched": len(sigs)}
-
-
-# =============================================================================
-# B2B DIRECT  (scheduled, unchanged)
+# B2B HARVEST
 # =============================================================================
 
 @celery.task(
@@ -1203,145 +558,94 @@ def b2b_harvest_sport(self, sport_slug: str) -> dict:
         matches = fetch_b2b_sport(sport_slug, mode="upcoming")
     except Exception as exc:
         raise self.retry(exc=exc)
-    latency = int((time.perf_counter() - t0) * 1000)
-    
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
-    cache_set(f"b2b:upcoming:{sport_slug}", {
-        "source": "b2b", "sport": sport_slug, "mode": "upcoming",
-        "match_count": len(matches), "harvested_at": _now_iso(),
-        "latency_ms": latency, "matches": matches,
-    }, ttl=300)
-    _emit("b2b", sport_slug, len(matches), latency)
 
-    # 2. PERSIST TO DB
-    _persist_b2b_matches(matches, sport_slug)
-    _schedule_alignment(sport_slug, countdown=60)
+    latency = int((time.perf_counter() - t0) * 1000)
+
+    if matches:
+        cache_set(f"b2b:upcoming:{sport_slug}", {
+            "source": "b2b", "sport": sport_slug, "mode": "upcoming",
+            "match_count": len(matches), "harvested_at": _now_iso(),
+            "latency_ms": latency, "matches": matches,
+        }, ttl=300)
+
+        from app.workers.redis_bus import publish_snapshot
+        publish_snapshot("b2b", "upcoming", sport_slug, matches)
+
+    _emit("b2b", sport_slug, len(matches), latency)
     return {"ok": True, "source": "b2b", "sport": sport_slug,
             "count": len(matches), "latency_ms": latency}
 
 
 @celery.task(name="tasks.b2b.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
 def b2b_harvest_all_upcoming() -> dict:
-    sigs = [b2b_harvest_sport.s(s) for s in _B2B_HARVEST_SPORTS]
+    sigs = [b2b_harvest_sport.s(s) for s in _B2B_SPORTS]
     group(sigs).apply_async(queue="harvest")
     return {"dispatched": len(sigs)}
 
 
+# =============================================================================
+# STANDALONE BT / OD (manual triggers only — NOT in beat schedule)
+# =============================================================================
+
 @celery.task(
-    name="tasks.b2b_page.harvest_page", bind=True,
-    max_retries=2, default_retry_delay=15,
-    soft_time_limit=45, time_limit=60, acks_late=True,
+    name="tasks.bt.harvest_sport", bind=True,
+    max_retries=2, soft_time_limit=600, time_limit=660, acks_late=True,
 )
-def b2b_page_harvest_page(self, bookmaker: dict, sport: str, page: int) -> dict:
-    from app.workers.celery_tasks import _upsert_unified_match
-    bk_name = bookmaker.get("name") or bookmaker.get("domain", "?")
-    bk_id   = bookmaker.get("id")
-    t0      = time.perf_counter()
-    try:
-        from app.views.odds_feed.bookmaker_fetcher import fetch_bookmaker
-        matches = fetch_bookmaker(bookmaker, sport_name=sport, mode="upcoming",
-                                  page=page, page_size=PAGE_SIZE, timeout=20)
-    except Exception as exc:
-        raise self.retry(exc=exc)
+def bt_harvest_sport(self, sport_slug: str, max_matches: int = 3000) -> dict:
+    """Manual BT harvest — use bt_od_harvest_sport for scheduled runs."""
+    t0 = time.perf_counter()
+    matches = _fetch_bt_sport(sport_slug)
+    if not matches:
+        return {"ok": False, "reason": "no matches"}
+
     latency = int((time.perf_counter() - t0) * 1000)
-    ck = f"odds:upcoming:{sport.lower().replace(' ', '_')}:{bk_id}:p{page}"
-    
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
-    cache_set(ck, {
-        "bookmaker_id": bk_id, "bookmaker_name": bk_name,
-        "sport": sport, "mode": "upcoming", "page": page,
+    cache_set(f"bt:upcoming:{sport_slug}", {
+        "source": "betika", "sport": sport_slug, "mode": "upcoming",
         "match_count": len(matches), "harvested_at": _now_iso(),
         "latency_ms": latency, "matches": matches,
-    }, ttl=360)
-    _publish(WS_CHANNEL, {
-        "event": "odds_updated", "source": "b2b",
-        "bookmaker": bk_name, "sport": sport, "mode": "upcoming",
-        "page": page, "count": len(matches), "ts": _now_iso(),
-    })
+    }, ttl=3600)
 
-    # 2. PERSIST TO DB
-    for m in matches:
-        _upsert_unified_match(m, bk_id, bk_name)
-    sport_slug = sport.lower().replace(" ", "-")
-    bk_slug    = {v: k for k, v in _BK_NAMES.items()}.get(bk_name, bk_name[:4].lower())
-    _persist_bk_matches(matches, bk_slug, sport_slug)
-    
-    return {"ok": True, "count": len(matches), "latency_ms": latency}
+    from app.workers.redis_bus import publish_snapshot
+    publish_snapshot("bt", "upcoming", sport_slug, matches)
+    _upsert_and_chain(matches, "Betika")
+    _persist_bk_matches(matches, "bt", sport_slug)
+    return {"ok": True, "sport": sport_slug, "count": len(matches), "latency_ms": latency}
 
 
-@celery.task(name="tasks.b2b_page.harvest_all_upcoming", soft_time_limit=60, time_limit=120)
-def b2b_page_harvest_all_upcoming() -> dict:
-    from app.workers.celery_tasks import _redis
-    raw        = _redis().get("cache:bookmakers:active")
-    bookmakers = json.loads(raw) if raw else []
-    if not bookmakers:
-        return {"dispatched": 0}
-    sigs = [
-        b2b_page_harvest_page.s(bm, sport, page)
-        for bm in bookmakers
-        for sport in _B2B_SPORTS
-        for page in range(1, MAX_PAGES + 1)
-    ]
+@celery.task(
+    name="tasks.od.harvest_sport", bind=True,
+    max_retries=1, soft_time_limit=1800, time_limit=1860, acks_late=True,
+)
+def od_harvest_sport(self, sport_slug: str) -> dict:
+    """Manual OD harvest — use bt_od_harvest_sport for scheduled runs."""
+    t0 = time.perf_counter()
+    matches = _fetch_od_sport(sport_slug)
+    if not matches:
+        return {"ok": False, "reason": "no matches"}
+
+    latency = int((time.perf_counter() - t0) * 1000)
+    cache_set(f"od:upcoming:{sport_slug}", {
+        "source": "odibets", "sport": sport_slug, "mode": "upcoming",
+        "match_count": len(matches), "harvested_at": _now_iso(),
+        "latency_ms": latency, "matches": matches,
+    }, ttl=3600)
+
+    from app.workers.redis_bus import publish_snapshot
+    publish_snapshot("od", "upcoming", sport_slug, matches)
+    _upsert_and_chain(matches, "OdiBets")
+    _persist_bk_matches(matches, "od", sport_slug)
+    return {"ok": True, "sport": sport_slug, "count": len(matches), "latency_ms": latency}
+
+
+@celery.task(name="tasks.bt.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
+def bt_harvest_all_upcoming() -> dict:
+    sigs = [bt_harvest_sport.s(s) for s in _BT_SPORTS]
     group(sigs).apply_async(queue="harvest")
     return {"dispatched": len(sigs)}
 
 
-# =============================================================================
-# SBO  (scheduled, unchanged)
-# =============================================================================
-
-@celery.task(
-    name="tasks.sbo.harvest_sport", bind=True,
-    max_retries=1, default_retry_delay=30,
-    soft_time_limit=120, time_limit=150, acks_late=True,
-)
-def sbo_harvest_sport(self, sport_slug: str, max_matches: int = 90) -> dict:
-    t0 = time.perf_counter()
-    try:
-        from app.views.sbo.sbo_fetcher import OddsAggregator, SPORT_CONFIG
-        cfg = next((c for c in SPORT_CONFIG if c["sport"] == sport_slug), None)
-        if not cfg:
-            return {"ok": False, "error": f"Unknown sport: {sport_slug}"}
-        agg = OddsAggregator(cfg, fetch_full_sp_markets=True,
-                             fetch_full_bt_markets=True, fetch_od_markets=True)
-        matches = agg.run(max_matches=max_matches)
-    except Exception as exc:
-        raise self.retry(exc=exc)
-    latency = int((time.perf_counter() - t0) * 1000)
-    
-    # 1. UPDATE CACHE & REDIS BEFORE DB PERSISTENCE
-    cache_set(f"sbo:upcoming:{sport_slug}", {
-        "sport": sport_slug, "match_count": len(matches),
-        "harvested_at": _now_iso(), "latency_ms": latency, "matches": matches,
-    }, ttl=180)
-    
-    arb_count = sum(1 for m in matches if m.get("arbitrage"))
-    _publish(WS_CHANNEL, {
-        "event": "odds_updated", "source": "sbo",
-        "sport": sport_slug, "count": len(matches),
-        "arb_count": arb_count, "ts": _now_iso(),
-    })
-    
-    if arb_count:
-        _publish(ARB_CHANNEL, {
-            "event": "arb_found", "sport": sport_slug,
-            "arb_count": arb_count, "ts": _now_iso(),
-        })
-
-    # 2. PERSIST TO DB
-    if matches and matches[0].get("bookmakers"):
-        _persist_b2b_matches(matches, sport_slug)
-    else:
-        _upsert_and_chain(matches, "SBO")
-        _persist_bk_matches(matches, "sbo", sport_slug)
-        
-    _schedule_alignment(sport_slug, countdown=60)
-    return {"ok": True, "count": len(matches),
-            "arb_count": arb_count, "latency_ms": latency}
-
-
-@celery.task(name="tasks.sbo.harvest_all_upcoming", soft_time_limit=60, time_limit=120)
-def sbo_harvest_all_upcoming() -> dict:
-    sigs = [sbo_harvest_sport.s(s, 90) for s in _SBO_SPORTS]
+@celery.task(name="tasks.od.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
+def od_harvest_all_upcoming() -> dict:
+    sigs = [od_harvest_sport.s(s) for s in _OD_SPORTS]
     group(sigs).apply_async(queue="harvest")
     return {"dispatched": len(sigs)}

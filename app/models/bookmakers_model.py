@@ -1,91 +1,307 @@
 """
-Bookmaker Models
-=================
-Updated to include betting-related fields: tax, max_bets_per_day,
-min_bet_amount, max_bet_amount, currency, and optional flat tax.
-Also added Bookmaker.to_dict() for easy serialization.
+app/models/bookmaker_catalog.py
+================================
+Single source of truth for all bookmaker configuration.
+Replaces ALL hardcoded BK dicts scattered across the codebase.
+
+Tables
+------
+  bookmakers          Core BK info (name, slug, logo, domain, tier)
+  countries           Country list with flag emoji + currency
+  bookmaker_countries BK ↔ Country with per-country payment methods + API URL
+  market_failures     Rolling log of markets that fail per BK (for monitoring)
+  harvest_jobs        Per-sport harvest job log with timing + counts
 """
+from __future__ import annotations
+import enum
 from datetime import datetime, timezone
 from app.extensions import db
 from app.models.enums_tools import _utcnow_naive
 
 
+def _now():
+    return datetime.now(timezone.utc)
+
+
+# =============================================================================
+# ENUMS
+# =============================================================================
+
+class BkTier(str, enum.Enum):
+    LOCAL   = "local"       # SP, BT, OD — Kenya-facing
+    B2B     = "b2b"         # 1xBet, Melbet etc. — international via B2B API
+    CUSTOM  = "custom"      # any future BK
+
+
+class BkStatus(str, enum.Enum):
+    ACTIVE   = "active"
+    PAUSED   = "paused"
+    DISABLED = "disabled"
+
+
+class PaymentMethod(str, enum.Enum):
+    MPESA        = "mpesa"
+    AIRTEL_MONEY = "airtel_money"
+    BANK         = "bank"
+    CARD         = "card"
+    CRYPTO       = "crypto"
+    USSD         = "ussd"
+    VOUCHER      = "voucher"
+
+
+# =============================================================================
+# BOOKMAKER
+# =============================================================================
+
 class Bookmaker(db.Model):
     __tablename__ = "bookmakers"
 
-    id = db.Column(db.Integer, primary_key=True)
-    domain = db.Column(db.String(100), unique=True, nullable=False)
-    name = db.Column(db.String(100), nullable=True)
-    vendor_slug = db.Column(db.String(), nullable=True)  # e.g. "betika", "sportpesa", "betway"
+    id           = db.Column(db.Integer,     primary_key=True)
+    slug         = db.Column(db.String(32),  nullable=False, unique=True, index=True)
+    name         = db.Column(db.String(64),  nullable=False)
+    short_code   = db.Column(db.String(8),   nullable=False)   # SP, BT, OD, 1X …
+    tier         = db.Column(db.Enum(BkTier), nullable=False, default=BkTier.LOCAL)
+    status       = db.Column(db.Enum(BkStatus), nullable=False, default=BkStatus.ACTIVE)
 
-    # AI-observed UI metadata
-    brand_color = db.Column(db.String(20))
-    logo_url = db.Column(db.String(255))
-    
-    payments = db.relationship(
-        "BookmakerPayment", 
-        back_populates="bookmaker", 
-        lazy="dynamic"  # (Keep whatever lazy/cascade settings you already had)
-    )
-    # payments = db.relationship("BookmakerPayment")  # New relationship to payments
-    harvest_config = db.Column(db.JSON, nullable=True)  # e.g. {"odds_format": "decimal", "supports_live_betting": true}
+    # Display
+    logo_url     = db.Column(db.Text)        # MinIO URL or CDN URL
+    primary_color = db.Column(db.String(16))  # hex e.g. #22C55E
+    website_url  = db.Column(db.Text)
 
-    # Configs
-    paybill_number = db.Column(db.String(50))
-    sms_number = db.Column(db.String(50))
-    is_active = db.Column(db.Boolean, default=False)
-    needs_ui_intervention = db.Column(db.Boolean, default=False)
+    # API integration
+    api_base_url = db.Column(db.Text)        # base URL for harvest API
+    api_key_env  = db.Column(db.String(64))  # env var name that holds API key
+    requires_auth = db.Column(db.Boolean, default=False)
 
-    # Betting-specific settings (new)
-    currency = db.Column(db.String(8), nullable=True, default="KES")  # e.g. KES, USD
-    min_bet_amount = db.Column(db.Numeric(12, 2), nullable=True)
-    max_bet_amount = db.Column(db.Numeric(12, 2), nullable=True)
-    max_bets_per_day = db.Column(db.Integer, nullable=True)
+    # Sports this BK covers (JSON list of canonical sport slugs)
+    supported_sports = db.Column(db.JSON, default=list)
 
-    # Tax: percentage (e.g. 15.00 for 15%) or an optional flat amount
-    tax_percent = db.Column(db.Numeric(5, 2), nullable=True)
-    tax_flat_amount = db.Column(db.Numeric(12, 2), nullable=True)
+    # Harvest config
+    harvest_interval_seconds = db.Column(db.Integer, default=300)
+    max_pages_per_sport      = db.Column(db.Integer, default=30)
+    page_size                = db.Column(db.Integer, default=50)
+    redis_ttl_seconds        = db.Column(db.Integer, default=3600)
 
-    # Discovery audit
-    last_discovery_at = db.Column(db.DateTime, nullable=True)
+    # Metadata
+    created_at   = db.Column(db.DateTime(timezone=True), default=_now)
+    updated_at   = db.Column(db.DateTime(timezone=True), default=_now, onupdate=_now)
 
     # Relationships
-    endpoints = db.relationship(
-        "BookmakerEndpoint", backref="bookmaker", lazy="dynamic",
-        cascade="all, delete-orphan"
-    )
+    countries    = db.relationship("BookmakerCountry", back_populates="bookmaker",
+                                   cascade="all, delete-orphan")
+    market_failures = db.relationship("MarketFailure", back_populates="bookmaker",
+                                      cascade="all, delete-orphan")
+    harvest_jobs = db.relationship("HarvestJob", back_populates="bookmaker",
+                                   cascade="all, delete-orphan")
 
-    def __repr__(self):
-        return f"<Bookmaker {self.name or self.domain}>"
-
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
-            "id": self.id,
-            "domain": self.domain,
-            "name": self.name,
-            "brand_color": self.brand_color,
-            "logo_url": self.logo_url,
-            "paybill_number": self.paybill_number,
-            "sms_number": self.sms_number,
-            "is_active": self.is_active,
-            "needs_ui_intervention": self.needs_ui_intervention,
-            "currency": self.currency,
-            "min_bet_amount": (
-                str(self.min_bet_amount) if self.min_bet_amount is not None else None
-            ),
-            "max_bet_amount": (
-                str(self.max_bet_amount) if self.max_bet_amount is not None else None
-            ),
-            "max_bets_per_day": self.max_bets_per_day,
-            "tax_percent": (
-                str(self.tax_percent) if self.tax_percent is not None else None
-            ),
-            "tax_flat_amount": (
-                str(self.tax_flat_amount) if self.tax_flat_amount is not None else None
-            ),
-            "last_discovery_at": self.last_discovery_at.isoformat() if self.last_discovery_at else None,
+            "id":               self.id,
+            "slug":             self.slug,
+            "name":             self.name,
+            "short_code":       self.short_code,
+            "tier":             self.tier.value,
+            "status":           self.status.value,
+            "logo_url":         self.logo_url,
+            "primary_color":    self.primary_color,
+            "website_url":      self.website_url,
+            "api_base_url":     self.api_base_url,
+            "supported_sports": self.supported_sports or [],
+            "harvest_interval": self.harvest_interval_seconds,
         }
 
+    def __repr__(self):
+        return f"<Bookmaker {self.slug}>"
+
+
+# =============================================================================
+# COUNTRY
+# =============================================================================
+
+class Country(db.Model):
+    __tablename__ = "bk_countries"
+
+    id           = db.Column(db.Integer,    primary_key=True)
+    code         = db.Column(db.String(3),  nullable=False, unique=True, index=True)  # ISO 3166-1 alpha-2
+    name         = db.Column(db.String(64), nullable=False)
+    flag_emoji   = db.Column(db.String(8))
+    currency_code = db.Column(db.String(8))   # KES, USD, EUR …
+    currency_symbol = db.Column(db.String(8)) # KSh, $, €
+
+    bookmakers   = db.relationship("BookmakerCountry", back_populates="country",
+                                   cascade="all, delete-orphan")
+
+    def to_dict(self) -> dict:
+        return {
+            "code":            self.code,
+            "name":            self.name,
+            "flag_emoji":      self.flag_emoji,
+            "currency_code":   self.currency_code,
+            "currency_symbol": self.currency_symbol,
+        }
+
+
+# =============================================================================
+# BOOKMAKER ↔ COUNTRY  (join table with extra data)
+# =============================================================================
+
+class BookmakerCountry(db.Model):
+    __tablename__ = "bookmaker_countries"
+
+    id             = db.Column(db.Integer, primary_key=True)
+    bookmaker_id   = db.Column(db.Integer, db.ForeignKey("bookmakers.id", ondelete="CASCADE"), nullable=False)
+    country_id     = db.Column(db.Integer, db.ForeignKey("bk_countries.id", ondelete="CASCADE"), nullable=False)
+
+    # Country-specific BK config
+    local_domain   = db.Column(db.Text)     # e.g. ke.sportpesa.com
+    api_url        = db.Column(db.Text)     # country-specific API endpoint
+    is_primary     = db.Column(db.Boolean, default=False)  # main operating country
+    is_licensed    = db.Column(db.Boolean, default=True)
+
+    # Payment methods available in this country (JSON list of PaymentMethod values)
+    payment_methods = db.Column(db.JSON, default=list)
+
+    # Min/max deposit in local currency
+    min_deposit    = db.Column(db.Numeric(12, 2))
+    max_deposit    = db.Column(db.Numeric(12, 2))
+    min_withdrawal = db.Column(db.Numeric(12, 2))
+
+    # Metadata
+    notes          = db.Column(db.Text)
+
+    bookmaker      = db.relationship("Bookmaker",       back_populates="countries")
+    country        = db.relationship("Country",         back_populates="bookmakers")
+
+    __table_args__ = (
+        db.UniqueConstraint("bookmaker_id", "country_id", name="uq_bk_country"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "bookmaker_slug":  self.bookmaker.slug if self.bookmaker else None,
+            "country_code":    self.country.code   if self.country   else None,
+            "local_domain":    self.local_domain,
+            "api_url":         self.api_url,
+            "is_primary":      self.is_primary,
+            "payment_methods": self.payment_methods or [],
+            "min_deposit":     float(self.min_deposit)    if self.min_deposit    else None,
+            "max_deposit":     float(self.max_deposit)    if self.max_deposit    else None,
+            "min_withdrawal":  float(self.min_withdrawal) if self.min_withdrawal else None,
+        }
+
+
+# =============================================================================
+# MARKET FAILURE LOG
+# =============================================================================
+
+class MarketFailure(db.Model):
+    """
+    Tracks which markets fail to parse per bookmaker.
+    Written during harvest — helps prioritise mapper fixes.
+    """
+    __tablename__ = "market_failures"
+
+    id            = db.Column(db.Integer, primary_key=True)
+    bookmaker_id  = db.Column(db.Integer, db.ForeignKey("bookmakers.id", ondelete="CASCADE"), nullable=False)
+    sport_slug    = db.Column(db.String(32), nullable=False, index=True)
+    market_name   = db.Column(db.String(128), nullable=False, index=True)
+    failure_count = db.Column(db.Integer, default=1)
+    last_error    = db.Column(db.Text)
+    last_seen     = db.Column(db.DateTime(timezone=True), default=_now, onupdate=_now)
+    first_seen    = db.Column(db.DateTime(timezone=True), default=_now)
+
+    bookmaker     = db.relationship("Bookmaker", back_populates="market_failures")
+
+    __table_args__ = (
+        db.UniqueConstraint("bookmaker_id", "sport_slug", "market_name", name="uq_market_failure"),
+        db.Index("ix_mf_count", "failure_count"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "bookmaker":     self.bookmaker.slug if self.bookmaker else None,
+            "sport":         self.sport_slug,
+            "market":        self.market_name,
+            "failure_count": self.failure_count,
+            "last_error":    self.last_error,
+            "last_seen":     self.last_seen.isoformat() if self.last_seen else None,
+        }
+
+
+def record_market_failure(bk_slug: str, sport_slug: str, market_name: str, error: str = "") -> None:
+    """
+    Upsert a market failure record. Call from harvester exception handlers.
+    Safe to call in background — swallows its own exceptions.
+    """
+    try:
+        from app.extensions import db as _db
+        bk = Bookmaker.query.filter_by(slug=bk_slug).first()
+        if not bk:
+            return
+        existing = MarketFailure.query.filter_by(
+            bookmaker_id=bk.id, sport_slug=sport_slug, market_name=market_name,
+        ).first()
+        if existing:
+            existing.failure_count += 1
+            existing.last_error     = error[:500] if error else existing.last_error
+            existing.last_seen      = _now()
+        else:
+            _db.session.add(MarketFailure(
+                bookmaker_id=bk.id, sport_slug=sport_slug,
+                market_name=market_name, last_error=error[:500] if error else "",
+            ))
+        _db.session.commit()
+    except Exception:
+        pass
+
+
+# =============================================================================
+# HARVEST JOB LOG
+# =============================================================================
+
+class HarvestJob(db.Model):
+    """
+    One row per completed harvest task.
+    Used by the monitoring dashboard to show last-run status per BK/sport.
+    """
+    __tablename__ = "harvest_jobs"
+
+    id              = db.Column(db.Integer, primary_key=True)
+    bookmaker_id    = db.Column(db.Integer, db.ForeignKey("bookmakers.id", ondelete="CASCADE"))
+    sport_slug      = db.Column(db.String(32), nullable=False, index=True)
+    mode            = db.Column(db.String(16), default="upcoming")
+
+    started_at      = db.Column(db.DateTime(timezone=True), default=_now)
+    finished_at     = db.Column(db.DateTime(timezone=True))
+    latency_ms      = db.Column(db.Integer)
+
+    match_count     = db.Column(db.Integer, default=0)
+    market_count    = db.Column(db.Integer, default=0)
+    failure_count   = db.Column(db.Integer, default=0)
+
+    status          = db.Column(db.String(16), default="ok")   # ok | error | partial
+    error_message   = db.Column(db.Text)
+
+    bookmaker       = db.relationship("Bookmaker", back_populates="harvest_jobs")
+
+    __table_args__ = (
+        db.Index("ix_hj_bk_sport", "bookmaker_id", "sport_slug"),
+        db.Index("ix_hj_started",  "started_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "bookmaker":    self.bookmaker.slug if self.bookmaker else None,
+            "sport":        self.sport_slug,
+            "mode":         self.mode,
+            "started_at":   self.started_at.isoformat()  if self.started_at  else None,
+            "finished_at":  self.finished_at.isoformat() if self.finished_at else None,
+            "latency_ms":   self.latency_ms,
+            "match_count":  self.match_count,
+            "market_count": self.market_count,
+            "failure_count": self.failure_count,
+            "status":       self.status,
+        }
 
 class BookmakerPayment(db.Model):
     """
