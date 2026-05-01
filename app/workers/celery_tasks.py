@@ -16,8 +16,17 @@ _log = logging.getLogger(__name__)
 # =============================================================================
 def _redis(db: int = 2):
     import redis as _r
-    url = celery.conf.broker_url or "redis://localhost:6379/0"
-    base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
+    import os
+
+    # Use REDIS_URL from environment, fallback to default
+    url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # If the URL already contains a database number (e.g., /0), remove it
+    # so we can append our own /{db} cleanly.
+    if url.count("/") >= 3:
+        # Example: redis://:pass@host:6379/0  →  redis://:pass@host:6379
+        base = url.rsplit("/", 1)[0]
+    else:
+        base = url
     return _r.Redis.from_url(f"{base}/{db}", decode_responses=False, socket_timeout=5)
 
 def cache_set(key: str, data, ttl: int = 600) -> bool:
