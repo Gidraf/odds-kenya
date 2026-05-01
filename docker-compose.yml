@@ -94,7 +94,7 @@ services:
       --keep-alive 5
       --worker-connections 1000
       --log-level info
-      run:app
+      run:flask_app
     expose:
       - "5000"
     environment:
