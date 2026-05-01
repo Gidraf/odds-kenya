@@ -74,7 +74,7 @@ echo "🐳 Starting infrastructure containers..."
 # ─── 3. Start application ─────────────────────────────────────────────────────
 
 echo "🚀 Starting application containers..."
-docker compose up -d web celery-harvest celery-results celery-analytics celery-beat flower webapp-nextjs nginx_lb
+docker compose up -d web celery-harvest celery-results celery-analytics celery-beat flower nginx_lb
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
