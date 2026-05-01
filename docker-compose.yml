@@ -91,7 +91,7 @@ services:
     command: >
       gunicorn -k gevent -w 1 -b 0.0.0.0:5000
       --timeout 300
-      --keepalive 5
+      --keep-alive 5
       --worker-connections 1000
       --log-level info
       run:app
