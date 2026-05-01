@@ -61,7 +61,7 @@ fi
 # ─── 2. Start infrastructure ──────────────────────────────────────────────────
 
 echo "🐳 Starting infrastructure containers..."
-docker-compose up -d redis6382 rabbitmq
+docker compose up -d redis6382 rabbitmq
 
 echo "⏳ Waiting for RabbitMQ to be ready..."
 until docker exec kinetic-rabbitmq rabbitmq-diagnostics ping > /dev/null 2>&1; do
@@ -104,7 +104,7 @@ MONITORING COMMANDS
 ═══════════════════════════════════════════════════════════════
 
 ── See all running workers ──────────────────────────────────────
-docker-compose ps
+docker compose ps
 
 ── Check which tasks are registered on each worker ──────────────
 docker exec odds-kenya-celery-harvest-1 \
@@ -160,6 +160,6 @@ docker logs odds-kenya-celery-harvest-1 --tail 100 -f
 docker logs odds-kenya-celery-results-1 --tail 100 -f
 
 ── Full restart ─────────────────────────────────────────────────
-docker-compose down && docker-compose up -d
+docker compose down && docker compose up -d
 
 MONITORING
