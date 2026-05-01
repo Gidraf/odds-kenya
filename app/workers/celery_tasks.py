@@ -7,7 +7,6 @@ from datetime import datetime, timezone, timedelta
 
 from celery.signals import worker_ready
 
-from app.extensions import init_celery
 from app.workers.celery_app import celery_app as celery
 
 _log = logging.getLogger(__name__)

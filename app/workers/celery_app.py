@@ -1,13 +1,13 @@
 # app/workers/celery_app.py
 from __future__ import annotations
 import os
-from celery import Celery
+f
+from app.extensions import init_celery
 
 def make_celery() -> Celery:
-    broker  = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    backend = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-    app = Celery("kinetic", broker=broker, backend=backend)
+    from flask import current_app
+    _app = current_app._get_current_object()  # avoid proxy issues
+    app = init_celery(_app)
     app.conf.update(
         task_serializer          = "json",
         result_serializer        = "json",
