@@ -89,11 +89,13 @@ services:
     container_name: odds-kenya-web-1
     build: .
     command: >
+      command: >
       gunicorn -k gevent -w 1 -b 0.0.0.0:5000
       --timeout 300
       --keep-alive 5
       --worker-connections 1000
       --log-level info
+      --worker-tmp-dir /tmp
       run:flask_app
     expose:
       - "5000"
