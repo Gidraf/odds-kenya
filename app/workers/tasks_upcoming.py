@@ -220,7 +220,7 @@ def _fetch_od_sport(sport_slug: str) -> list[dict]:
 @celery.task(
     name="tasks.sp.harvest_sport", bind=True,
     max_retries=2, default_retry_delay=20,
-    soft_time_limit=3600, time_limit=3660, acks_late=True,
+    soft_time_limit=6000, time_limit=3660, acks_late=True,
 )
 def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -> dict:
     t0      = time.perf_counter()
