@@ -652,10 +652,10 @@ function conn(url,src){
     }catch(_){addLine(src,e.data);}
   };
 }
-conn("/api/monitor/stream/logs",  "celery");
-conn("/api/monitor/stream/flask", "flask");
-conn("/api/monitor/stream/tasks", "tasks");
-conn("/api/monitor/stream/jobs",  "celery");
+conn("/api/monitor/debug/stream/logs",  "celery");
+conn("/api/monitor/debug/stream/flask", "flask");
+conn("/api/monitor/debug/stream/tasks", "tasks");
+conn("/api/monitor/debug/stream/jobs",  "celery");
 
 // ─── Beat ─────────────────────────────────────────────────────────────
 function fmtS(s){
