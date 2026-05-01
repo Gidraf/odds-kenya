@@ -11,7 +11,10 @@ from werkzeug.security import generate_password_hash
 
 # Expose celery_app at module level so Celery CLI can find it:
 # celery -A run.celery_app worker ...
-init_celery(flask_app)
+
+from app.workers.celery_app import make_celery
+make_celery(flask_app)
+# init_celery(flask_app)
 celery_app = flask_app.celery
 
 

@@ -66,7 +66,10 @@ def create_app() -> Flask:
         **({"message_queue": mq, "channel": "flask-socketio"} if mq else {}),
     )
 
-    flask_app.celery = init_celery(flask_app)
+    from app.workers.celery_app import make_celery
+    make_celery(flask_app)
+
+    # flask_app.celery = init_celery(flask_app)
 
     # ── Blueprints ────────────────────────────────────────────────────────────
     from app.views.auth                              import authorization

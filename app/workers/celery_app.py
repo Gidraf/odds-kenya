@@ -1,97 +1,35 @@
 # app/workers/celery_app.py
 from __future__ import annotations
 import os
-from app.extensions import celery
 
-def make_celery() -> Celery:
-    broker  = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    backend = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-    app = celery
-    app.conf.update(
-        task_serializer          = "json",
-        result_serializer        = "json",
-        accept_content           = ["json"],
-        task_track_started       = True,
-        task_acks_late           = True,
-        worker_prefetch_multiplier = 4,
-        task_soft_time_limit     = 30,
-        task_time_limit          = 40,
-        result_expires           = 300,
+def make_celery(flask_app=None):
+    """
+    If flask_app is passed (from create_app), every task runs inside
+    a Flask app context automatically. Without it, tasks crash on any
+    db.session / model access.
+    """
+    from app.extensions import celery
+
+    broker  = os.getenv("CELERY_BROKER_URL",    "amqp://kinetic:kinetic_pass@localhost:5672/kinetic")
+    backend = os.getenv("CELERY_RESULT_BACKEND", os.getenv("REDIS_URL", "redis://localhost:6382/1"))
+
+    celery.conf.broker_url   = broker
+    celery.conf.result_backend = backend
+
+    celery.conf.update(
+        task_serializer                    = "json",
+        result_serializer                  = "json",
+        accept_content                     = ["json"],
+        task_track_started                 = True,
+        task_acks_late                     = True,
+        worker_prefetch_multiplier         = 1,
+        task_soft_time_limit               = 300,
+        task_time_limit                    = 360,
+        result_expires                     = 3600,
         broker_connection_retry_on_startup = True,
+        broker_heartbeat                   = 10,
 
-        # ─── TASK ROUTES (queue assignments) ─────────────────────────────────
-        task_routes = {
-            "harvest.bookmaker_sport":             {"queue": "harvest"},
-            "harvest.all_upcoming":                {"queue": "harvest"},
-            "harvest.merge_broadcast":             {"queue": "harvest"},
-            "harvest.value_bets":                  {"queue": "ev_arb"},
-            "harvest.cleanup":                     {"queue": "harvest"},
-            "tasks.sp.harvest_sport":              {"queue": "harvest"},
-            "tasks.sp.harvest_all_upcoming":       {"queue": "harvest"},
-            "tasks.sp.harvest_all_live":           {"queue": "live"},
-            "tasks.sp.cross_bk_enrich":           {"queue": "harvest"},
-            "tasks.sp.enrich_analytics":          {"queue": "harvest"},
-            "tasks.sp.get_match_analytics":       {"queue": "harvest"},
-            "tasks.sp.harvest_page":              {"queue": "harvest"},
-            "tasks.sp.merge_pages":               {"queue": "results"},
-            "tasks.sp.harvest_sport_paged":       {"queue": "harvest"},
-            "tasks.sp.harvest_all_paged":         {"queue": "harvest"},
-            "tasks.bt_od.harvest_sport":          {"queue": "harvest"},
-            "tasks.bt_od.harvest_all":            {"queue": "harvest"},
-            "tasks.bt.harvest_sport":              {"queue": "harvest"},
-            "tasks.bt.harvest_page":              {"queue": "harvest"},
-            "tasks.bt.merge_pages":               {"queue": "results"},
-            "tasks.bt.harvest_sport_paged":       {"queue": "harvest"},
-            "tasks.bt.harvest_all_paged":         {"queue": "harvest"},
-            "tasks.bt.enrich_sport":              {"queue": "harvest"},
-            "tasks.bt.harvest_all_upcoming":       {"queue": "harvest"},
-            "tasks.bt.harvest_all_live":           {"queue": "live"},
-            "tasks.od.harvest_sport":              {"queue": "harvest"},
-            "tasks.od.harvest_date_chunk":        {"queue": "harvest"},
-            "tasks.od.merge_pages":               {"queue": "results"},
-            "tasks.od.harvest_sport_paged":       {"queue": "harvest"},
-            "tasks.od.harvest_all_paged":         {"queue": "harvest"},
-            "tasks.od.harvest_all_upcoming":       {"queue": "harvest"},
-            "tasks.od.harvest_all_live":           {"queue": "live"},
-            "tasks.b2b.harvest_sport":             {"queue": "harvest"},
-            "tasks.b2b.harvest_all_upcoming":      {"queue": "harvest"},
-            "tasks.b2b.harvest_all_live":          {"queue": "live"},
-            "tasks.b2b_page.harvest_page":         {"queue": "harvest"},
-            "tasks.b2b_page.harvest_all_upcoming": {"queue": "harvest"},
-            "tasks.b2b_page.harvest_all_live":     {"queue": "live"},
-            "tasks.b2b.harvest_bk_sport":         {"queue": "harvest"},
-            "tasks.b2b.merge_sport":              {"queue": "results"},
-            "tasks.b2b.harvest_all_paged":        {"queue": "harvest"},
-            "tasks.b2b.harvest_all_live_paged":   {"queue": "live"},
-            "tasks.sbo.harvest_sport":             {"queue": "harvest"},
-            "tasks.sbo.harvest_all_upcoming":      {"queue": "harvest"},
-            "tasks.sbo.harvest_all_live":          {"queue": "live"},
-            "tasks.sp.poll_all_event_details":     {"queue": "live"},
-            "tasks.ops.compute_ev_arb":            {"queue": "ev_arb"},
-            "tasks.ops.update_match_results":      {"queue": "results"},
-            "tasks.ops.dispatch_notifications":    {"queue": "notify"},
-            "tasks.ops.publish_ws_event":          {"queue": "notify"},
-            "tasks.ops.health_check":              {"queue": "default"},
-            "tasks.ops.healthcheck":               {"queue": "default"},
-            "tasks.ops.expire_subscriptions":      {"queue": "default"},
-            "tasks.ops.cache_finished_games":      {"queue": "results"},
-            "tasks.ops.send_async_email":          {"queue": "notify"},
-            "tasks.ops.send_message":              {"queue": "notify"},
-            "tasks.ops.persist_combined_batch":    {"queue": "results"},
-            "tasks.ops.persist_all_sports":        {"queue": "results"},
-            "tasks.ops.build_health_report":       {"queue": "default"},
-            "tasks.ops.publish_bk_snapshot":       {"queue": "harvest"},
-            "tasks.align.sport":                   {"queue": "results"},
-            "tasks.align.all_sports":              {"queue": "results"},
-            "tasks.harvest.all_paged":             {"queue": "harvest"},
-            "tasks.ops.beat.harvest_all_paged":    {"queue": "harvest"},
-            "tasks.ops.beat.b2b_live":             {"queue": "harvest"},
-            "tasks.ops.beat.alignment":            {"queue": "results"},
-            "tasks.ops.beat.prune":                {"queue": "default"},
-        },
-
-        # ─── TASK MODULES TO LOAD ────────────────────────────────────────────
         include = [
             "app.workers.tasks_ops",
             "app.workers.tasks_upcoming",
@@ -101,7 +39,105 @@ def make_celery() -> Celery:
             "app.workers.tasks_harvest_b2b",
             "app.workers.tasks_align",
         ],
-    )
-    return app
 
+        task_routes = {
+            "tasks.sp.*":                  {"queue": "harvest"},
+            "tasks.bt.*":                  {"queue": "harvest"},
+            "tasks.od.*":                  {"queue": "harvest"},
+            "tasks.bt_od.*":               {"queue": "harvest"},
+            "tasks.b2b.*":                 {"queue": "harvest"},
+            "tasks.sbo.*":                 {"queue": "harvest"},
+            "harvest.*":                   {"queue": "harvest"},
+            "tasks.live.*":                {"queue": "live"},
+            "tasks.ops.compute_ev_arb":    {"queue": "ev_arb"},
+            "tasks.ops.persist*":          {"queue": "results"},
+            "harvest.persist*":            {"queue": "results"},
+            "harvest.value_bets":          {"queue": "ev_arb"},
+            "tasks.align.*":               {"queue": "results"},
+            "tasks.market_align.*":        {"queue": "results"},
+            "tasks.ops.beat.*":            {"queue": "default"},
+            "tasks.ops.health_check":      {"queue": "default"},
+            "tasks.ops.build_health*":     {"queue": "default"},
+            "tasks.ops.expire*":           {"queue": "default"},
+            "tasks.ops.publish_ws_event":  {"queue": "notify"},
+            "tasks.ops.dispatch_notify*":  {"queue": "notify"},
+            "tasks.ops.send_*":            {"queue": "notify"},
+            "tasks.notify.*":              {"queue": "notify"},
+            "tasks.sp.enrich_analytics":   {"queue": "analytics"},
+            "tasks.sp.get_match_analytics":{"queue": "analytics"},
+        },
+
+        beat_schedule = {
+            "sp-harvest-5min": {
+                "task":     "tasks.sp.harvest_all_upcoming",
+                "schedule": 300,
+                "options":  {"queue": "harvest"},
+            },
+            "bt-od-harvest-5min": {
+                "task":     "tasks.bt_od.harvest_all_upcoming",
+                "schedule": 300,
+                "options":  {"queue": "harvest", "countdown": 60},
+            },
+            "b2b-harvest-10min": {
+                "task":     "tasks.b2b.harvest_all_upcoming",
+                "schedule": 600,
+                "options":  {"queue": "harvest"},
+            },
+            "harvest-all-paged-5min": {
+                "task":     "tasks.ops.beat.harvest_all_paged",
+                "schedule": 300,
+                "options":  {"queue": "harvest"},
+            },
+            "b2b-live-90s": {
+                "task":     "tasks.ops.beat.b2b_live",
+                "schedule": 90,
+                "options":  {"queue": "harvest"},
+            },
+            "alignment-10min": {
+                "task":     "tasks.ops.beat.alignment",
+                "schedule": 600,
+                "options":  {"queue": "results"},
+            },
+            "prune-30min": {
+                "task":     "tasks.ops.beat.prune",
+                "schedule": 1800,
+                "options":  {"queue": "default"},
+            },
+            "arb-digest-5min": {
+                "task":     "tasks.notify.arb_digest",
+                "schedule": 300,
+                "options":  {"queue": "notify"},
+            },
+            "cleanup-daily-3am": {
+                "task":     "harvest.cleanup",
+                "schedule": 86400,
+                "options":  {"queue": "results"},
+            },
+        },
+    )
+
+    # ── THIS IS THE CRITICAL FIX ───────────────────────────────────────────
+    # Wrap every task execution in a Flask app context.
+    # Without this, any task that calls db.session, Model.query etc.
+    # crashes with "Working outside of application context."
+    if flask_app is not None:
+        class ContextTask(celery.Task):
+            abstract = True
+
+            def __call__(self, *args, **kwargs):
+                with flask_app.app_context():
+                    return self.run(*args, **kwargs)
+
+        celery.Task = ContextTask
+
+    return celery
+
+
+# Module-level instance — used by:
+#   celery -A app.workers.celery_app worker ...
+#   celery -A app.workers.celery_app beat ...
+#   celery -A app.workers.celery_app flower ...
+#
+# At this point flask_app is None, so ContextTask is NOT applied yet.
+# It gets applied when create_app() calls make_celery(flask_app).
 celery_app = make_celery()
