@@ -97,7 +97,6 @@ def make_celery() -> Celery:
             "app.workers.tasks_upcoming",
             "app.workers.tasks_live",
             "app.workers.tasks_market_align",
-            "app.workers.tasks_bt_od",
             "app.workers.tasks_harvest_pages",
             "app.workers.tasks_harvest_b2b",
             "app.workers.tasks_align",

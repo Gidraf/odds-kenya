@@ -357,12 +357,3 @@ def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
                 compute_ev_arb.apply_async(args=[mid], queue="ev_arb", countdown=1)
     except Exception as exc:
         _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
-
-    from app.workers.od_harvester import init_live_poller
-    from app.workers.sp_live_harvester import start_harvester_thread
-    from app.extensions import get_redis_client
-
-    redis_client = get_redis_client()
-    init_live_poller(redis_client, interval=2.0)
-    start_harvester_thread()
-    _log.info("[worker_ready] Live pollers started (OD, SP).")
