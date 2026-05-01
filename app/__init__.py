@@ -147,7 +147,7 @@ def create_app() -> Flask:
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,
-            BookmakerEntityValue, BookmakerPayment, BookmakerEntityMap, BookmakerMatchLink, HarvestJob, Country, BookmakerCountry, MarketFailure, 
+            BookmakerEntityValue, BookmakerPayment, BookmakerEntityMap, BookmakerMatchLink, HarvestJob, Country, BookmakerCountry, MarketFailure, BkTier, BkStatus, PaymentMethod
         )
         from app.models.research_model import (
             ResearchSession, ResearchFinding, ResearchEndpoint,
