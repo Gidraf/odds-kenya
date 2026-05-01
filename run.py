@@ -5,7 +5,7 @@ from app import create_app
 
 flask_app = create_app()
 
-from app.extensions import db, init_celery, socketio
+from app.extensions import db, socketio
 from app.models.user_admin import User
 from werkzeug.security import generate_password_hash
 
