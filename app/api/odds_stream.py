@@ -134,7 +134,22 @@ def _r():
 # DATA LAYER — the critical fix lives here
 # =============================================================================
 
-_read_key
+def _read_key(r, patterns: list[str], sport: str) -> list[dict] | None:
+    best: list[dict] | None = None
+    for pat in patterns:
+        try:
+            raw = r.get(pat.format(sport=sport))
+            if not raw:
+                continue
+            data    = json.loads(raw)
+            matches = data.get("matches", []) if isinstance(data, dict) else data
+            if matches and (best is None or len(matches) > len(best)):
+                best = matches   # ← keeps the largest dataset found
+        except Exception:
+            continue
+    return best
+
+
 def _get_unified(mode: str, sport: str) -> list[dict]:
     """
     THE KEY FIX:
