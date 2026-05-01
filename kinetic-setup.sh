@@ -21,9 +21,9 @@ cat > .env << 'EOF'
 DATABASE_URL=postgresql://kinetic:kinetic_pass@localhost:5432/kinetic
 
 # ── Redis (cache + pubsub — NOT broker) ───────────────────────────────────────
-REDIS_PASSWORD=%40Winners1127
-REDIS_URL=redis://:%40Winners1127@localhost:6382/0
-REDIS_CACHE_URL=redis://:%40Winners1127@localhost:6382/2
+REDIS_PASSWORD=Winners1127
+REDIS_URL=redis://:Winners1127@localhost:6382/0
+REDIS_CACHE_URL=redis://:Winners1127@localhost:6382/2
 
 # ── RabbitMQ (Celery broker) ───────────────────────────────────────────────────
 RABBITMQ_USER=kinetic
