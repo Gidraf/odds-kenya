@@ -169,17 +169,6 @@ services:
       retries: 3
 
   # ── Next.js ────────────────────────────────────────────────────────────────
-  webapp-nextjs:
-    image: odds-kenya-webapp-nextjs
-    container_name: kinetic-web
-    restart: unless-stopped
-    ports:
-      - "3050:3050"
-    environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://kinetic-api.gidraf.dev/api}
-      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-wss://kinetic-api.gidraf.dev}
-    networks:
-      - kinetic
 
   # ── Nginx ──────────────────────────────────────────────────────────────────
   nginx_lb:
