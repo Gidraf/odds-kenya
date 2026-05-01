@@ -134,22 +134,7 @@ def _r():
 # DATA LAYER — the critical fix lives here
 # =============================================================================
 
-def _read_key(r, patterns: list[str], sport: str) -> list[dict] | None:
-    """Try each Redis key pattern, return first non-empty match list."""
-    for pat in patterns:
-        try:
-            raw = r.get(pat.format(sport=sport))
-            if not raw:
-                continue
-            data = json.loads(raw)
-            matches = data.get("matches", []) if isinstance(data, dict) else data
-            if matches:
-                return matches
-        except Exception:
-            pass
-    return None
-
-
+_read_key
 def _get_unified(mode: str, sport: str) -> list[dict]:
     """
     THE KEY FIX:
