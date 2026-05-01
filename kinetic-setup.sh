@@ -29,7 +29,7 @@ REDIS_CACHE_URL=redis://:Winners1127@localhost:6382/2
 RABBITMQ_USER=kinetic
 RABBITMQ_PASS=kinetic_rabbit_pass
 CELERY_BROKER_URL=amqp://kinetic:kinetic_rabbit_pass@localhost:5672/kinetic
-CELERY_RESULT_BACKEND=redis://:%40Winners1127@localhost:6382/1
+CELERY_RESULT_BACKEND=redis://:Winners1127@localhost:6382/1
 
 # ── Flower (task monitor) ──────────────────────────────────────────────────────
 FLOWER_USER=admin
