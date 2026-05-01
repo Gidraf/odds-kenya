@@ -45,6 +45,7 @@ from app.workers.celery_tasks import (
     _upsert_and_chain, _extract_betradar_id, _normalise_sport_name,
     _get_or_create_bookmaker,_redis
 )
+from app.workers.tasks_bt_od import _fetch_bt_sport, _fetch_od_sport
 
 logger = get_task_logger(__name__)
 
