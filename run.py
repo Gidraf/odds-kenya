@@ -15,7 +15,7 @@ from werkzeug.security import generate_password_hash
 from app.workers.celery_app import make_celery
 make_celery(flask_app)
 # init_celery(flask_app)
-celery_app = flask_app.celery
+celery_app = make_celery(flask_app)
 
 
 @flask_app.cli.command("seed-markets")
