@@ -57,11 +57,11 @@ class Bookmaker(db.Model):
     __tablename__ = "bookmakers"
 
     id           = db.Column(db.Integer,     primary_key=True)
-    slug         = db.Column(db.String(32),  nullable=False, unique=True, index=True)
-    name         = db.Column(db.String(64),  nullable=False)
-    short_code   = db.Column(db.String(8),   nullable=False)   # SP, BT, OD, 1X …
-    tier         = db.Column(db.Enum(BkTier), nullable=False, default=BkTier.LOCAL)
-    status       = db.Column(db.Enum(BkStatus), nullable=False, default=BkStatus.ACTIVE)
+    slug         = db.Column(db.String(32),  nullable=True, unique=True, index=True)
+    name         = db.Column(db.String(64),  nullable=True)
+    short_code   = db.Column(db.String(8),   nullable=True)   # SP, BT, OD, 1X …
+    tier         = db.Column(db.Enum(BkTier), nullable=True, default=BkTier.LOCAL)
+    status       = db.Column(db.Enum(BkStatus), nullable=True, default=BkStatus.ACTIVE)
 
     # Display
     logo_url     = db.Column(db.Text)        # MinIO URL or CDN URL
@@ -71,7 +71,7 @@ class Bookmaker(db.Model):
     # API integration
     api_base_url = db.Column(db.Text)        # base URL for harvest API
     api_key_env  = db.Column(db.String(64))  # env var name that holds API key
-    requires_auth = db.Column(db.Boolean, default=False)
+    requires_auth = db.Column(db.Boolean, default=True)
 
     # Sports this BK covers (JSON list of canonical sport slugs)
     supported_sports = db.Column(db.JSON, default=list)
