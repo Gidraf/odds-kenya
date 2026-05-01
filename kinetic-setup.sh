@@ -61,15 +61,15 @@ fi
 # ─── 2. Start infrastructure ──────────────────────────────────────────────────
 
 echo "🐳 Starting infrastructure containers..."
-docker compose up -d redis6382 rabbitmq
+# docker compose up -d redis6382 rabbitmq
 
-echo "⏳ Waiting for RabbitMQ to be ready..."
-until docker exec kinetic-rabbitmq rabbitmq-diagnostics ping > /dev/null 2>&1; do
-  printf '.'
-  sleep 3
-done
-echo ""
-echo "✅ RabbitMQ is ready"
+# echo "⏳ Waiting for RabbitMQ to be ready..."
+# until docker exec kinetic-rabbitmq rabbitmq-diagnostics ping > /dev/null 2>&1; do
+#   printf '.'
+#   sleep 3
+# done
+# echo ""
+# echo "✅ RabbitMQ is ready"
 
 # ─── 3. Start application ─────────────────────────────────────────────────────
 
