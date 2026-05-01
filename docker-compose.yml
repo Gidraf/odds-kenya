@@ -1,53 +1,40 @@
 version: "3.9"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Kinetic Odds Engine — full stack
-#
-# Services:
-#   redis6382          Redis 7  (cache + pubsub only — NOT celery broker)
-#   rabbitmq           RabbitMQ (celery broker — replaces Redis as broker)
-#   flower             Celery task monitor UI  (port 5555)
-#   web                Flask/Gunicorn  (1 worker, gevent)
-#   celery-harvest     Harvest queue   (SP/BT/OD fetching)
-#   celery-results     DB persistence + EV/arb compute
-#   celery-analytics   Deep analytics + AI commentary
-#   celery-beat        Periodic scheduler
-#   webapp-nextjs      Next.js frontend
-#   nginx_lb           Reverse proxy
+# Kinetic Odds Engine
+# RabbitMQ runs on the HOST machine (not in Docker).
+# All containers reach it via host.docker.internal.
 # ─────────────────────────────────────────────────────────────────────────────
 
 x-celery-common: &celery-common
   build: .
   restart: unless-stopped
   depends_on:
-    rabbitmq:
-      condition: service_healthy
     redis6382:
       condition: service_healthy
   environment: &celery-env
-    # ── App ──────────────────────────────────────────────────────────────────
     FLASK_APP: run.py
     FLASK_ENV: production
     SECRET_KEY: ${SECRET_KEY}
     DATABASE_URL: ${DATABASE_URL}
 
-    # ── Redis — cache + pubsub only ──────────────────────────────────────────
+    # Redis — cache + pubsub only
     REDIS_URL: "redis://:${REDIS_PASSWORD}@host.docker.internal:6382/0"
     REDIS_CACHE_URL: "redis://:${REDIS_PASSWORD}@host.docker.internal:6382/2"
 
-    # ── RabbitMQ — celery broker ─────────────────────────────────────────────
-    CELERY_BROKER_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/kinetic"
+    # RabbitMQ — running on host machine, NOT in Docker
+    CELERY_BROKER_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic"
     CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD}@host.docker.internal:6382/1"
 
-    # ── MinIO — match images, logos, audio ──────────────────────────────────
+    # MinIO
     MINIO_ENDPOINT: ${MINIO_ENDPOINT:-host.docker.internal:6500}
     MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
     MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
     MINIO_SECURE: "false"
 
-    # ── Misc ─────────────────────────────────────────────────────────────────
-    ENABLE_HARVESTER: "0"   # harvester runs in celery-harvest, not web
+    ENABLE_HARVESTER: "0"
     TZ: Africa/Nairobi
+
   extra_hosts:
     - "host.docker.internal:host-gateway"
   networks:
@@ -55,7 +42,7 @@ x-celery-common: &celery-common
 
 services:
 
-  # ── Redis (cache + pubsub — NOT broker) ────────────────────────────────────
+  # ── Redis ──────────────────────────────────────────────────────────────────
   redis6382:
     image: redis:7
     container_name: redis6382
@@ -80,49 +67,23 @@ services:
     networks:
       - kinetic
 
-  # ── RabbitMQ (Celery broker) ────────────────────────────────────────────────
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    container_name: kinetic-rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-kinetic}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-kinetic_pass}
-      RABBITMQ_DEFAULT_VHOST: kinetic
-    ports:
-      - "5672:5672"        # AMQP
-      - "15672:15672"      # Management UI  →  http://localhost:15672
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 30s
-    networks:
-      - kinetic
-
-  # ── Flower (Celery task monitor) ────────────────────────────────────────────
+  # ── Flower (connects to host RabbitMQ) ─────────────────────────────────────
   flower:
     <<: *celery-common
     container_name: kinetic-flower
     command: >
       celery -A app.workers.celery_app flower
-      --broker=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/kinetic
+      --broker=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic
       --port=5555
       --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASS:-flower_pass}
       --url_prefix=flower
       --persistent=true
       --db=/tmp/flower.db
     ports:
-      - "5555:5555"        # Flower UI  →  http://localhost:5555
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+      - "5555:5555"
     restart: unless-stopped
 
-  # ── Web (Flask/Gunicorn — SSE + REST only) ──────────────────────────────────
+  # ── Web ────────────────────────────────────────────────────────────────────
   web:
     <<: *celery-common
     container_name: odds-kenya-web-1
@@ -146,7 +107,7 @@ services:
       retries: 3
       start_period: 20s
 
-  # ── Celery: Harvest worker (SP/BT/OD fetching) ──────────────────────────────
+  # ── Celery: Harvest ────────────────────────────────────────────────────────
   celery-harvest:
     <<: *celery-common
     container_name: odds-kenya-celery-harvest-1
@@ -164,7 +125,7 @@ services:
       timeout: 15s
       retries: 3
 
-  # ── Celery: Results worker (DB persistence + EV/arb compute) ────────────────
+  # ── Celery: Results ────────────────────────────────────────────────────────
   celery-results:
     <<: *celery-common
     container_name: odds-kenya-celery-results-1
@@ -177,7 +138,7 @@ services:
       --loglevel=info
       --hostname=results@%h
 
-  # ── Celery: Analytics worker ────────────────────────────────────────────────
+  # ── Celery: Analytics ──────────────────────────────────────────────────────
   celery-analytics:
     <<: *celery-common
     container_name: odds-kenya-celery-analytics-1
@@ -190,7 +151,7 @@ services:
       --loglevel=info
       --hostname=analytics@%h
 
-  # ── Celery: Beat scheduler ──────────────────────────────────────────────────
+  # ── Celery: Beat ───────────────────────────────────────────────────────────
   celery-beat:
     <<: *celery-common
     container_name: odds-kenya-celery-beat-1
@@ -206,7 +167,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # ── Next.js frontend ─────────────────────────────────────────────────────────
+  # ── Next.js ────────────────────────────────────────────────────────────────
   webapp-nextjs:
     image: odds-kenya-webapp-nextjs
     container_name: kinetic-web
@@ -219,7 +180,7 @@ services:
     networks:
       - kinetic
 
-  # ── Nginx reverse proxy ──────────────────────────────────────────────────────
+  # ── Nginx ──────────────────────────────────────────────────────────────────
   nginx_lb:
     image: nginx:alpine
     container_name: nginx_lb
@@ -235,7 +196,6 @@ services:
 
 volumes:
   redis_data:
-  rabbitmq_data:
 
 networks:
   kinetic:
