@@ -37,8 +37,8 @@ FLOWER_PASS=flower_secure_pass
 
 # ── MinIO ─────────────────────────────────────────────────────────────────────
 MINIO_ENDPOINT=localhost:6500
-MINIO_ACCESS_KEY=your_minio_access_key
-MINIO_SECRET_KEY=your_minio_secret_key
+MINIO_ACCESS_KEY=gidraf
+MINIO_SECRET_KEY=Winners1127
 
 # ── App ───────────────────────────────────────────────────────────────────────
 SECRET_KEY=your_secret_key_here
