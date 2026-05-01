@@ -518,3 +518,36 @@ def monitor_stats():
                 pass
 
     return _signed_response({"stats": stats})
+
+
+@bp_stream.route("/odds/page/<mode>/<sport>", methods=["GET"])
+@require_tier("basic")
+def paged_odds(mode: str, sport: str):
+    """
+    Paginated REST endpoint for large datasets (1000+ football matches).
+    Called by the dashboard 'Load More' button.
+    
+    Query params:
+      page     int  (1-based, default 1)
+      per_page int  (default 100, max 200)
+    """
+    from app.api import _signed_response
+    tier     = getattr(g.user, "tier", "basic") or "basic"
+    page     = max(1, request.args.get("page",     1,   type=int))
+    per_page = min(200, request.args.get("per_page", 100, type=int))
+
+    all_matches = _enrich_matches(_get_unified(mode, sport), tier)
+    total       = len(all_matches)
+    offset      = (page - 1) * per_page
+    page_data   = all_matches[offset: offset + per_page]
+
+    return _signed_response({
+        "matches":    page_data,
+        "total":      total,
+        "page":       page,
+        "per_page":   per_page,
+        "pages":      -(-total // per_page),   # ceiling division
+        "has_more":   offset + per_page < total,
+        "sport":      sport,
+        "mode":       mode,
+    })

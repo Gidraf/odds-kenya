@@ -268,6 +268,80 @@ def _is_near_term(start_time_str: str, days: int = _NEAR_TERM_DAYS) -> bool:
         return False
 
 
+@celery.task(
+    name="tasks.bt_od.harvest_sport",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    soft_time_limit=600,
+    time_limit=660,
+    acks_late=True,
+)
+def bt_od_harvest_sport(self, sport_slug: str) -> dict:
+    """
+    Fetch BT + OD for one sport concurrently and publish each independently.
+    BT and OD are written to their own Redis keys so _merge_bk_caches finds them.
+    Cross-bk merging happens at read time — we never drop single-bk matches here.
+    """
+    from app.workers.redis_bus import publish_snapshot
+    t0 = time.perf_counter()
+
+    bt_matches: list[dict] = []
+    od_matches: list[dict] = []
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            bt_fut = pool.submit(_fetch_bt_sport, sport_slug)
+            od_fut = pool.submit(_fetch_od_sport, sport_slug)
+            bt_matches = bt_fut.result() or []
+            od_matches = od_fut.result() or []
+    except SoftTimeLimitExceeded:
+        raise
+    except Exception as exc:
+        raise self.retry(exc=exc)
+
+    # ── Write each BK to its own key so the stream can find it ───────────────
+    # publish_snapshot writes to odds:bt:upcoming:{sport} AND triggers
+    # _rebuild_unified_snapshot which updates odds:unified:upcoming:{sport}
+    if bt_matches:
+        cache_set(f"bt:upcoming:{sport_slug}", {
+            "source": "betika", "sport": sport_slug, "mode": "upcoming",
+            "match_count": len(bt_matches), "harvested_at": _now_iso(),
+            "matches": bt_matches,
+        }, ttl=3600)
+        publish_snapshot("bt", "upcoming", sport_slug, bt_matches, meta={"source": "betika"})
+        _upsert_and_chain(bt_matches, "Betika")
+        _persist_bk_matches(bt_matches, "bt", sport_slug)
+
+    if od_matches:
+        cache_set(f"od:upcoming:{sport_slug}", {
+            "source": "odibets", "sport": sport_slug, "mode": "upcoming",
+            "match_count": len(od_matches), "harvested_at": _now_iso(),
+            "matches": od_matches,
+        }, ttl=3600)
+        publish_snapshot("od", "upcoming", sport_slug, od_matches, meta={"source": "odibets"})
+        _upsert_and_chain(od_matches, "OdiBets")
+        _persist_bk_matches(od_matches, "od", sport_slug)
+
+    latency = int((time.perf_counter() - t0) * 1000)
+
+    _publish(WS_CHANNEL, {
+        "event": "odds_updated", "source": "bt_od", "sport": sport_slug,
+        "bt_count": len(bt_matches), "od_count": len(od_matches),
+        "latency_ms": latency, "ts": _now_iso(),
+    })
+
+    logger.info(
+        "[bt_od] %s: bt=%d od=%d latency=%dms",
+        sport_slug, len(bt_matches), len(od_matches), latency,
+    )
+    return {
+        "ok": True, "sport": sport_slug,
+        "bt_count": len(bt_matches), "od_count": len(od_matches),
+        "latency_ms": latency,
+    }
+
+
 # =============================================================================
 # REGISTRY PIPELINE
 # =============================================================================

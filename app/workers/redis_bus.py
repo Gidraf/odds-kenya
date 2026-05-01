@@ -148,20 +148,11 @@ def publish_snapshot(
 
 
 def _rebuild_unified_snapshot(r, mode: str, sport: str, ttl: int = 3600) -> None:
-    """
-    Read all per-BK snapshots and write a merged unified snapshot.
-    Called after every BK snapshot update.
-    """
-    from app.workers.fuzzy_matcher import (
-        match_dict_to_candidate, bulk_align, MatchCandidate,
-    )
-
+    # Removed fuzzy_matcher import — use simple dedup by betradar_id + name key
     all_matches: list[dict] = []
     seen_ids: set = set()
 
-    # Collect from all standard BKs
-    standard_bks = ["sp", "bt", "od"]
-    for bk in standard_bks:
+    for bk in ["sp", "bt", "od", "b2b"]:
         raw = r.get(ch_data(bk, mode, sport))
         if not raw:
             continue
@@ -173,38 +164,20 @@ def _rebuild_unified_snapshot(r, mode: str, sport: str, ttl: int = 3600) -> None
         except Exception:
             pass
 
-    # Collect from B2B unified snapshot
-    b2b_raw = r.get(ch_data("b2b", mode, sport))
-    if b2b_raw:
-        try:
-            b2b_data = json.loads(b2b_raw)
-            b2b_matches = b2b_data.get("matches") or []
-            for m in b2b_matches:
-                _add_to_unified(all_matches, seen_ids, m, "b2b")
-        except Exception:
-            pass
-
     if not all_matches:
         return
 
-    unified_snap = {
-        "mode":         mode,
-        "sport":        sport,
-        "match_count":  len(all_matches),
-        "updated_at":   _now(),
-        "matches":      all_matches,
-    }
-    r.setex(ch_unified(mode, sport), ttl, json.dumps(unified_snap, default=str))
+    r.setex(ch_unified(mode, sport), ttl, json.dumps({
+        "mode": mode, "sport": sport,
+        "match_count": len(all_matches),
+        "updated_at": _now(),
+        "matches": all_matches,
+    }, default=str))
 
-    # Also publish to the main WS channel
     r.publish("odds:updates", json.dumps({
-        "event":  "unified_ready",
-        "mode":   mode,
-        "sport":  sport,
-        "count":  len(all_matches),
-        "ts":     _now(),
+        "event": "unified_ready", "mode": mode, "sport": sport,
+        "count": len(all_matches), "ts": _now(),
     }))
-
 
 def _add_to_unified(
     unified: list[dict],
