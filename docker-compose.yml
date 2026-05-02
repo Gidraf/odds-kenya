@@ -159,19 +159,22 @@ services:
   celery-beat:
     <<: *celery-common
     container_name: odds-kenya-celery-beat-1
+    # Store schedule in a named volume — survives restarts without corruption
+    # Always delete stale schedule on startup before writing fresh one
     command: >
-      sh -c "rm -f /app/celerybeat.pid &&
+      sh -c "rm -f /app/celerybeat.pid /beat-data/celerybeat-schedule /beat-data/celerybeat-schedule.db &&
              celery -A app.workers.celery_app beat
              --loglevel=info
              --scheduler celery.beat:PersistentScheduler
-             --schedule /tmp/celerybeat-schedule"
+             --schedule /beat-data/celerybeat-schedule"
+    volumes:
+      - beat_data:/beat-data
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/celerybeat-schedule"]
+      test: ["CMD", "test", "-f", "/beat-data/celerybeat-schedule"]
       interval: 60s
       timeout: 10s
-      retries: 3
-
-  # ── Next.js ────────────────────────────────────────────────────────────────
+      retries: 5
+      start_period: 30s
 
   # ── Nginx ──────────────────────────────────────────────────────────────────
   nginx_lb:
@@ -189,6 +192,7 @@ services:
 
 volumes:
   redis_data:
+  beat_data:      # ← named volume for beat schedule — never corrupts on restart
 
 networks:
   kinetic:
