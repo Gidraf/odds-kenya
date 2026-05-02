@@ -223,8 +223,8 @@ def _load_sports() -> list[str]:
     bind=True,
     name="app.workers.celery_tasks.harvest_bookmaker_sport",
     max_retries=2,
-    default_retry_delay=30,
-    soft_time_limit=60,
+    default_retry_delay=3000,
+    soft_time_limit=6000,
     time_limit=90,
     acks_late=True,
 )

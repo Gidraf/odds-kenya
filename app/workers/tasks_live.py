@@ -418,7 +418,7 @@ def _fetch_and_publish_details(event_id: int, sport_id: int = 1) -> dict:
 
 @celery.task(
     name="tasks.live.ensure_harvester",
-    soft_time_limit=15, time_limit=20, acks_late=True,
+    soft_time_limit=1500, time_limit=2000, acks_late=True,
 )
 def ensure_harvester_running() -> dict:
     """
@@ -459,7 +459,7 @@ def ensure_harvester_running() -> dict:
 
 @celery.task(
     name="tasks.live.cross_bk_refresh",
-    soft_time_limit=25, time_limit=30, acks_late=True,
+    soft_time_limit=250, time_limit=300, acks_late=True,
 )
 def live_cross_bk_refresh() -> dict:
     """

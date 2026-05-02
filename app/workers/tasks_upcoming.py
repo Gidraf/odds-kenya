@@ -301,7 +301,7 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
     }
 
 
-@celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
+@celery.task(name="tasks.sp.harvest_all_upcoming", soft_time_limit=6000, time_limit=9000)
 def sp_harvest_all_upcoming() -> dict:
     sigs = [sp_harvest_sport.s(s, SP_MAX_MATCHES) for s in _SP_SPORTS]
     group(sigs).apply_async(queue="harvest")
@@ -315,7 +315,7 @@ def sp_harvest_all_upcoming() -> dict:
 @celery.task(
     name="tasks.bt_od.harvest_sport", bind=True,
     max_retries=2, default_retry_delay=30,
-    soft_time_limit=600, time_limit=660, acks_late=True,
+    soft_time_limit=6000, time_limit=9000, acks_late=True,
 )
 def bt_od_harvest_sport(self, sport_slug: str) -> dict:
     """
@@ -549,7 +549,7 @@ def sp_enrich_analytics(self, sport_slug: str) -> dict:
 @celery.task(
     name="tasks.b2b.harvest_sport", bind=True,
     max_retries=2, default_retry_delay=30,
-    soft_time_limit=300, time_limit=360, acks_late=True,
+    soft_time_limit=6000, time_limit=9000, acks_late=True,
 )
 def b2b_harvest_sport(self, sport_slug: str) -> dict:
     t0 = time.perf_counter()
@@ -589,7 +589,7 @@ def b2b_harvest_all_upcoming() -> dict:
 
 @celery.task(
     name="tasks.bt.harvest_sport", bind=True,
-    max_retries=2, soft_time_limit=600, time_limit=660, acks_late=True,
+    max_retries=2, soft_time_limit=6000, time_limit=9000, acks_late=True,
 )
 def bt_harvest_sport(self, sport_slug: str, max_matches: int = 3000) -> dict:
     """Manual BT harvest — use bt_od_harvest_sport for scheduled runs."""
@@ -614,7 +614,7 @@ def bt_harvest_sport(self, sport_slug: str, max_matches: int = 3000) -> dict:
 
 @celery.task(
     name="tasks.od.harvest_sport", bind=True,
-    max_retries=1, soft_time_limit=1800, time_limit=1860, acks_late=True,
+    max_retries=1, soft_time_limit=6000, time_limit=9000, acks_late=True,
 )
 def od_harvest_sport(self, sport_slug: str) -> dict:
     """Manual OD harvest — use bt_od_harvest_sport for scheduled runs."""
@@ -637,14 +637,14 @@ def od_harvest_sport(self, sport_slug: str) -> dict:
     return {"ok": True, "sport": sport_slug, "count": len(matches), "latency_ms": latency}
 
 
-@celery.task(name="tasks.bt.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
+@celery.task(name="tasks.bt.harvest_all_upcoming", soft_time_limit=6000, time_limit=9000)
 def bt_harvest_all_upcoming() -> dict:
     sigs = [bt_harvest_sport.s(s) for s in _BT_SPORTS]
     group(sigs).apply_async(queue="harvest")
     return {"dispatched": len(sigs)}
 
 
-@celery.task(name="tasks.od.harvest_all_upcoming", soft_time_limit=300, time_limit=600)
+@celery.task(name="tasks.od.harvest_all_upcoming", soft_time_limit=6000, time_limit=9000)
 def od_harvest_all_upcoming() -> dict:
     sigs = [od_harvest_sport.s(s) for s in _OD_SPORTS]
     group(sigs).apply_async(queue="harvest")

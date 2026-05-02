@@ -52,7 +52,7 @@ B2B_N_PAGES           = 5     # pages per BK per sport = 1 000 max
 @celery.task(
     name="tasks.b2b.harvest_bk_sport",
     bind=True, max_retries=2, default_retry_delay=15,
-    soft_time_limit=120, time_limit=150, acks_late=True,
+    soft_time_limit=3600, time_limit=9000, acks_late=True,
 )
 def b2b_harvest_bk_sport(
     self,
@@ -136,7 +136,7 @@ def b2b_harvest_bk_sport(
 @celery.task(
     name="tasks.b2b.merge_sport",
     bind=True, max_retries=5, default_retry_delay=15,
-    soft_time_limit=180, time_limit=210, acks_late=True,
+    soft_time_limit=6000, time_limit=9000, acks_late=True,
 )
 def b2b_merge_sport(
     self,
@@ -242,7 +242,7 @@ def b2b_merge_sport(
 @celery.task(
     name="tasks.b2b.harvest_sport_paged",
     bind=True, max_retries=1, default_retry_delay=60,
-    soft_time_limit=60, time_limit=90, acks_late=True,
+    soft_time_limit=6000, time_limit=9000, acks_late=True,
 )
 def b2b_harvest_sport_paged(
     self,
@@ -272,7 +272,7 @@ def b2b_harvest_sport_paged(
 
 @celery.task(
     name="tasks.b2b.harvest_all_paged",
-    soft_time_limit=30, time_limit=60,
+    soft_time_limit=3000, time_limit=6000,
 )
 def b2b_harvest_all_paged() -> dict:
     """Beat task (every 5 min): paged B2B harvest for all supported sports."""
@@ -293,7 +293,7 @@ _B2B_LIVE_SPORTS = ["soccer", "basketball", "tennis", "ice-hockey", "volleyball"
 @celery.task(
     name="tasks.b2b.harvest_bk_live",
     bind=True, max_retries=1, default_retry_delay=10,
-    soft_time_limit=45, time_limit=60, acks_late=True,
+    soft_time_limit=6000, time_limit=6000, acks_late=True,
 )
 def b2b_harvest_bk_live(self, bk_slug: str, sport_slug: str) -> dict:
     """Fetch live matches for one BK and publish immediately."""
@@ -320,7 +320,7 @@ def b2b_harvest_bk_live(self, bk_slug: str, sport_slug: str) -> dict:
 
 @celery.task(
     name="tasks.b2b.harvest_all_live",
-    soft_time_limit=60, time_limit=90,
+    soft_time_limit=6000, time_limit=9000,
 )
 def b2b_harvest_all_live() -> dict:
     """Beat task (every 90s): live harvest for all B2B BKs."""

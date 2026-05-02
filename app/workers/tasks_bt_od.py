@@ -374,8 +374,8 @@ def _persist_multi_bk(matches: list[dict], sport_slug: str) -> int:
     bind=True,
     max_retries=2,
     default_retry_delay=30,
-    soft_time_limit=600,
-    time_limit=660,
+    soft_time_limit=6000,
+    time_limit=6600,
     acks_late=True,
 )
 def bt_od_harvest_sport(self, sport_slug: str) -> dict:
@@ -449,7 +449,7 @@ def bt_od_harvest_sport(self, sport_slug: str) -> dict:
 
 @celery.task(
     name="tasks.bt_od.harvest_all",
-    soft_time_limit=120,
+    soft_time_limit=6000,
     time_limit=180,
 )
 def bt_od_harvest_all() -> dict:

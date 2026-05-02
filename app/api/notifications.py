@@ -126,7 +126,7 @@ def publish_harvest_done(bk: str, sport: str, count: int, latency_ms: int) -> No
 def register_notify_tasks(celery):
     """Register Celery notification tasks. Called from app factory."""
 
-    @celery.task(name="tasks.notify.arb_digest", soft_time_limit=60, time_limit=90)
+    @celery.task(name="tasks.notify.arb_digest", soft_time_limit=6000, time_limit=90)
     def arb_digest_task():
         """
         Send arb digest email to premium users who have email alerts enabled.
@@ -192,7 +192,7 @@ def register_notify_tasks(celery):
 
         return {"sent": sent, "arb_count": len(top_arb)}
 
-    @celery.task(name="tasks.notify.send_arb_email", soft_time_limit=30, time_limit=60)
+    @celery.task(name="tasks.notify.send_arb_email", soft_time_limit=6000, time_limit=60)
     def send_arb_email(to_email: str, name: str, arb_list: list):
         """Send arb opportunity email."""
         try:
