@@ -39,7 +39,7 @@ from flask import Blueprint, Response, request, stream_with_context
 from .utils import _now_utc, _normalise_sport_slug, _sse, _keepalive
 from .routes_debug import _unify_match_payload, _merge_best, _normalize_market_slug
 
-bp_bk_streams = Blueprint("bk_streams", __name__, url_prefix="/api/odds/stream")
+bp_bk_streams = Blueprint("bk_streams", __name__, url_prefix="/api/odds/stream/bk")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
