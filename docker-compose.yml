@@ -156,25 +156,23 @@ services:
       --hostname=analytics@%h
 
   # ── Celery: Beat ───────────────────────────────────────────────────────────
+  # Uses in-memory scheduler (celery.beat:Scheduler) — no file, no corruption.
+  # Beat schedule is defined in celery_app.py conf.beat_schedule.
+  # On every restart it re-reads from code — always fresh, never stale.
   celery-beat:
     <<: *celery-common
     container_name: odds-kenya-celery-beat-1
-    # Store schedule in a named volume — survives restarts without corruption
-    # Always delete stale schedule on startup before writing fresh one
     command: >
-      sh -c "rm -f /app/celerybeat.pid /beat-data/celerybeat-schedule /beat-data/celerybeat-schedule.db &&
+      sh -c "rm -f /app/celerybeat.pid &&
              celery -A app.workers.celery_app beat
              --loglevel=info
-             --scheduler celery.beat:PersistentScheduler
-             --schedule /beat-data/celerybeat-schedule"
-    volumes:
-      - beat_data:/beat-data
+             --scheduler celery.beat:Scheduler"
     healthcheck:
-      test: ["CMD", "test", "-f", "/beat-data/celerybeat-schedule"]
-      interval: 60s
+      test: ["CMD", "pgrep", "-f", "celery.*beat"]
+      interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 3
+      start_period: 15s
 
   # ── Nginx ──────────────────────────────────────────────────────────────────
   nginx_lb:
@@ -192,7 +190,6 @@ services:
 
 volumes:
   redis_data:
-  beat_data:      # ← named volume for beat schedule — never corrupts on restart
 
 networks:
   kinetic:
