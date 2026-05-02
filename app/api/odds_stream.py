@@ -449,12 +449,12 @@ def stream_odds(mode: str, sport: str):
     if mode not in ("upcoming", "live"):
         return _err("mode must be 'upcoming' or 'live'", 400)
 
-    user = _auth_user()
-    if not user:
-        def _deny():
-            yield _sse("error", {"error": "Unauthorized", "code": 401})
-        return Response(stream_with_context(_deny()), mimetype="text/event-stream",
-                        status=200, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    # user = _auth_user()
+    # if not user:
+    #     def _deny():
+    #         yield _sse("error", {"error": "Unauthorized", "code": 401})
+    #     return Response(stream_with_context(_deny()), mimetype="text/event-stream",
+    #                     status=200, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     live_tier = _tier_rank(user) >= _TIER_RANK["pro"]
     return Response(
