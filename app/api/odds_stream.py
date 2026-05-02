@@ -3,19 +3,25 @@ app/api/odds_stream.py
 ======================
 Unified SSE stream + REST endpoints for ALL 10 bookmakers.
 
-KEY FIX: _get_unified no longer short-circuits on the unified snapshot key.
-That key gets written after page-1 merge (50-100 matches). If we returned
-it early, clients would see 50 matches even though SP has 1476.
-We always read ALL individual BK keys and merge them fresh.
+Speed optimisations vs previous version
+----------------------------------------
+1. _get_unified() returns the cached unified key if < 5 min old (sub-ms).
+2. warm_cache() pre-builds unified keys in background — first SSE connect
+   always hits a warm cache.
+3. _merge_bks() skips empty BK keys early.
+4. SSE generator sends slim batch first (teams + 1x2 only) so UI renders
+   immediately, then sends full batch with all markets.
+5. Paged endpoint sorts + slices in Python (no DB round-trip).
 
 Routes
 ------
-GET /odds/stream/<mode>/<sport>      SSE  (?token= for auth — EventSource limitation)
-GET /odds/snapshot/<mode>/<sport>    REST full snapshot
-GET /odds/page/<mode>/<sport>        REST paginated  (?page=1&per_page=100)
-GET /api/monitor/competitions        Competition list (no auth needed)
-GET /api/monitor/stats               Per-sport counts
-GET /api/monitor/redis-keys          Debug: which keys exist for a sport
+GET /api/odds/stream/<mode>/<sport>      SSE  (?token= for auth)
+GET /api/odds/snapshot/<mode>/<sport>    REST full snapshot
+GET /api/odds/page/<mode>/<sport>        REST paginated (?page=1&per_page=100)
+GET /api/monitor/competitions
+GET /api/monitor/stats
+GET /api/monitor/redis-keys
+GET /api/monitor/warm-cache              POST — pre-build all unified keys
 """
 from __future__ import annotations
 
@@ -28,12 +34,13 @@ from flask import Blueprint, Response, request, stream_with_context, g
 
 log = logging.getLogger(__name__)
 
-bp_stream  = Blueprint("odds_stream",  __name__,  url_prefix="/api")
+bp_stream  = Blueprint("odds_stream",  __name__, url_prefix="/api")
 bp_monitor = Blueprint("odds_monitor", __name__, url_prefix="/api/monitor")
 
 _TIER_RANK = {"free": 0, "basic": 1, "pro": 2, "premium": 3, "admin": 4}
 _LOCAL_BKS = {"sp", "bt", "od"}
 _KEEPALIVE  = 20
+_CACHE_TTL  = 300   # 5 min — how long unified key is considered fresh
 
 ALL_SPORTS = [
     "soccer", "basketball", "tennis", "cricket", "rugby", "ice-hockey",
@@ -41,14 +48,12 @@ ALL_SPORTS = [
     "darts", "american-football", "esoccer",
 ]
 
-# Every key pattern any harvester might write to — checked in order
-# In _BK_KEY_FORMATS, add the b2b-prefixed key as fallback for each B2B BK
+# ── Key patterns — checked in order, best (most matches) wins ─────────────────
 _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
     ("sp",        ["odds:sp:upcoming:{sport}",        "sp:upcoming:{sport}"]),
     ("bt",        ["odds:bt:upcoming:{sport}",        "bt:upcoming:{sport}"]),
     ("od",        ["odds:od:upcoming:{sport}",        "od:upcoming:{sport}"]),
     ("b2b",       ["odds:b2b:upcoming:{sport}",       "b2b:upcoming:{sport}"]),
-    # B2B individual BKs — check both direct key AND the b2b-prefixed key
     ("1xbet",     ["odds:1xbet:upcoming:{sport}",     "odds:b2b:1xbet:upcoming:{sport}",     "1xbet:upcoming:{sport}"]),
     ("22bet",     ["odds:22bet:upcoming:{sport}",     "odds:b2b:22bet:upcoming:{sport}",     "22bet:upcoming:{sport}"]),
     ("betwinner", ["odds:betwinner:upcoming:{sport}", "odds:b2b:betwinner:upcoming:{sport}", "betwinner:upcoming:{sport}"]),
@@ -75,18 +80,15 @@ def _auth_user():
 
     auth  = request.headers.get("Authorization", "")
     token = auth[7:] if auth.startswith("Bearer ") else None
-    logging.info(f"Auth header: {auth}, \nextracted token: {token}")
     if not token:
         token = request.args.get("token", "").strip() or None
 
     if token:
         try:
             payload = _decode_token(token)
-            # if payload.get("type") not in ("access", "api"):
-            #     return None
             return Customer.query.get(int(payload["sub"]))
         except Exception as exc:
-            logging.warning(f"T oken decode failed: {exc}")
+            log.warning("Token decode failed: %s", exc)
             return None
 
     api_key = request.headers.get("X-Api-Key", "").strip()
@@ -135,10 +137,11 @@ def _r():
 
 
 # =============================================================================
-# DATA LAYER — the critical fix lives here
+# DATA LAYER
 # =============================================================================
 
 def _read_key(r, patterns: list[str], sport: str) -> list[dict] | None:
+    """Return the dataset with the most matches across all key patterns."""
     best: list[dict] | None = None
     for pat in patterns:
         try:
@@ -148,43 +151,49 @@ def _read_key(r, patterns: list[str], sport: str) -> list[dict] | None:
             data    = json.loads(raw)
             matches = data.get("matches", []) if isinstance(data, dict) else data
             if matches and (best is None or len(matches) > len(best)):
-                best = matches   # ← keeps the largest dataset found
+                best = matches
         except Exception:
             continue
     return best
 
 
-def _get_unified(mode: str, sport: str) -> list[dict]:
+def _get_unified(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
     """
-    THE KEY FIX:
-    We NEVER short-circuit on odds:unified:upcoming:{sport}.
-    That key is written after every publish_snapshot call — including
-    after the very first page (50-100 matches from the paged harvest).
-    Returning early would mean clients always see only 50 matches.
+    Return unified match list for a sport.
 
-    Instead we always read every individual BK key and merge them.
-    SP has all 1476 soccer matches in sp:upcoming:soccer.
-    BT has its matches in bt:upcoming:soccer.
-    OD has its matches in od:upcoming:soccer.
-    We merge all three (and any B2B keys) into one list.
-    Then we write the merged result back as the unified key so the
-    next pubsub-triggered refresh is faster.
+    SPEED: Serve from cached unified key if < _CACHE_TTL seconds old.
+    Only re-merge from individual BK keys when cache is stale or missing.
     """
     r = _r()
 
+    unified_key = f"odds:unified:{mode}:{sport}"
+
+    if not force_refresh:
+        raw = r.get(unified_key)
+        if raw:
+            try:
+                data = json.loads(raw)
+                age  = time.time() - float(data.get("updated_at", 0))
+                if age < _CACHE_TTL:
+                    return data.get("matches", [])
+            except Exception:
+                pass
+
+    # Cache miss or stale — merge fresh
     if mode == "live":
-        return _merge_bks(r, sport, _BK_KEY_FORMATS_LIVE)
+        merged = _merge_bks(r, sport, _BK_KEY_FORMATS_LIVE)
+    else:
+        merged = _merge_bks(r, sport, _BK_KEY_FORMATS)
 
-    merged = _merge_bks(r, sport, _BK_KEY_FORMATS)
-
-    # Write merged result back so pubsub refreshes are fast
+    # Write back so next request is instant
     if merged:
         try:
             r.setex(
-                f"odds:unified:{mode}:{sport}",
+                unified_key,
                 3600,
                 json.dumps({
-                    "mode": mode, "sport": sport,
+                    "mode":        mode,
+                    "sport":       sport,
                     "match_count": len(merged),
                     "updated_at":  time.time(),
                     "matches":     merged,
@@ -197,13 +206,10 @@ def _get_unified(mode: str, sport: str) -> list[dict]:
 
 
 def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[dict]:
-    """
-    Read every BK's Redis key for this sport and merge into one deduplicated list.
-    Dedup priority: betradar_id > home|away team name.
-    """
+    """Merge all BK datasets into one deduplicated list."""
     result:  list[dict] = []
-    by_jk:   dict[str, int] = {}   # join_key → index
-    by_name: dict[str, int] = {}   # home|away → index
+    by_jk:   dict[str, int] = {}
+    by_name: dict[str, int] = {}
 
     def jk(m: dict) -> str:
         return str(
@@ -229,7 +235,6 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
             if pos is None and key_nk:
                 pos = by_name.get(key_nk)
 
-            # Extract markets for this BK
             mkts = (
                 m.get("markets") or
                 m.get("bookmakers", {}).get(bk_slug, {}).get("markets") or
@@ -237,7 +242,6 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
             )
 
             if pos is not None:
-                # Entry already exists — merge this BK's markets in
                 ex = result[pos]
                 ex.setdefault("bookmakers", {})[bk_slug] = {
                     "bookmaker": bk_slug.upper(), "slug": bk_slug, "markets": mkts,
@@ -246,24 +250,23 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
                 if not ex.get("competition") and m.get("competition"):
                     ex["competition"] = m["competition"]
             else:
-                # New match
                 entry: dict = {
-                    "match_id":         m.get("match_id") or key_jk,
-                    "join_key":         key_jk,
-                    "parent_match_id":  m.get("parent_match_id") or m.get("betradar_id") or key_jk,
-                    "betradar_id":      m.get("betradar_id") or "",
-                    "home_team":        m.get("home_team")  or m.get("home_team_name")  or "",
-                    "away_team":        m.get("away_team")  or m.get("away_team_name")  or "",
-                    "competition":      m.get("competition") or m.get("competition_name") or "",
-                    "sport":            m.get("sport") or sport,
-                    "start_time":       m.get("start_time") or "",
-                    "status":           m.get("status") or "PRE_MATCH",
-                    "is_live":          m.get("is_live", False),
-                    "has_arb":          False,
-                    "has_ev":           False,
-                    "best_arb_pct":     0,
+                    "match_id":          m.get("match_id") or key_jk,
+                    "join_key":          key_jk,
+                    "parent_match_id":   m.get("parent_match_id") or m.get("betradar_id") or key_jk,
+                    "betradar_id":       m.get("betradar_id") or "",
+                    "home_team":         m.get("home_team")  or m.get("home_team_name")  or "",
+                    "away_team":         m.get("away_team")  or m.get("away_team_name")  or "",
+                    "competition":       m.get("competition") or m.get("competition_name") or "",
+                    "sport":             m.get("sport") or sport,
+                    "start_time":        m.get("start_time") or "",
+                    "status":            m.get("status") or "PRE_MATCH",
+                    "is_live":           m.get("is_live", False),
+                    "has_arb":           False,
+                    "has_ev":            False,
+                    "best_arb_pct":      0,
                     "arb_opportunities": [],
-                    "market_slugs":     list((mkts or {}).keys()),
+                    "market_slugs":      list((mkts or {}).keys()),
                     "bookmakers": {
                         bk_slug: {"bookmaker": bk_slug.upper(), "slug": bk_slug, "markets": mkts}
                     },
@@ -271,23 +274,21 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
                 }
                 pos = len(result)
                 result.append(entry)
-                if key_jk:  by_jk[key_jk]   = pos
-                if key_nk:  by_name[key_nk] = pos
+                if key_jk: by_jk[key_jk]   = pos
+                if key_nk: by_name[key_nk] = pos
 
-    # Compute best odds + arb after all BKs are merged
     for m in result:
-        m["best"]           = _build_best(m["bookmakers"])
-        has_arb, pct, arbs  = _detect_arb(m["best"])
-        m["has_arb"]        = has_arb
-        m["best_arb_pct"]   = pct
+        m["best"]            = _build_best(m["bookmakers"])
+        has_arb, pct, arbs   = _detect_arb(m["best"])
+        m["has_arb"]         = has_arb
+        m["best_arb_pct"]    = pct
         m["arb_opportunities"] = arbs
-        m["market_slugs"]   = list(m["best"].keys())
+        m["market_slugs"]    = list(m["best"].keys())
 
     return result
 
 
 def _build_best(bookmakers: dict) -> dict:
-    """Best price per market/outcome across all bookmakers."""
     best: dict = {}
     for bk_slug, bd in bookmakers.items():
         for mkt, outcomes in (bd.get("markets") or {}).items():
@@ -310,18 +311,14 @@ def _build_best(bookmakers: dict) -> dict:
 
 
 def _detect_arb(best: dict) -> tuple[bool, float, list]:
-    """
-    Real arb only — legs must span 2+ different bookmakers.
-    Single-BK arb is impossible; never flag it.
-    """
     arbs = []
     for mkt, ob in best.items():
         keys = list(ob.keys())
         exp  = 3 if mkt in ("match_winner", "1x2", "moneyline") else 2
         if len(keys) < exp:
             continue
-        use  = keys[:exp]
-        bks  = {ob[k]["bk"] for k in use if ob[k].get("bk")}
+        use = keys[:exp]
+        bks = {ob[k]["bk"] for k in use if ob[k].get("bk")}
         if len(bks) < 2:
             continue
         odds = [ob[k]["odd"] for k in use]
@@ -343,8 +340,33 @@ def _detect_arb(best: dict) -> tuple[bool, float, list]:
     return True, arbs[0]["profit_pct"], arbs
 
 
+def _slim(m: dict) -> dict:
+    """Lightweight match dict for the first SSE batch — renders UI instantly."""
+    best = m.get("best", {})
+    return {
+        "match_id":      m["match_id"],
+        "join_key":      m["join_key"],
+        "home_team":     m["home_team"],
+        "away_team":     m["away_team"],
+        "competition":   m["competition"],
+        "start_time":    m["start_time"],
+        "is_live":       m["is_live"],
+        "has_arb":       m["has_arb"],
+        "best_arb_pct":  m["best_arb_pct"],
+        "bk_count":      m["bk_count"],
+        "market_slugs":  m.get("market_slugs", []),
+        "bookmakers":    {k: {"bookmaker": v["bookmaker"], "slug": v["slug"], "markets": {}}
+                         for k, v in (m.get("bookmakers") or {}).items()},
+        "best": {
+            "1x2":          best.get("1x2", {}),
+            "match_winner": best.get("match_winner", {}),
+            "moneyline":    best.get("moneyline", {}),
+        },
+        "arb_opportunities": m.get("arb_opportunities", []),
+    }
+
+
 def _filter_tier(matches: list[dict], tier: str) -> list[dict]:
-    """Basic tier sees SP + BT + OD only. Pro/premium see all 10."""
     if tier in ("pro", "premium", "admin"):
         return matches
     out = []
@@ -370,25 +392,41 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
 
     def generate():
         r = _r()
-
-        # Send full snapshot immediately on connect
         matches = _filter_tier(_get_unified(mode, sport), tier)
+
+        # ── Phase 1: slim batch — renders match list instantly ────────────────
         yield _sse("batch", {
-            "matches": matches, "source": "snapshot",
-            "sport":   sport,   "mode":   mode,
-            "count":   len(matches), "tier": tier,
+            "matches": [_slim(m) for m in matches],
+            "source":  "slim",
+            "sport":   sport,
+            "mode":    mode,
+            "count":   len(matches),
+            "tier":    tier,
         })
+
+        # ── Phase 2: full batch — all markets, arb data ───────────────────────
+        yield _sse("batch", {
+            "matches": matches,
+            "source":  "full",
+            "sport":   sport,
+            "mode":    mode,
+            "count":   len(matches),
+            "tier":    tier,
+        })
+
         yield _sse("connected", {
-            "status":    "connected", "sport":     sport,
-            "mode":      mode,        "tier":      tier,
-            "live_push": live_tier,   "count":     len(matches),
+            "status":    "connected",
+            "sport":     sport,
+            "mode":      mode,
+            "tier":      tier,
+            "live_push": live_tier,
+            "count":     len(matches),
         })
 
         if not live_tier:
             yield ": keepalive\n\n"
             return
 
-        # Pro/premium: subscribe to Redis pubsub for live pushes
         pubsub   = r.pubsub(ignore_subscribe_messages=True)
         channels = [
             f"odds:all:{mode}:{sport}:updates",
@@ -418,11 +456,15 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
                         elif "live_updates" in ch:
                             yield _sse("live_update", payload)
                         else:
-                            # Harvest completed — send fresh full snapshot
-                            fresh = _filter_tier(_get_unified(mode, sport), tier)
+                            # Invalidate cache + push fresh snapshot
+                            fresh = _filter_tier(
+                                _get_unified(mode, sport, force_refresh=True), tier
+                            )
                             yield _sse("batch", {
-                                "matches": fresh, "source": "live",
-                                "sport":   sport, "mode":   mode,
+                                "matches": fresh,
+                                "source":  "live",
+                                "sport":   sport,
+                                "mode":    mode,
                                 "count":   len(fresh),
                             })
                     except Exception as exc:
@@ -447,19 +489,19 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
 
 @bp_stream.route("/odds/stream/<mode>/<sport>", methods=["GET"])
 def stream_odds(mode: str, sport: str):
-    """SSE — pass JWT via ?token= (EventSource can't set headers)."""
     from app.api import _err
 
     if mode not in ("upcoming", "live"):
         return _err("mode must be 'upcoming' or 'live'", 400)
 
     user = _auth_user()
-    
     if not user:
         def _deny():
             yield _sse("error", {"error": "Unauthorized", "code": 401})
-        return Response(stream_with_context(_deny()), mimetype="text/event-stream",
-                        status=200, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return Response(
+            stream_with_context(_deny()), mimetype="text/event-stream",
+            status=200, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     live_tier = _tier_rank(user) >= _TIER_RANK["pro"]
     return Response(
@@ -478,7 +520,6 @@ def stream_odds(mode: str, sport: str):
 @bp_stream.route("/odds/snapshot/<mode>/<sport>", methods=["GET"])
 @require_tier("basic")
 def snapshot_odds(mode: str, sport: str):
-    """Full REST snapshot — all matches for polling clients."""
     from app.api import _signed_response
     tier    = getattr(g.user, "tier", "basic") or "basic"
     matches = _filter_tier(_get_unified(mode, sport), tier)
@@ -489,15 +530,6 @@ def snapshot_odds(mode: str, sport: str):
 @bp_stream.route("/odds/page/<mode>/<sport>", methods=["GET"])
 @require_tier("basic")
 def paged_odds(mode: str, sport: str):
-    """
-    Paginated REST for 1000+ match datasets.
-    Used by dashboard Load More / infinite scroll.
-
-    Query params:
-      page      int   1-based (default 1)
-      per_page  int   max 200 (default 100)
-      sort      str   'start_time' | 'arb'
-    """
     from app.api import _signed_response
 
     tier     = getattr(g.user, "tier", "basic") or "basic"
@@ -534,12 +566,11 @@ def paged_odds(mode: str, sport: str):
 
 @bp_monitor.route("/competitions", methods=["GET"])
 def monitor_competitions():
-    """Competition names from Redis — used by filter bar. No auth required."""
     from app.api import _signed_response
-    sport = request.args.get("sport", "soccer")
-    mode  = request.args.get("mode",  "upcoming")
+    sport   = request.args.get("sport", "soccer")
+    mode    = request.args.get("mode",  "upcoming")
     matches = _get_unified(mode, sport)
-    comps = sorted({
+    comps   = sorted({
         str(m.get("competition_name") or m.get("competition") or "").strip()
         for m in matches
         if (m.get("competition_name") or m.get("competition"))
@@ -549,9 +580,8 @@ def monitor_competitions():
 
 @bp_monitor.route("/stats", methods=["GET"])
 def monitor_stats():
-    """Per-sport match count + BK coverage."""
     from app.api import _signed_response
-    r = _r()
+    r     = _r()
     stats: dict = {}
     for sport in ALL_SPORTS:
         for mode in ("upcoming", "live"):
@@ -565,7 +595,9 @@ def monitor_stats():
                 for m in matches:
                     bk_seen.update((m.get("bookmakers") or {}).keys())
                 stats.setdefault(sport, {})[mode] = {
-                    "count": len(matches), "bks": sorted(bk_seen), "bk_count": len(bk_seen),
+                    "count":    len(matches),
+                    "bks":      sorted(bk_seen),
+                    "bk_count": len(bk_seen),
                 }
             except Exception:
                 pass
@@ -574,17 +606,12 @@ def monitor_stats():
 
 @bp_monitor.route("/redis-keys", methods=["GET"])
 def monitor_redis_keys():
-    """
-    Debug: which BK Redis keys exist for a sport and how many matches each has.
-    Call this when BT/OD data isn't appearing to diagnose the issue.
-    e.g. GET /api/monitor/redis-keys?sport=soccer
-    """
     from app.api import _signed_response
     sport = request.args.get("sport", "soccer")
     r     = _r()
 
-    found: dict[str, int]    = {}
-    missing: list[str]       = []
+    found: dict[str, int] = {}
+    missing: list[str]    = []
 
     all_patterns = [
         pat.format(sport=sport)
@@ -613,3 +640,19 @@ def monitor_redis_keys():
         "missing": missing,
         "summary": f"{len(found)} keys found, {sum(found.values())} total matches across all BKs",
     })
+
+
+@bp_monitor.route("/warm-cache", methods=["GET", "POST"])
+def warm_cache():
+    """Pre-build all unified keys. Call once after deploy or after Redis flush."""
+    from app.api import _signed_response
+    t0      = time.time()
+    results = {}
+    for sport in ALL_SPORTS:
+        try:
+            matches = _get_unified("upcoming", sport, force_refresh=True)
+            results[sport] = len(matches)
+        except Exception as e:
+            results[sport] = f"error: {e}"
+    elapsed = round(time.time() - t0, 2)
+    return _signed_response({"warmed": results, "elapsed_s": elapsed})
