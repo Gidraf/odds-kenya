@@ -3,25 +3,26 @@ app/api/odds_stream.py
 ======================
 Unified SSE stream + REST endpoints for ALL 10 bookmakers.
 
-Speed optimisations vs previous version
-----------------------------------------
-1. _get_unified() returns the cached unified key if < 5 min old (sub-ms).
-2. warm_cache() pre-builds unified keys in background — first SSE connect
-   always hits a warm cache.
+Speed optimisations
+-------------------
+1. _get_unified() returns cached unified key if < 5 min old (sub-ms).
+2. warm_cache() pre-builds all unified keys in background.
 3. _merge_bks() skips empty BK keys early.
-4. SSE generator sends slim batch first (teams + 1x2 only) so UI renders
-   immediately, then sends full batch with all markets.
+4. SSE sends slim batch first (teams + 1x2) so UI renders instantly,
+   then full batch with all markets.
 5. Paged endpoint sorts + slices in Python (no DB round-trip).
+6. _detect_arb() checks ALL valid outcome combinations per market —
+   1+X, 1+2, X+2, AND 1+X+2 for 3-way markets. No scenario is missed.
 
 Routes
 ------
-GET /api/odds/stream/<mode>/<sport>      SSE  (?token= for auth)
-GET /api/odds/snapshot/<mode>/<sport>    REST full snapshot
-GET /api/odds/page/<mode>/<sport>        REST paginated (?page=1&per_page=100)
-GET /api/monitor/competitions
-GET /api/monitor/stats
-GET /api/monitor/redis-keys
-GET /api/monitor/warm-cache              POST — pre-build all unified keys
+GET  /api/odds/stream/<mode>/<sport>       SSE (?token= for auth)
+GET  /api/odds/snapshot/<mode>/<sport>     REST full snapshot
+GET  /api/odds/page/<mode>/<sport>         REST paginated
+GET  /api/monitor/competitions
+GET  /api/monitor/stats
+GET  /api/monitor/redis-keys
+GET  /api/monitor/warm-cache               POST/GET — pre-build unified keys
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ import json
 import time
 import logging
 from functools import wraps
+from itertools import combinations
 
 from flask import Blueprint, Response, request, stream_with_context, g
 
@@ -37,10 +39,16 @@ log = logging.getLogger(__name__)
 bp_stream  = Blueprint("odds_stream",  __name__, url_prefix="/api")
 bp_monitor = Blueprint("odds_monitor", __name__, url_prefix="/api/monitor")
 
-_TIER_RANK = {"free": 0, "basic": 1, "pro": 2, "premium": 3, "admin": 4}
-_LOCAL_BKS = {"sp", "bt", "od"}
+_TIER_RANK  = {"free": 0, "basic": 1, "pro": 2, "premium": 3, "admin": 4}
+_LOCAL_BKS  = {"sp", "bt", "od"}
 _KEEPALIVE  = 20
-_CACHE_TTL  = 300   # 5 min — how long unified key is considered fresh
+_CACHE_TTL  = 300   # 5 min
+
+# 3-way markets where we check ALL 4 combos (1+X+2, 1+X, 1+2, X+2)
+_THREE_WAY_MARKETS = frozenset({
+    "match_winner", "1x2", "moneyline", "first_half_1x2",
+    "second_half_1x2", "draw_no_bet",
+})
 
 ALL_SPORTS = [
     "soccer", "basketball", "tennis", "cricket", "rugby", "ice-hockey",
@@ -48,7 +56,6 @@ ALL_SPORTS = [
     "darts", "american-football", "esoccer",
 ]
 
-# ── Key patterns — checked in order, best (most matches) wins ─────────────────
 _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
     ("sp",        ["odds:sp:upcoming:{sport}",        "sp:upcoming:{sport}"]),
     ("bt",        ["odds:bt:upcoming:{sport}",        "bt:upcoming:{sport}"]),
@@ -160,12 +167,9 @@ def _read_key(r, patterns: list[str], sport: str) -> list[dict] | None:
 def _get_unified(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
     """
     Return unified match list for a sport.
-
-    SPEED: Serve from cached unified key if < _CACHE_TTL seconds old.
-    Only re-merge from individual BK keys when cache is stale or missing.
+    Serves from cached unified key if < _CACHE_TTL seconds old.
     """
     r = _r()
-
     unified_key = f"odds:unified:{mode}:{sport}"
 
     if not force_refresh:
@@ -179,13 +183,11 @@ def _get_unified(mode: str, sport: str, force_refresh: bool = False) -> list[dic
             except Exception:
                 pass
 
-    # Cache miss or stale — merge fresh
     if mode == "live":
         merged = _merge_bks(r, sport, _BK_KEY_FORMATS_LIVE)
     else:
         merged = _merge_bks(r, sport, _BK_KEY_FORMATS)
 
-    # Write back so next request is instant
     if merged:
         try:
             r.setex(
@@ -278,17 +280,18 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
                 if key_nk: by_name[key_nk] = pos
 
     for m in result:
-        m["best"]            = _build_best(m["bookmakers"])
-        has_arb, pct, arbs   = _detect_arb(m["best"])
-        m["has_arb"]         = has_arb
-        m["best_arb_pct"]    = pct
+        m["best"]              = _build_best(m["bookmakers"])
+        has_arb, pct, arbs     = _detect_arb(m["best"])
+        m["has_arb"]           = has_arb
+        m["best_arb_pct"]      = pct
         m["arb_opportunities"] = arbs
-        m["market_slugs"]    = list(m["best"].keys())
+        m["market_slugs"]      = list(m["best"].keys())
 
     return result
 
 
 def _build_best(bookmakers: dict) -> dict:
+    """Build best-price-per-outcome map across all bookmakers."""
     best: dict = {}
     for bk_slug, bd in bookmakers.items():
         for mkt, outcomes in (bd.get("markets") or {}).items():
@@ -311,52 +314,112 @@ def _build_best(bookmakers: dict) -> dict:
 
 
 def _detect_arb(best: dict) -> tuple[bool, float, list]:
-    arbs = []
+    """
+    Find ALL arbitrage opportunities across every market.
+
+    For 3-way markets (1x2, match_winner, moneyline) we check:
+      • Full 3-leg: 1 + X + 2
+      • All 2-leg pairs: 1+X, 1+2, X+2
+
+    For 2-way markets we check all 2-leg pairs (usually just 1 pair).
+
+    Each combo must span at least 2 different bookmakers — same-BK
+    combos are never true arb.
+
+    Returns (has_arb, best_profit_pct, sorted_arb_list).
+    """
+    arbs: list[dict] = []
+    seen_combos: set[tuple] = set()  # deduplicate
+
     for mkt, ob in best.items():
         keys = list(ob.keys())
-        exp  = 3 if mkt in ("match_winner", "1x2", "moneyline") else 2
-        if len(keys) < exp:
+        if len(keys) < 2:
             continue
-        use = keys[:exp]
-        bks = {ob[k]["bk"] for k in use if ob[k].get("bk")}
-        if len(bks) < 2:
-            continue
-        odds = [ob[k]["odd"] for k in use]
-        if any(o <= 1 for o in odds):
-            continue
-        s = sum(1 / o for o in odds)
-        if 0 < s < 1.0:
-            profit = round((1 / s - 1) * 100, 3)
-            legs   = [
-                {"outcome": k, "odd": ob[k]["odd"], "bk": ob[k]["bk"],
-                 "stake_pct": round((1 / ob[k]["odd"]) / s, 4)}
+
+        is_3way = mkt in _THREE_WAY_MARKETS
+
+        # Build list of combo tuples to try
+        combos_to_try: list[tuple[str, ...]] = []
+
+        if is_3way and len(keys) >= 3:
+            trio = tuple(keys[:3])
+            # Full 3-leg first
+            combos_to_try.append(trio)
+            # All 2-leg pairs from the trio
+            combos_to_try.extend(combinations(trio, 2))
+        else:
+            # 2-way or unknown — try all pairs (cap at 4 outcomes to avoid explosion)
+            use_keys = keys[:4]
+            combos_to_try.extend(combinations(use_keys, 2))
+
+        for use in combos_to_try:
+            # Must span 2+ different bookmakers
+            bks_in_combo = {ob[k]["bk"] for k in use if ob[k].get("bk")}
+            if len(bks_in_combo) < 2:
+                continue
+
+            # All odds must be valid
+            odds = [ob[k]["odd"] for k in use]
+            if any(o <= 1.0 for o in odds):
+                continue
+
+            inv_sum = sum(1.0 / o for o in odds)
+
+            # Arbitrage exists when sum of inverse odds < 1.0
+            if not (0 < inv_sum < 1.0):
+                continue
+
+            profit_pct = round((1.0 / inv_sum - 1.0) * 100, 3)
+            combo_key  = (mkt,) + tuple(sorted(use))
+
+            if combo_key in seen_combos:
+                continue
+            seen_combos.add(combo_key)
+
+            legs = [
+                {
+                    "outcome":   k,
+                    "odd":       ob[k]["odd"],
+                    "bk":        ob[k]["bk"],
+                    "stake_pct": round((1.0 / ob[k]["odd"]) / inv_sum, 4),
+                }
                 for k in use
             ]
-            arbs.append({"market": mkt, "profit_pct": profit, "legs": legs})
+
+            arbs.append({
+                "market":     mkt,
+                "combo":      " + ".join(use),
+                "profit_pct": profit_pct,
+                "legs":       legs,
+                "n_bks":      len(bks_in_combo),
+            })
 
     if not arbs:
         return False, 0.0, []
+
     arbs.sort(key=lambda a: -a["profit_pct"])
     return True, arbs[0]["profit_pct"], arbs
 
 
 def _slim(m: dict) -> dict:
-    """Lightweight match dict for the first SSE batch — renders UI instantly."""
+    """Lightweight match dict for first SSE batch — renders UI instantly."""
     best = m.get("best", {})
     return {
-        "match_id":      m["match_id"],
-        "join_key":      m["join_key"],
-        "home_team":     m["home_team"],
-        "away_team":     m["away_team"],
-        "competition":   m["competition"],
-        "start_time":    m["start_time"],
-        "is_live":       m["is_live"],
-        "has_arb":       m["has_arb"],
-        "best_arb_pct":  m["best_arb_pct"],
-        "bk_count":      m["bk_count"],
-        "market_slugs":  m.get("market_slugs", []),
-        "bookmakers":    {k: {"bookmaker": v["bookmaker"], "slug": v["slug"], "markets": {}}
-                         for k, v in (m.get("bookmakers") or {}).items()},
+        "match_id":          m["match_id"],
+        "join_key":          m["join_key"],
+        "home_team":         m["home_team"],
+        "away_team":         m["away_team"],
+        "competition":       m["competition"],
+        "start_time":        m["start_time"],
+        "is_live":           m["is_live"],
+        "has_arb":           m["has_arb"],
+        "best_arb_pct":      m["best_arb_pct"],
+        "bk_count":          m["bk_count"],
+        "market_slugs":      m.get("market_slugs", []),
+        "bookmakers": {
+            k: {"bookmaker": v["bookmaker"], "slug": v["slug"], "markets": {}}
+            for k, v in (m.get("bookmakers") or {}).items()
+        },
         "best": {
             "1x2":          best.get("1x2", {}),
             "match_winner": best.get("match_winner", {}),
@@ -375,6 +438,12 @@ def _filter_tier(matches: list[dict], tier: str) -> list[dict]:
         bks = mc.get("bookmakers") or {}
         mc["bookmakers"] = {k: v for k, v in bks.items() if k in _LOCAL_BKS}
         mc["bk_count"]   = len(mc["bookmakers"])
+        # Re-build best + arb for local-only tier
+        mc["best"]              = _build_best(mc["bookmakers"])
+        has_arb, pct, arbs      = _detect_arb(mc["best"])
+        mc["has_arb"]           = has_arb
+        mc["best_arb_pct"]      = pct
+        mc["arb_opportunities"] = arbs
         out.append(mc)
     return out
 
@@ -391,7 +460,7 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
     tier = getattr(user, "tier", "basic") or "basic"
 
     def generate():
-        r = _r()
+        r       = _r()
         matches = _filter_tier(_get_unified(mode, sport), tier)
 
         # ── Phase 1: slim batch — renders match list instantly ────────────────
@@ -404,7 +473,7 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
             "tier":    tier,
         })
 
-        # ── Phase 2: full batch — all markets, arb data ───────────────────────
+        # ── Phase 2: full batch — all markets, full arb data ─────────────────
         yield _sse("batch", {
             "matches": matches,
             "source":  "full",
@@ -427,6 +496,7 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
             yield ": keepalive\n\n"
             return
 
+        # ── Phase 3: pubsub live updates (pro+ tier) ──────────────────────────
         pubsub   = r.pubsub(ignore_subscribe_messages=True)
         channels = [
             f"odds:all:{mode}:{sport}:updates",
@@ -450,13 +520,18 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
                             ch = ch.decode()
 
                         if "arb:" in ch:
+                            # Single match arb update — selective client update
                             yield _sse("arb_update", payload)
+
                         elif "ev:" in ch:
                             yield _sse("ev_update", payload)
+
                         elif "live_updates" in ch:
+                            # Score / match_time update for a single match
                             yield _sse("live_update", payload)
+
                         else:
-                            # Invalidate cache + push fresh snapshot
+                            # Full odds refresh — re-merge + push
                             fresh = _filter_tier(
                                 _get_unified(mode, sport, force_refresh=True), tier
                             )
@@ -468,7 +543,7 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
                                 "count":   len(fresh),
                             })
                     except Exception as exc:
-                        log.debug("[stream] pubsub: %s", exc)
+                        log.debug("[stream] pubsub error: %s", exc)
 
                 if time.time() - last_ka > _KEEPALIVE:
                     yield ": keepalive\n\n"
@@ -481,6 +556,87 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
                 pass
 
     return generate
+
+
+# =============================================================================
+# PUBLISH HELPERS (called from harvesters after writing to Redis)
+# =============================================================================
+
+def publish_harvest_done(bk_slug: str, sport: str, count: int):
+    """
+    Call this at the end of each BK harvest task so the SSE stream can
+    notify the frontend that fresh data is available for a sport.
+
+    Usage in tasks_upcoming.py:
+        from app.api.odds_stream import publish_harvest_done
+        publish_harvest_done("sp", "soccer", len(matches))
+    """
+    try:
+        r = _r()
+        # Invalidate the unified cache so next SSE poll re-merges
+        r.delete(f"odds:unified:upcoming:{sport}")
+        # Notify all subscribers
+        r.publish(
+            f"odds:all:upcoming:{sport}:updates",
+            json.dumps({
+                "event":  "harvest_done",
+                "bk":     bk_slug,
+                "sport":  sport,
+                "count":  count,
+                "ts":     time.time(),
+            })
+        )
+    except Exception as exc:
+        log.warning("publish_harvest_done failed: %s", exc)
+
+
+def publish_live_update(sport: str, match_id: str, join_key: str,
+                        score_home=None, score_away=None,
+                        match_time=None, is_live=None,
+                        bookmakers: dict | None = None):
+    """
+    Publish a lightweight live update for a single match.
+    The frontend applies this selectively without re-fetching the full list.
+
+    Usage:
+        publish_live_update("soccer", "12345", "67890",
+                            score_home=1, score_away=0, match_time="37")
+    """
+    try:
+        r = _r()
+        payload: dict = {"match_id": match_id, "join_key": join_key}
+        if score_home is not None: payload["score_home"] = score_home
+        if score_away is not None: payload["score_away"] = score_away
+        if match_time  is not None: payload["match_time"]  = match_time
+        if is_live     is not None: payload["is_live"]     = is_live
+        if bookmakers:              payload["bookmakers"]  = bookmakers
+        r.publish(f"bus:live_updates:{sport}", json.dumps(payload))
+    except Exception as exc:
+        log.warning("publish_live_update failed: %s", exc)
+
+
+def publish_arb_update(sport: str, join_key: str, match_id: str,
+                       has_arb: bool, best_arb_pct: float,
+                       arb_opportunities: list):
+    """
+    Publish a per-match arb update so the frontend can update just that card.
+    Call after re-running _detect_arb when a harvester updates odds.
+    """
+    try:
+        r = _r()
+        r.publish(
+            f"arb:updates:{sport}",
+            json.dumps({
+                "join_key":          join_key,
+                "match_id":          match_id,
+                "has_arb":           has_arb,
+                "best_arb_pct":      best_arb_pct,
+                "arb_opportunities": arb_opportunities,
+                "ts":                time.time(),
+            })
+        )
+    except Exception as exc:
+        log.warning("publish_arb_update failed: %s", exc)
 
 
 # =============================================================================
@@ -638,13 +794,13 @@ def monitor_redis_keys():
         "sport":   sport,
         "found":   found,
         "missing": missing,
-        "summary": f"{len(found)} keys found, {sum(found.values())} total matches across all BKs",
+        "summary": f"{len(found)} keys found, {sum(found.values())} total matches",
     })
 
 
 @bp_monitor.route("/warm-cache", methods=["GET", "POST"])
 def warm_cache():
-    """Pre-build all unified keys. Call once after deploy or after Redis flush."""
+    """Pre-build all unified keys. Call once after deploy or Redis flush."""
     from app.api import _signed_response
     t0      = time.time()
     results = {}
@@ -656,3 +812,74 @@ def warm_cache():
             results[sport] = f"error: {e}"
     elapsed = round(time.time() - t0, 2)
     return _signed_response({"warmed": results, "elapsed_s": elapsed})
+
+
+# =============================================================================
+# LIFECYCLE INTEGRATION — wire watch/notification into odds_stream app
+# =============================================================================
+
+def _register_lifecycle(app) -> None:
+    """
+    Call this from create_app() after registering bp_stream and bp_monitor.
+
+    Example in app/__init__.py:
+        from app.api.odds_stream import bp_stream, bp_monitor, _register_lifecycle
+        from app.workers.match_lifecycle import bp_lifecycle, start_lifecycle_manager
+        app.register_blueprint(bp_stream)
+        app.register_blueprint(bp_monitor)
+        if bp_lifecycle:
+            app.register_blueprint(bp_lifecycle)
+        _register_lifecycle(app)
+        start_lifecycle_manager()
+    """
+    try:
+        from app.workers.match_lifecycle import start_lifecycle_manager
+        with app.app_context():
+            start_lifecycle_manager()
+        log.info("MatchLifecycleManager started via _register_lifecycle()")
+    except Exception as exc:
+        log.warning("Could not start lifecycle manager: %s", exc)
+
+
+# Convenience: expose watch endpoint inline (alternative to bp_lifecycle)
+@bp_stream.route("/odds/watch", methods=["POST"])
+def watch_match_inline():
+    """
+    POST /api/odds/watch
+    Body: {"match": {...matchObj}, "prefs": {"channels": ["email","websocket"], ...}}
+
+    Quick way to watch a match from the frontend without separate blueprint.
+    Returns {ok, watch} or {error}.
+    """
+    from app.api import _err
+    user = _auth_user()
+    if not user:
+        return _err("Authentication required", 401)
+
+    try:
+        from app.workers.match_lifecycle import (
+            WatchPrefs, get_lifecycle_manager,
+        )
+    except ImportError:
+        return _err("Lifecycle module not available", 503)
+
+    body       = __import__("flask").request.get_json(silent=True) or {}
+    match_data = body.get("match") or {}
+    prefs_data = body.get("prefs") or {}
+
+    prefs = WatchPrefs(
+        user_id     = str(user.id),
+        email       = prefs_data.get("email") or getattr(user, "email", ""),
+        phone       = prefs_data.get("phone") or getattr(user, "phone", ""),
+        webhook_url = prefs_data.get("webhook_url", ""),
+        channels    = prefs_data.get("channels") or ["websocket", "pubsub"],
+        notify_on   = prefs_data.get("notify_on") or [
+            "pre_start", "started", "suspended", "goal", "finished", "arb_found",
+        ],
+    )
+
+    mgr   = get_lifecycle_manager()
+    saved = mgr.save_match(match_data, prefs)
+
+    from app.api import _signed_response
+    return _signed_response({"ok": True, "watch": saved.to_dict()}), 201
