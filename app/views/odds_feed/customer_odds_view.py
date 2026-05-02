@@ -28,7 +28,7 @@ from flask import Blueprint, Response, request, stream_with_context
 from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
 from app.utils.decorators_ import log_event
 
-bp_odds_customer = Blueprint("web", __name__, url_prefix="/api")
+bp_odds_customer = Blueprint("web", __name__, url_prefix="/api/customer")
 
 FREE_ACCESS: bool = True
 _ENDPOINT_ACCESS: dict[str, str] = {

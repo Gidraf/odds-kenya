@@ -24,7 +24,7 @@ from flask import Blueprint, Response, request, stream_with_context
 
 from app.utils.customer_jwt_helpers import _err, _signed_response
 
-bp_sp = Blueprint("sp", __name__, url_prefix="/api/sp")
+bp_sp = Blueprint("sp", __name__, url_prefix="/api/sp/ods")
 
 _SPORTS = [
     "soccer", "esoccer", "basketball", "tennis", "ice-hockey",

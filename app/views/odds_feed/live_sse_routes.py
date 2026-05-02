@@ -71,7 +71,7 @@ from flask import Blueprint, Response, request, stream_with_context
 
 from app.utils.customer_jwt_helpers import _signed_response, _err
 
-bp_live_sse = Blueprint("live-sse", __name__, url_prefix="/api/live")
+bp_live_sse = Blueprint("live-sse", __name__, url_prefix="/api/live/odds-feed/")
 
 _KEEPALIVE_INTERVAL = 20   # seconds
 _SSE_HEADERS = {
