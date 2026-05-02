@@ -37,7 +37,7 @@ from flask import Blueprint, Response, request, stream_with_context, g
 log = logging.getLogger(__name__)
 
 bp_stream  = Blueprint("odds_stream",  __name__, url_prefix="/api")
-bp_monitor = Blueprint("odds_monitor", __name__, url_prefix="/api/monitor")
+bp_monitor = Blueprint("odds_monitor_main", __name__, url_prefix="/api/monitor")
 
 _TIER_RANK  = {"free": 0, "basic": 1, "pro": 2, "premium": 3, "admin": 4}
 _LOCAL_BKS  = {"sp", "bt", "od"}
