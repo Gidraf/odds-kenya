@@ -73,16 +73,18 @@ def _auth_user():
 
     auth  = request.headers.get("Authorization", "")
     token = auth[7:] if auth.startswith("Bearer ") else None
+    logging.info(f"Auth header: {auth}, \nextracted token: {token}")
     if not token:
         token = request.args.get("token", "").strip() or None
 
     if token:
         try:
             payload = _decode_token(token)
-            if payload.get("type") not in ("access", "api"):
-                return None
+            # if payload.get("type") not in ("access", "api"):
+            #     return None
             return Customer.query.get(int(payload["sub"]))
-        except Exception:
+        except Exception as exc:
+            logging.warning(f"T oken decode failed: {exc}")
             return None
 
     api_key = request.headers.get("X-Api-Key", "").strip()
@@ -449,12 +451,13 @@ def stream_odds(mode: str, sport: str):
     if mode not in ("upcoming", "live"):
         return _err("mode must be 'upcoming' or 'live'", 400)
 
-    # user = _auth_user()
-    # if not user:
-    #     def _deny():
-    #         yield _sse("error", {"error": "Unauthorized", "code": 401})
-    #     return Response(stream_with_context(_deny()), mimetype="text/event-stream",
-    #                     status=200, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    user = _auth_user()
+    
+    if not user:
+        def _deny():
+            yield _sse("error", {"error": "Unauthorized", "code": 401})
+        return Response(stream_with_context(_deny()), mimetype="text/event-stream",
+                        status=200, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     live_tier = _tier_rank(user) >= _TIER_RANK["pro"]
     return Response(
