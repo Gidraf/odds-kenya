@@ -42,18 +42,20 @@ ALL_SPORTS = [
 ]
 
 # Every key pattern any harvester might write to — checked in order
+# In _BK_KEY_FORMATS, add the b2b-prefixed key as fallback for each B2B BK
 _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
-    ("sp",        ["odds:sp:upcoming:{sport}", "sp:upcoming:{sport}"]),
-    ("bt",        ["odds:bt:upcoming:{sport}", "bt:upcoming:{sport}"]),
-    ("od",        ["odds:od:upcoming:{sport}", "od:upcoming:{sport}"]),
-    ("b2b",       ["odds:b2b:upcoming:{sport}", "b2b:upcoming:{sport}"]),
-    ("1xbet",     ["odds:1xbet:upcoming:{sport}",     "1xbet:upcoming:{sport}"]),
-    ("22bet",     ["odds:22bet:upcoming:{sport}",     "22bet:upcoming:{sport}"]),
-    ("betwinner", ["odds:betwinner:upcoming:{sport}", "betwinner:upcoming:{sport}"]),
-    ("melbet",    ["odds:melbet:upcoming:{sport}",    "melbet:upcoming:{sport}"]),
-    ("megapari",  ["odds:megapari:upcoming:{sport}",  "megapari:upcoming:{sport}"]),
-    ("helabet",   ["odds:helabet:upcoming:{sport}",   "helabet:upcoming:{sport}"]),
-    ("paripesa",  ["odds:paripesa:upcoming:{sport}",  "paripesa:upcoming:{sport}"]),
+    ("sp",        ["odds:sp:upcoming:{sport}",        "sp:upcoming:{sport}"]),
+    ("bt",        ["odds:bt:upcoming:{sport}",        "bt:upcoming:{sport}"]),
+    ("od",        ["odds:od:upcoming:{sport}",        "od:upcoming:{sport}"]),
+    ("b2b",       ["odds:b2b:upcoming:{sport}",       "b2b:upcoming:{sport}"]),
+    # B2B individual BKs — check both direct key AND the b2b-prefixed key
+    ("1xbet",     ["odds:1xbet:upcoming:{sport}",     "odds:b2b:1xbet:upcoming:{sport}",     "1xbet:upcoming:{sport}"]),
+    ("22bet",     ["odds:22bet:upcoming:{sport}",     "odds:b2b:22bet:upcoming:{sport}",     "22bet:upcoming:{sport}"]),
+    ("betwinner", ["odds:betwinner:upcoming:{sport}", "odds:b2b:betwinner:upcoming:{sport}", "betwinner:upcoming:{sport}"]),
+    ("melbet",    ["odds:melbet:upcoming:{sport}",    "odds:b2b:melbet:upcoming:{sport}",    "melbet:upcoming:{sport}"]),
+    ("megapari",  ["odds:megapari:upcoming:{sport}",  "odds:b2b:megapari:upcoming:{sport}",  "megapari:upcoming:{sport}"]),
+    ("helabet",   ["odds:helabet:upcoming:{sport}",   "odds:b2b:helabet:upcoming:{sport}",   "helabet:upcoming:{sport}"]),
+    ("paripesa",  ["odds:paripesa:upcoming:{sport}",  "odds:b2b:paripesa:upcoming:{sport}",  "paripesa:upcoming:{sport}"]),
 ]
 
 _BK_KEY_FORMATS_LIVE: list[tuple[str, list[str]]] = [

@@ -17,6 +17,9 @@ x-celery-common: &celery-common
     FLASK_ENV: production
     SECRET_KEY: ${SECRET_KEY}
     DATABASE_URL: ${DATABASE_URL}
+    JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM}
+    JWT_PUBLIC_KEY_PEM:  ${JWT_PUBLIC_KEY_PEM}
+    RESPONSE_SIGNING_SECRET: ${RESPONSE_SIGNING_SECRET}
 
     # Redis — cache + pubsub only
     REDIS_URL: "redis://:${REDIS_PASSWORD}@host.docker.internal:6382/0"

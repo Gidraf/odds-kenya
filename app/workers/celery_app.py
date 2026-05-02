@@ -74,7 +74,7 @@ def make_celery(flask_app=None):
                 "options":  {"queue": "harvest"},
             },
             "bt-od-harvest-5min": {
-                "task":     "tasks.bt_od.harvest_all_upcoming",
+                "task":     "tasks.bt_od.harvest_all_paged",
                 "schedule": 300,
                 "options":  {"queue": "harvest", "countdown": 60},
             },

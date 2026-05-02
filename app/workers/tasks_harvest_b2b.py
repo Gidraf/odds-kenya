@@ -94,6 +94,15 @@ def b2b_harvest_bk_sport(
 
     pipe = r.pipeline()
     pipe.setex(snap_key, ttl, json.dumps(all_matches, default=str))
+    direct_key = f"odds:{bk_slug}:upcoming:{sport_slug}"
+    pipe.setex(direct_key, ttl, json.dumps({
+    "source": bk_slug,
+    "sport": sport_slug,
+    "mode": mode,
+    "match_count": len(all_matches),
+    "harvested_at": _now_iso(),
+    "matches": all_matches,
+}, default=str))
     pipe.incr(done_key)
     pipe.expire(done_key, 600)
     _, done_count, _ = pipe.execute()
