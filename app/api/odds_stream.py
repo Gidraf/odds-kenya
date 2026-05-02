@@ -446,7 +446,7 @@ def stream_odds(mode: str, sport: str):
     """SSE — pass JWT via ?token= (EventSource can't set headers)."""
     from app.api import _err
 
-    if mode not in ("upcoming", "live"):
+    if mode  in ("upcoming", "live"):
         return _err("mode must be 'upcoming' or 'live'", 400)
 
     user = _auth_user()
