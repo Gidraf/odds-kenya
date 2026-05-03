@@ -56,7 +56,7 @@ TESTS = [
 ]
 
 def run_tests():
-    from app.workers.mappers import resolve_od_market  # noqa
+    from app.utils.mapping.odibets import resolve_od_market  # noqa
 
     passed = failed = 0
     for sport, slug, exp_can, raw_out, exp_out in TESTS:
@@ -89,18 +89,18 @@ def test_class_names():
     """Verify no NameError from wrong class names in dispatcher functions."""
     errors = []
     imports = [
-        ("app.workers.mappers.odibet",             "OdibetsBaseballMapper"),
-        ("app.workers.mappers.odibet_basketball",  "OdibetsBasketballMapper"),
-        ("app.workers.mappers.odibet_boxing",      "OdibetsBoxingMapper"),
-        ("app.workers.mappers.odibet_cricket",     "OdibetsCricketMapper"),
-        ("app.workers.mappers.odibet_esoccer",     "OdibetsEsoccerMapper"),
-        ("app.workers.mappers.odibet_handball",    "OdibetsHandballMapper"),
-        ("app.workers.mappers.odibet_ice_hockey",  "OdibetsIceHockeyMapper"),
-        ("app.workers.mappers.odibet_rugby",       "OdibetsRugbyMapper"),
-        ("app.workers.mappers.odibet_soccer",      "OdibetsSoccerMapper"),
-        ("app.workers.mappers.odibet_table_tennis","OdibetsTableTennisMapper"),
-        ("app.workers.mappers.odibet_tennis",      "OdibetsTennisMapper"),
-        ("app.workers.mappers.odibet_volleyball",  "OdibetsVolleyballMapper"),
+        ("app.utils.mapping.odibets",             "OdibetsBaseballMapper"),
+        ("app.utils.mapping.odibets.odibets_basketball_mapper",  "OdibetsBasketballMapper"),
+        ("app.utils.mapping.odibets.odibets_boxing_mapper",      "OdibetsBoxingMapper"),
+        ("app.utils.mapping.odibets.odibets_cricket_mapper",     "OdibetsCricketMapper"),
+        ("app.utils.mapping.odibets.odibets_esoccer_mapper",     "OdibetsEsoccerMapper"),
+        ("app.utils.mapping.odibets.odibets_handball_mapper",    "OdibetsHandballMapper"),
+        ("app.utils.mapping.odibets.odibets_ice_hockey_mapper",  "OdibetsIceHockeyMapper"),
+        ("app.utils.mapping.odibets.odibets_rugby_mapper",       "OdibetsRugbyMapper"),
+        ("app.utils.mapping.odibets.odibets_soccer_mapper",      "OdibetsSoccerMapper"),
+        ("app.utils.mapping.odibets.odibets_table_tennis_mapper","OdibetsTableTennisMapper"),
+        ("app.utils.mapping.odibets.odibets_tennis_mapper",      "OdibetsTennisMapper"),
+        ("app.utils.mapping.odibets.odibets_volleyball_mapper",  "OdibetsVolleyballMapper"),
     ]
     for module_path, class_name in imports:
         try:
