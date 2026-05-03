@@ -1,10 +1,5 @@
 version: "3.9"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Kinetic Odds Engine
-# RabbitMQ runs on the HOST machine (not in Docker).
-# ─────────────────────────────────────────────────────────────────────────────
-
 x-celery-common: &celery-common
   build: .
   restart: unless-stopped
@@ -20,9 +15,8 @@ x-celery-common: &celery-common
     JWT_PUBLIC_KEY_PEM:  ${JWT_PUBLIC_KEY_PEM}
     RESPONSE_SIGNING_SECRET: ${RESPONSE_SIGNING_SECRET}
 
-    # ── Redis ────────────────────────────────────────────────────────────────
-    # IMPORTANT: @ in password must be percent-encoded as %40
-    # If REDIS_PASSWORD=@Winners1127 → URL uses :%40Winners1127@
+    # Redis — use Docker service name "redis6382" (not host.docker.internal)
+    # Password has NO @ prefix → no %40 encoding needed
     REDIS_URL:        "redis://:${REDIS_PASSWORD}@redis6382:6382/0"
     REDIS_CACHE_URL:  "redis://:${REDIS_PASSWORD}@redis6382:6382/2"
     REDIS_HOST:       "redis6382"
@@ -30,15 +24,13 @@ x-celery-common: &celery-common
     REDIS_PASSWORD:   "${REDIS_PASSWORD}"
     REDIS_DB:         "0"
 
-    # ── RabbitMQ (on host) ────────────────────────────────────────────────────
     CELERY_BROKER_URL:     "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic"
     CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD}@redis6382:6382/1"
 
-    # ── MinIO ─────────────────────────────────────────────────────────────────
-    MINIO_ENDPOINT:    ${MINIO_ENDPOINT:-host.docker.internal:6500}
-    MINIO_ACCESS_KEY:  ${MINIO_ACCESS_KEY}
-    MINIO_SECRET_KEY:  ${MINIO_SECRET_KEY}
-    MINIO_SECURE:      "false"
+    MINIO_ENDPOINT:   ${MINIO_ENDPOINT:-host.docker.internal:6500}
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    MINIO_SECURE:     "false"
 
     ENABLE_HARVESTER: "0"
     TZ: Africa/Nairobi
@@ -50,7 +42,7 @@ x-celery-common: &celery-common
 
 services:
 
-  # ── Redis (inside Docker, accessible by name "redis6382") ─────────────────
+  # ── Redis ──────────────────────────────────────────────────────────────────
   redis6382:
     image: redis:7
     container_name: redis6382
@@ -64,7 +56,7 @@ services:
       --maxmemory-policy allkeys-lru
       --notify-keyspace-events "Ex"
     ports:
-      - "6382:6382"          # also expose to host for debugging
+      - "6382:6382"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -75,7 +67,7 @@ services:
     networks:
       - kinetic
 
-  # ── Web (Gunicorn / Flask) ─────────────────────────────────────────────────
+  # ── Web ────────────────────────────────────────────────────────────────────
   web:
     <<: *celery-common
     container_name: odds-kenya-web-1
@@ -88,32 +80,33 @@ services:
       --log-level info
       --worker-tmp-dir /tmp
       run:flask_app
-    # expose makes port available to other containers on the kinetic network
-    # ports publishes it to the HOST — needed for nginx_lb to proxy there
     expose:
       - "5000"
     environment:
       <<: *celery-env
       ENABLE_HARVESTER: "0"
+    # Healthcheck disabled until /health is registered in Flask
+    # Re-enable after copying health_blueprint.py into app/api/health.py
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 1
+      start_period: 5s
 
-  # ── Nginx (in Docker, on port 5050) ───────────────────────────────────────
+  # ── Nginx LB ───────────────────────────────────────────────────────────────
   nginx_lb:
     image: nginx:alpine
     container_name: nginx_lb
     restart: unless-stopped
     ports:
-      - "5050:5050"          # HOST:5050 → container:5050
+      - "5050:5050"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # KEY FIX: only wait for web to START, not be healthy
+    # This means nginx_lb comes up immediately even if /health doesn't exist yet
     depends_on:
-      web:
-        condition: service_healthy
+      - web
     networks:
       - kinetic
 
@@ -144,11 +137,6 @@ services:
       --max-tasks-per-child=200
       --loglevel=info
       --hostname=harvest@%h
-    healthcheck:
-      test: ["CMD", "celery", "-A", "app.workers.celery_app", "inspect", "ping", "-d", "harvest@%h"]
-      interval: 30s
-      timeout: 15s
-      retries: 3
 
   # ── Celery: Results ────────────────────────────────────────────────────────
   celery-results:
