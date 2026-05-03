@@ -56,7 +56,7 @@ TESTS = [
 ]
 
 def run_tests():
-    from app.utils.mapping.odibets import resolve_od_market  # noqa
+    from app.workers.mappers import resolve_od_market  # noqa
 
     passed = failed = 0
     for sport, slug, exp_can, raw_out, exp_out in TESTS:
