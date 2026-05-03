@@ -23,8 +23,8 @@ x-celery-common: &celery-common
     # ── Redis ────────────────────────────────────────────────────────────────
     # IMPORTANT: @ in password must be percent-encoded as %40
     # If REDIS_PASSWORD=@Winners1127 → URL uses :%40Winners1127@
-    REDIS_URL:        "redis://:%40${REDIS_PASSWORD}@redis6382:6382/0"
-    REDIS_CACHE_URL:  "redis://:%40${REDIS_PASSWORD}@redis6382:6382/2"
+    REDIS_URL:        "redis://:${REDIS_PASSWORD}@redis6382:6382/0"
+    REDIS_CACHE_URL:  "redis://:${REDIS_PASSWORD}@redis6382:6382/2"
     REDIS_HOST:       "redis6382"
     REDIS_PORT:       "6382"
     REDIS_PASSWORD:   "${REDIS_PASSWORD}"
@@ -32,7 +32,7 @@ x-celery-common: &celery-common
 
     # ── RabbitMQ (on host) ────────────────────────────────────────────────────
     CELERY_BROKER_URL:     "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic"
-    CELERY_RESULT_BACKEND: "redis://:%40${REDIS_PASSWORD}@redis6382:6382/1"
+    CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD}@redis6382:6382/1"
 
     # ── MinIO ─────────────────────────────────────────────────────────────────
     MINIO_ENDPOINT:    ${MINIO_ENDPOINT:-host.docker.internal:6500}
