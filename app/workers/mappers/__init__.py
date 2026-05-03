@@ -80,6 +80,7 @@ def _mapper(sport: str):
     return None
 
 
+
 def resolve_od_market(
     sport:        str,
     market_slug:  str,
@@ -179,20 +180,32 @@ def _embed_specifiers(slug: str, specifiers: Dict[str, str], original: str) -> s
 
 def _normalise_outcome_key(key: str) -> str:
     """
-    Normalise common outcome key variants to a consistent capitalisation.
+    Normalise common outcome key variants to canonical form.
+    Handles both direct keys and semantic variants from sport mappers.
     """
     MAP = {
-        "over":   "Over",
-        "under":  "Under",
-        "yes":    "Yes",
-        "no":     "No",
-        "odd":    "Odd",
-        "even":   "Even",
-        "home":   "1",
-        "away":   "2",
-        "draw":   "X",
+        # Over/Under, Yes/No, Odd/Even
+        "over":          "Over",
+        "under":         "Under",
+        "yes":           "Yes",
+        "no":            "No",
+        "odd":           "Odd",
+        "even":          "Even",
+        # Semantic → canonical numeric
+        "home":          "1",
+        "away":          "2",
+        "draw":          "X",
+        # Double-chance semantic variants → canonical chips
+        "home_or_draw":  "1X",
+        "1_or_x":        "1X",
+        "1orx":          "1X",
+        "draw_or_away":  "X2",
+        "x_or_2":        "X2",
+        "xor2":          "X2",
+        "home_or_away":  "12",
+        "1_or_2":        "12",
+        "1or2":          "12",
     }
-    # Only map if the key is purely one of these words
     lower = key.strip().lower()
     return MAP.get(lower, key)
 
