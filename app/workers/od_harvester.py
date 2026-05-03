@@ -19,7 +19,7 @@ from typing import Any, Generator
 
 import httpx
 
-from app.utils.mapping.odibets.odibets_sp_mapper import get_od_market_info
+from app.utils.mapping.odibets import get_od_market_info
 from app.workers.mappers.shared import normalize_outcome   # <-- NEW
 
 logger = logging.getLogger(__name__)
