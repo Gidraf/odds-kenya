@@ -88,9 +88,9 @@ def _env(key: str, default: str = "") -> str:
 
 SMTP_HOST     = _env("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT     = int(_env("SMTP_PORT", "587"))
-SMTP_USER     = _env("SMTP_USER")
-SMTP_PASS     = _env("SMTP_PASS")
-SMTP_FROM     = _env("SMTP_FROM", SMTP_USER)
+SMTP_USER     = _env("ADMIN_EMAIL")
+SMTP_PASS     = _env("ADMIN_EMAIL_PASSWORD")
+SMTP_FROM     = _env("ADMIN_EMAIL", SMTP_USER)
 
 AT_API_KEY    = _env("AT_API_KEY")           # Africa's Talking API key
 AT_SENDER_ID  = _env("AT_SENDER_ID", "KINETIC")
@@ -246,15 +246,20 @@ def _build_redis_url() -> str:
     return f"redis://{host}:{port}/{db}"
 
 _redis_client: Any = None
-def _redis() -> Any:
-    global _redis_client
-    if _redis_client is None:
-        import redis
-        _redis_client = redis.from_url(
-            _build_redis_url(), decode_responses=True,
-            socket_connect_timeout=3, socket_timeout=5,
-        )
-    return _redis_client
+def _redis(db: int = 2):
+    import redis as _r
+    import os
+
+    # Use REDIS_URL from environment, fallback to default
+    url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # If the URL already contains a database number (e.g., /0), remove it
+    # so we can append our own /{db} cleanly.
+    if url.count("/") >= 3:
+        # Example: redis://:pass@host:6379/0  →  redis://:pass@host:6379
+        base = url.rsplit("/", 1)[0]
+    else:
+        base = url
+    return _r.Redis.from_url(f"{base}/{db}", decode_responses=False, socket_timeout=5)
 
 
 # =============================================================================
