@@ -113,4 +113,4 @@ class OdibetsEsoccerMapper:
 
 # Generic dispatcher
 def get_od_esoccer_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
-    return OdibetEsoccerMapper.get_market_info(market_slug)
+    return OdibetsEsoccerMapper.get_market_info(market_slug)

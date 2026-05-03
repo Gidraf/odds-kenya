@@ -52,4 +52,4 @@ class OdibetsHandballMapper:
 
 
 def get_od_handball_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
-    return OdibetHandballMapper.get_market_info(market_slug)
+    return OdibetsHandballMapper.get_market_info(market_slug)

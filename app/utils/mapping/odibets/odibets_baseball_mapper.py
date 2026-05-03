@@ -136,6 +136,6 @@ class OdibetsBaseballMapper:
 def get_od_market_info(sport: str, market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
     """Dispatch to sport-specific mapper."""
     if sport == "baseball":
-        return OdibetBaseballMapper.get_market_info(market_slug)
+        return OdibetsBaseballMapper.get_market_info(market_slug)
     # Add other sports here (soccer, basketball, etc.)
     return None

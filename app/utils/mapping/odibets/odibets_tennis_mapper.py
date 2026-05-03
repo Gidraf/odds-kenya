@@ -144,4 +144,4 @@ class OdibetsTennisMapper:
 
 
 def get_od_tennis_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
-    return OdibetTennisMapper.get_market_info(market_slug)
+    return OdibetsTennisMapper.get_market_info(market_slug)
