@@ -3,19 +3,20 @@ app/workers/fuzzy_matcher.py
 =============================
 Cross-bookmaker match alignment engine.
 
-Aligns matches across all bookmakers (SP, BT, OD, 1xBet, 22Bet, Betwinner,
-Melbet, Megapari, Helabet, Paripesa) using:
+Aligns matches across all bookmakers using:
   1. BetradarID     → exact, highest confidence
   2. External ID    → per-BK exact match
   3. Fuzzy name     → rapidfuzz token_sort_ratio ≥ 85 on home+away
   4. Kick-off time  → within ±15 min window
   5. Competition    → optional fuzzy boost
+  6. Team aliases   → instant 100 if both names share a canonical team
 
 Scoring rubric (0-100 confidence):
   betradar_exact   = 100
   name_score ≥ 92  + time ≤ 5m   = 98
   name_score ≥ 85  + time ≤ 15m  = 80-90
   name_score ≥ 75  + time ≤ 30m  = 60 (warn only)
+  alias match      = 100 (via team_alias_resolver)
 
 Architecture:
   ┌─────────────────────────────────────────────┐
@@ -29,7 +30,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Callable
 
 # rapidfuzz is much faster than fuzzywuzzy
 try:
@@ -116,14 +117,12 @@ def _parse_dt(val) -> Optional[datetime]:
     if isinstance(val, datetime):
         return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
     if isinstance(val, (int, float)):
-        # Unix timestamp
         try:
             return datetime.fromtimestamp(val, tz=timezone.utc)
         except (ValueError, OSError):
             return None
     if isinstance(val, str):
         val = val.strip()
-        # .NET /Date(ms)/ format
         m = re.match(r'/Date\((\d+)\)/', val)
         if m:
             return datetime.fromtimestamp(int(m.group(1)) / 1000, tz=timezone.utc)
@@ -148,19 +147,42 @@ def _time_delta_minutes(a: Optional[datetime], b: Optional[datetime]) -> Optiona
     return delta
 
 
-# ─── Core Scoring ─────────────────────────────────────────────────────────────
+# ─── Core Scoring (with alias support) ────────────────────────────────────────
 
-def _name_score(c: MatchCandidate, home: str, away: str) -> int:
+def _name_score(
+    c: MatchCandidate,
+    home: str,
+    away: str,
+    team_alias_resolver: Optional[Callable[[str], set[int]]] = None,
+) -> int:
     """
     Compute fuzzy name similarity score (0–100).
-    Uses token_sort_ratio to handle word-order differences.
+
+    If team_alias_resolver is given, it is called with each team name
+    and returns a set of canonical team IDs. If the two sets intersect
+    for both home and away, the match is considered a perfect alias match.
     """
     if fuzz is None:
-        # Fallback: exact lowercase match
         h_match = int(_norm_name(c.home_team) == _norm_name(home)) * 100
         a_match = int(_norm_name(c.away_team) == _norm_name(away)) * 100
         return (h_match + a_match) // 2
 
+    # ── Alias boost ────────────────────────────────────────────────────────
+    if team_alias_resolver:
+        cand_home_ids = team_alias_resolver(c.home_team)
+        cand_away_ids = team_alias_resolver(c.away_team)
+        ref_home_ids  = team_alias_resolver(home)
+        ref_away_ids  = team_alias_resolver(away)
+
+        home_intersect = bool(cand_home_ids and ref_home_ids and cand_home_ids.intersection(ref_home_ids))
+        away_intersect = bool(cand_away_ids and ref_away_ids and cand_away_ids.intersection(ref_away_ids))
+
+        if home_intersect and away_intersect:
+            return 100   # perfect alias match
+        if home_intersect or away_intersect:
+            return 90    # strong partial alias match
+
+    # ── Standard fuzzy comparison ──────────────────────────────────────────
     nh, na = _norm_name(c.home_team), _norm_name(c.away_team)
     rh, ra = _norm_name(home), _norm_name(away)
 
@@ -171,12 +193,10 @@ def _name_score(c: MatchCandidate, home: str, away: str) -> int:
     a_score = fuzz.token_sort_ratio(na, ra)
     base    = int((h_score + a_score) / 2)
 
-    # Bonus: also try swapped (in case home/away are flipped)
+    # swapped check
     h_score2 = fuzz.token_sort_ratio(nh, ra)
     a_score2 = fuzz.token_sort_ratio(na, rh)
     swapped  = int((h_score2 + a_score2) / 2)
-
-    # If swapped is better, deduct a penalty (different team order = different fixture)
     if swapped > base:
         return max(base, swapped - 15)
 
@@ -184,9 +204,8 @@ def _name_score(c: MatchCandidate, home: str, away: str) -> int:
 
 
 def _comp_score(c: MatchCandidate, comp: Optional[str]) -> int:
-    """Fuzzy competition name match (0–100)."""
     if not c.competition or not comp or fuzz is None:
-        return 50  # neutral when unknown
+        return 50
     return fuzz.token_sort_ratio(
         _norm_name(c.competition),
         _norm_name(comp),
@@ -200,39 +219,37 @@ def score_pair(
     start_time: Optional[datetime] = None,
     competition: Optional[str] = None,
     betradar_id: Optional[str] = None,
+    team_alias_resolver: Optional[Callable[[str], set[int]]] = None,
 ) -> int:
     """
     Score how likely `candidate` is the same match as the reference.
     Returns confidence 0-100.
     """
-    # ── Level 0: BetradarID exact ────────────────────────────────────────────
+    # ── Level 0: BetradarID exact ────────────────────────────────────────
     if betradar_id and candidate.betradar_id:
         if betradar_id == candidate.betradar_id:
             return EXACT_BETRADAR_SCORE
         else:
-            return 0  # Different BR ID → definitely different game
+            return 0
 
-    # ── Level 1: Name similarity ─────────────────────────────────────────────
-    ns = _name_score(candidate, home_team, away_team)
+    # ── Level 1: Name similarity (now alias‑aware) ───────────────────────
+    ns = _name_score(candidate, home_team, away_team, team_alias_resolver)
     if ns < NAME_THRESHOLD:
         return 0
 
-    # Start with name score as base
     score = ns
 
-    # ── Level 2: Time proximity ──────────────────────────────────────────────
+    # ── Level 2: Time proximity ──────────────────────────────────────────
     dt_delta = _time_delta_minutes(candidate.start_time, start_time)
     if dt_delta is not None:
         if dt_delta > MAX_TIME_DELTA_MIN:
-            return 0  # too far apart in time
+            return 0
         elif dt_delta <= BOOST_TIME_DELTA_MIN:
             score = min(100, score + 5)
-        # else: within window, no penalty
     else:
-        # Unknown time → slight penalty
         score = max(0, score - 5)
 
-    # ── Level 3: Competition boost ───────────────────────────────────────────
+    # ── Level 3: Competition boost ───────────────────────────────────────
     if competition and candidate.competition:
         cs = _comp_score(candidate, competition)
         if cs >= 85:
@@ -250,30 +267,26 @@ class FuzzyMatcher:
     Aligns incoming match candidates against existing unified matches.
 
     Usage:
-        matcher = FuzzyMatcher(existing_matches)
+        matcher = FuzzyMatcher(existing_matches, team_alias_resolver=my_resolver)
         result  = matcher.align(candidate)
-        if result.unified_match_id:
-            # merge into existing
-        else:
-            # create new unified match
     """
 
-    def __init__(self, existing: list[dict]):
-        """
-        existing: list of UnifiedMatch.to_dict() or similar dicts with keys:
-          id, betradar_id, home_team_name, away_team_name, start_time,
-          competition_name, sport_name, external_ids
-        """
+    def __init__(
+        self,
+        existing: list[dict],
+        team_alias_resolver: Optional[Callable[[str], set[int]]] = None,
+    ):
         self._index: list[dict] = existing
+        self.team_alias_resolver = team_alias_resolver
 
-        # Build betradar lookup for O(1) BR-ID matches
+        # Betradar lookup
         self._br_index: dict[str, dict] = {}
         for m in existing:
             br = m.get("betradar_id")
             if br:
                 self._br_index[str(br)] = m
 
-        # Build external_id lookups per BK
+        # External ID lookup per BK
         self._ext_index: dict[str, dict[str, dict]] = {}
         for m in existing:
             ext = m.get("external_ids") or {}
@@ -285,7 +298,7 @@ class FuzzyMatcher:
     def align(self, candidate: MatchCandidate) -> AlignResult:
         """Find the best existing match for this candidate."""
 
-        # ── Fast path: BetradarID ────────────────────────────────────────────
+        # ── Fast path: BetradarID ────────────────────────────────────────
         if candidate.betradar_id:
             existing = self._br_index.get(str(candidate.betradar_id))
             if existing:
@@ -296,7 +309,7 @@ class FuzzyMatcher:
                     candidate=candidate,
                 )
 
-        # ── Fast path: known external_id for this BK ────────────────────────
+        # ── Fast path: External ID ───────────────────────────────────────
         bk_ext = self._ext_index.get(candidate.bk_slug, {})
         if candidate.external_id and candidate.external_id in bk_ext:
             existing = bk_ext[candidate.external_id]
@@ -307,7 +320,7 @@ class FuzzyMatcher:
                 candidate=candidate,
             )
 
-        # ── Fuzzy search ─────────────────────────────────────────────────────
+        # ── Fuzzy search ─────────────────────────────────────────────────
         cand_dt = _parse_dt(candidate.start_time)
         best_score = 0
         best_match: Optional[dict] = None
@@ -320,6 +333,7 @@ class FuzzyMatcher:
                 start_time=_parse_dt(m.get("start_time")),
                 competition=m.get("competition_name"),
                 betradar_id=m.get("betradar_id"),
+                team_alias_resolver=self.team_alias_resolver,
             )
             if s > best_score:
                 best_score = s
@@ -334,7 +348,6 @@ class FuzzyMatcher:
                 candidate=candidate,
             )
 
-        # ── No match found → caller should create new unified match ──────────
         return AlignResult(
             unified_match_id=None,
             confidence=0,
@@ -355,22 +368,21 @@ class FuzzyMatcher:
             self._ext_index[bk][str(eid)] = new_match
 
 
-# ─── Bulk align helper (used by tasks_align.py) ───────────────────────────────
+# ─── Bulk align helper ────────────────────────────────────────────────────────
 
 def bulk_align(
     candidates: list[MatchCandidate],
     existing_matches: list[dict],
     sport_slug: str,
+    team_alias_resolver: Optional[Callable[[str], set[int]]] = None,
 ) -> tuple[list[AlignResult], list[AlignResult]]:
     """
     Align a batch of candidates against existing unified matches.
 
     Returns:
         (updates, creates)
-        updates: candidates matched to existing unified matches
-        creates: candidates with no match → new unified matches needed
     """
-    matcher = FuzzyMatcher(existing_matches)
+    matcher = FuzzyMatcher(existing_matches, team_alias_resolver=team_alias_resolver)
     updates: list[AlignResult] = []
     creates: list[AlignResult] = []
 
@@ -380,10 +392,8 @@ def bulk_align(
             updates.append(result)
         else:
             creates.append(result)
-            # add a placeholder so subsequent candidates from the same batch
-            # don't create duplicates
             placeholder = {
-                "id": f"__pending__{id(cand)}",  # temp ID
+                "id": f"__pending__{id(cand)}",
                 "betradar_id": cand.betradar_id or "",
                 "home_team_name": cand.home_team,
                 "away_team_name": cand.away_team,
@@ -403,7 +413,6 @@ def bulk_align(
 # ─── Candidate builder helpers ────────────────────────────────────────────────
 
 def match_dict_to_candidate(m: dict, bk_slug: str) -> MatchCandidate:
-    """Convert a normalised harvester match dict into a MatchCandidate."""
     ext_id = (
         m.get(f"{bk_slug}_match_id") or
         m.get("b2b_match_id") or
