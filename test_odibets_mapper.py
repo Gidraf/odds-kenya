@@ -97,7 +97,7 @@ def test_class_names():
         ("app.utils.mapping.odibets.odibets_handball_mapper",    "OdibetsHandballMapper"),
         ("app.utils.mapping.odibets.odibets_ice_hockey_mapper",  "OdibetsIceHockeyMapper"),
         ("app.utils.mapping.odibets.odibets_rugby_mapper",       "OdibetsRugbyMapper"),
-        ("app.utils.mapping.odibets.odibets_soccer_mapper",      "OdibetsSoccerMapper"),
+        ("app.utils.mapping.odibets.odibets_football_mapper",      "OdibetsSoccerMapper"),
         ("app.utils.mapping.odibets.odibets_table_tennis_mapper","OdibetsTableTennisMapper"),
         ("app.utils.mapping.odibets.odibets_tennis_mapper",      "OdibetsTennisMapper"),
         ("app.utils.mapping.odibets.odibets_volleyball_mapper",  "OdibetsVolleyballMapper"),
