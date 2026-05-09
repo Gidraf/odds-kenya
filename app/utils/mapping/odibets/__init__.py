@@ -161,3 +161,27 @@ def resolve_od_markets_batch(
         else:
             result[can_slug] = can_outs
     return result
+
+
+# ── Unified get_od_market_info — what od_harvester.py imports ─────────────────
+# Keeps all existing class methods intact. Just dispatches by sport.
+
+def get_od_market_info(sport: str, market_slug: str):
+    """
+    Unified dispatcher used by od_harvester.py.
+    Returns (canonical_slug, specifiers_dict) or None.
+
+    Calls the sport-specific mapper's get_market_info() classmethod.
+    All existing per-sport get_od_market_info() standalone functions
+    are superseded by this single entry point.
+    """
+    mapper_cls = _get_mapper(sport)
+    if mapper_cls is None:
+        return None
+    if not hasattr(mapper_cls, "get_market_info"):
+        return None
+    try:
+        return mapper_cls.get_market_info(market_slug)
+    except Exception as exc:
+        log.debug("get_od_market_info error sport=%s slug=%s: %s", sport, market_slug, exc)
+        return None

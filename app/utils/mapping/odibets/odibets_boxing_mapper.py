@@ -130,7 +130,7 @@ class OdibetsBoxingMapper:
 
 
 # Generic dispatcher
-def get_od_boxing_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
+def get_od_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
     from app.utils.mapping.odibets.odibets_basketball_mapper import OdibetsBasketballMapper  # ✓
     return OdibetsBasketballMapper.get_market_info(market_slug)
  
