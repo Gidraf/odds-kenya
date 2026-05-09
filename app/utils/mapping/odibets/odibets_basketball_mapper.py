@@ -139,5 +139,5 @@ class OdibetsBasketballMapper:
 
 
 # Optional: generic dispatcher for all sports
-def get_od_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
+def get_od_basketball_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
     return OdibetsBasketballMapper.get_market_info(market_slug)

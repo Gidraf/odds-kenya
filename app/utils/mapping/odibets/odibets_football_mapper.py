@@ -273,5 +273,5 @@ class OdibetsSoccerMapper:
         return outcome_key
 
 
-def get_od_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
+def get_od_soccer_market_info(market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
     return OdibetsSoccerMapper.get_market_info(market_slug)
