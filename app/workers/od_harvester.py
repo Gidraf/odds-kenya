@@ -8,7 +8,10 @@ Uses unified OdiBets mappers (odibet_mappers.py) for market canonicalisation.
 - Concurrent sub‑type fetching merges all markets without overwriting.
 """
 
-from __future__ import annotations
+
+import re
+import logging
+from typing import Any, Dict, Optional, Tuple
 
 import logging
 import threading
@@ -24,9 +27,382 @@ from app.workers.mappers.shared import normalize_outcome   # <-- NEW
 
 logger = logging.getLogger(__name__)
 
+log = logging.getLogger(__name__)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SPORT SLUG MAP
 # ══════════════════════════════════════════════════════════════════════════════
+
+_OD_ID_TO_SLUG: dict[int, dict[str, str]] = {
+    # ── Core soccer markets seen in production ────────────────────────────────
+    1:   {"soccer": "1x2",               "basketball": "1x2"},
+    2:   {"soccer": "double_chance"},
+    3:   {"soccer": "draw_no_bet"},
+    4:   {"soccer": "btts"},
+    5:   {"soccer": "first_team_to_score"},
+    6:   {"soccer": "draw_no_bet"},
+    7:   {"soccer": "correct_score"},
+    8:   {"soccer": "half_time_result"},
+    9:   {"soccer": "half_time_result"},
+    10:  {"soccer": "double_chance"},          # outcomes: 12, 1X, X2
+    11:  {"soccer": "draw_no_bet"},            # outcomes: 1, 2  (no draw)
+    12:  {"soccer": "draw_no_bet"},            # outcomes: 2, X
+    13:  {"soccer": "draw_no_bet"},            # outcomes: 1, X
+    14:  {"soccer": "european_handicap"},      # big handicap
+    15:  {"soccer": "winning_margin"},         # 1_by_1, 1_by_2, X, 2_by_1...
+    16:  {"soccer": "draw_no_bet"},            # 1, 2 only (asian-style no draw)
+    17:  {"soccer": "btts"},
+    18:  {"soccer": "first_half_btts"},
+    19:  {"soccer": "over_under_goals"},       # line in specifier
+    20:  {"soccer": "over_under_goals"},
+    21:  {"soccer": "exact_goals"},            # 0,1,2,3,4,5,6+
+    22:  {"soccer": "half_time_full_time"},
+    23:  {"soccer": "exact_goals"},            # team-specific 0,1,2,3+
+    24:  {"soccer": "exact_goals"},            # team-specific 0,1,2,3+
+    25:  {"soccer": "over_under_goals"},
+    26:  {"soccer": "odd_even_goals"},
+    27:  {"soccer": "odd_even_goals"},
+    28:  {"soccer": "odd_even_goals"},
+    29:  {"soccer": "btts"},                   # yes/no (same as gg/ng)
+    30:  {"soccer": "which_team_to_score"},    # both_teams/none/only_1/only_2
+    31:  {"soccer": "team_to_score"},          # yes/no
+    32:  {"soccer": "team_to_score"},
+    33:  {"soccer": "team_to_score"},
+    34:  {"soccer": "team_to_score"},
+    35:  {"soccer": "1x2_btts"},              # 1_yes/1_no/x_yes/x_no/2_yes/2_no
+    36:  {"soccer": "over_under_btts_2_5"},   # over_2.5_yes/no
+    37:  {"soccer": "first_goalscorer"},
+    38:  {"soccer": "anytime_goalscorer"},
+    39:  {"soccer": "last_goalscorer"},
+    40:  {"soccer": "first_half_correct_score"},
+    41:  {"soccer": "correct_score"},         # full match scorelines
+    42:  {"soccer": "double_chance"},
+    43:  {"soccer": "draw_no_bet"},
+    44:  {"soccer": "over_under_goals"},
+    45:  {"soccer": "correct_score"},
+    46:  {"soccer": "ht_correct_score_combo"}, # ht_score_ft_score combos
+    47:  {"soccer": "half_time_full_time"},    # 1/1, x/x, 2/2 format
+    48:  {"soccer": "team_to_score"},
+    49:  {"soccer": "team_to_score"},
+    50:  {"soccer": "btts"},
+    51:  {"soccer": "team_to_score"},
+    52:  {"soccer": "highest_scoring_half"},   # 1st_half/2nd_half/equal
+    53:  {"soccer": "highest_scoring_half"},
+    54:  {"soccer": "highest_scoring_half"},
+    55:  {"soccer": "btts_both_halves"},       # no/no, yes/no, yes/yes, no/yes
+    56:  {"soccer": "team_clean_sheet"},
+    57:  {"soccer": "team_clean_sheet"},
+    58:  {"soccer": "team_to_win_both_halves"},
+    59:  {"soccer": "team_to_score_in_both_halves"},
+    60:  {"soccer": "second_half_1x2"},
+    61:  {"soccer": "first_half_1x2"},
+    62:  {"soccer": "draw_no_bet"},
+    63:  {"soccer": "first_half_double_chance"},
+    64:  {"soccer": "first_half_draw_no_bet"},
+    65:  {"soccer": "european_handicap"},
+    66:  {"soccer": "asian_handicap"},
+    67:  {"soccer": "asian_handicap"},
+    68:  {"soccer": "asian_handicap"},
+    69:  {"soccer": "over_under_goals"},
+    70:  {"soccer": "over_under_goals"},
+    71:  {"soccer": "exact_goals"},            # 0,1,2,3+,2+
+    72:  {"soccer": "exact_goals"},
+    73:  {"soccer": "exact_goals"},
+    74:  {"soccer": "odd_even_goals"},
+    75:  {"soccer": "team_to_score"},
+    76:  {"soccer": "btts"},
+    77:  {"soccer": "btts"},
+    78:  {"soccer": "first_half_1x2_btts"},
+    79:  {"soccer": "result_and_over_under_1_5"},
+    80:  {"soccer": "result_and_over_under"},
+    81:  {"soccer": "first_half_correct_score"},
+    82:  {"soccer": "first_half_correct_score"},
+    83:  {"soccer": "second_half_1x2"},
+    84:  {"soccer": "second_half_1x2"},
+    85:  {"soccer": "second_half_double_chance"},
+    86:  {"soccer": "second_half_draw_no_bet"},
+    87:  {"soccer": "european_handicap"},
+    88:  {"soccer": "asian_handicap"},
+    89:  {"soccer": "asian_handicap"},
+    90:  {"soccer": "over_under_goals"},
+    91:  {"soccer": "over_under_goals"},
+    92:  {"soccer": "over_under_goals"},
+    93:  {"soccer": "exact_goals"},            # 0, 1, 2+
+    94:  {"soccer": "odd_even_goals"},
+    95:  {"soccer": "team_to_score"},
+    96:  {"soccer": "team_to_score"},
+    97:  {"soccer": "team_to_score"},
+    98:  {"soccer": "first_half_correct_score"},
+    99:  {"soccer": "first_half_correct_score"},
+    100: {"soccer": "over_under_goals"},
+    101: {"soccer": "over_under_goals"},
+    102: {"soccer": "over_under_goals"},
+    103: {"soccer": "over_under_goals"},
+    104: {"soccer": "over_under_goals"},
+    105: {"soccer": "over_under_goals"},
+    106: {"soccer": "over_under_goals"},
+    107: {"soccer": "over_under_goals"},
+    108: {"soccer": "asian_handicap"},
+    109: {"soccer": "asian_handicap"},
+    110: {"soccer": "asian_handicap"},
+    111: {"soccer": "correct_score"},
+    112: {"soccer": "half_time_result"},
+    113: {"soccer": "first_half_over_under"},
+    114: {"soccer": "first_half_over_under"},
+    115: {"soccer": "first_half_asian_handicap"},
+    116: {"soccer": "first_half_asian_handicap"},
+    117: {"soccer": "team_total_goals_home"},
+    118: {"soccer": "team_total_goals_away"},
+    119: {"soccer": "result_and_btts"},
+    120: {"soccer": "result_and_over_under"},
+    121: {"soccer": "double_chance_and_btts"},
+    122: {"soccer": "draw_no_bet"},
+    123: {"soccer": "european_handicap"},
+    124: {"soccer": "european_handicap"},
+    125: {"soccer": "multigoals"},
+    126: {"soccer": "exact_goals"},
+    127: {"soccer": "winning_margin"},
+    128: {"soccer": "half_time_full_time"},
+    129: {"soccer": "correct_score"},
+    130: {"soccer": "over_under_goals"},
+    131: {"soccer": "over_under_goals"},
+    132: {"soccer": "over_under_goals"},
+    133: {"soccer": "over_under_goals"},
+    134: {"soccer": "over_under_goals"},
+    135: {"soccer": "over_under_goals"},
+    136: {"soccer": "over_under_goals"},
+    137: {"soccer": "over_under_goals"},
+    138: {"soccer": "over_under_goals"},
+    139: {"soccer": "over_under_goals"},
+    140: {"soccer": "exact_goals"},
+    141: {"soccer": "btts"},
+    142: {"soccer": "first_half_btts"},
+    143: {"soccer": "result_and_btts"},
+    144: {"soccer": "result_and_over_under"},
+    145: {"soccer": "double_chance_and_over_under"},
+    146: {"soccer": "double_chance_and_btts"},
+    147: {"soccer": "odd_even_goals"},
+    148: {"soccer": "anytime_goalscorer"},
+    149: {"soccer": "anytime_goalscorer", "basketball": "match_winner"},
+    150: {"soccer": "first_goalscorer",   "basketball": "over_under"},
+    151: {"soccer": "last_goalscorer"},
+    152: {"soccer": "asian_handicap"},
+    153: {"soccer": "asian_handicap"},
+    154: {"soccer": "european_handicap"},
+    155: {"soccer": "first_half_1x2",     "basketball": "point_spread"},
+    156: {"soccer": "first_half_double_chance", "basketball": "asian_handicap"},
+    157: {"soccer": "first_half_over_under",    "basketball": "total_points"},
+    158: {"soccer": "first_half_btts"},
+    159: {"soccer": "first_half_correct_score"},
+    160: {"soccer": "second_half_1x2",    "basketball": "quarter_winner"},
+    161: {"soccer": "second_half_over_under", "basketball": "over_under"},
+    162: {"soccer": "correct_score"},
+    163: {"soccer": "exact_goals"},
+    164: {"soccer": "winning_margin"},
+    165: {"soccer": "multigoals"},
+    170: {"soccer": "anytime_goalscorer"},
+    180: {"soccer": "first_goalscorer"},
+    184: {"soccer": "over_under_goals"},
+    190: {"soccer": "btts_and_over_under"},
+    200: {"soccer": "result_and_over_under"},
+    210: {"soccer": "draw_no_bet"},
+    220: {"soccer": "correct_score"},
+    # ── Combo markets (540-553) ───────────────────────────────────────────────
+    540: {"soccer": "double_chance_btts"},
+    541: {"soccer": "double_chance_btts"},
+    542: {"soccer": "double_chance_btts"},
+    543: {"soccer": "1x2_btts"},
+    544: {"soccer": "result_and_over_under_1_5"},
+    545: {"soccer": "double_chance_over_under_2_5"},
+    546: {"soccer": "double_chance_btts"},
+    547: {"soccer": "double_chance_over_under"},
+    548: {"soccer": "multigoals"},
+    549: {"soccer": "multigoals"},
+    550: {"soccer": "multigoals"},
+    551: {"soccer": "multigoals"},
+    552: {"soccer": "multigoals"},
+    553: {"soccer": "multigoals"},
+    # ── HT/FT + Over/Under combos ─────────────────────────────────────────────
+    818: {"soccer": "ht_ft_over_under"},
+    819: {"soccer": "ht_ft_over_under"},
+    820: {"soccer": "ht_ft_exact_goals"},
+    856: {"soccer": "team_to_score"},
+    858: {"soccer": "team_to_score"},
+    859: {"soccer": "team_to_score"},
+    861: {"soccer": "team_to_score"},
+    879: {"soccer": "team_to_score"},
+    880: {"soccer": "team_to_score"},
+    881: {"soccer": "team_to_score"},
+    # ── Basketball ─────────────────────────────────────────────────────────────
+    300: {"basketball": "match_winner"},
+    301: {"basketball": "1x2"},
+    302: {"basketball": "draw_no_bet"},
+    303: {"soccer": "match_winner",   "basketball": "match_winner"},
+    304: {"soccer": "match_winner",   "basketball": "total_points"},
+    305: {"basketball": "asian_handicap"},
+    306: {"basketball": "total_points"},
+    307: {"basketball": "first_half_1x2"},
+    308: {"basketball": "quarter_winner"},
+    309: {"basketball": "quarter_total"},
+    310: {"basketball": "moneyline"},
+    311: {"basketball": "asian_handicap"},
+    312: {"basketball": "total_points"},
+    313: {"basketball": "team_total"},
+    314: {"basketball": "quarter_asian_handicap"},
+    315: {"basketball": "1x2"},
+    316: {"basketball": "over_under"},
+    317: {"basketball": "first_half_asian_handicap"},
+    318: {"basketball": "first_half_total"},
+}
+ 
+ 
+def lookup_by_id(sid: int, sport: str) -> Optional[str]:
+    """Look up canonical slug by integer sub_type_id."""
+    entry = _OD_ID_TO_SLUG.get(sid)
+    if not entry:
+        return None
+    return entry.get(sport) or list(entry.values())[0]
+ 
+ 
+# ─── PATCHED _make_unique_slug ────────────────────────────────────────────────
+ 
+def make_unique_slug(sport: str, raw_slug: str, specifiers: str, sid: str = "") -> str:
+    """
+    Resolve an OdiBets market to a canonical slug.
+ 
+    Resolution order:
+      1. Integer sub_type_id → _OD_ID_TO_SLUG (fastest, most reliable)
+      2. Name-based mapper via get_od_market_info (for named markets)
+      3. Heuristic from raw slug text
+      4. Fallback: sanitised raw_slug
+ 
+    Args:
+        sport:      canonical sport slug e.g. "soccer"
+        raw_slug:   odds_type name from API e.g. "Double Chance" or "soccer_unknown_10"
+        specifiers: specifier string e.g. "total=2.5"
+        sid:        sub_type_id string e.g. "10"
+    """
+    # ── 1. Integer ID lookup (covers ~90% of unknown markets) ─────────────────
+    if sid and sid.isdigit():
+        base = lookup_by_id(int(sid), sport)
+        if base:
+            line = _extract_line(specifiers)
+            if line and "over_under" in base:
+                return f"{base}_{line.replace('.', '_')}"
+            return base
+ 
+    # ── 2. Name-based mapper ───────────────────────────────────────────────────
+    if raw_slug and not raw_slug.startswith(f"{sport}_unknown_"):
+        try:
+            from app.utils.mapping.odibets import get_od_market_info
+            info = get_od_market_info(sport, raw_slug)
+            if info:
+                canon_slug, spec_dict = info
+                spec_str = ",".join(f"{k}={v}" for k, v in sorted(spec_dict.items()))
+                return f"{canon_slug}|{spec_str}" if spec_str else canon_slug
+        except Exception as exc:
+            log.debug("get_od_market_info error sport=%s slug=%s: %s", sport, raw_slug, exc)
+ 
+        # ── 3. Quick heuristic on name ─────────────────────────────────────────
+        heuristic = _name_heuristic(raw_slug, sport)
+        if heuristic:
+            return heuristic
+ 
+    # ── 4. Sanitise fallback ───────────────────────────────────────────────────
+    clean = raw_slug.lower().replace(" ", "_").replace("-", "_").replace("/", "_")
+    clean = re.sub(r"[^a-z0-9_]", "", clean).strip("_")
+    return clean or f"{sport}_unknown_{sid or 'x'}"
+ 
+ 
+def _extract_line(spec_str: str) -> str:
+    if not spec_str:
+        return ""
+    m = re.search(r"total=([\d.]+)", spec_str)
+    if m: return m.group(1)
+    m = re.search(r"([\d]+\.[\d]+)", spec_str)
+    if m: return m.group(1)
+    return ""
+ 
+ 
+def _name_heuristic(name: str, sport: str) -> Optional[str]:
+    """Map raw API market names to canonical slugs without a full mapper."""
+    n = name.lower().strip().replace(" ", "_").replace("/", "_")
+    MAP = {
+        "1x2":             "1x2",
+        "double_chance":   "double_chance",
+        "draw_no_bet":     "draw_no_bet",
+        "both_teams_to_score": "btts",
+        "btts":            "btts",
+        "gg_ng":           "btts",
+        "gg/ng":           "btts",
+        "over_under":      "over_under_goals",
+        "total_goals":     "over_under_goals",
+        "correct_score":   "correct_score",
+        "half_time_result": "half_time_result",
+        "ht_ft":           "half_time_full_time",
+        "half_time_full_time": "half_time_full_time",
+        "exact_goals":     "exact_goals",
+        "odd_even":        "odd_even_goals",
+        "asian_handicap":  "asian_handicap",
+        "european_handicap": "european_handicap",
+        "first_goalscorer": "first_goalscorer",
+        "anytime_goalscorer": "anytime_goalscorer",
+        "highest_scoring_half": "highest_scoring_half",
+        "winning_margin":  "winning_margin",
+        "multigoals":      "multigoals",
+        "1st_half_1x2":    "first_half_1x2",
+        "first_half_1x2":  "first_half_1x2",
+        "1st_half_btts":   "first_half_btts",
+        "1st_half_over_under": "first_half_over_under",
+        "result_both_teams_to_score": "result_and_btts",
+        "result_total_goals": "result_and_over_under",
+        "double_chance_total": "double_chance_and_over_under",
+        "double_chance_btts": "double_chance_and_btts",
+        "clean_sheet":     "team_clean_sheet",
+        "to_score":        "team_to_score",
+        "which_team_to_score": "which_team_to_score",
+    }
+    return MAP.get(n)
+ 
+ 
+# ─── Unified normalize_outcome ────────────────────────────────────────────────
+# Uses shared.py's normalize_outcome as the single source of truth.
+# Both bt_harvester and od_harvester should import from here or from shared.py.
+ 
+def normalize_outcome_unified(market_slug: str, raw_key: str, display: str = "") -> str:
+    """
+    Single normalize_outcome for all harvesters.
+    Prefers shared.py's implementation (used by bt_harvester).
+    Falls back to inline logic if shared.py unavailable.
+    """
+    try:
+        from app.workers.mappers.shared import normalize_outcome as _shared_norm
+        return _shared_norm(market_slug, raw_key, display)
+    except ImportError:
+        pass
+ 
+    # Inline fallback (mirrors shared.py logic)
+    key = raw_key.strip()
+    kl  = key.lower()
+    _MAP = {
+        "1": "1", "home": "1", "x": "X", "draw": "X", "2": "2", "away": "2",
+        "yes": "Yes", "no": "No", "over": "Over", "under": "Under",
+        "ov": "Over", "un": "Under", "odd": "Odd", "even": "Even",
+        "1x": "1X", "x2": "X2", "12": "12",
+        "home_or_draw": "1X", "draw_or_away": "X2", "home_or_away": "12",
+    }
+    if kl in _MAP: return _MAP[kl]
+    if re.match(r"^\d+:\d+$", key): return key
+    if re.match(r"^\d+\+?$", key): return key
+    if re.match(r"^[12xX]/[12xX]$", key): return key
+    if "_" in kl and re.match(r"^[a-z][a-z_\-]{2,}$", kl):
+        NON_PLAYER = {"no_goal","none","own_goal","home_win","away_win",
+                      "both_teams","only_1","only_2","no_goalscorer"}
+        if kl not in NON_PLAYER:
+            parts = key.split("_")
+            if all(p.isalpha() for p in parts) and len(parts) >= 2:
+                return " ".join(p.capitalize() for p in parts)
+    return re.sub(r"[^a-zA-Z0-9_:+./\-]+", "_", key).strip("_") or key
 
 OD_SPORT_IDS: dict[str, str] = {
     "soccer":            "soccer",
@@ -291,19 +667,10 @@ def _translate(ds: str, home: str, away: str) -> str:
             ds = ds.replace(src, tgt)
     return ds
 
-def _make_unique_slug(sport: str, raw_slug: str, specifiers: str) -> str:
-    """
-    Use the OdiBets mapper to get canonical slug + specifiers,
-    then combine them into a unique key.
-    """
-    info = get_od_market_info(sport, raw_slug)
-    if info:
-        canon_slug, spec_dict = info
-        spec_str = ",".join(f"{k}={v}" for k, v in sorted(spec_dict.items()))
-        return f"{canon_slug}|{spec_str}" if spec_str else canon_slug
-    else:
-        logger.debug(f"OD mapper: no mapping for '{raw_slug}' in sport {sport}")
-        return raw_slug.lower().replace(" ", "_").replace("-", "_")
+def _make_unique_slug(sport: str, raw_slug: str, specifiers: str, sid: str = "") -> str:
+        # from app.workers.od_harvester_patch import make_unique_slug as _make
+        return make_unique_slug(sport, raw_slug, specifiers, sid=sid)
+
 
 def _parse_markets(raw: list[dict], sport: str, home: str, away: str) -> dict[str, dict[str, float]]:
     result: dict[str, dict[str, float]] = {}
@@ -334,10 +701,12 @@ def _parse_markets(raw: list[dict], sport: str, home: str, away: str) -> dict[st
             continue
 
         # --- ALL OTHER MARKETS: use the OdiBets mapper and shared outcome normaliser ---
-        raw_slug = name
-        if not raw_slug:
-            raw_slug = f"{sport}_unknown_{sid}"
-        slug = _make_unique_slug(sport, raw_slug, mkt_spec)
+        # raw_slug = name
+        raw_slug = name or ""
+        slug = _make_unique_slug(sport, raw_slug, mkt_spec, sid=sid)
+        # if not raw_slug:
+        #     raw_slug = f"{sport}_unknown_{sid}"
+        # slug = _make_unique_slug(sport, raw_slug, mkt_spec)
 
         for o, outcome_spec in _outcomes(mkt):
             if str(o.get("active") or "") in ("0", "false"): continue
