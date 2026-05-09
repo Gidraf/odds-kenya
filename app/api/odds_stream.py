@@ -254,13 +254,24 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
     by_name: dict[str, int] = {}
 
     def jk(m: dict) -> str:
-        return str(m.get("join_key") or m.get("parent_match_id") or
-                   m.get("betradar_id") or m.get("match_id") or "")
+        # betradar_id is the most reliable cross-BK identifier
+        return str(
+            m.get("betradar_id") or
+            m.get("join_key") or
+            m.get("parent_match_id") or
+            m.get("match_id") or ""
+        )
 
     def nk(m: dict) -> str:
-        h = (m.get("home_team") or m.get("home_team_name") or "")[:14].lower().strip()
-        a = (m.get("away_team") or m.get("away_team_name") or "")[:14].lower().strip()
-        return f"{h}|{a}" if h and a else ""
+        h = (m.get("home_team") or m.get("home_team_name") or "").lower().strip()
+        a = (m.get("away_team") or m.get("away_team_name") or "").lower().strip()
+        # Use first word (most stable across BKs) truncated to 10 chars
+        def first_word(t: str) -> str:
+            t = t.replace(".", "").replace("-", " ").replace("_", " ")
+            parts = t.split()
+            return parts[0][:10] if parts else t[:10]
+        hc = first_word(h); ac = first_word(a)
+        return f"{hc}|{ac}" if hc and ac else ""
 
     for bk_slug, patterns in bk_formats:
         matches = _read_key(r, patterns, sport)
