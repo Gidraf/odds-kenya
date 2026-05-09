@@ -177,7 +177,7 @@ def normalize_od_market(
 
     # ── 1. Sport-specific mapper ───────────────────────────────────────────────
     try:
-        from app.workers.mappers import resolve_od_market as _resolve
+        from app.utils.mapping.odibets import resolve_od_market as _resolve
         canonical, _outcomes = _resolve(sport, market_slug, {})
         if canonical and not canonical.endswith(f"_unknown_{sid}"):
             return _embed_line(canonical, spec_str)

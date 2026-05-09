@@ -1,89 +1,163 @@
 """
-app/workers/mappers/odibet/__init__.py
+app/utils/mapping/odibets/__init__.py
 ======================================
-OdiBets mappers – dispatcher and registration.
+OdiBets market mapper dispatcher.
 
-Exports:
-    get_od_market_info(sport, market_slug) -> (canonical_slug, specifiers) or None
+USAGE:
+    from app.utils.mapping.odibets import resolve_od_market
+    slug, outcomes = resolve_od_market("soccer", market_slug, raw_outcomes)
 """
-
 from __future__ import annotations
+import logging
+from typing import Any, Dict, Optional, Tuple
 
-from typing import Dict, Optional, Tuple
+log = logging.getLogger(__name__)
 
-# Import all sport-specific mappers
-from .odibets_baseball_mapper import OdibetsBaseballMapper
-from .odibets_basketball_mapper import OdibetsBasketballMapper
-from .odibets_boxing_mapper import OdibetsBoxingMapper
-from .odibets_cricket_mapper import OdibetsCricketMapper
-from .odibets_darts_mapper import OdibetsDartsMapper
-from .odibets_esoccer_mapper import OdibetsEsoccerMapper
-from .odibets_football_mapper import OdibetsSoccerMapper      # or OdibetsSoccerMapper
-from .odibets_handball_mapper import OdibetsHandballMapper
-from .odibets_ice_hockey_mapper import OdibetsIceHockeyMapper
-# from .odibets_mma_mapper import OdibetsMMAMapper
-from .odibets_rugby_mapper import OdibetsRugbyMapper
-from .odibets_table_tennis_mapper import OdibetsTableTennisMapper
-from .odibets_tennis_mapper import OdibetsTennisMapper
-from .odibets_volleyball_mapper import OdibetsVolleyballMapper
+# ── Lazy sport mapper loader ──────────────────────────────────────────────────
 
-# Import shared registration function
-from app.workers.mappers.shared import register_sport
+def _get_mapper(sport: str):
+    """Return the mapper class for a sport, or None."""
+    sport = sport.lower().strip()
+    try:
+        if sport in ("soccer", "football"):
+            from app.utils.mapping.odibets.odibets_football_mapper import OdibetsFootballMapper
+            return OdibetsFootballMapper
+        if sport == "basketball":
+            from app.utils.mapping.odibets.odibets_basketball_mapper import OdibetsBasketballMapper
+            return OdibetsBasketballMapper
+        if sport == "tennis":
+            from app.utils.mapping.odibets.odibets_tennis_mapper import OdibetsTennisMapper
+            return OdibetsTennisMapper
+        if sport == "ice-hockey":
+            from app.utils.mapping.odibets.odibets_ice_hockey_mapper import OdibetsIceHockeyMapper
+            return OdibetsIceHockeyMapper
+        if sport == "volleyball":
+            from app.utils.mapping.odibets.odibets_volleyball_mapper import OdibetsVolleyballMapper
+            return OdibetsVolleyballMapper
+        if sport == "cricket":
+            from app.utils.mapping.odibets.odibets_cricket_mapper import OdibetsCricketMapper
+            return OdibetsCricketMapper
+        if sport == "rugby":
+            from app.utils.mapping.odibets.odibets_rugby_mapper import OdibetsRugbyMapper
+            return OdibetsRugbyMapper
+        if sport == "baseball":
+            from app.utils.mapping.odibets.odibets_baseball_mapper import OdibetsBaseballMapper
+            return OdibetsBaseballMapper
+        if sport == "boxing":
+            from app.utils.mapping.odibets.odibets_boxing_mapper import OdibetsBoxingMapper
+            return OdibetsBoxingMapper
+        if sport == "mma":
+            from app.utils.mapping.odibets.odibets_mma_mapper import OdibetsMMAMapper
+            return OdibetsMMAMapper
+        if sport == "table-tennis":
+            from app.utils.mapping.odibets.odibets_table_tennis_mapper import OdibetsTableTennisMapper
+            return OdibetsTableTennisMapper
+        if sport == "handball":
+            from app.utils.mapping.odibets.odibets_handball_mapper import OdibetsHandballMapper
+            return OdibetsHandballMapper
+        if sport in ("esoccer", "efootball"):
+            from app.utils.mapping.odibets.odibets_esoccer_mapper import OdibetsEsoccerMapper
+            return OdibetsEsoccerMapper
+        if sport == "darts":
+            from app.utils.mapping.odibets.odibets_darts_mapper import OdibetsDartsMapper
+            return OdibetsDartsMapper
+    except ImportError as exc:
+        log.debug("Mapper import error sport=%s: %s", sport, exc)
+    return None
 
-# =============================================================================
-# Register outcome normalisers for each sport (if mapper has normalize_outcome)
-# =============================================================================
-register_sport("baseball",        OdibetsBaseballMapper)
-register_sport("basketball",      OdibetsBasketballMapper)
-register_sport("boxing",          OdibetsBoxingMapper)
-register_sport("cricket",         OdibetsCricketMapper)
-register_sport("darts",           OdibetsDartsMapper)
-register_sport("esoccer",         OdibetsEsoccerMapper)
-register_sport("efootball",       OdibetsEsoccerMapper)   # alias
-register_sport("soccer",          OdibetsSoccerMapper)
-register_sport("football",        OdibetsSoccerMapper)
-register_sport("handball",        OdibetsHandballMapper)
-register_sport("ice-hockey",      OdibetsIceHockeyMapper)
-register_sport("hockey",          OdibetsIceHockeyMapper)
-register_sport("mma",             None)
-register_sport("rugby",           OdibetsRugbyMapper)
-register_sport("rugby-union",     OdibetsRugbyMapper)
-register_sport("rugby-league",    OdibetsRugbyMapper)
-register_sport("table-tennis",    OdibetsTableTennisMapper)
-register_sport("tennis",          OdibetsTennisMapper)
-register_sport("volleyball",      OdibetsVolleyballMapper)
 
-# =============================================================================
-# Market slug dispatcher (for the harvester)
-# =============================================================================
-_SPORT_MAPPER: Dict[str, type] = {
-    "baseball":        OdibetsBaseballMapper,
-    "basketball":      OdibetsBasketballMapper,
-    "boxing":          OdibetsBoxingMapper,
-    "cricket":         OdibetsCricketMapper,
-    "darts":           OdibetsDartsMapper,
-    "esoccer":         OdibetsEsoccerMapper,
-    "efootball":       OdibetsEsoccerMapper,
-    "football":        OdibetsSoccerMapper,
-    "soccer":          OdibetsSoccerMapper,
-    "handball":        OdibetsHandballMapper,
-    "ice-hockey":      OdibetsIceHockeyMapper,
-    "hockey":          OdibetsIceHockeyMapper,
-    "mma":             None,
-    "rugby":           OdibetsRugbyMapper,
-    "rugby-union":     OdibetsRugbyMapper,
-    "rugby-league":    OdibetsRugbyMapper,
-    "table-tennis":    OdibetsTableTennisMapper,
-    "tennis":          OdibetsTennisMapper,
-    "volleyball":      OdibetsVolleyballMapper,
+# ── Outcome key normalisation ─────────────────────────────────────────────────
+
+_OUTCOME_MAP = {
+    "over": "Over", "under": "Under", "yes": "Yes", "no": "No",
+    "odd": "Odd", "even": "Even", "home": "1", "away": "2", "draw": "X",
+    "home_or_draw": "1X", "1_or_x": "1X", "draw_or_away": "X2",
+    "x_or_2": "X2", "home_or_away": "12", "1_or_2": "12",
 }
 
-def get_od_market_info(sport: str, market_slug: str) -> Optional[Tuple[str, Dict[str, str]]]:
+def _normalise_outcome(key: str) -> str:
+    return _OUTCOME_MAP.get(key.strip().lower(), key)
+
+
+# ── Specifier embedding ───────────────────────────────────────────────────────
+
+def _embed_specifiers(slug: str, spec: Dict[str, str]) -> str:
+    period   = spec.get("period", "")
+    line     = spec.get("line", "")
+    handicap = spec.get("handicap", "")
+    team     = spec.get("team", "")
+    parts    = [slug]
+    if period and period not in ("match", "full"):
+        if period == "first_half":
+            parts = ["first_half", slug]
+        elif period not in ("", "full", "match"):
+            parts.append(period.replace(" ", "_"))
+    if team:
+        parts.append(team)
+    if line:
+        parts.append(line.replace(".", "_").replace("-", "minus_"))
+    if handicap and not line:
+        hcp = handicap.replace(".", "_")
+        if handicap.startswith("-"):
+            hcp = "minus_" + hcp[1:].replace(".", "_")
+        parts.append(hcp)
+    return "_".join(p for p in parts if p)
+
+
+# ── Main dispatcher ───────────────────────────────────────────────────────────
+
+def resolve_od_market(
+    sport: str,
+    market_slug: str,
+    raw_outcomes: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
     """
-    Main entry point for OdiBets harvester.
-    Returns (canonical_slug, specifiers) or None if sport not found.
+    Resolve one OdiBets market slug → (canonical_slug, canonical_outcomes).
+    Falls back to (market_slug, raw_outcomes) when no mapper matches.
     """
-    mapper = _SPORT_MAPPER.get(sport.lower())
-    if mapper and hasattr(mapper, "get_market_info"):
-        return mapper.get_market_info(market_slug)
-    return None
+    mapper_cls = _get_mapper(sport)
+    if mapper_cls is None:
+        return market_slug, raw_outcomes
+
+    info = mapper_cls.get_market_info(market_slug) if hasattr(mapper_cls, "get_market_info") else None
+    if info is None:
+        return market_slug, raw_outcomes
+
+    canonical_slug, specifiers = info
+    final_slug = _embed_specifiers(canonical_slug, specifiers)
+
+    canonical_outcomes: Dict[str, Any] = {}
+    for raw_key, odd_val in raw_outcomes.items():
+        try:
+            can_key = mapper_cls.transform_outcome(market_slug, str(raw_key)) \
+                if hasattr(mapper_cls, "transform_outcome") else str(raw_key)
+        except Exception:
+            can_key = str(raw_key)
+        canonical_outcomes[_normalise_outcome(can_key)] = odd_val
+
+    return final_slug, canonical_outcomes
+
+
+def resolve_od_markets_batch(
+    sport: str,
+    markets_raw: list,
+) -> Dict[str, Dict[str, Any]]:
+    """Resolve a full list of OdiBets markets for one match."""
+    result: Dict[str, Dict[str, Any]] = {}
+    for mkt in markets_raw:
+        slug = str(mkt.get("slug") or mkt.get("name") or mkt.get("market_slug") or "")
+        if not slug:
+            continue
+        raw_outs = mkt.get("outcomes") or mkt.get("odds") or {}
+        if isinstance(raw_outs, list):
+            raw_outs = {
+                str(o.get("key") or o.get("name") or i):
+                o.get("odd") or o.get("value") or o.get("odd_value") or 0
+                for i, o in enumerate(raw_outs)
+            }
+        can_slug, can_outs = resolve_od_market(sport, slug, raw_outs)
+        if can_slug in result:
+            result[can_slug].update(can_outs)
+        else:
+            result[can_slug] = can_outs
+    return result
