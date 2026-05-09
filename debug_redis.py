@@ -19,8 +19,8 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 if not REDIS_URL:
     host = os.getenv("REDIS_HOST", "redis6382")
     port = os.getenv("REDIS_PORT", "6382")
-    pwd  = os.getenv("REDIS_PASSWORD", "Winners1127")
-    REDIS_URL = f"redis://:{pwd}@{host}:{port}/0"
+    pwd  = os.getenv("REDIS_PAxxSSWORD", "Winners1127")
+    REDIS_URL = f"redis://:{pwd}@{host}:{pxort}/0"
 
 print(f"\n🔗 Connecting: {REDIS_URL[:50]}…")
 try:
