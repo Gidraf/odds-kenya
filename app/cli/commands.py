@@ -1439,28 +1439,40 @@ def harvest_all(days, max_matches, output_dir):
 @click.option("--debug", is_flag=True, help="Print curl commands and raw JSON")
 def harvest_b2b_all(output_dir, sport, debug):
     """Fetch parsed JSON from B2B bookmakers per bookmaker for all (or one) sports."""
-    from app.workers.b2b_harvester import B2B_SUPPORTED_SPORTS, B2B_BOOKMAKERS, fetch_single_bk, merge_b2b_by_match
+    from app.workers.b2b_harvester import (
+        B2B_SUPPORTED_SPORTS,
+        B2B_BOOKMAKERS,
+        fetch_single_bk,
+        merge_b2b_by_match,
+    )
     import os, json
     from datetime import datetime
-    
+
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
     sports = [sport] if sport else B2B_SUPPORTED_SPORTS
     print(f"🚀 Harvesting B2B bookmakers for {len(sports)} sports...")
-    
+
     errors = {}
-    
+
     for s in sports:
         print(f"\n--- B2B: {s.upper()} ---")
         per_bk = {}
         for bk in B2B_BOOKMAKERS:
             try:
-                matches = fetch_single_bk(bk, s, mode="upcoming", page=1, page_size=100)
+                # Pass debug and output_dir so we get curl dumps + raw JSON
+                matches = fetch_single_bk(
+                    bk, s, mode="upcoming", page=1, page_size=100,
+                    debug=debug, output_dir=output_dir
+                )
                 per_bk[bk["slug"]] = matches
                 print(f"  ✅ {bk['slug']}/{s}: {len(matches)} matches parsed")
-                
-                out_file = os.path.join(output_dir, f"b2b_{bk['slug']}_{s}_{timestamp}.json")
+
+                # Save individual bookmaker file
+                out_file = os.path.join(
+                    output_dir, f"b2b_{bk['slug']}_{s}_{timestamp}.json"
+                )
                 with open(out_file, "w") as f:
                     json.dump(matches, f, indent=2, default=str)
             except Exception as e:
@@ -1469,21 +1481,21 @@ def harvest_b2b_all(output_dir, sport, debug):
                 traceback.print_exc()
                 errors[f"{bk['slug']}/{s}"] = str(e)
                 per_bk[bk["slug"]] = []
-                
-        # Merge them and save the unified version for this sport
-        merged = harvest_b2b_sport(sport, mode="upcoming", debug=debug)
+
+        # Merge all bookmakers for this sport
         merged = merge_b2b_by_match(per_bk, s)
-        out_unified = os.path.join(output_dir, f"b2b_unified_{s}_{timestamp}.json")
+        out_unified = os.path.join(
+            output_dir, f"b2b_unified_{s}_{timestamp}.json"
+        )
         with open(out_unified, "w") as f:
             json.dump(merged, f, indent=2, default=str)
         print(f"  🔗 Unified {s}: {len(merged)} matches saved.")
-            
+
     print(f"\n✅ All B2B harvests complete. Saved to {output_dir}")
     if errors:
         print("\n⚠️ The following had errors:")
         for k, err in errors.items():
             print(f"  - {k}: {err}")
-
 # -----------------------------------------------------------------------------
 # Web endpoint: Browse saved JSON files
 # -----------------------------------------------------------------------------
