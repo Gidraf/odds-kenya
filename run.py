@@ -1687,16 +1687,21 @@ def _upsert_account(cfg, verbose=True):
     db.session.flush()
 
     # Tier is stored on Subscription, not Customer
+    from datetime import datetime, timezone, timedelta
+    from app.utils.fetcher_utils import SubscriptionStatus
     sub = Subscription.query.filter_by(user_id=user.id).first()
     if sub:
         sub.tier       = tier
-        sub.is_active  = True
-        sub.expires_at = None   # never expires for test accounts
+        sub.status     = SubscriptionStatus.ACTIVE.value
+        sub.is_trial   = False
+        sub.period_end = datetime.now(timezone.utc) + timedelta(days=3650)   # 10 years for test accounts
     else:
         Subscription.start_trial(user.id, tier)
         sub = Subscription.query.filter_by(user_id=user.id).first()
         if sub:
-            sub.expires_at = None
+            sub.status     = SubscriptionStatus.ACTIVE.value
+            sub.is_trial   = False
+            sub.period_end = datetime.now(timezone.utc) + timedelta(days=3650)
 
     db.session.commit()
 

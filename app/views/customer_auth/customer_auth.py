@@ -163,8 +163,8 @@ def register():
     except Exception as exc:
         current_app.logger.error(f"[auth] verification email failed for {email}: {exc}")
 
-    access_token  = _issue_token(user.id, "access")
-    refresh_token = _issue_token(user.id, "refresh")
+    access_token  = _issue_token(user.id, "access",   extra={"tier": user.tier})
+    refresh_token = _issue_token(user.id, "refresh",  extra={"tier": user.tier})
 
     return _signed_response({
         "ok":            True,
@@ -203,8 +203,8 @@ def login():
         "ok":            True,
         "user":          user.to_dict(),
         "subscription":  user.subscription.to_dict() if user.subscription else None,
-        "access_token":  _issue_token(user.id, "access"),
-        "refresh_token": _issue_token(user.id, "refresh"),
+        "access_token":  _issue_token(user.id, "access",   extra={"tier": user.tier}),
+        "refresh_token": _issue_token(user.id, "refresh",  extra={"tier": user.tier}),
     }
 
     # Warn if email not verified
@@ -240,7 +240,7 @@ def refresh_token():
 
     return _signed_response({
         "ok":           True,
-        "access_token": _issue_token(user_id, "access"),
+        "access_token": _issue_token(user.id, "access",   extra={"tier": user.tier}),
     })
 
 
