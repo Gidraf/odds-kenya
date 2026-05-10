@@ -211,6 +211,19 @@ def _curl_get(url: str, referer: str, debug: bool = False) -> dict | None:
         return None
 
 
+def _log_curl(output_dir: str, bk_slug: str, sport_id: int, mode: str, url: str, success: bool):
+    """Append a curl log entry to the shared log file."""
+    if not output_dir:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+    log_path = os.path.join(output_dir, "b2b_curl_log.txt")
+    timestamp = _now_iso()
+    status = "OK" if success else "FAIL"
+    line = f"[{timestamp}] {bk_slug:>10} | sport={sport_id:<3} | {mode:<9} | {status:<4} | {url}\n"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(line)
+
+
 def _dump_debug(bk_slug: str, sport_id: int, mode: str, url: str, referer: str,
                 raw_response: Any, matches: list[dict], output_dir: str):
     """Save full debug information for one bookmaker-sport fetch."""
@@ -268,7 +281,7 @@ def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming",
     """
     Fetch raw games from BetB2B API, filter by sport_id (SI field).
     Prints curl command and raw response if debug=True.
-    Saves full debug dump to output_dir if both debug and output_dir are given.
+    Saves full debug dump + curl log to output_dir if both debug and output_dir are given.
     """
     slug      = bk["slug"]
     cache_key = (slug, sport_id, mode)
@@ -294,14 +307,24 @@ def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming",
         print(f"\n📡 [{mode.upper()}] Fetching {slug} / sport {sport_id}")
 
     data = _curl_get(url, referer, debug=debug)
+
+    success = False
+    if data:
+        err = data.get("ErrorCode") or data.get("Error") or data.get("err") or 0
+        if not err or err == 0:
+            success = True
+
+    # Log the curl request to file (regardless of success)
+    if output_dir:
+        _log_curl(output_dir, slug, sport_id, mode, url, success)
+
     if not data:
         if debug:
             print("   ↳ No data or curl error — caching skip")
         _UNSUPPORTED_SPORT_CACHE.add(cache_key)
         return []
 
-    err = data.get("ErrorCode") or data.get("Error") or data.get("err") or 0
-    if err and err != 0:
+    if not success:
         if debug:
             print(f"   ↳ API error code: {err}")
         _UNSUPPORTED_SPORT_CACHE.add(cache_key)
