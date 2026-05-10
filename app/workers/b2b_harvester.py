@@ -27,12 +27,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 import logging
 logger = logging.getLogger(__name__)
@@ -63,7 +62,7 @@ B2B_BOOKMAKERS: list[dict] = [
         "name":       "1xBet",
         "domain":     "1xbet.co.ke",
         "partner_id": 61,
-        "gr":         657,            # updated based on provided sample
+        "gr":         657,
         "feed":       "LiveFeed",
         "color":      "#1F8AEB",
     },
@@ -176,7 +175,13 @@ def _now_iso() -> str:
 def _ts_to_iso(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def _curl_get(url: str, referer: str) -> dict | None:
+def _curl_get(url: str, referer: str, debug: bool = False) -> dict | None:
+    """Use system curl to bypass Cloudflare TLS fingerprint blocks."""
+    if debug:
+        print(f"\n🔍 [CURL] curl -s -m 15 \\")
+        print(f"   -H 'accept: application/json, text/plain, */*' \\")
+        print(f"   -H 'referer: {referer}' \\")
+        print(f"   '{url}'")
     try:
         res = subprocess.run(
             [
@@ -188,12 +193,23 @@ def _curl_get(url: str, referer: str) -> dict | None:
             capture_output=True, text=True, check=False
         )
         if res.returncode == 0 and res.stdout:
-            return json.loads(res.stdout)
-    except Exception:
-        pass
-    return None
+            data = json.loads(res.stdout)
+            if debug:
+                raw_snippet = res.stdout[:2000]
+                print("📡 Raw response (first 2000 chars):")
+                print(raw_snippet)
+                if len(res.stdout) > 2000:
+                    print("   ... (truncated)")
+            return data
+        else:
+            if debug:
+                print(f"❌ curl failed with return code {res.returncode}")
+            return None
+    except Exception as e:
+        if debug:
+            print(f"❌ curl exception: {e}")
+        return None
 
-# ─── Debug dump helper ──────────────────────────────────────────────────────
 
 def _dump_debug(bk_slug: str, sport_id: int, mode: str, url: str, referer: str,
                 raw_response: Any, matches: list[dict], output_dir: str):
@@ -208,13 +224,14 @@ def _dump_debug(bk_slug: str, sport_id: int, mode: str, url: str, referer: str,
         "curl_url": url,
         "referer": referer,
         "raw_response": raw_response,
-        "parsed_matches": matches[:5],      # keep first 5 for file size
+        "parsed_matches": matches[:5],
         "total_matches": len(matches) if isinstance(matches, list) else 0,
         "timestamp": _now_iso(),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(dump, f, indent=2, ensure_ascii=False)
     logger.info("Debug dump saved: %s", path)
+
 
 # ─── URL builders ───────────────────────────────────────────────────────────
 
@@ -242,6 +259,7 @@ def _build_linefeed_url(bk: dict, sport_id: int) -> str:
         f"&partner=0&getEmpty=true&hot=false&grMode=2"
     )
 
+
 # Cache for unsupported combos
 _UNSUPPORTED_SPORT_CACHE: set = set()
 
@@ -249,14 +267,19 @@ def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming",
                    debug: bool = False, output_dir: str = "") -> list[dict]:
     """
     Fetch raw games from BetB2B API, filter by sport_id (SI field).
-    Saves debug dump if requested.
+    Prints curl command and raw response if debug=True.
+    Saves full debug dump to output_dir if both debug and output_dir are given.
     """
     slug      = bk["slug"]
     cache_key = (slug, sport_id, mode)
 
     if not _bk_supports_sport(slug, sport_id):
+        if debug:
+            print(f"⛔ Skipping {slug}/sport {sport_id} (not supported)")
         return []
     if cache_key in _UNSUPPORTED_SPORT_CACHE:
+        if debug:
+            print(f"⛔ Skipping {slug}/sport {sport_id} (previously empty)")
         return []
 
     domain = bk["domain"]
@@ -267,13 +290,20 @@ def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming",
     else:
         url = _build_livefeed_url(bk)         # no sportId filter in URL
 
-    data = _curl_get(url, referer)
+    if debug:
+        print(f"\n📡 [{mode.upper()}] Fetching {slug} / sport {sport_id}")
+
+    data = _curl_get(url, referer, debug=debug)
     if not data:
+        if debug:
+            print("   ↳ No data or curl error — caching skip")
         _UNSUPPORTED_SPORT_CACHE.add(cache_key)
         return []
 
     err = data.get("ErrorCode") or data.get("Error") or data.get("err") or 0
     if err and err != 0:
+        if debug:
+            print(f"   ↳ API error code: {err}")
         _UNSUPPORTED_SPORT_CACHE.add(cache_key)
         return []
 
@@ -285,16 +315,23 @@ def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming",
     else:
         raw_sport_games = all_games
 
+    if debug:
+        print(f"   ↳ {len(raw_sport_games)} games after filtering (out of {len(all_games)} total)")
+
+    # Save full debug dump if output_dir is provided
     if debug and output_dir:
-        # Save everything, including unfiltered all_games and filtered for reference
         _dump_debug(slug, sport_id, mode, url, referer,
                     {"all_games_count": len(all_games), "filtered": raw_sport_games[:10]},
                     [], output_dir)
+        print(f"   ↳ Full raw JSON saved to {output_dir}")
 
     if not raw_sport_games:
+        if debug:
+            print("   ↳ No games for this sport — caching skip")
         _UNSUPPORTED_SPORT_CACHE.add(cache_key)
 
     return raw_sport_games
+
 
 # ─── Market parsing (real API format) ──────────────────────────────────────
 
@@ -411,6 +448,7 @@ def _parse_game(game: dict, bk: dict, sport_slug: str, mode: str = "upcoming") -
         "harvested_at": _now_iso(),
     }
 
+
 # ─── Single-bookmaker fetch ────────────────────────────────────────────────
 
 def fetch_single_bk(
@@ -441,9 +479,8 @@ def fetch_single_bk(
             logger.debug("[b2b:%s] parse error: %s", bk["slug"], e)
 
     if debug and output_dir:
-        # Append parsed matches to the debug file
-        _dump_debug(bk["slug"], sport_id, mode, "", "",
-                    None, matches, output_dir)  # raw already saved, just update matches
+        # Update the debug file with parsed matches
+        _dump_debug(bk["slug"], sport_id, mode, "", "", None, matches, output_dir)
 
     ms = int((time.perf_counter() - t0) * 1000)
     logger.info(
@@ -451,6 +488,7 @@ def fetch_single_bk(
         bk["slug"], sport_slug, mode, page, len(matches), len(raw_games), ms,
     )
     return matches
+
 
 # ─── All-bookmakers parallel fetch ─────────────────────────────────────────
 
@@ -483,7 +521,8 @@ def fetch_all_b2b_sport(
     logger.info("[b2b:all] %s/%s → %d total across %d BKs", sport_slug, mode, total, len(bks))
     return results
 
-# ─── Merge ─────────────────────────────────────────────────────────────────
+
+# ─── Cross-BK merge ────────────────────────────────────────────────────────
 
 def merge_b2b_by_match(per_bk_results: dict[str, list[dict]], sport_slug: str) -> list[dict]:
     all_matches: list[dict] = []
@@ -529,6 +568,7 @@ def merge_b2b_by_match(per_bk_results: dict[str, list[dict]], sport_slug: str) -
     logger.info("[b2b:merge] %s → %d unified from %d raw", sport_slug, len(unified), len(all_matches))
     return unified
 
+
 # ─── Full harvest for a sport ─────────────────────────────────────────────
 
 def harvest_b2b_sport(
@@ -541,6 +581,7 @@ def harvest_b2b_sport(
     per_bk = fetch_all_b2b_sport(sport_slug, mode, bookmakers, debug=debug, output_dir=output_dir)
     merged = merge_b2b_by_match(per_bk, sport_slug)
     return merged
+
 
 # ─── Paged harvest (Celery compatibility) ─────────────────────────────────
 
@@ -559,7 +600,8 @@ def harvest_b2b_page(
         return []
     return fetch_single_bk(bk, sport_slug, mode, page, page_size, debug, output_dir)
 
-# ─── Live Poller (unchanged, uses corrected fetch) ────────────────────────
+
+# ─── Live Poller ─────────────────────────────────────────────────────────────
 
 class B2BLivePoller:
     _POLL_SPORTS: list[str] = [
@@ -598,6 +640,7 @@ class B2BLivePoller:
                     logger.warning("[b2b:live] %s error: %s", sport_slug, e)
             elapsed = time.perf_counter() - t0
             time.sleep(max(0, self._interval - elapsed))
+
 
 # ─── Bookmaker registry helpers ────────────────────────────────────────────
 
