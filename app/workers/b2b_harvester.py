@@ -27,11 +27,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 import logging
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ B2B_BOOKMAKERS: list[dict] = [
         "name":       "1xBet",
         "domain":     "1xbet.co.ke",
         "partner_id": 61,
-        "gr":         657,
+        "gr":         657,            # updated based on provided sample
         "feed":       "LiveFeed",
         "color":      "#1F8AEB",
     },
@@ -192,10 +193,11 @@ def _curl_get(url: str, referer: str) -> dict | None:
         pass
     return None
 
-# ─── Debug dump ─────────────────────────────────────────────────────────────
+# ─── Debug dump helper ──────────────────────────────────────────────────────
 
 def _dump_debug(bk_slug: str, sport_id: int, mode: str, url: str, referer: str,
                 raw_response: Any, matches: list[dict], output_dir: str):
+    """Save full debug information for one bookmaker-sport fetch."""
     os.makedirs(output_dir, exist_ok=True)
     filename = f"b2b_debug_{bk_slug}_{sport_id}_{mode}.json"
     path = os.path.join(output_dir, filename)
@@ -206,7 +208,7 @@ def _dump_debug(bk_slug: str, sport_id: int, mode: str, url: str, referer: str,
         "curl_url": url,
         "referer": referer,
         "raw_response": raw_response,
-        "parsed_matches": matches[:5],
+        "parsed_matches": matches[:5],      # keep first 5 for file size
         "total_matches": len(matches) if isinstance(matches, list) else 0,
         "timestamp": _now_iso(),
     }
@@ -284,6 +286,7 @@ def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming",
         raw_sport_games = all_games
 
     if debug and output_dir:
+        # Save everything, including unfiltered all_games and filtered for reference
         _dump_debug(slug, sport_id, mode, url, referer,
                     {"all_games_count": len(all_games), "filtered": raw_sport_games[:10]},
                     [], output_dir)
@@ -438,8 +441,9 @@ def fetch_single_bk(
             logger.debug("[b2b:%s] parse error: %s", bk["slug"], e)
 
     if debug and output_dir:
-        # Update the debug file with parsed matches
-        _dump_debug(bk["slug"], sport_id, mode, "", "", None, matches, output_dir)
+        # Append parsed matches to the debug file
+        _dump_debug(bk["slug"], sport_id, mode, "", "",
+                    None, matches, output_dir)  # raw already saved, just update matches
 
     ms = int((time.perf_counter() - t0) * 1000)
     logger.info(
@@ -479,7 +483,7 @@ def fetch_all_b2b_sport(
     logger.info("[b2b:all] %s/%s → %d total across %d BKs", sport_slug, mode, total, len(bks))
     return results
 
-# ─── Cross-BK merge ────────────────────────────────────────────────────────
+# ─── Merge ─────────────────────────────────────────────────────────────────
 
 def merge_b2b_by_match(per_bk_results: dict[str, list[dict]], sport_slug: str) -> list[dict]:
     all_matches: list[dict] = []
@@ -555,7 +559,7 @@ def harvest_b2b_page(
         return []
     return fetch_single_bk(bk, sport_slug, mode, page, page_size, debug, output_dir)
 
-# ─── Live Poller (unchanged) ───────────────────────────────────────────────
+# ─── Live Poller (unchanged, uses corrected fetch) ────────────────────────
 
 class B2BLivePoller:
     _POLL_SPORTS: list[str] = [

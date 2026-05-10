@@ -1496,6 +1496,7 @@ def harvest_b2b_all(output_dir, sport, debug):
         print("\n⚠️ The following had errors:")
         for k, err in errors.items():
             print(f"  - {k}: {err}")
+
 # -----------------------------------------------------------------------------
 # Web endpoint: Browse saved JSON files
 # -----------------------------------------------------------------------------
