@@ -163,7 +163,13 @@ def _auth_user():
     if token:
         try:
             payload = _decode_token(token)
-            return Customer.query.get(int(payload["sub"]))
+            user = Customer.query.get(int(payload["sub"]))
+            if user:
+                tier = _get_user_tier(user)
+                log.debug("Auth OK: user_id=%s tier=%s sub_tier=%s",
+                          user.id, tier,
+                          getattr(user, "subscription_tier", "N/A"))
+            return user
         except Exception as exc:
             log.warning("Token decode failed: %s", exc); return None
     api_key = request.headers.get("X-Api-Key", "").strip()
@@ -178,9 +184,19 @@ def _auth_user():
     return None
 
 
+def _get_user_tier(user) -> str:
+    """Read tier from any of the field names the Customer model might use."""
+    if not user: return "free"
+    return (
+        getattr(user, "subscription_tier", None) or
+        getattr(user, "tier", None)              or
+        getattr(user, "plan", None)              or
+        "basic"
+    )
+
 def _tier_rank(user) -> int:
     if not user: return -1
-    return _TIER_RANK.get(getattr(user, "tier", "basic") or "basic", 1)
+    return _TIER_RANK.get(_get_user_tier(user), 1)
 
 
 def require_tier(min_tier: str):
@@ -471,7 +487,7 @@ def _sse(event: str, data: dict) -> str:
 
 
 def _make_generator(mode: str, sport: str, user, live_tier: bool):
-    tier = getattr(user, "tier", "basic") or "basic"
+    tier = _get_user_tier(user)
 
     def generate():
         try: r = _r()
@@ -608,7 +624,7 @@ def stream_odds(mode: str, sport: str):
 @require_tier("basic")
 def snapshot_odds(mode: str, sport: str):
     from app.api import _signed_response
-    tier    = getattr(g.user, "tier", "basic") or "basic"
+    tier    = _get_user_tier(g.user)
     matches = _filter_tier(_get_unified(mode, sport), tier)
     return _signed_response({"matches": matches, "sport": sport, "mode": mode, "count": len(matches)})
 
