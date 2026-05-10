@@ -21,6 +21,7 @@ celery_app = make_celery(flask_app)
 
 from app.cli import register_cli_commands
 register_cli_commands(flask_app)
+# register_cli(flask_app)
 
 if __name__ == "__main__":
     socketio.run(flask_app, debug=True, host="0.0.0.0", port=5500, use_reloader=False, log_output=True)

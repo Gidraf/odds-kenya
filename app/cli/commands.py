@@ -1,4 +1,16 @@
-from app.workers.b2b_harvester import harvest_b2b_sport
+from app.workers.b2b_harvester import _save_results_to_redis
+from app.workers.b2b_harvester import print_sample_per_sport
+from app.workers.b2b_harvester import harvest_all_b2b
+from app.workers.b2b_harvester import ALL_SPORT_SLUGS
+from app.workers.b2b_harvester import B2B_SUPPORTED_SPORTS
+from app.workers.b2b_harvester import fetch_single_bk
+from app.workers.b2b_harvester import merge_b2b_by_match
+from app.workers.b2b_harvester import _save_sport_to_redis
+from app.workers.b2b_harvester import fetch_sports_tree
+from app.workers.b2b_harvester import print_raw_sample
+from app.workers.b2b_harvester import B2B_BOOKMAKERS
+from app.workers.b2b_harvester import _BK_BY_SLUG
+from app.models.user_admin import User
 import os
 import sys
 import json
@@ -10,6 +22,177 @@ from flask import Blueprint, current_app, request, render_template_string
 from app.extensions import db
 
 bp = Blueprint("cli_commands", __name__, cli_group=None)
+
+
+
+import logging
+
+import traceback
+from datetime import datetime
+
+from app.workers.b2b_harvester import (
+    B2B_BOOKMAKERS,
+    B2B_SUPPORTED_SPORTS,
+    ALL_SPORT_SLUGS,
+    _BK_BY_SLUG,
+    fetch_single_bk,
+    fetch_bk_all_sports,
+    harvest_all_b2b,
+    merge_b2b_by_match,
+    fetch_sports_tree,
+    print_sample_per_sport,
+    print_raw_sample,
+    _save_sport_to_redis,
+    _save_results_to_redis,
+)
+
+
+# ─── harvest-b2b ─────────────────────────────────────────────────────────────
+
+@bp.cli.command("harvest-b2b")
+@click.option("--mode",        default="upcoming", type=click.Choice(["upcoming", "live"]))
+@click.option("--sport",       default=None,  help="Limit to one sport slug")
+@click.option("--bk",          default=None,  help="Limit to one bookmaker slug")
+@click.option("--sample",      is_flag=True,  help="Print one sample match per sport")
+@click.option("--raw",         is_flag=True,  help="Print raw E[] events for one game")
+@click.option("--sports-tree", is_flag=True,  help="Print sports/competitions tree")
+@click.option("--save",        is_flag=True,  help="Save to Redis after harvest")
+@click.option("--output-dir",  default="harvest_dumps")
+def harvest_b2b_cmd(mode, sport, bk, sample, raw, sports_tree, save, output_dir):
+    """Harvest all B2B bookmakers (all sports + BKs concurrently)."""
+    if sports_tree:
+        click.echo("\n📋 Sports tree:")
+        fetch_sports_tree(verbose=True)
+        return
+
+    bks    = [_BK_BY_SLUG[bk]] if bk else B2B_BOOKMAKERS
+    sports = [sport] if sport else ALL_SPORT_SLUGS
+
+    if raw:
+        print_raw_sample(bks[0], sports[0], mode)
+        return
+
+    # harvest_all_b2b runs all BKs × sports concurrently
+    all_results = harvest_all_b2b(mode=mode, sports=sports, bookmakers=bks, verbose=True)
+
+    if sample:
+        print_sample_per_sport(all_results, sport_filter=sport)
+        return
+
+    if save:
+        _save_results_to_redis(all_results, mode)
+
+    os.makedirs(output_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for bk_slug, sport_data in all_results.items():
+        for sp, ms in sport_data.items():
+            if ms:
+                path = os.path.join(output_dir, f"b2b_{bk_slug}_{sp}_{mode}_{ts}.json")
+                with open(path, "w") as f:
+                    json.dump(ms, f, indent=2, default=str)
+
+    click.echo(f"\n✅ Files saved to {output_dir}/")
+
+
+# ─── harvest-b2b-all ─────────────────────────────────────────────────────────
+
+@bp.cli.command("harvest-b2b-all")
+@click.option("--output-dir", default="harvest_dumps")
+@click.option("--sport",      default=None,  help="Single sport slug (omit for all)")
+@click.option("--debug",      is_flag=True,  help="Enable DEBUG logging")
+def harvest_b2b_all(output_dir, sport, debug):
+    """
+    Fetch odds from all B2B bookmakers for all sports.
+    Saves per-BK files + unified merged file + pushes to Redis.
+    """
+    if debug:
+        logging.getLogger("app.workers.b2b_harvester").setLevel(logging.DEBUG)
+
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sports    = [sport] if sport else B2B_SUPPORTED_SPORTS
+    errors: dict[str, str] = {}
+
+    click.echo(f"\n🚀 Harvesting B2B — {len(B2B_BOOKMAKERS)} bookmakers × {len(sports)} sports")
+
+    for s in sports:
+        click.echo(f"\n{'─'*60}\nSport: {s.upper()}")
+        per_bk: dict[str, list[dict]] = {}
+
+        # fetch_bk_all_sports already runs all sports concurrently per BK,
+        # but here we want per-sport files so we fetch one sport at a time
+        # across all BKs using fetch_single_bk (which now has sport filter).
+        for bk in B2B_BOOKMAKERS:
+            try:
+                matches = fetch_single_bk(
+                    bk, s,
+                    mode="upcoming",
+                    page=1,
+                    page_size=500,
+                    output_dir=output_dir,
+                    verbose=True,
+                )
+                per_bk[bk["slug"]] = matches
+
+                # Per-BK raw file
+                out_file = os.path.join(
+                    output_dir, f"b2b_{bk['slug']}_{s}_{timestamp}.json"
+                )
+                with open(out_file, "w") as f:
+                    json.dump(matches, f, indent=2, default=str)
+
+            except Exception as e:
+                traceback.print_exc()
+                errors[f"{bk['slug']}/{s}"] = str(e)
+                per_bk[bk["slug"]] = []
+
+        # Merge all BKs for this sport
+        merged = merge_b2b_by_match(per_bk, s)
+        out_unified = os.path.join(output_dir, f"b2b_unified_{s}_{timestamp}.json")
+        with open(out_unified, "w") as f:
+            json.dump(merged, f, indent=2, default=str)
+        click.echo(f"\n  🔗 Unified {s}: {len(merged)} matches → {out_unified}")
+
+        # Push to Redis immediately so odds_stream can serve it
+        if merged:
+            _save_sport_to_redis(s, "upcoming", merged)            # b2b unified key
+            for bk_slug, bk_matches in per_bk.items():
+                if bk_matches:
+                    _save_sport_to_redis(s, "upcoming", bk_matches, bk_slug=bk_slug)
+
+    click.echo(f"\n✅ Done. Files saved to: {output_dir}/")
+    if errors:
+        click.echo(f"\n⚠️  {len(errors)} error(s):")
+        for key, err in errors.items():
+            click.echo(f"   {key}: {err}")
+
+
+# ─── b2b-sample ──────────────────────────────────────────────────────────────
+
+@bp.cli.command("b2b-sample")
+@click.option("--sport", default="soccer")
+@click.option("--mode",  default="upcoming")
+@click.option("--bk",    default=None, help="Bookmaker slug (default: 1xbet)")
+def b2b_sample_cmd(sport, mode, bk):
+    """
+    Print all raw E[] events for one match.
+    Use this to discover G-group IDs for building sport mappers.
+    """
+    bk_obj = _BK_BY_SLUG.get(bk) if bk else B2B_BOOKMAKERS[0]
+    if not bk_obj:
+        click.echo(f"❌ Unknown bookmaker: {bk}")
+        return
+    print_raw_sample(bk_obj, sport, mode)
+
+
+# ─── b2b-sports-tree ─────────────────────────────────────────────────────────
+
+@bp.cli.command("b2b-sports-tree")
+@click.option("--bk", default="paripesa", help="Bookmaker to query (all use same sport IDs)")
+def b2b_sports_tree_cmd(bk):
+    """Print available sports and competitions from the BetB2B platform."""
+    bk_obj = _BK_BY_SLUG.get(bk, B2B_BOOKMAKERS[-1])
+    fetch_sports_tree(bk_obj, verbose=True)
 
 @bp.cli.command("seed-markets")
 def seed_markets_cmd():
