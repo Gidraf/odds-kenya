@@ -1433,15 +1433,11 @@ def harvest_all(days, max_matches, output_dir):
 # CLI: Harvest B2B bookmakers
 # -----------------------------------------------------------------------------
 
-@bp.cli.command("harvest-all")
-@click.option("--days", default=7)
-@click.option("--max-matches", default=None, type=int)
-@click.option("--output-dir", default="harvest_dumps")
+@bp.cli.command("harvest-b2b-all")
+@click.option("--output-dir", default="harvest_dumps", help="Directory")
+@click.option("--sport", default=None, help="Specific sport to harvest")
 @click.option("--debug", is_flag=True, help="Print curl commands and raw JSON")
-def harvest_all(days, max_matches, output_dir, debug):
-    """Run all three bookmaker harvests and then unified."""
-    print("🚀 Harvesting all bookmakers...")
-    merged = harvest_b2b_sport("soccer", mode="upcoming", debug=debug)
+def harvest_b2b_all(output_dir, sport, debug):
     """Fetch parsed JSON from B2B bookmakers per bookmaker for all (or one) sports."""
     from app.workers.b2b_harvester import B2B_SUPPORTED_SPORTS, B2B_BOOKMAKERS, fetch_single_bk, merge_b2b_by_match
     import os, json
@@ -1475,6 +1471,7 @@ def harvest_all(days, max_matches, output_dir, debug):
                 per_bk[bk["slug"]] = []
                 
         # Merge them and save the unified version for this sport
+        merged = harvest_b2b_sport(sport, mode="upcoming", debug=debug)
         merged = merge_b2b_by_match(per_bk, s)
         out_unified = os.path.join(output_dir, f"b2b_unified_{s}_{timestamp}.json")
         with open(out_unified, "w") as f:
