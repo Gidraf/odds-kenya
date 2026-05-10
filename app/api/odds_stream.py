@@ -154,6 +154,12 @@ def _normalise_markets(markets: dict) -> dict:
 # =============================================================================
 
 def _auth_user():
+    """
+    Authenticate the request. Stores the resolved tier in Flask g.jwt_tier
+    so _tier_rank() can read it without a DB round-trip.
+
+    Tier priority: JWT claim > DB subscription_tier > DB tier > "basic"
+    """
     from app.utils.customer_jwt_helpers import _decode_token
     from app.models.customer import Customer
     auth  = request.headers.get("Authorization", "")
@@ -162,25 +168,35 @@ def _auth_user():
         token = request.args.get("token", "").strip() or None
     if token:
         try:
-            payload = _decode_token(token)
-            user = Customer.query.get(int(payload["sub"]))
-            if user:
-                tier = _get_user_tier(user)
-                log.debug("Auth OK: user_id=%s tier=%s sub_tier=%s",
-                          user.id, tier,
-                          getattr(user, "subscription_tier", "N/A"))
+            payload  = _decode_token(token)
+            user     = Customer.query.get(int(payload["sub"]))
+            if not user:
+                return None
+            jwt_tier = str(payload.get("tier") or "").strip()
+            db_tier  = _get_user_tier(user)
+            # JWT claim wins if it's a recognised tier
+            g.jwt_tier = jwt_tier if jwt_tier in _TIER_RANK else db_tier
+            log.debug("Auth uid=%s jwt_tier=%r db_tier=%r → g.jwt_tier=%r",
+                      user.id, jwt_tier, db_tier, g.jwt_tier)
             return user
         except Exception as exc:
-            log.warning("Token decode failed: %s", exc); return None
+            log.warning("Token decode failed: %s", exc)
+            return None
     api_key = request.headers.get("X-Api-Key", "").strip()
     if api_key:
         try:
             from app.models.api_key import ApiKey
             from app.models.customer import Customer as C
-            ak = ApiKey.query.filter_by(key=api_key, is_active=True).first()
-            user = ak and C.query.get(ak.user_id)
-            return user if (user and user.is_active) else None
-        except: pass
+            ak   = ApiKey.query.filter_by(key=api_key, is_active=True).first()
+            if not ak:
+                return None
+            user = C.query.get(ak.user_id)
+            if not (user and user.is_active):
+                return None
+            g.jwt_tier = _get_user_tier(user)
+            return user
+        except:
+            pass
     return None
 
 
@@ -196,6 +212,14 @@ def _get_user_tier(user) -> str:
 
 def _tier_rank(user) -> int:
     if not user: return -1
+    # g.jwt_tier is set by _auth_user() from the JWT claim — most authoritative
+    try:
+        from flask import g as _g
+        jwt_tier = getattr(_g, "jwt_tier", None)
+        if jwt_tier and jwt_tier in _TIER_RANK:
+            return _TIER_RANK[jwt_tier]
+    except RuntimeError:
+        pass  # outside request context (tests, CLI)
     return _TIER_RANK.get(_get_user_tier(user), 1)
 
 
@@ -487,7 +511,12 @@ def _sse(event: str, data: dict) -> str:
 
 
 def _make_generator(mode: str, sport: str, user, live_tier: bool):
-    tier = _get_user_tier(user)
+    # Read tier from g.jwt_tier (set by _auth_user from JWT claim)
+    try:
+        from flask import g as _g
+        tier = getattr(_g, "jwt_tier", None) or _get_user_tier(user)
+    except RuntimeError:
+        tier = _get_user_tier(user)
 
     def generate():
         try: r = _r()
@@ -624,7 +653,7 @@ def stream_odds(mode: str, sport: str):
 @require_tier("basic")
 def snapshot_odds(mode: str, sport: str):
     from app.api import _signed_response
-    tier    = _get_user_tier(g.user)
+    tier    = getattr(g, "jwt_tier", None) or _get_user_tier(g.user)
     matches = _filter_tier(_get_unified(mode, sport), tier)
     return _signed_response({"matches": matches, "sport": sport, "mode": mode, "count": len(matches)})
 
