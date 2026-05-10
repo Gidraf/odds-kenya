@@ -1710,9 +1710,23 @@ def _upsert_account(cfg, verbose=True):
         label = "✓ created" if action == "created" else "↻ updated"
         click.echo(f"  {tag}  {label:12}  {email}")
 
+def _get_user_tier(user) -> str:
+    """Read tier from Subscription first, then any Customer column."""
+    sub = getattr(user, "subscription", None)
+    if sub:
+        t = getattr(sub, "tier", None)
+        if t: return str(t)
+    for field in ("subscription_tier", "tier", "plan"):
+        t = getattr(user, field, None)
+        if t: return str(t)
+    return "basic"
+
 def _issue_token_for(user_id):
     from app.utils.customer_jwt_helpers import _issue_token
-    return _issue_token(user_id, "access")
+    from app.models.customer import Customer
+    user = Customer.query.get(user_id)
+    tier = _get_user_tier(user) if user else "basic"
+    return _issue_token(user_id, "access", extra={"tier": tier})
 
 
 # ─── CLI commands (run as: flask seed-accounts / flask get-token / etc.) ──────

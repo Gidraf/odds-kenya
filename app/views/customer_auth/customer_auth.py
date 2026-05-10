@@ -162,9 +162,9 @@ def register():
         _send_verification_email(user, raw_token)
     except Exception as exc:
         current_app.logger.error(f"[auth] verification email failed for {email}: {exc}")
-
-    access_token  = _issue_token(user.id, "access",   extra={"tier": user.tier})
-    refresh_token = _issue_token(user.id, "refresh",  extra={"tier": user.tier})
+    _tier = (user.subscription.tier if user.subscription else None) or getattr(user, "tier", "basic") or "basic"
+    access_token  = _issue_token(user.id, "access",   extra={"tier": _tier})
+    refresh_token = _issue_token(user.id, "refresh",  extra={"tier": _tier})
 
     return _signed_response({
         "ok":            True,
@@ -198,13 +198,13 @@ def login():
     user.last_login_at = datetime.now(timezone.utc)
     MetricsEvent.log("login", user_id=user.id, tier=user.tier, ip=request.remote_addr)
     db.session.commit()
-
+    _tier = (user.subscription.tier if user.subscription else None) or getattr(user, "tier", "basic") or "basic"
     resp = {
-        "ok":            True,
+       "ok":            True,
         "user":          user.to_dict(),
         "subscription":  user.subscription.to_dict() if user.subscription else None,
-        "access_token":  _issue_token(user.id, "access",   extra={"tier": user.tier}),
-        "refresh_token": _issue_token(user.id, "refresh",  extra={"tier": user.tier}),
+        "access_token":  _issue_token(user.id, "access",   extra={"tier": _tier}),
+        "refresh_token": _issue_token(user.id, "refresh",  extra={"tier": _tier}),
     }
 
     # Warn if email not verified
@@ -237,10 +237,10 @@ def refresh_token():
     user = Customer.query.get(user_id)
     if not user or not user.is_active:
         return _err("Account not found", 401)
-
+    _tier = (user.subscription.tier if user.subscription else None) or getattr(user, "tier", "basic") or "basic"
     return _signed_response({
         "ok":           True,
-        "access_token": _issue_token(user.id, "access",   extra={"tier": user.tier}),
+        "access_token": _issue_token(user.id, "access",   extra={"tier": _tier}),
     })
 
 
