@@ -13,15 +13,15 @@ BetB2B family harvester — covers all 7 Kenya bookmakers:
   Helabet     | helabetke.com       | 237       |  —  | LineFeed
   Paripesa    | paripesa.cool       | 188       | 764 | LiveFeed
 
-API Endpoints:
-  LineFeed (upcoming):
+API Endpoints (LiveFeed example):
+  GET https://{domain}/service-api/LiveFeed/Get1x2_VZip?
+      count=50&lng=en&gr={gr}&mode=4&country=87&partner={pid}
+      &virtualSports=true&noFilterBlockEvent=true&sportId={sid}
+
+  LineFeed (Helabet upcoming):
     GET https://{domain}/LineFeed/GetGameZip?sportId={sid}&partnerID={pid}&gr={gr}
                          &tf=1200&tz=0&lng=en&GroupEvents=true&countryId=0
                          &partner=0&getEmpty=true&hot=false&grMode=2
-
-  LiveFeed (live matches):
-    GET https://{domain}/service-api/LiveFeed/GetFeedProper?LangId=1&sportId={sid}
-                         &partnerId={pid}&gr={gr}&typeId=0&levelId=1
 
 Normalised output shape (same as sp/od/bt harvesters):
 {
@@ -49,24 +49,23 @@ from __future__ import annotations
 import json
 import re
 import time
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 import httpx
-
 import logging
+
 logger = logging.getLogger(__name__)
 
-# ─── Bookmaker registry ───────────────────────────────────────────────────────
+# ─── Bookmaker registry ──────────────────────────────────────────────────────
 
 # Sports known to work across all BetB2B bookmakers
-_B2B_COMMON_SPORTS = {1, 2, 3, 5, 8, 17, 21}   # soccer, ice-hockey, basketball, tennis, volleyball, rugby, cricket
+_B2B_COMMON_SPORTS = {1, 2, 3, 5, 8, 17, 21}
 
-# Per-BK additional sports (discovered empirically; niche sports vary by BK)
-# None = use common sports only; explicit set = union with common
 _BK_EXTRA_SPORTS: dict[str, set] = {
-    "1xbet":     {4, 9, 11, 13, 14, 16, 47},   # widest offering
+    "1xbet":     {4, 9, 11, 13, 14, 16, 47},
     "22bet":     {4, 9, 11, 13, 14, 16, 47},
     "betwinner": {4, 9, 11, 13, 14, 16, 47},
     "melbet":    {4, 9, 11, 13, 14, 16, 47},
@@ -75,14 +74,11 @@ _BK_EXTRA_SPORTS: dict[str, set] = {
     "paripesa":  {4, 9, 11, 13, 14},
 }
 
-
 def _bk_supports_sport(bk_slug: str, sport_id: int) -> bool:
-    """Return True if this BK is likely to have data for this sport_id."""
     if sport_id in _B2B_COMMON_SPORTS:
         return True
     extras = _BK_EXTRA_SPORTS.get(bk_slug, set())
     return sport_id in extras
-
 
 B2B_BOOKMAKERS: list[dict] = [
     {
@@ -150,7 +146,7 @@ B2B_BOOKMAKERS: list[dict] = [
     },
 ]
 
-# ─── Sport ID mapping (BetB2B internal sport IDs) ─────────────────────────────
+# ─── Sport ID mapping ────────────────────────────────────────────────────────
 
 _B2B_SPORT_IDS: dict[str, int] = {
     "soccer":            1,
@@ -163,7 +159,6 @@ _B2B_SPORT_IDS: dict[str, int] = {
     "mma":               9,
     "boxing":            9,
     "handball":          11,
-    "baseball":          12,
     "table-tennis":      13,
     "darts":             14,
     "american-football": 16,
@@ -173,370 +168,259 @@ _B2B_SPORT_IDS: dict[str, int] = {
     "esports":           47,
 }
 
-# ─── Market group → canonical slug mapping ────────────────────────────────────
-# BetB2B uses numeric Group IDs (G field) for market types
+# ─── Market group → canonical slug mapping (updated for real API) ────────────
 
 _B2B_GROUP_TO_SLUG: dict[int, str] = {
-    1:   "match_winner",       # 1X2
-    2:   "double_chance",
-    3:   "draw_no_bet",
-    5:   "btts",
-    6:   "match_winner",       # 1X2 variant
-    17:  "over_under_2_5",
-    19:  "over_under_0_5",
-    20:  "over_under_1_5",
-    21:  "over_under_2_5",
-    22:  "over_under_3_5",
-    23:  "over_under_4_5",
-    24:  "over_under_5_5",
-    30:  "first_half_match_winner",
-    45:  "first_half_over_under_0_5",
-    46:  "first_half_over_under_1_5",
-    47:  "first_half_over_under_2_5",
-    56:  "asian_handicap",
-    57:  "european_handicap",
-    83:  "correct_score",
-    102: "ht_ft",
-    161: "odd_even",
-    162: "first_half_odd_even",
+    1:   "match_winner",         # 1X2
+    2:   "asian_handicap",       # handicap (Asian) with line P
+    8:   "double_chance",        # 1X, 12, X2
+    15:  "btts",                 # Both Teams to Score
+    17:  "over_under",           # total goals
+    19:  "first_half_over_under", # 1st half O/U
+    62:  "handicap_result",      # handicap result (European)
 }
 
-# Outcome name normalisation
-_B2B_OUTCOME_MAP: dict[str, str] = {
-    "1":       "1",
-    "x":       "X",
-    "2":       "2",
-    "w1":      "1",
-    "w2":      "2",
-    "home":    "1",
-    "draw":    "X",
-    "away":    "2",
-    "yes":     "Yes",
-    "no":      "No",
-    "over":    "Over",
-    "under":   "Under",
-    "odd":     "Odd",
-    "even":    "Even",
-    "1x":      "1X",
-    "12":      "12",
-    "x2":      "X2",
+# Outcome T mapping for known groups
+_OUTCOME_T_MAP = {
+    # 1X2
+    1:  {1: "1", 2: "X", 3: "2"},
+    # Double chance (8)
+    8:  {4: "1X", 5: "12", 6: "X2"},
+    # Over/Under (17, 19) → T=9=Over, T=10=Under
+    17: {9: "Over", 10: "Under"},
+    19: {9: "Over", 10: "Under"},
+    # BTTS (15) → T=11=Yes, T=12=No
+    15: {11: "Yes", 12: "No"},
+    # Handicap (2) → T=7=Home, T=8=Away
+    2:  {7: "1", 8: "2"},
+    # Handicap result (62) → T=13=Home, T=14=Away
+    62: {13: "1", 14: "2"},
 }
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+def _ts_to_iso(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def _parse_dotnet_date(val: Any) -> str | None:
-    """Parse /Date(ms)/ or ISO string → ISO string."""
-    if val is None:
-        return None
-    if isinstance(val, str):
-        m = re.match(r"/Date\((\d+)\)/", val)
-        if m:
-            ts = int(m.group(1)) / 1000
-            return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        return val  # already ISO
-    if isinstance(val, (int, float)):
-        return datetime.fromtimestamp(val / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _curl_get(url: str, referer: str, debug: bool = False) -> dict | None:
+    """Use system curl to bypass Cloudflare TLS fingerprint blocks."""
+    if debug:
+        print(f"\n🔍 [CURL] {url}")
+        print(f"   Referer: {referer}")
+        print(f"   curl -s -m 15 -H 'accept: application/json' -H 'referer: {referer}' '{url}'")
+    try:
+        res = subprocess.run(
+            [
+                "curl", "-s", "-m", "15",
+                "-H", "accept: application/json, text/plain, */*",
+                "-H", f"referer: {referer}",
+                url
+            ],
+            capture_output=True, text=True, check=False
+        )
+        if res.returncode == 0 and res.stdout:
+            return json.loads(res.stdout)
+    except Exception as e:
+        if debug:
+            print(f"❌ curl error: {e}")
     return None
 
-
-def _norm_outcome(name: str) -> str:
-    """Normalise outcome label."""
-    k = name.strip().lower()
-    return _B2B_OUTCOME_MAP.get(k, name.strip())
-
-
-def _slug_for_group(group_id: int, group_name: str = "") -> str:
-    """Map BetB2B group ID to canonical market slug."""
-    if group_id in _B2B_GROUP_TO_SLUG:
-        return _B2B_GROUP_TO_SLUG[group_id]
-
-    # Derive from group name
-    gn = group_name.lower().strip()
-    if "1x2" in gn or "match result" in gn:
-        return "match_winner"
-    if "both teams" in gn or "btts" in gn or "gg" in gn:
-        return "btts"
-    if "double" in gn:
-        return "double_chance"
-    if "draw no bet" in gn:
-        return "draw_no_bet"
-    if "over" in gn and "under" in gn:
-        line_m = re.search(r'([\d.]+)', gn)
-        line = line_m.group(1).replace(".", "_") if line_m else "2_5"
-        half = "first_half_" if "half" in gn or "1st" in gn else ""
-        return f"{half}over_under_{line}"
-    if "handicap" in gn:
-        kind = "asian" if "asian" in gn else "european"
-        return f"{kind}_handicap"
-    if "correct score" in gn:
-        return "correct_score"
-    if "half" in gn and "time" in gn:
-        return "first_half_match_winner"
-    if "odd" in gn or "even" in gn:
-        return "odd_even"
-    if "winner" in gn:
-        return "match_winner"
-
-    # Fallback: slugify
-    slug = re.sub(r'[^a-z0-9]', '_', gn)
-    slug = re.sub(r'_+', '_', slug).strip('_')
-    return slug or f"market_{group_id}"
-
-
-# ─── HTTP client (shared, connection-pooled) ──────────────────────────────────
-
-_CLIENT = httpx.Client(
-    timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=2.0),
-    limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
-    follow_redirects=True,
-    http2=True,
-)
-
-_HEADERS = {
-    "Accept":          "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control":   "no-cache",
-    "Connection":      "keep-alive",
-    "User-Agent":      (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-}
-
-
-# ─── Low-level API calls ──────────────────────────────────────────────────────
-
-def _build_linefeed_url(bk: dict, sport_id: int) -> str:
-    domain = bk["domain"]
-    pid    = bk["partner_id"]
-    gr     = bk.get("gr")
-
-    params = (
-        f"sportId={sport_id}"
-        f"&partnerID={pid}"
-        f"&tf=1200"
-        f"&tz=0"
-        f"&lng=en"
-        f"&GroupEvents=true"
-        f"&countryId=0"
-        f"&partner=0"
-        f"&getEmpty=true"
-        f"&hot=false"
-        f"&grMode=2"
-    )
-    if gr:
-        params += f"&gr={gr}"
-
-    return f"https://{domain}/service-api/LineFeed/GetGameZip?{params}"
-
+# ─── Low-level API calls ─────────────────────────────────────────────────────
 
 def _build_livefeed_url(bk: dict, sport_id: int) -> str:
     domain = bk["domain"]
     pid    = bk["partner_id"]
-    gr     = bk.get("gr", 0) or 0
+    gr     = bk.get("gr")
+    base = f"https://{domain}/service-api/LiveFeed/Get1x2_VZip"
+    params = (
+        f"count=50&lng=en&mode=4&country=87&partner={pid}"
+        f"&virtualSports=true&noFilterBlockEvent=true"
+        f"&sportId={sport_id}"
+    )
+    if gr is not None:
+        params += f"&gr={gr}"
+    return f"{base}?{params}"
 
+def _build_linefeed_url(bk: dict, sport_id: int) -> str:
+    domain = bk["domain"]
+    pid    = bk["partner_id"]
+    gr     = bk.get("gr") or ""
     return (
-        f"https://{domain}/service-api/LiveFeed/GetFeedProper"
-        f"?LangId=1&sportId={sport_id}&partnerId={pid}"
-        f"&gr={gr}&typeId=0&levelId=1"
+        f"https://{domain}/LineFeed/GetGameZip?"
+        f"sportId={sport_id}&partnerID={pid}&gr={gr}"
+        f"&tf=1200&tz=0&lng=en&GroupEvents=true&countryId=0"
+        f"&partner=0&getEmpty=true&hot=false&grMode=2"
     )
 
-
-# In-process cache: (bk_slug, sport_id, mode) combos known to return empty.
-# Populated at runtime; cleared on worker restart so BKs can add sports.
+# Cache for unsupported combos
 _UNSUPPORTED_SPORT_CACHE: set = set()
 
-
-def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming") -> list[dict]:
+def _fetch_b2b_raw(bk: dict, sport_id: int, mode: str = "upcoming", debug: bool = False) -> list[dict]:
     """
     Fetch raw game list from BetB2B API.
-    Returns the Value[] array, or [] when sport is not offered.
-
-    Empty/null body = sport not available on this BK.
-    These combos are cached in-process so we stop making pointless requests.
+    Uses LiveFeed/Get1x2_VZip for live/upcoming, LineFeed for Helabet.
     """
     slug      = bk["slug"]
     cache_key = (slug, sport_id, mode)
 
-    # Skip sports this BK is known not to support (before making any HTTP request)
     if not _bk_supports_sport(slug, sport_id):
         return []
-
-    # Skip known-empty combos discovered at runtime
     if cache_key in _UNSUPPORTED_SPORT_CACHE:
         return []
 
-    url = (
-        _build_livefeed_url(bk, sport_id)
-        if mode == "live"
-        else _build_linefeed_url(bk, sport_id)
-    )
-    try:
-        resp = _CLIENT.get(url, headers={
-            **_HEADERS,
-            "Referer": f"https://{bk['domain']}/",
-            "Origin":  f"https://{bk['domain']}",
-        })
+    domain = bk["domain"]
+    referer = f"https://{domain}/"
 
-        # Empty body = sport not offered — cache and skip silently
-        body = resp.content
-        if not body or body.strip() in (b"", b"null", b"[]", b"{}"):
-            logger.debug("[b2b:%s] sport %d not offered (empty body)", slug, sport_id)
-            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
-            return []
+    # Determine endpoint
+    if bk["feed"] == "LineFeed":
+        url = _build_linefeed_url(bk, sport_id)
+    else:
+        url = _build_livefeed_url(bk, sport_id)
 
-        resp.raise_for_status()
+    if debug:
+        print(f"\n📡 Fetching {slug} / sport {sport_id} ({mode})")
 
-        try:
-            data = resp.json()
-        except ValueError:
-            # Non-JSON body (HTML error page, plain text) — cache as unsupported
-            logger.debug("[b2b:%s] sport %d non-JSON response (%d bytes) — skipping",
-                         slug, sport_id, len(body))
-            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
-            return []
-
-        # BetB2B wraps response in {"Value": [...], "Err": 0}
-        if isinstance(data, dict):
-            err = data.get("Err") or data.get("err") or 0
-            if err and err != 0:
-                logger.debug("[b2b:%s] sport %d API err=%s — skipping", slug, sport_id, err)
-                _UNSUPPORTED_SPORT_CACHE.add(cache_key)
-                return []
-            result = data.get("Value") or data.get("value") or []
-            if not result:
-                _UNSUPPORTED_SPORT_CACHE.add(cache_key)   # empty Value → nothing to offer
-            return result
-
-        if isinstance(data, list):
-            return data
+    data = _curl_get(url, referer, debug=debug)
+    if not data:
+        if debug:
+            print("   → No response / curl failed")
+        _UNSUPPORTED_SPORT_CACHE.add(cache_key)
         return []
 
-    except httpx.HTTPStatusError as e:
-        code = e.response.status_code
-        if code in (400, 404, 422, 204):
-            logger.debug("[b2b:%s] sport %d HTTP %d — caching as unsupported", slug, sport_id, code)
-            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
-        else:
-            logger.warning("[b2b:%s] HTTP %d for sport %d", slug, code, sport_id)
+    # Check API error
+    err = data.get("ErrorCode") or data.get("Error") or data.get("err") or 0
+    if err and err != 0:
+        if debug:
+            print(f"   → API error: {err}")
+        _UNSUPPORTED_SPORT_CACHE.add(cache_key)
         return []
 
-    except httpx.TimeoutException:
-        logger.warning("[b2b:%s] timeout for sport %d", slug, sport_id)
-        return []
+    games = data.get("Value") or data.get("value") or []
+    if not games:
+        _UNSUPPORTED_SPORT_CACHE.add(cache_key)
+    if debug:
+        print(f"   → Received {len(games)} games")
+        print("   Raw JSON (first 2000 chars):")
+        print(json.dumps(games[:2], indent=2, ensure_ascii=False)[:2000])
+    return games
 
-    except Exception as e:
-        err_str = str(e)
-        # "Expecting value" = JSON parse on empty body; demote to debug
-        if any(x in err_str for x in ("Expecting value", "No data", "JSONDecodeError")):
-            logger.debug("[b2b:%s] sport %d empty/invalid response — caching skip", slug, sport_id)
-            _UNSUPPORTED_SPORT_CACHE.add(cache_key)
-        else:
-            logger.warning("[b2b:%s] fetch error sport %d: %s", slug, sport_id, e)
-        return []
+# ─── Market parsing (real API format) ───────────────────────────────────────
 
+def _parse_market_group(gid: int, outcomes: dict) -> tuple[str, dict[str, float]]:
+    """Convert group ID and raw outcomes to canonical slug + normalised prices."""
+    slug = _B2B_GROUP_TO_SLUG.get(gid)
+    if not slug:
+        return f"unknown_{gid}", dict(outcomes)
 
-# ─── Market parsing ───────────────────────────────────────────────────────────
+    # If the slug is generic like "over_under", we'll keep it as is
+    # but we can append line info? Kept simple for now.
+    return slug, dict(outcomes)
 
-def _parse_events(events: list[dict]) -> dict[str, dict[str, float]]:
+def _parse_events(raw_events: list[dict], additional_events: list[dict]) -> dict[str, dict[str, float]]:
     """
-    Parse BetB2B 'Events' (market odds) into canonical {slug: {outcome: price}}.
-
-    Event object:
-      { "Id": 11, "G": 1, "GN": "1X2", "E": [
-          {"Id": 1, "Name": "1", "Coef": 2.10},
-          {"Id": 2, "Name": "X", "Coef": 3.20},
-          {"Id": 3, "Name": "2", "Coef": 3.50}
-      ]}
+    Parse main E and additional AE arrays into canonical market dict.
+    E format: [ {"G":1, "C":1.968, "T":3}, ... ]
+    AE format: [ {"G":2, "ME":[...]}, ... ]
     """
     markets: dict[str, dict[str, float]] = {}
 
-    for ev in (events or []):
-        if not isinstance(ev, dict):
-            continue
+    def _process_event(ev: dict):
+        gid = ev.get("G")
+        if not gid:
+            return
+        coeff = ev.get("C") or ev.get("CV")
+        try:
+            price = float(coeff)
+        except (TypeError, ValueError):
+            return
+        if price <= 1.0:
+            return
+        t = ev.get("T")
+        if t is None:
+            return
 
-        group_id   = ev.get("G") or ev.get("GroupId") or 0
-        group_name = ev.get("GN") or ev.get("GroupName") or ""
-        slug       = _slug_for_group(int(group_id), group_name)
+        # Map outcome name
+        outcome = None
+        mapping = _OUTCOME_T_MAP.get(gid, {})
+        outcome = mapping.get(t)
+        if outcome is None:
+            outcome = str(t)
 
-        selections = ev.get("E") or ev.get("Selections") or []
-        if not selections:
-            continue
+        # For handicap/over_under, add line info
+        p = ev.get("P")
+        if p is not None and gid in (2, 17, 19, 62):
+            outcome = f"{outcome}@{p}"
 
+        # Determine slug
+        slug, _ = _parse_market_group(gid, {outcome: price})
         if slug not in markets:
             markets[slug] = {}
+        if outcome not in markets[slug] or price > markets[slug][outcome]:
+            markets[slug][outcome] = price
 
-        for sel in selections:
-            if not isinstance(sel, dict):
-                continue
-            name  = str(sel.get("Name") or sel.get("N") or "")
-            coef  = sel.get("Coef") or sel.get("C") or 0
-            try:
-                price = float(coef)
-            except (TypeError, ValueError):
-                continue
-            if price <= 1.0:
-                continue
-            outcome = _norm_outcome(name)
-            # Keep highest price per outcome (some events duplicate)
-            if outcome not in markets[slug] or price > markets[slug][outcome]:
-                markets[slug][outcome] = price
+    # Main events
+    for ev in raw_events:
+        if isinstance(ev, dict):
+            _process_event(ev)
 
+    # Additional events (AE) contain sub-events in ME
+    for ae in additional_events:
+        if not isinstance(ae, dict):
+            continue
+        gid = ae.get("G")
+        me_list = ae.get("ME", [])
+        for me in me_list:
+            if not isinstance(me, dict):
+                continue
+            # ME objects have G (inherit from parent?), C, P, T
+            # Use parent G if present
+            me_gid = me.get("G") or gid
+            me["G"] = me_gid
+            _process_event(me)
+
+    # Remove empty markets
     return {k: v for k, v in markets.items() if v}
 
 
-def _parse_live_events(events: list[dict]) -> dict[str, dict[str, float]]:
-    """
-    LiveFeed events have same structure as LineFeed events.
-    Additional live-specific fields (score, timer) handled separately.
-    """
-    return _parse_events(events)
-
-
-# ─── Game normalisation ───────────────────────────────────────────────────────
+# ─── Game normalisation (real API) ──────────────────────────────────────────
 
 def _parse_game(game: dict, bk: dict, sport_slug: str, mode: str = "upcoming") -> dict | None:
-    """
-    Normalise one BetB2B game object into our canonical match dict.
-
-    LineFeed game keys:
-      Id, Oc (home), Odc (away), Sid (sport), CI (competition),
-      Cid (country_id), CN (country_name), StartDate, Events
-    """
-    home  = game.get("Oc") or game.get("Team1") or ""
-    away  = game.get("Odc") or game.get("Team2") or ""
+    """Normalise one game dict from LiveFeed/LineFeed into canonical match dict."""
+    home = game.get("O1E") or game.get("O1") or ""
+    away = game.get("O2E") or game.get("O2") or ""
     if not home or not away:
         return None
 
-    game_id  = game.get("Id") or game.get("GameId")
-    comp     = game.get("CI") or game.get("CompetitionName") or ""
-    country  = game.get("CN") or game.get("CountryName") or ""
-    start_dt = _parse_dotnet_date(game.get("StartDate") or game.get("SD"))
+    game_id  = game.get("I") or game.get("GameId")
+    comp     = game.get("LE") or game.get("L") or ""
+    country  = game.get("CN") or ""
+    start_ts = game.get("S")  # Unix timestamp (seconds)
+    start_dt = _ts_to_iso(start_ts) if start_ts else None
 
-    events_raw = game.get("Events") or game.get("E") or []
-    markets    = _parse_events(events_raw)
+    # Parse odds from E and AE
+    raw_events   = game.get("E") or []
+    raw_add_events = game.get("AE") or []
+    markets = _parse_events(raw_events, raw_add_events)
 
     if not markets:
         return None
 
-    # Live-specific fields
+    # Score from SC object
     score_home = score_away = None
-    match_time = None
-    if mode == "live":
-        score_raw = game.get("Sc") or game.get("Score") or ""
-        if isinstance(score_raw, str) and ":" in score_raw:
-            parts = score_raw.split(":")
-            try:
-                score_home = int(parts[0])
-                score_away = int(parts[1])
-            except (ValueError, IndexError):
-                pass
-        match_time = str(game.get("Tm") or game.get("Time") or "")
+    sc = game.get("SC")
+    if isinstance(sc, dict):
+        fs = sc.get("FS") or {}
+        # Sometimes integer scores
+        s1 = fs.get("S1")
+        s2 = fs.get("S2")
+        try:
+            score_home = int(s1) if s1 is not None else None
+            score_away = int(s2) if s2 is not None else None
+        except (ValueError, TypeError):
+            pass
 
     match_id = f"{bk['partner_id']}:{game_id}"
 
@@ -563,13 +447,12 @@ def _parse_game(game: dict, bk: dict, sport_slug: str, mode: str = "upcoming") -
         "status":       mode if mode == "live" else "upcoming",
         "score_home":   score_home,
         "score_away":   score_away,
-        "match_time":   match_time,
+        "match_time":   None,   # can be derived from SC if needed
         "is_live":      mode == "live",
         "harvested_at": _now_iso(),
     }
 
-
-# ─── Single-bookmaker fetch ───────────────────────────────────────────────────
+# ─── Single-bookmaker fetch ─────────────────────────────────────────────────
 
 def fetch_single_bk(
     bk: dict,
@@ -577,6 +460,7 @@ def fetch_single_bk(
     mode: str = "upcoming",
     page: int = 1,
     page_size: int = 100,
+    debug: bool = False,
 ) -> list[dict]:
     """
     Fetch one bookmaker for one sport.
@@ -585,7 +469,7 @@ def fetch_single_bk(
     sport_id = _B2B_SPORT_IDS.get(sport_slug.lower(), 1)
     t0 = time.perf_counter()
 
-    raw_games = _fetch_b2b_raw(bk, sport_id, mode)
+    raw_games = _fetch_b2b_raw(bk, sport_id, mode, debug=debug)
 
     # Apply pagination (BetB2B returns everything; we slice)
     start = (page - 1) * page_size
@@ -606,28 +490,27 @@ def fetch_single_bk(
         "[b2b:%s] %s/%s page%d → %d/%d matches (%dms)",
         bk["slug"], sport_slug, mode, page, len(matches), len(raw_games), ms,
     )
+    if debug:
+        print(f"\n📊 Parsed {len(matches)} valid matches for {bk['slug']}/{sport_slug}")
+        print("Unified matches (first 1):")
+        print(json.dumps(matches[:1], indent=2, ensure_ascii=False))
     return matches
 
-
-# ─── All-bookmakers parallel fetch ───────────────────────────────────────────
+# ─── All-bookmakers parallel fetch ─────────────────────────────────────────
 
 def fetch_all_b2b_sport(
     sport_slug: str,
     mode: str = "upcoming",
     bookmakers: list[dict] | None = None,
     max_workers: int = 7,
+    debug: bool = False,
 ) -> dict[str, list[dict]]:
-    """
-    Fetch all B2B bookmakers in parallel for one sport.
-
-    Returns: { bk_slug: [match, ...] }
-    """
     bks = bookmakers or B2B_BOOKMAKERS
     results: dict[str, list[dict]] = {}
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(bks)), thread_name_prefix="b2b") as pool:
         futures = {
-            pool.submit(fetch_single_bk, bk, sport_slug, mode): bk
+            pool.submit(fetch_single_bk, bk, sport_slug, mode, 1, 200, debug): bk
             for bk in bks
         }
         for fut in as_completed(futures):
@@ -643,25 +526,9 @@ def fetch_all_b2b_sport(
     logger.info("[b2b:all] %s/%s → %d total across %d BKs", sport_slug, mode, total, len(bks))
     return results
 
+# ─── Cross-BK merge (exact match on home/away/time) ────────────────────────
 
-# ─── Cross-BK merge (by match identity) ─────────────────────────────────────
-
-def merge_b2b_by_match(
-    per_bk_results: dict[str, list[dict]],
-    sport_slug: str,
-) -> list[dict]:
-    """
-    Merge results across all B2B bookmakers into unified match objects.
-    Uses exact home/away + time matching (B2B games share same structure).
-
-    Returns list of merged matches with all bookmaker data.
-    """
-    from app.workers.fuzzy_matcher import (
-        MatchCandidate, FuzzyMatcher, match_dict_to_candidate,
-        bulk_align, _parse_dt,
-    )
-
-    # Build a flat list of all matches with their BK
+def merge_b2b_by_match(per_bk_results: dict[str, list[dict]], sport_slug: str) -> list[dict]:
     all_matches: list[dict] = []
     for bk_slug, matches in per_bk_results.items():
         for m in matches:
@@ -671,68 +538,56 @@ def merge_b2b_by_match(
     if not all_matches:
         return []
 
-    # Build unified list by merging same games across BKs
     unified: list[dict] = []
-    seen_key: dict[str, int] = {}  # "home|away|start" → index in unified
+    seen_key: dict[str, int] = {}
 
     for m in all_matches:
         bk_slug = m["_bk_slug"]
-        home    = m.get("home_team", "").lower().strip()
-        away    = m.get("away_team", "").lower().strip()
-        start   = (m.get("start_time") or "")[:16]   # truncate to minute
-
+        home = m.get("home_team", "").lower().strip()
+        away = m.get("away_team", "").lower().strip()
+        start = (m.get("start_time") or "")[:16]
         key = f"{home}|||{away}|||{start}"
 
         if key in seen_key:
-            # Merge into existing
             idx = seen_key[key]
             existing = unified[idx]
-            bk_data  = m["bookmakers"].get(bk_slug, {})
+            bk_data = m["bookmakers"].get(bk_slug, {})
             if bk_data:
                 existing["bookmakers"][bk_slug] = bk_data
-                # Merge markets: keep best odds per outcome
                 for slug, outs in (bk_data.get("markets") or {}).items():
                     if slug not in existing["markets"]:
                         existing["markets"][slug] = {}
                     for outcome, price in outs.items():
-                        existing_price = existing["markets"][slug].get(outcome, 0)
-                        if price > existing_price:
+                        if outcome not in existing["markets"][slug] or price > existing["markets"][slug][outcome]:
                             existing["markets"][slug][outcome] = price
                 existing["market_count"] = len(existing["markets"])
         else:
-            # New match
             merged = dict(m)
             merged.pop("_bk_slug", None)
             merged["bookmakers"] = dict(m.get("bookmakers") or {})
-            merged["markets"]    = dict(m.get("markets") or {})
+            merged["markets"] = dict(m.get("markets") or {})
             seen_key[key] = len(unified)
             unified.append(merged)
 
     logger.info("[b2b:merge] %s → %d unified from %d raw", sport_slug, len(unified), len(all_matches))
     return unified
 
-
-# ─── Full B2B harvest for a sport ─────────────────────────────────────────────
+# ─── Full B2B harvest for a sport ──────────────────────────────────────────
 
 def harvest_b2b_sport(
     sport_slug: str,
     mode: str = "upcoming",
     bookmakers: list[dict] | None = None,
+    debug: bool = False,
 ) -> list[dict]:
-    """
-    Full harvest pipeline for one sport:
-      1. Fetch all B2B bookmakers in parallel
-      2. Merge by match identity
-      3. Return unified list
-
-    This is the main entry point called by Celery tasks.
-    """
-    per_bk = fetch_all_b2b_sport(sport_slug, mode, bookmakers)
+    per_bk = fetch_all_b2b_sport(sport_slug, mode, bookmakers, debug=debug)
     merged = merge_b2b_by_match(per_bk, sport_slug)
+    if debug:
+        print(f"\n🔗 Unified matches for {sport_slug}:")
+        print(json.dumps(merged[:2], indent=2, ensure_ascii=False))
     return merged
 
-
-# ─── Paged harvest (called by tasks_harvest_b2b.py) ──────────────────────────
+# ─── Paged harvest (for Celery compatibility) ───────────────────────────────
 
 def harvest_b2b_page(
     bk_slug: str,
@@ -740,26 +595,17 @@ def harvest_b2b_page(
     page: int,
     page_size: int = 100,
     mode: str = "upcoming",
+    debug: bool = False,
 ) -> list[dict]:
-    """
-    Fetch one page from one B2B bookmaker.
-    Called in parallel by Celery tasks.
-    """
     bk = next((b for b in B2B_BOOKMAKERS if b["slug"] == bk_slug), None)
     if not bk:
         logger.warning("[b2b] unknown bk_slug: %s", bk_slug)
         return []
-    return fetch_single_bk(bk, sport_slug, mode, page, page_size)
+    return fetch_single_bk(bk, sport_slug, mode, page, page_size, debug=debug)
 
-
-# ─── Live harvest ─────────────────────────────────────────────────────────────
+# ─── Live poller (unchanged, but using corrected fetch) ─────────────────────
 
 class B2BLivePoller:
-    """
-    Background thread that polls all B2B LiveFeeds every `interval` seconds
-    and publishes updates to Redis pub/sub.
-    """
-
     _POLL_SPORTS: list[str] = [
         "soccer", "basketball", "tennis", "ice-hockey",
         "volleyball", "table-tennis",
@@ -794,21 +640,16 @@ class B2BLivePoller:
                         publish_b2b_live_update(sport_slug, matches, self._r)
                 except Exception as e:
                     logger.warning("[b2b:live] %s error: %s", sport_slug, e)
-
             elapsed = time.perf_counter() - t0
-            sleep_s = max(0, self._interval - elapsed)
-            time.sleep(sleep_s)
+            time.sleep(max(0, self._interval - elapsed))
 
-
-# ─── Bookmaker registry helpers ───────────────────────────────────────────────
+# ─── Bookmaker registry helpers ─────────────────────────────────────────────
 
 def get_bk_by_slug(slug: str) -> dict | None:
     return next((b for b in B2B_BOOKMAKERS if b["slug"] == slug), None)
 
-
 def get_all_slugs() -> list[str]:
     return [b["slug"] for b in B2B_BOOKMAKERS]
-
 
 B2B_SUPPORTED_SPORTS: list[str] = [
     "soccer", "basketball", "tennis", "ice-hockey",
