@@ -1409,14 +1409,12 @@ def harvest_unified(days, max_matches, output_dir, sport):
 # -----------------------------------------------------------------------------
 
 @bp.cli.command("harvest-all")
-@click.option("--days", default=7)
-@click.option("--max-matches", default=None, type=int)
-@click.option("--output-dir", default="harvest_dumps")
-@click.option("--debug", is_flag=True, help="Print curl commands and raw JSON")
-def harvest_all(days, max_matches, output_dir, debug):
+@click.option("--days", default=7, help="Days ahead")
+@click.option("--max-matches", default=None, type=int, help="Max matches per sport per bookmaker")
+@click.option("--output-dir", default="harvest_dumps", help="Directory")
+def harvest_all(days, max_matches, output_dir):
     """Run all three bookmaker harvests and then unified."""
     print("🚀 Harvesting all bookmakers...")
-    merged = harvest_b2b_sport("soccer", mode="upcoming", debug=debug)
     # Run each bookmaker command (by invoking functions)
     # We'll just call the functions directly
     # First harvest each bookmaker individually (they save per sport)
@@ -1435,10 +1433,15 @@ def harvest_all(days, max_matches, output_dir, debug):
 # CLI: Harvest B2B bookmakers
 # -----------------------------------------------------------------------------
 
-@bp.cli.command("harvest-b2b-all")
-@click.option("--output-dir", default="harvest_dumps", help="Directory")
-@click.option("--sport", default=None, help="Specific sport to harvest")
-def harvest_b2b_all(output_dir, sport):
+@bp.cli.command("harvest-all")
+@click.option("--days", default=7)
+@click.option("--max-matches", default=None, type=int)
+@click.option("--output-dir", default="harvest_dumps")
+@click.option("--debug", is_flag=True, help="Print curl commands and raw JSON")
+def harvest_all(days, max_matches, output_dir, debug):
+    """Run all three bookmaker harvests and then unified."""
+    print("🚀 Harvesting all bookmakers...")
+    merged = harvest_b2b_sport("soccer", mode="upcoming", debug=debug)
     """Fetch parsed JSON from B2B bookmakers per bookmaker for all (or one) sports."""
     from app.workers.b2b_harvester import B2B_SUPPORTED_SPORTS, B2B_BOOKMAKERS, fetch_single_bk, merge_b2b_by_match
     import os, json
