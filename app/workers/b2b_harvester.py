@@ -20,7 +20,7 @@ API Endpoints:
                          &partner=0&getEmpty=true&hot=false&grMode=2
 
   LiveFeed (live matches):
-    GET https://{domain}/LiveFeed/GetFeedProper?LangId=1&sportId={sid}
+    GET https://{domain}/service-api/LiveFeed/GetFeedProper?LangId=1&sportId={sid}
                          &partnerId={pid}&gr={gr}&typeId=0&levelId=1
 
 Normalised output shape (same as sp/od/bt harvesters):
@@ -332,7 +332,7 @@ def _build_linefeed_url(bk: dict, sport_id: int) -> str:
     if gr:
         params += f"&gr={gr}"
 
-    return f"https://{domain}/LineFeed/GetGameZip?{params}"
+    return f"https://{domain}/service-api/LineFeed/GetGameZip?{params}"
 
 
 def _build_livefeed_url(bk: dict, sport_id: int) -> str:
@@ -341,7 +341,7 @@ def _build_livefeed_url(bk: dict, sport_id: int) -> str:
     gr     = bk.get("gr", 0) or 0
 
     return (
-        f"https://{domain}/LiveFeed/GetFeedProper"
+        f"https://{domain}/service-api/LiveFeed/GetFeedProper"
         f"?LangId=1&sportId={sport_id}&partnerId={pid}"
         f"&gr={gr}&typeId=0&levelId=1"
     )
