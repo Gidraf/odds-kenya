@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 # SPORT SLUG MAP
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 _OD_ID_TO_SLUG: dict[int, dict[str, str]] = {
     # ── Core soccer markets seen in production ────────────────────────────────
     1:   {"soccer": "1x2",               "basketball": "1x2"},
@@ -42,12 +42,12 @@ _OD_ID_TO_SLUG: dict[int, dict[str, str]] = {
     5:   {"soccer": "first_team_to_score"},
     6:   {"soccer": "draw_no_bet"},
     7:   {"soccer": "correct_score"},
-    8:   {"soccer": "half_time_result"},
-    9:   {"soccer": "half_time_result"},
+    8:   {"soccer": "first_team_to_score"},   # outcomes: 1, 2, none
+    9:   {"soccer": "first_team_to_score"},   # second occurrence: 1, 2, none
     10:  {"soccer": "double_chance"},          # outcomes: 12, 1X, X2
     11:  {"soccer": "draw_no_bet"},            # outcomes: 1, 2  (no draw)
-    12:  {"soccer": "draw_no_bet"},            # outcomes: 2, X
-    13:  {"soccer": "draw_no_bet"},            # outcomes: 1, X
+    12:  {"soccer": "double_chance"},         # outcomes: 2, X → X2 (Away or Draw)
+    13:  {"soccer": "double_chance"},         # outcomes: 1, X → 1X (Home or Draw)
     14:  {"soccer": "european_handicap"},      # big handicap
     15:  {"soccer": "winning_margin"},         # 1_by_1, 1_by_2, X, 2_by_1...
     16:  {"soccer": "draw_no_bet"},            # 1, 2 only (asian-style no draw)
@@ -253,6 +253,36 @@ _OD_ID_TO_SLUG: dict[int, dict[str, str]] = {
     316: {"basketball": "over_under"},
     317: {"basketball": "first_half_asian_handicap"},
     318: {"basketball": "first_half_total"},
+ 
+    # ── Additional IDs from production data ──────────────────────────────────────
+    166: {"soccer": "over_under_goals"},      # over, under
+    169: {"soccer": "corner_total"},          # 0-8, 9-11, 12+
+    171: {"soccer": "multigoals"},            # 0-2, 3-4, 5-6, 7+
+    172: {"soccer": "odd_even_goals"},        # odd, even
+    173: {"soccer": "1x2"},                   # 1, X, 2 variant
+    174: {"soccer": "first_team_to_score"},   # none, 1, 2
+    175: {"soccer": "last_team_to_score"},    # none, 1, 2
+    176: {"soccer": "draw_no_bet"},           # 1, 2 only (no draw — true DNB)
+    177: {"soccer": "over_under_goals"},      # over, under
+    181: {"soccer": "exact_goals"},           # 0-1, 2, 3, 4+
+    182: {"soccer": "multigoals"},            # 5-6, 7+, 0-4
+    183: {"soccer": "odd_even_goals"},        # odd, even (first half)
+    854: {"soccer": "team_to_score"},         # yes, no
+    855: {"soccer": "team_to_score"},
+    856: {"soccer": "team_to_score"},
+    857: {"soccer": "team_to_score"},
+    858: {"soccer": "team_to_score"},
+    859: {"soccer": "team_to_score"},
+    860: {"soccer": "team_to_score"},
+    861: {"soccer": "team_to_score"},
+    862: {"soccer": "team_to_score"},
+    863: {"soccer": "team_to_score"},
+    864: {"soccer": "team_to_score"},
+    865: {"soccer": "team_to_score"},
+    889: {"soccer": "player_correct_score"},  # player_name_score combos
+    890: {"soccer": "player_correct_score"},
+    1179: {"soccer": "1x2"},                  # 1, X, 2
+    1601: {"soccer": "1x2"},                  # 1, X, 2
 }
  
  
@@ -404,6 +434,7 @@ def normalize_outcome_unified(market_slug: str, raw_key: str, display: str = "")
                 return " ".join(p.capitalize() for p in parts)
     return re.sub(r"[^a-zA-Z0-9_:+./\-]+", "_", key).strip("_") or key
 
+    
 OD_SPORT_IDS: dict[str, str] = {
     "soccer":            "soccer",
     "basketball":        "basketball",
