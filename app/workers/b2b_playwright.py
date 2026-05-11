@@ -130,7 +130,21 @@ _API_PATTERNS = (
     "/service-api/LineFeed/Get1x2_VZip",
     "/service-api/LiveFeed/Get1x2_VZip",
     "/service-api/LineFeed/GetSportsShortZip",
+    "/service-api/LineFeed/GetGameZip",
+    "/service-api/LiveFeed/GetGameZip",
 )
+
+# GetGameZip URL builder (full markets for one match)
+def _game_zip_url(bk: dict, game_id: int, mode: str = "upcoming") -> str:
+    """Full-market URL for one game. Called via page.evaluate() so x-hd is auto."""
+    p    = bk["partner_id"]
+    feed = "LiveFeed" if mode == "live" else "LineFeed"
+    return (
+        f"https://{bk['domain']}/service-api/{feed}/GetGameZip"
+        f"?id={game_id}&lng=en&isSubGames=true&GroupEvents=true"
+        f"&countevents=250&grMode=4&partner={p}&topGroups="
+        f"&country=87&marketType=1&isNewBuilder=true"
+    )
 
 # =============================================================================
 # PARSERS
@@ -292,16 +306,73 @@ async def _pw_intercept(
     return matches
 
 
+
+def _parse_game_zip(payload: dict) -> dict[str, dict[str, float]]:
+    """
+    Parse a GetGameZip response into canonical markets.
+    The response Value is a single game object with a nested Gn[] (groups)
+    structure, each containing events E[].
+
+    Shape:
+      { "Value": { "I": game_id, "Gn": [
+          { "G": group_id, "N": "Match Winner", "E": [
+              { "T": 1, "C": 2.5, "P": null }, ...
+          ]},
+          ...
+      ]}}
+    """
+    markets: dict[str, dict[str, float]] = defaultdict(dict)
+    val = payload.get("Value") or {}
+    if not isinstance(val, dict):
+        return {}
+
+    for group in val.get("Gn") or []:
+        if not isinstance(group, dict):
+            continue
+        gid = group.get("G") or group.get("GrpId")
+        slug = _GROUP_TO_SLUG.get(gid, f"group_{gid}") if gid else "unknown"
+
+        for ev in group.get("E") or []:
+            if not isinstance(ev, dict):
+                continue
+            t = ev.get("T"); c = ev.get("C") or ev.get("CV")
+            if t is None or c is None:
+                continue
+            try:
+                price = float(c)
+            except (TypeError, ValueError):
+                continue
+            if price <= 1.0:
+                continue
+            label = _T_LABELS.get(gid, {}).get(t, f"T{t}") if gid else f"T{t}"
+            p = ev.get("P")
+            if p is not None and gid in (2, 17, 19, 62, 99, 2854):
+                label = f"{label}@{p}"
+            if price > markets[slug].get(label, 0.0):
+                markets[slug][label] = price
+
+    return {k: v for k, v in markets.items() if v}
+
 async def _pw_intercept_many(
-    bks: list[dict],
+    bks:       list[dict],
     sport_slug: str,
-    mode: str = "upcoming",
-    headless: bool = True,
-    wait_s: int = 30,
+    mode:       str  = "upcoming",
+    headless:   bool = True,
+    wait_s:     int  = 30,
+    max_matches: int = 1500,   # paginate until we have this many (or run out)
+    full_markets: bool = True, # fetch GetGameZip for every game
 ) -> dict[str, list[dict]]:
     """
-    Open one browser tab per bookmaker CONCURRENTLY in a single event loop.
-    All BK pages load in parallel — much faster than sequential.
+    Open one browser tab per bookmaker CONCURRENTLY.
+
+    Pagination:
+      The sport list page shows ~40 games. We click "Show more" / scroll
+      OR intercept additional Get1x2_VZip requests that the browser fires
+      naturally as we scroll. We collect up to max_matches per BK.
+
+    Full markets:
+      After collecting game IDs from the list page, we call GetGameZip for
+      each game via page.evaluate(fetch(...)) — the browser handles x-hd.
     """
     from playwright.async_api import async_playwright
 
@@ -309,10 +380,8 @@ async def _pw_intercept_many(
     page_slug  = SPORT_PAGE_SLUG.get(sport_slug, sport_slug)
     feed       = "live" if mode == "live" else "line"
     results:   dict[str, list[dict]] = {}
-    captured:  dict[str, list[dict]] = {bk["slug"]: [] for bk in bks}
 
     async with async_playwright() as pw:
-        # Launch one shared browser — tabs are lightweight
         browser = await pw.chromium.launch(
             headless=headless,
             args=["--no-sandbox", "--disable-dev-shm-usage",
@@ -320,42 +389,56 @@ async def _pw_intercept_many(
         )
 
         async def _fetch_one(bk: dict) -> tuple[str, list[dict]]:
-            slug     = bk["slug"]
-            page_url = f"{bk['base']}/en/{feed}/{page_slug}"
-            profile  = PROFILE_DIR / slug
+            slug      = bk["slug"]
+            page_url  = f"{bk['base']}/en/{feed}/{page_slug}"
+            profile   = PROFILE_DIR / slug
             profile.mkdir(parents=True, exist_ok=True)
+            storage_f = profile / "storage.json"
 
-            # Load saved cookies from persistent profile if they exist
-            storage_file = profile / "storage.json"
             ctx_opts: dict = {
-                "viewport": {"width": 1366, "height": 768},
-                "user_agent": (
+                "viewport":          {"width": 1366, "height": 900},
+                "user_agent":        (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/148.0.0.0 Safari/537.36"
                 ),
                 "ignore_https_errors": True,
             }
-            if storage_file.exists():
+            if storage_f.exists():
                 try:
-                    ctx_opts["storage_state"] = str(storage_file)
+                    ctx_opts["storage_state"] = str(storage_f)
                 except Exception:
                     pass
 
             ctx  = await browser.new_context(**ctx_opts)
             page = await ctx.new_page()
-            bk_captured: list[dict] = []
+
+            # ── Intercept all relevant API responses ──────────────────────────
+            list_payloads:   list[dict] = []   # Get1x2_VZip responses
+            detail_payloads: dict[int, dict] = {}   # GetGameZip responses keyed by game_id
 
             async def _on_response(resp):
-                if not any(p in resp.url for p in _API_PATTERNS): return
-                try:
-                    if resp.status == 200:
+                url = resp.url
+                if resp.status != 200:
+                    return
+                if "GetGameZip" in url:
+                    try:
                         body = await resp.json()
                         if body and body.get("ErrorCode") in (0, ""):
-                            bk_captured.append(body)
-                            logger.debug("[pw:%s] %d items from %s",
-                                         slug, len(body.get("Value") or []), resp.url[:80])
-                except Exception: pass
+                            # Extract game ID from URL ?id=XXXXXXX
+                            import re as _re
+                            m = _re.search(r'[?&]id=(\d+)', url)
+                            if m:
+                                detail_payloads[int(m.group(1))] = body
+                    except Exception:
+                        pass
+                elif any(p in url for p in ("/Get1x2_VZip", "/GetSportsShortZip")):
+                    try:
+                        body = await resp.json()
+                        if body and body.get("ErrorCode") in (0, ""):
+                            list_payloads.append(body)
+                    except Exception:
+                        pass
 
             page.on("response", _on_response)
             print(f"  [{slug}] → {page_url}")
@@ -368,38 +451,160 @@ async def _pw_intercept_many(
                 await ctx.close()
                 return slug, []
 
-            # Wait for API data — up to wait_s seconds
+            # ── Wait for initial game list ────────────────────────────────────
             deadline = time.perf_counter() + wait_s
             while time.perf_counter() < deadline:
                 await asyncio.sleep(1)
-                if bk_captured:
-                    await asyncio.sleep(2)   # let more requests finish
+                if list_payloads:
+                    await asyncio.sleep(2)
                     break
 
-            # Save updated cookies back to storage file
-            try:
-                state = await ctx.storage_state()
-                with open(storage_file, "w") as f:
-                    json.dump(state, f)
-            except Exception: pass
+            # ── Collect game IDs from list ────────────────────────────────────
+            seen_gids: set = set()
+            game_ids:  list[int] = []
+            for payload in list_payloads:
+                for item in payload.get("Value") or []:
+                    if not isinstance(item, dict): continue
+                    if "O1E" in item or "O1" in item:
+                        if sport_id and item.get("SI") not in (sport_id, None): continue
+                        gid = item.get("I") or item.get("GameId")
+                        if gid and gid not in seen_gids:
+                            seen_gids.add(gid); game_ids.append(gid)
+                    elif "L" in item:
+                        if sport_id and item.get("I") not in (sport_id, None): continue
+                        for country in item.get("L") or []:
+                            for sc in country.get("SC") or []:
+                                for game in sc.get("G") or []:
+                                    if not isinstance(game, dict): continue
+                                    gid = game.get("I") or game.get("GameId")
+                                    if gid and gid not in seen_gids:
+                                        seen_gids.add(gid); game_ids.append(gid)
 
-            await ctx.close()
+            # ── Paginate: scroll to load more games ───────────────────────────
+            # The browser fires new Get1x2_VZip requests as user scrolls.
+            # We scroll in chunks and collect additional payloads.
+            scroll_attempts = 0
+            max_scrolls     = max(1, (max_matches // 40))  # ~40 games per load
 
-            # Parse captured JSON
-            matches: list[dict] = []
-            seen:    set        = set()
-            for payload in bk_captured:
+            while len(game_ids) < max_matches and scroll_attempts < max_scrolls:
+                prev_count = len(game_ids)
+                try:
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(2)
+                    # Also click any "Show more" button if present
+                    more_btns = await page.query_selector_all(
+                        "button.show-more, .show-more-btn, [class*='show-more']"
+                    )
+                    for btn in more_btns[:1]:
+                        try:
+                            await btn.click()
+                            await asyncio.sleep(2)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Parse any new payloads that arrived
+                for payload in list_payloads:
+                    for item in payload.get("Value") or []:
+                        if not isinstance(item, dict): continue
+                        if "O1E" in item or "O1" in item:
+                            if sport_id and item.get("SI") not in (sport_id, None): continue
+                            gid = item.get("I") or item.get("GameId")
+                            if gid and gid not in seen_gids:
+                                seen_gids.add(gid); game_ids.append(gid)
+
+                scroll_attempts += 1
+                if len(game_ids) == prev_count:
+                    break  # no new games loaded — stop scrolling
+
+            logger.debug("[pw:%s] %s: %d game IDs collected", slug, sport_slug, len(game_ids))
+
+            # ── Fetch full markets via GetGameZip using browser fetch() ────────
+            # page.evaluate() runs inside the browser — x-hd is auto-generated
+            if full_markets and game_ids:
+                p = bk["partner_id"]
+                feed_api = "LiveFeed" if mode == "live" else "LineFeed"
+                base_url = (
+                    f"https://{bk['domain']}/service-api/{feed_api}/GetGameZip"
+                    f"?lng=en&isSubGames=true&GroupEvents=true&countevents=250"
+                    f"&grMode=4&partner={p}&topGroups=&country=87"
+                    f"&marketType=1&isNewBuilder=true"
+                )
+                # Fetch in batches of 10 to avoid flooding
+                batch_size = 10
+                for i in range(0, min(len(game_ids), max_matches), batch_size):
+                    batch = game_ids[i:i + batch_size]
+                    tasks_js = []
+                    for gid in batch:
+                        url_js = f"{base_url}&id={gid}"
+                        tasks_js.append(f"""
+                            fetch("{url_js}", {{
+                                headers: {{"accept":"application/json","is-srv":"false",
+                                           "x-app-n":"__BETTING_APP__",
+                                           "x-svc-source":"__BETTING_APP__"}}
+                            }}).then(r=>r.json()).catch(()=>null)
+                        """)
+                    js = f"Promise.all([{','.join(tasks_js)}])"
+                    try:
+                        responses = await page.evaluate(js)
+                        for resp_body in responses or []:
+                            if not resp_body: continue
+                            err = resp_body.get("ErrorCode")
+                            if err not in (0, "0", "", None): continue
+                            val = resp_body.get("Value")
+                            if val and isinstance(val, dict):
+                                gid = val.get("I") or val.get("Id")
+                                if gid:
+                                    detail_payloads[int(gid)] = resp_body
+                    except Exception as exc:
+                        logger.debug("[pw:%s] GetGameZip batch error: %s", slug, exc)
+                    await asyncio.sleep(0.5)
+
+            # ── Parse all collected data ──────────────────────────────────────
+            # Build base match list from list_payloads
+            base_matches: list[dict] = []
+            seen_parse: set = set()
+            for payload in list_payloads:
                 for m in _games_to_matches(
                     payload.get("Value") or [], bk, sport_slug, mode, sport_id
                 ):
                     gid = m.get("external_id")
-                    if gid and gid in seen: continue
-                    if gid: seen.add(gid)
-                    matches.append(m)
+                    if gid and gid in seen_parse: continue
+                    if gid: seen_parse.add(gid)
+                    base_matches.append(m)
 
-            return slug, matches
+            # Enrich with full markets from GetGameZip
+            enriched_count = 0
+            for match in base_matches:
+                gid_str = match.get("external_id") or ""
+                try:
+                    gid_int = int(gid_str)
+                except (ValueError, TypeError):
+                    continue
+                detail = detail_payloads.get(gid_int)
+                if not detail:
+                    continue
+                full_mkts = _parse_game_zip(detail)
+                if full_mkts:
+                    match["markets"]      = full_mkts
+                    match["market_count"] = len(full_mkts)
+                    enriched_count += 1
 
-        # Run all BKs concurrently as async tasks
+            # Save updated cookies
+            try:
+                state = await ctx.storage_state()
+                with open(storage_f, "w") as f:
+                    json.dump(state, f)
+            except Exception:
+                pass
+
+            await ctx.close()
+            print(f"  [{slug}] {sport_slug}: {len(base_matches)} matches, "
+                  f"{enriched_count} enriched with full markets")
+            return slug, base_matches
+
+        # Run all BKs as concurrent async tasks
         tasks    = [asyncio.create_task(_fetch_one(bk)) for bk in bks]
         outcomes = await asyncio.gather(*tasks, return_exceptions=True)
         await browser.close()
@@ -433,12 +638,14 @@ def fetch_bk_sport(bk: dict, sport_slug: str, mode: str = "upcoming",
 
 
 def fetch_sport_all_bks(
-    sport_slug: str,
-    mode: str = "upcoming",
-    bookmakers: list[dict] | None = None,
-    headless: bool = True,
-    wait_s: int = 30,
-    verbose: bool = True,
+    sport_slug:   str,
+    mode:         str  = "upcoming",
+    bookmakers:   list[dict] | None = None,
+    headless:     bool = True,
+    wait_s:       int  = 30,
+    max_matches:  int  = 1500,
+    full_markets: bool = True,
+    verbose:      bool = True,
 ) -> dict[str, list[dict]]:
     """
     Fetch ONE sport from ALL bookmakers concurrently.
@@ -449,7 +656,8 @@ def fetch_sport_all_bks(
     t0  = time.perf_counter()
     if verbose:
         print(f"\n  Fetching {sport_slug}/{mode} from {len(bks)} BKs concurrently…")
-    result = asyncio.run(_pw_intercept_many(bks, sport_slug, mode, headless, wait_s))
+    result = asyncio.run(_pw_intercept_many(bks, sport_slug, mode, headless, wait_s,
+                                            max_matches=max_matches, full_markets=full_markets))
     ms     = int((time.perf_counter() - t0) * 1000)
     if verbose:
         for slug, matches in sorted(result.items()):
@@ -474,19 +682,22 @@ def fetch_bk_all_sports(bk: dict, mode: str = "upcoming",
 
 
 def harvest_all_b2b(
-    mode:       str = "upcoming",
-    sports:     list[str] | None = None,
-    bookmakers: list[dict] | None = None,
-    bk_workers: int = 7,          # all 7 BKs at once by default
-    headless:   bool = True,
-    wait_s:     int = 30,
-    verbose:    bool = True,
+    mode:         str  = "upcoming",
+    sports:       list[str] | None  = None,
+    bookmakers:   list[dict] | None = None,
+    bk_workers:   int  = 7,
+    headless:     bool = True,
+    wait_s:       int  = 30,
+    max_matches:  int  = 1500,
+    full_markets: bool = True,
+    verbose:      bool = True,
 ) -> dict[str, dict[str, list[dict]]]:
     """
     Harvest ALL bookmakers × ALL sports.
 
-    For each sport: opens one browser tab per bookmaker concurrently.
-    All 7 BKs load in parallel per sport — total time ≈ N_sports × wait_s.
+    Each sport: opens one browser tab per BK concurrently.
+    Paginates up to max_matches (default 1500) per BK per sport.
+    Fetches full markets via GetGameZip for every match.
     """
     bks    = bookmakers or B2B_BOOKMAKERS
     sports = sports or ALL_SPORT_SLUGS
@@ -494,24 +705,27 @@ def harvest_all_b2b(
     if verbose:
         print(f"\n{'═'*65}")
         print(f"B2B Playwright [{mode.upper()}]  {len(bks)} BKs × {len(sports)} sports")
-        print(f"All {len(bks)} bookmakers open in parallel per sport")
+        print(f"max_matches={max_matches}  full_markets={full_markets}")
         print(f"{'═'*65}")
 
-    # results[bk_slug][sport_slug] = [matches]
     results: dict[str, dict[str, list[dict]]] = {bk["slug"]: {} for bk in bks}
 
     for sp in sports:
         if verbose:
             print(f"\n  ── {sp.upper()} ──")
         per_bk = asyncio.run(
-            _pw_intercept_many(bks, sp, mode, headless, wait_s)
+            _pw_intercept_many(bks, sp, mode, headless, wait_s,
+                               max_matches=max_matches,
+                               full_markets=full_markets)
         )
         for bk in bks:
             results[bk["slug"]][sp] = per_bk.get(bk["slug"], [])
         if verbose:
             for slug, matches in sorted(per_bk.items()):
                 status = "✅" if matches else "⚠ "
-                print(f"    {status} {slug:<12} {len(matches):4} matches")
+                mc = sum(m.get("market_count",0) for m in matches)
+                avg = f"avg {mc//len(matches)} mkts" if matches else ""
+                print(f"    {status} {slug:<12} {len(matches):4} matches  {avg}")
 
     return results
 
@@ -852,20 +1066,46 @@ def register_cli(flask_app) -> None:
     # ── b2b-pw-test ──────────────────────────────────────────────────────────
 
     @flask_app.cli.command("b2b-pw-test")
-    @click.option("--bk",       default="1xbet")
+    @click.option("--bk",       default=None,
+                  help="Bookmaker slug — omit to test ALL bookmakers concurrently")
     @click.option("--sport",    default="soccer")
+    @click.option("--mode",     default="upcoming",
+                  type=click.Choice(["upcoming","live"]))
     @click.option("--headless", default=True)
     @click.option("--wait",     default=30)
-    def b2b_pw_test(bk, sport, headless, wait):
-        """Quick test — one bookmaker, one sport."""
+    def b2b_pw_test(bk, sport, mode, headless, wait):
+        """
+        Test Playwright harvest.  Default: ALL bookmakers open concurrently.
+
+        \b
+        Examples:
+          flask b2b-pw-test                              # all 7 BKs, soccer
+          flask b2b-pw-test --sport ice-hockey           # all 7 BKs, hockey
+          flask b2b-pw-test --bk 1xbet                   # single BK
+          flask b2b-pw-test --bk paripesa --sport esoccer --no-headless
+        """
         if not _check_pw(): return
-        bk_obj = _BK_BY_SLUG.get(bk)
-        if not bk_obj: click.echo(f"❌ Unknown: {bk}"); return
-        matches = fetch_bk_sport(bk_obj, sport, "upcoming", headless, wait, verbose=True)
-        click.echo(f"\n✅ {bk}/{sport}: {len(matches)} matches")
-        if matches:
-            m = matches[0]
-            click.echo(f"   {m['home_team']} vs {m['away_team']} | markets={m['market_count']}")
+        bks = [_BK_BY_SLUG[bk]] if bk else B2B_BOOKMAKERS
+        click.echo(f"\n🎭 Testing {len(bks)} bookmaker(s) × {sport} [{mode}]")
+        click.echo(f"   All {len(bks)} tabs opening concurrently…\n")
+
+        per_bk = fetch_sport_all_bks(
+            sport_slug=sport, mode=mode,
+            bookmakers=bks, headless=headless,
+            wait_s=wait, verbose=True,
+        )
+
+        total = sum(len(v) for v in per_bk.values())
+        click.echo(f"\n{'─'*55}")
+        click.echo(f"  TOTAL: {total} matches across {len(bks)} bookmaker(s)")
+        click.echo(f"{'─'*55}")
+        for slug, matches in sorted(per_bk.items()):
+            status = "✅" if matches else "⚠ "
+            click.echo(f"  {status} {slug:<12} {len(matches):4} matches")
+            if matches:
+                best = max(matches, key=lambda m: m.get("market_count", 0))
+                click.echo(f"       {best['home_team']} vs {best['away_team']}"
+                           f"  [{best['market_count']} markets]")
 
 
 # =============================================================================
