@@ -292,127 +292,9 @@ async def _pw_intercept(
     return matches
 
 
-async def _pw_intercept_many(
-    bks: list[dict],
-    sport_slug: str,
-    mode: str = "upcoming",
-    headless: bool = True,
-    wait_s: int = 30,
-) -> dict[str, list[dict]]:
-    """
-    Open one browser tab per bookmaker CONCURRENTLY in a single event loop.
-    All BK pages load in parallel — much faster than sequential.
-    """
-    from playwright.async_api import async_playwright
-
-    sport_id   = B2B_SPORT_IDS.get(sport_slug.lower())
-    page_slug  = SPORT_PAGE_SLUG.get(sport_slug, sport_slug)
-    feed       = "live" if mode == "live" else "line"
-    results:   dict[str, list[dict]] = {}
-    captured:  dict[str, list[dict]] = {bk["slug"]: [] for bk in bks}
-
-    async with async_playwright() as pw:
-        # Launch one shared browser — tabs are lightweight
-        browser = await pw.chromium.launch(
-            headless=headless,
-            args=["--no-sandbox", "--disable-dev-shm-usage",
-                  "--disable-blink-features=AutomationControlled"],
-        )
-
-        async def _fetch_one(bk: dict) -> tuple[str, list[dict]]:
-            slug     = bk["slug"]
-            page_url = f"{bk['base']}/en/{feed}/{page_slug}"
-            profile  = PROFILE_DIR / slug
-            profile.mkdir(parents=True, exist_ok=True)
-
-            # Load saved cookies from persistent profile if they exist
-            storage_file = profile / "storage.json"
-            ctx_opts: dict = {
-                "viewport": {"width": 1366, "height": 768},
-                "user_agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/148.0.0.0 Safari/537.36"
-                ),
-                "ignore_https_errors": True,
-            }
-            if storage_file.exists():
-                try:
-                    ctx_opts["storage_state"] = str(storage_file)
-                except Exception:
-                    pass
-
-            ctx  = await browser.new_context(**ctx_opts)
-            page = await ctx.new_page()
-            bk_captured: list[dict] = []
-
-            async def _on_response(resp):
-                if not any(p in resp.url for p in _API_PATTERNS): return
-                try:
-                    if resp.status == 200:
-                        body = await resp.json()
-                        if body and body.get("ErrorCode") in (0, ""):
-                            bk_captured.append(body)
-                            logger.debug("[pw:%s] %d items from %s",
-                                         slug, len(body.get("Value") or []), resp.url[:80])
-                except Exception: pass
-
-            page.on("response", _on_response)
-            print(f"  [{slug}] → {page_url}")
-
-            try:
-                await page.goto(page_url, wait_until="domcontentloaded",
-                                timeout=wait_s * 1000)
-            except Exception as exc:
-                logger.warning("[pw:%s] goto: %s", slug, exc)
-                await ctx.close()
-                return slug, []
-
-            # Wait for API data — up to wait_s seconds
-            deadline = time.perf_counter() + wait_s
-            while time.perf_counter() < deadline:
-                await asyncio.sleep(1)
-                if bk_captured:
-                    await asyncio.sleep(2)   # let more requests finish
-                    break
-
-            # Save updated cookies back to storage file
-            try:
-                state = await ctx.storage_state()
-                with open(storage_file, "w") as f:
-                    json.dump(state, f)
-            except Exception: pass
-
-            await ctx.close()
-
-            # Parse captured JSON
-            matches: list[dict] = []
-            seen:    set        = set()
-            for payload in bk_captured:
-                for m in _games_to_matches(
-                    payload.get("Value") or [], bk, sport_slug, mode, sport_id
-                ):
-                    gid = m.get("external_id")
-                    if gid and gid in seen: continue
-                    if gid: seen.add(gid)
-                    matches.append(m)
-
-            return slug, matches
-
-        # Run all BKs concurrently as async tasks
-        tasks    = [asyncio.create_task(_fetch_one(bk)) for bk in bks]
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-        await browser.close()
-
-    for outcome in outcomes:
-        if isinstance(outcome, Exception):
-            logger.error("[pw] task error: %s", outcome)
-            continue
-        slug, matches = outcome
-        results[slug] = matches
-
-    return results
-
+def _run_pw(bk: dict, sport_slug: str, mode: str, headless: bool, wait_s: int) -> list[dict]:
+    """Sync wrapper — runs async playwright in a fresh event loop."""
+    return asyncio.run(_pw_intercept(bk, sport_slug, mode, headless, wait_s))
 
 # =============================================================================
 # PUBLIC HARVEST FUNCTIONS
@@ -423,8 +305,7 @@ def fetch_bk_sport(bk: dict, sport_slug: str, mode: str = "upcoming",
                    verbose: bool = True) -> list[dict]:
     """Fetch one sport from one bookmaker via Playwright."""
     t0      = time.perf_counter()
-    result  = asyncio.run(_pw_intercept_many([bk], sport_slug, mode, headless, wait_s))
-    matches = result.get(bk["slug"], [])
+    matches = _run_pw(bk, sport_slug, mode, headless, wait_s)
     ms      = int((time.perf_counter() - t0) * 1000)
     if verbose:
         status = "✅" if matches else "⚠ "
@@ -432,61 +313,26 @@ def fetch_bk_sport(bk: dict, sport_slug: str, mode: str = "upcoming",
     return matches
 
 
-def fetch_sport_all_bks(
-    sport_slug: str,
-    mode: str = "upcoming",
-    bookmakers: list[dict] | None = None,
-    headless: bool = True,
-    wait_s: int = 30,
-    verbose: bool = True,
-) -> dict[str, list[dict]]:
-    """
-    Fetch ONE sport from ALL bookmakers concurrently.
-    Opens one browser tab per BK in parallel — much faster than sequential.
-    Returns {bk_slug: [matches]}.
-    """
-    bks = bookmakers or B2B_BOOKMAKERS
-    t0  = time.perf_counter()
-    if verbose:
-        print(f"\n  Fetching {sport_slug}/{mode} from {len(bks)} BKs concurrently…")
-    result = asyncio.run(_pw_intercept_many(bks, sport_slug, mode, headless, wait_s))
-    ms     = int((time.perf_counter() - t0) * 1000)
-    if verbose:
-        for slug, matches in sorted(result.items()):
-            status = "✅" if matches else "⚠ "
-            print(f"  {status} {slug:<12} {sport_slug:<16} {mode:<9} — {len(matches):4} matches")
-        total = sum(len(v) for v in result.values())
-        print(f"  → {total} total matches across all BKs ({ms}ms)")
-    return result
-
-
 def fetch_bk_all_sports(bk: dict, mode: str = "upcoming",
                          sports: list[str] | None = None,
                          headless: bool = True, wait_s: int = 30,
                          verbose: bool = True) -> dict[str, list[dict]]:
-    """Fetch all sports from ONE bookmaker (one concurrent batch per sport)."""
+    """Fetch all sports from ONE bookmaker sequentially (browsers are heavy)."""
     sports  = sports or ALL_SPORT_SLUGS
     results = {}
     for sp in sports:
-        per_bk    = asyncio.run(_pw_intercept_many([bk], sp, mode, headless, wait_s))
-        results[sp] = per_bk.get(bk["slug"], [])
+        results[sp] = fetch_bk_sport(bk, sp, mode, headless, wait_s, verbose)
     return results
 
 
-def harvest_all_b2b(
-    mode:       str = "upcoming",
-    sports:     list[str] | None = None,
-    bookmakers: list[dict] | None = None,
-    bk_workers: int = 7,          # all 7 BKs at once by default
-    headless:   bool = True,
-    wait_s:     int = 30,
-    verbose:    bool = True,
-) -> dict[str, dict[str, list[dict]]]:
+def harvest_all_b2b(mode: str = "upcoming", sports: list[str] | None = None,
+                     bookmakers: list[dict] | None = None, bk_workers: int = 2,
+                     headless: bool = True, wait_s: int = 30,
+                     verbose: bool = True) -> dict[str, dict[str, list[dict]]]:
     """
     Harvest ALL bookmakers × ALL sports.
-
-    For each sport: opens one browser tab per bookmaker concurrently.
-    All 7 BKs load in parallel per sport — total time ≈ N_sports × wait_s.
+    Each BK runs in its own thread (separate event loop + browser instance).
+    Keep bk_workers low (2) — browsers are memory-heavy.
     """
     bks    = bookmakers or B2B_BOOKMAKERS
     sports = sports or ALL_SPORT_SLUGS
@@ -494,24 +340,24 @@ def harvest_all_b2b(
     if verbose:
         print(f"\n{'═'*65}")
         print(f"B2B Playwright [{mode.upper()}]  {len(bks)} BKs × {len(sports)} sports")
-        print(f"All {len(bks)} bookmakers open in parallel per sport")
         print(f"{'═'*65}")
 
-    # results[bk_slug][sport_slug] = [matches]
-    results: dict[str, dict[str, list[dict]]] = {bk["slug"]: {} for bk in bks}
+    results: dict[str, dict[str, list[dict]]] = {}
 
-    for sp in sports:
-        if verbose:
-            print(f"\n  ── {sp.upper()} ──")
-        per_bk = asyncio.run(
-            _pw_intercept_many(bks, sp, mode, headless, wait_s)
-        )
-        for bk in bks:
-            results[bk["slug"]][sp] = per_bk.get(bk["slug"], [])
-        if verbose:
-            for slug, matches in sorted(per_bk.items()):
-                status = "✅" if matches else "⚠ "
-                print(f"    {status} {slug:<12} {len(matches):4} matches")
+    def _harvest_one(bk: dict) -> tuple[str, dict]:
+        return bk["slug"], fetch_bk_all_sports(bk, mode, sports, headless, wait_s, verbose)
+
+    with ThreadPoolExecutor(max_workers=min(bk_workers, len(bks)),
+                             thread_name_prefix="pw-bk") as pool:
+        futures = {pool.submit(_harvest_one, bk): bk for bk in bks}
+        for fut in as_completed(futures):
+            bk = futures[fut]
+            try:
+                slug, data = fut.result()
+                results[slug] = data
+            except Exception as exc:
+                logger.error("[pw:%s] unhandled: %s", bk["slug"], exc)
+                results[bk["slug"]] = {s: [] for s in sports}
 
     return results
 
@@ -820,32 +666,15 @@ def register_cli(flask_app) -> None:
         if not bk_obj: click.echo(f"❌ Unknown: {bk}"); return
         profile = PROFILE_DIR / bk
         profile.mkdir(parents=True, exist_ok=True)
-        click.echo(f"\n🎭 Opening {bk_obj['base']} — log in, then press ENTER here.")
+        click.echo(f"\n🎭 Opening {bk_obj['base']} — log in, then press Enter here.")
         with sync_playwright() as pw:
-            # Use persistent context so all cookies/localStorage are captured
             ctx = pw.chromium.launch_persistent_context(
                 str(profile), headless=False,
-                args=["--no-sandbox", "--start-maximized"],
-                viewport={"width": 1366, "height": 768},
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/148.0.0.0 Safari/537.36"
-                ),
+                args=["--no-sandbox"], viewport={"width":1366,"height":768},
             )
             page = ctx.new_page()
             page.goto(bk_obj["base"])
-            input("  ↳ Logged in? Press ENTER to save session and close browser…")
-            # Save storage state so _pw_intercept_many can reload cookies
-            storage_file = profile / "storage.json"
-            try:
-                state = ctx.storage_state()
-                with open(storage_file, "w") as f:
-                    import json as _json
-                    _json.dump(state, f)
-                click.echo(f"  💾 Storage state saved → {storage_file}")
-            except Exception as exc:
-                click.echo(f"  ⚠️  Could not save storage state: {exc}")
+            input("  ↳ Log in, then press ENTER to save & close…")
             ctx.close()
         click.echo(f"  ✅ Session saved → {profile}")
 
