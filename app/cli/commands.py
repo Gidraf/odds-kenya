@@ -97,6 +97,7 @@ def harvest_b2b_cmd(mode, sport, bk, sample, raw, sports_tree, save, output_dir)
 
 import click
 import json
+import logging
 import os
 import traceback
 from datetime import datetime
@@ -106,6 +107,7 @@ from app.workers.b2b_playwright import (
     B2B_SUPPORTED_SPORTS,
     ALL_SPORT_SLUGS,
     _BK_BY_SLUG,
+    PROFILE_DIR,
     fetch_bk_sport,
     fetch_sport_all_bks,
     harvest_all_b2b,
@@ -115,7 +117,6 @@ from app.workers.b2b_playwright import (
     print_sample_per_sport,
     _save_sport_to_redis,
     _save_results_to_redis,
-    PROFILE_DIR,
 )
 
 
@@ -130,36 +131,38 @@ def _check_pw() -> bool:
         return False
 
 
+# ─── harvest-b2b-playwright ──────────────────────────────────────────────────
+
 @bp.cli.command("harvest-b2b-playwright")
-@click.option("--mode",         default="upcoming", type=click.Choice(["upcoming", "live"]))
-@click.option("--sport",        default=None,  help="Limit to one sport slug")
-@click.option("--bk",           default=None,  help="Limit to one bookmaker slug")
-@click.option("--sample",       is_flag=True,  help="Print one sample match per sport")
-@click.option("--raw",          is_flag=True,  help="Print raw E[] events for one game")
-@click.option("--sports-tree",  is_flag=True,  help="Print sports/competitions tree")
-@click.option("--save",         is_flag=True,  help="Save to Redis after harvest")
-@click.option("--mapper",       is_flag=True,  help="Save one match per sport with ALL markets for mapper building")
-@click.option("--output-dir",   default="harvest_dumps")
-@click.option("--headless",     default=True,  is_flag=False, type=bool,
+@click.option("--mode",            default="upcoming", type=click.Choice(["upcoming", "live"]))
+@click.option("--sport",           default=None,   help="Limit to one sport slug")
+@click.option("--bk",              default=None,   help="Limit to one bookmaker slug")
+@click.option("--sample",          is_flag=True,   help="Print one sample match per sport")
+@click.option("--raw",             is_flag=True,   help="Print raw events for one game (mapper building)")
+@click.option("--sports-tree",     is_flag=True,   help="Print sports/competitions tree")
+@click.option("--save",            is_flag=True,   help="Save to Redis after harvest")
+@click.option("--mapper",          is_flag=True,   help="Save best match per sport with ALL markets")
+@click.option("--output-dir",      default="harvest_dumps")
+@click.option("--headless",        default=True,   is_flag=False, type=bool,
               help="Run browser headless (--no-headless to watch)")
-@click.option("--wait",         default=30,    help="Seconds to wait per page")
-@click.option("--max-matches",  default=1500,  help="Max matches per BK per sport (default 1500)")
-@click.option("--no-full-markets", is_flag=True,
-              help="Skip GetGameZip full-market fetch (faster but fewer markets)")
+@click.option("--wait",            default=15,     help="Seconds to wait per competition page")
+@click.option("--tabs",            default=5,      help="Concurrent tabs per BK (default 5)")
+@click.option("--no-full-markets", is_flag=True,   help="Skip GetGameZip — faster, fewer markets")
 def harvest_b2b_playwright(mode, sport, bk, sample, raw, sports_tree,
                             save, mapper, output_dir, headless, wait,
-                            max_matches, no_full_markets):
-    """Harvest all B2B bookmakers via Playwright (all BKs open concurrently).
+                            tabs, no_full_markets):
+    """
+    Harvest B2B bookmakers via Playwright — pure browser navigation.
+
+    Navigates to each competition page so the browser fires the API requests
+    naturally. x-hd tokens are handled automatically. All BKs run concurrently.
 
     \b
-    Fetches up to --max-matches per BK per sport via pagination.
-    Enriches every match with full markets via GetGameZip (x-hd handled by browser).
-
     Examples:
       flask harvest-b2b-playwright --sport soccer
-      flask harvest-b2b-playwright --sport esoccer --bk 1xbet
-      flask harvest-b2b-playwright --mapper          # one match per sport, all markets
-      flask harvest-b2b-playwright --max-matches 500 --sport soccer
+      flask harvest-b2b-playwright --bk betwinner --sport soccer --no-headless
+      flask harvest-b2b-playwright --mapper
+      flask harvest-b2b-playwright --save
     """
     if not _check_pw():
         return
@@ -180,9 +183,12 @@ def harvest_b2b_playwright(mode, sport, bk, sample, raw, sports_tree,
     full_markets = not no_full_markets
 
     all_results = harvest_all_b2b(
-        mode=mode, sports=sports, bookmakers=bks,
-        headless=headless, wait_s=wait,
-        max_matches=max_matches, full_markets=full_markets,
+        mode=mode,
+        sports=sports,
+        bookmakers=bks,
+        headless=headless,
+        wait_s=wait,
+        full_markets=full_markets,
         verbose=True,
     )
 
@@ -190,14 +196,14 @@ def harvest_b2b_playwright(mode, sport, bk, sample, raw, sports_tree,
         print_sample_per_sport(all_results, sport_filter=sport)
         return
 
-    # ── Mapper mode: save best match per sport with all markets ───────────────
+    # ── Mapper: best match per sport with all markets ─────────────────────────
     if mapper:
         os.makedirs(output_dir, exist_ok=True)
         ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
         summary = {}
         for sp in sports:
-            best_match  = None
-            best_count  = 0
+            best_match = None
+            best_count = 0
             for bk_slug, sport_data in all_results.items():
                 for m in sport_data.get(sp, []):
                     if m.get("market_count", 0) > best_count:
@@ -209,16 +215,16 @@ def harvest_b2b_playwright(mode, sport, bk, sample, raw, sports_tree,
                 with open(path, "w") as f:
                     json.dump(best_match, f, indent=2, default=str)
                 summary[sp] = {
-                    "match": f"{best_match['home_team']} vs {best_match['away_team']}",
+                    "match":   f"{best_match['home_team']} vs {best_match['away_team']}",
                     "markets": best_count,
-                    "bk": best_match["_from_bk"],
-                    "file": path,
+                    "bk":      best_match["_from_bk"],
+                    "file":    path,
                 }
                 click.echo(f"  📁 {sp:<18} {best_count:3} markets  "
-                           f"{best_match['home_team']} vs {best_match['away_team']}"
-                           f"  [{best_match['_from_bk']}]")
-        # Save summary
-        with open(os.path.join(output_dir, f"mapper_summary_{ts}.json"), "w") as f:
+                           f"{best_match['home_team']} vs {best_match['away_team']}  "
+                           f"[{best_match['_from_bk']}]")
+        summary_path = os.path.join(output_dir, f"mapper_summary_{ts}.json")
+        with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2, default=str)
         click.echo(f"\n✅ Mapper samples saved to {output_dir}/")
         return
@@ -227,7 +233,7 @@ def harvest_b2b_playwright(mode, sport, bk, sample, raw, sports_tree,
         _save_results_to_redis(all_results, mode)
 
     os.makedirs(output_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
     saved = 0
     for bk_slug, sport_data in all_results.items():
         for sp, ms in sport_data.items():
@@ -240,14 +246,15 @@ def harvest_b2b_playwright(mode, sport, bk, sample, raw, sports_tree,
     click.echo(f"\n✅ {saved} file(s) saved to {output_dir}/")
 
 
+# ─── harvest-b2b-playwright-all ──────────────────────────────────────────────
+
 @bp.cli.command("harvest-b2b-playwright-all")
 @click.option("--output-dir", default="harvest_dumps")
 @click.option("--sport",      default=None)
-@click.option("--headless",   default=True, is_flag=False, type=bool)
-@click.option("--wait",       default=30)
-@click.option("--workers",    default=2)
+@click.option("--headless",   default=True,  is_flag=False, type=bool)
+@click.option("--wait",       default=15)
 @click.option("--debug",      is_flag=True)
-def harvest_b2b_playwright_all(output_dir, sport, headless, wait, workers, debug):
+def harvest_b2b_playwright_all(output_dir, sport, headless, wait, debug):
     """
     Full harvest: per-BK files + unified merged file + Redis push.
 
@@ -255,13 +262,12 @@ def harvest_b2b_playwright_all(output_dir, sport, headless, wait, workers, debug
     Examples:
       flask harvest-b2b-playwright-all
       flask harvest-b2b-playwright-all --sport soccer
-      flask harvest-b2b-playwright-all --sport esoccer --no-headless
+      flask harvest-b2b-playwright-all --no-headless
     """
     if not _check_pw():
         return
 
     if debug:
-        import logging
         logging.getLogger("app.workers.b2b_playwright").setLevel(logging.DEBUG)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -277,7 +283,14 @@ def harvest_b2b_playwright_all(output_dir, sport, headless, wait, workers, debug
 
         for bk in B2B_BOOKMAKERS:
             try:
-                matches = fetch_bk_sport(bk, s, "upcoming", headless, wait, verbose=True)
+                matches = fetch_bk_sport(
+                    bk, s,
+                    mode="upcoming",
+                    headless=headless,
+                    wait_s=wait,
+                    full_markets=True,
+                    verbose=True,
+                )
                 per_bk[bk["slug"]] = matches
 
                 if matches:
@@ -309,11 +322,13 @@ def harvest_b2b_playwright_all(output_dir, sport, headless, wait, workers, debug
             click.echo(f"   {key}: {err}")
 
 
+# ─── b2b-pw-setup ────────────────────────────────────────────────────────────
+
 @bp.cli.command("b2b-pw-setup")
 @click.option("--bk", default="1xbet", help="Bookmaker slug to log in to")
 def b2b_pw_setup(bk):
     """
-    Open browser to log in and save session cookies for future harvests.
+    Open browser to log in — saves session cookies for future harvests.
 
     \b
     Run once per bookmaker:
@@ -335,7 +350,9 @@ def b2b_pw_setup(bk):
         return
 
     from playwright.sync_api import sync_playwright
-    profile = PROFILE_DIR / bk
+
+    profile   = PROFILE_DIR / bk
+    storage_f = profile / "storage.json"
     profile.mkdir(parents=True, exist_ok=True)
 
     click.echo(f"\n🎭 Opening {bk_obj['base']}")
@@ -356,11 +373,22 @@ def b2b_pw_setup(bk):
         page = ctx.new_page()
         page.goto(bk_obj["base"])
         input("\n  ↳ Logged in? Press ENTER to save session and close browser…\n")
+
+        # Save storage state (cookies + localStorage) for future headless runs
+        try:
+            state = ctx.storage_state()
+            with open(storage_f, "w") as f:
+                json.dump(state, f)
+            click.echo(f"  💾 Storage state saved → {storage_f}")
+        except Exception as e:
+            click.echo(f"  ⚠️  Could not save storage state: {e}")
+
         ctx.close()
 
-    click.echo(f"  ✅ Session saved → {profile}")
     click.echo(f"\n  Now run: flask harvest-b2b-playwright --bk {bk} --sport soccer")
 
+
+# ─── b2b-pw-test ─────────────────────────────────────────────────────────────
 
 @bp.cli.command("b2b-pw-test")
 @click.option("--bk",       default=None,
@@ -368,31 +396,34 @@ def b2b_pw_setup(bk):
 @click.option("--sport",    default="soccer")
 @click.option("--mode",     default="upcoming", type=click.Choice(["upcoming", "live"]))
 @click.option("--headless", default=True, is_flag=False, type=bool)
-@click.option("--wait",     default=30)
-def b2b_pw_test(bk, sport, mode, headless, wait):
+@click.option("--wait",     default=15)
+@click.option("--tabs",     default=5,   help="Concurrent tabs per BK")
+def b2b_pw_test(bk, sport, mode, headless, wait, tabs):
     """
     Test Playwright harvest. Default: ALL bookmakers open concurrently.
 
     \b
     Examples:
       flask b2b-pw-test                              # all 7 BKs, soccer
-      flask b2b-pw-test --sport ice-hockey           # all 7 BKs, hockey
-      flask b2b-pw-test --bk 1xbet                   # single BK only
-      flask b2b-pw-test --bk paripesa --sport esoccer --no-headless
+      flask b2b-pw-test --sport ice-hockey
+      flask b2b-pw-test --bk betwinner --no-headless
+      flask b2b-pw-test --bk paripesa --sport esoccer
     """
     if not _check_pw():
         return
 
-    from app.workers.b2b_playwright import fetch_sport_all_bks
-
     bks = [_BK_BY_SLUG[bk]] if bk else B2B_BOOKMAKERS
     click.echo(f"\n🎭 Testing {len(bks)} bookmaker(s) × {sport} [{mode}]")
-    click.echo(f"   All {len(bks)} tabs opening concurrently…\n")
+    click.echo(f"   Navigating to each competition page naturally…\n")
 
     per_bk = fetch_sport_all_bks(
-        sport_slug=sport, mode=mode,
-        bookmakers=bks, headless=headless,
-        wait_s=wait, verbose=True,
+        sport_slug=sport,
+        mode=mode,
+        bookmakers=bks,
+        headless=headless,
+        wait_s=wait,
+        full_markets=True,
+        verbose=True,
     )
 
     total = sum(len(v) for v in per_bk.values())

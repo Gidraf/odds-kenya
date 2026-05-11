@@ -1,26 +1,16 @@
 """
 app/workers/b2b_playwright.py
 ==============================
-Playwright-based B2B harvester.
+Playwright B2B harvester — pure navigation approach.
 
-STRATEGY: hardcoded competition LI IDs → no waiting for GetSportsShortZip.
-  1. Navigate to sport page (establishes session + cookies)
-  2. Use page.evaluate(fetch(Get1x2_VZip?champs={LI})) for EVERY competition
-     — browser auto-generates x-hd token
-  3. Collect all matches across all competitions
-  4. Optionally enrich each match with GetGameZip (full markets)
+For each competition, we navigate to its page URL:
+  https://betwinner.ke/en/line/football/96463-germany-bundesliga
 
-Competition LI IDs are hardcoded from the GetSportsShortZip JSON snapshot
-(May 2026). They are stable and don't change — leagues keep the same ID forever.
+The browser fires Get1x2_VZip?champs=96463 naturally.
+We intercept that response — no evaluate(), no manual x-hd.
 
-INSTALL:
-  pip install playwright --break-system-packages
-  playwright install chromium
-
-FIRST-TIME LOGIN (saves session cookies):
-  flask b2b-pw-setup --bk 1xbet
-  flask b2b-pw-setup --bk betwinner
-  ... (one per BK)
+Competition LI IDs are hardcoded from GetSportsShortZip snapshot (May 2026).
+LI IDs are permanent — leagues keep the same ID forever.
 """
 from __future__ import annotations
 
@@ -28,16 +18,16 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# BOOKMAKER REGISTRY
+# BOOKMAKERS
 # =============================================================================
 
 B2B_BOOKMAKERS: list[dict] = [
@@ -79,192 +69,171 @@ ALL_SPORT_SLUGS: list[str] = [
     "cricket","rugby","handball","table-tennis","mma",
     "boxing","darts","american-football","baseball","esoccer",
 ]
-B2B_SUPPORTED_SPORTS: list[str] = ALL_SPORT_SLUGS
+B2B_SUPPORTED_SPORTS = ALL_SPORT_SLUGS
 PROFILE_DIR = Path(os.environ.get("B2B_PROFILE_DIR", "/tmp/b2b_pw_profiles"))
 
 # =============================================================================
-# HARDCODED COMPETITION LI IDs (from GetSportsShortZip snapshot, May 2026)
-# These are stable IDs — they never change for existing leagues.
-# Add new ones as needed; just append (LI, name, GC_approx).
+# COMPETITION LIST — (LI, url_slug, approx_GC)
+# Hardcoded from GetSportsShortZip snapshot May 2026.
+# Navigate to: /en/line/{sport_page}/{LI}-{url_slug}
 # =============================================================================
 
-_SPORT_COMPETITIONS: dict[int, list[tuple[int, str, int]]] = {
-    # ── Football (sport_id=1) ────────────────────────────────────────────────
-    1: [
-        # (LI, name, approx_GC) — sorted biggest-first for priority
-        (2708736, "World Cup 2026", 67),
-        (125983,  "Friendlies. National Teams", 59),
-        (2973812, "WC Qual 2027. Europe. Women", 40),
-        (828065,  "USA. MLS", 34),
-        (127733,  "Spain. La Liga", 25),
-        (2809583, "Spain. La Liga. Team vs Player", 22),
-        (1268397, "Brazil. Campeonato. Serie A", 21),
-        (2489433, "World Cup 2026. Winner", 19),
-        (44797,   "Sweden. Division 1", 17),
-        (8777,    "Greece. SuperLeague", 17),
-        (40369,   "Germany. Oberliga Bayern", 16),
-        (120013,  "Brazil. Copa do Brasil", 16),
-        (2922491, "Argentina. Primera B Nacional", 16),
-        (142091,  "Copa Libertadores", 16),
-        (1528791, "Copa Sudamericana", 16),
-        (13521,   "Scotland. Premier League", 14),
-        (27695,   "Switzerland. SuperLeague", 14),
-        (27687,   "Spain. Segunda Division", 13),
-        (12821,   "France. Ligue 1", 13),
-        (1371789, "Sweden. Superettan", 13),
-        (2924971, "Bulgaria. First League", 13),
-        (2892390, "Peru. Liga 1", 11),
-        (225733,  "Russia. Premier League", 11),
-        (212425,  "Sweden. Allsvenskan", 11),
-        (27731,   "Poland. Ekstraklasa", 11),
-        (96463,   "Germany. Bundesliga", 10),
-        (109313,  "Germany. 2. Bundesliga", 10),
-        (2579233, "Germany. 3. Liga", 10),
-        (88637,   "England. Premier League", 10),
-        (1793471, "Norway. Eliteserien", 10),
-        (11113,   "Turkey. SuperLiga", 10),
-        (57265,   "Brazil. Serie B", 9),
-        (27707,   "Czech Republic. Chance Liga", 9),
-        (1173855, "Switzerland. Challenge League", 9),
-        (28787,   "Belgium. Jupiler League", 8),
-        (28465,   "Germany. Oberliga NOFV-Süd", 8),
-        (29949,   "Ukraine. Premier League", 8),
-        (8773,    "Denmark. Superliga", 8),
-        (26031,   "Austria. Bundesliga", 8),
-        (110163,  "Italy. Serie A", 8),
-        (276999,  "Ecuador. Serie A", 8),
-        (11249,   "Indonesia. Super League", 8),
-        (16819,   "Saudi Arabia. Pro League", 8),
-        (90523,   "South Africa. PSL", 8),
-        (118663,  "Portugal. Primeira Liga", 8),
-        (1015483, "Belarus. Premier League", 7),
-        (31508,   "Norway. Adeccoligaen", 7),
-        (30693,   "Poland. Liga 1", 7),
-        (2960706, "Japan. J1 Division", 7),
-        (120501,  "Latvia. Virsliga", 7),
-        (55427,   "Lithuania. League 1", 7),
-        (147087,  "Egypt. Premier League", 7),
-        (7067,    "Italy. Serie B", 4),
-        (1122087, "India. Super League", 4),
-        (1924563, "Canada. Premier League", 4),
-        (33021,   "Kazakhstan. Premier League", 8),
-        (2018750, "Netherlands. Eredivisie", 10),
-        (6,       "Russia. League 1", 6),
-        (2421233, "Russia. League 1", 6),
-        (1692148, "France. National", 8),
-        (30467,   "South Korea. K League 1", 8),
-        (33137,   "South Korea. K League 2", 7),
-        (119599,  "Argentina. Primera Division", 6),
-        (52183,   "Uruguay. Primera Division", 2),
-        (214147,  "Colombia. Primera A", 4),
-        (28298,   "Chile. Primera Division", 8),
-        (58043,   "China. Super League", 8),
-        (11121,   "Romania. Liga 1", 8),
-        (27735,   "Croatia. HNL", 5),
-        (30049,   "Slovenia. League 1", 4),
-        (27701,   "Slovakia. Super League", 6),
-        (166963,  "Serbia. 1st League", 2),
-        (39969,   "Denmark. 1st Division", 6),
-        (52591,   "Denmark. 2nd Division", 6),
-        (119445,  "Ireland. Premier League", 5),
-        (29975,   "Ireland. Division 1", 5),
-        (2905446, "Australia. A League", 2),
-        (118587,  "UEFA Champions League", 1),
-        (118593,  "UEFA Europa League", 1),
-        (2252762, "UEFA Conference League", 1),
-        (38317,   "CAF Champions League", 1),
-        (31429,   "Morocco. Botola", 3),
-        (28207,   "Tunisia. Ligue 1", 1),
-        (156433,  "Ivory Coast. League 1", 2),
-        (108319,  "England. FA Cup", 1),
-        (105759,  "England. Championship", 2),
-        (13709,   "England. League One", 2),
-        (24637,   "England. League Two", 3),
-        (316897,  "England. Superleague. Women", 5),
-        (1299397, "England. Premier League 2", 2),
-        (34275,   "UEFA CL Women", 1),
-        (190409,  "USA. NWSL Women", 7),
-        (2306111, "Mexico. Liga MX", 2),
+# (LI, url-slug, approx_game_count)
+_COMPETITIONS: dict[int, list[tuple[int, str, int]]] = {
+
+    1: [  # Football
+        (2708736, "world-cup-2026",                  67),
+        (828065,  "usa-mls",                         34),
+        (125983,  "friendlies-national-teams",       59),
+        (127733,  "spain-la-liga",                   25),
+        (1268397, "brazil-serie-a",                  22),
+        (2809583, "spain-la-liga-team-vs-player",    22),
+        (44797,   "sweden-division-1",               17),
+        (8777,    "greece-superleague",               17),
+        (2922491, "argentina-primera-b-nacional",    17),
+        (40369,   "germany-oberliga-bayern",         16),
+        (142091,  "copa-libertadores",               16),
+        (1528791, "copa-sudamericana",               16),
+        (120013,  "brazil-copa-do-brasil",           16),
+        (13521,   "scotland-premier-league",         14),
+        (27695,   "switzerland-superleague",         14),
+        (12821,   "france-ligue-1",                  13),
+        (27687,   "spain-segunda-division",          13),
+        (1371789, "sweden-superettan",               13),
+        (2924971, "bulgaria-first-league",           15),
+        (2892390, "peru-liga-1",                     11),
+        (225733,  "russia-premier-league",           11),
+        (212425,  "sweden-allsvenskan",              11),
+        (27731,   "poland-ekstraklasa",              11),
+        (2960706, "japan-j1-division",               11),
+        (96463,   "germany-bundesliga",              10),
+        (109313,  "germany-2-bundesliga",            10),
+        (2579233, "germany-3-liga",                  10),
+        (88637,   "england-premier-league",          10),
+        (1793471, "norway-eliteserien",              10),
+        (11113,   "turkey-superliga",                10),
+        (2018750, "netherlands-eredivisie",          10),
+        (190409,  "usa-nwsl-women",                   7),
+        (57265,   "brazil-serie-b",                   9),
+        (27707,   "czech-republic-chance-liga",       9),
+        (1173855, "switzerland-challenge-league",     9),
+        (28787,   "belgium-jupiler-league",           8),
+        (28465,   "germany-oberliga-nofv-sud",        8),
+        (29949,   "ukraine-premier-league",           8),
+        (8773,    "denmark-superliga",                8),
+        (26031,   "austria-bundesliga",               8),
+        (110163,  "italy-serie-a",                    8),
+        (276999,  "ecuador-serie-a",                  8),
+        (11249,   "indonesia-super-league",           8),
+        (16819,   "saudi-arabia-pro-league",          8),
+        (90523,   "south-africa-psl",                 8),
+        (118663,  "portugal-primeira-liga",           8),
+        (33021,   "kazakhstan-premier-league",        8),
+        (147087,  "egypt-premier-league",             8),
+        (1692148, "france-national",                  8),
+        (30467,   "south-korea-k-league-1",           8),
+        (2421233, "russia-league-1",                  9),
+        (31508,   "norway-adeccoligaen",               8),
+        (30693,   "poland-liga-1",                     7),
+        (120501,  "latvia-virsliga",                   7),
+        (55427,   "lithuania-league-1",                7),
+        (33137,   "south-korea-k-league-2",            7),
+        (1015483, "belarus-premier-league",            7),
+        (316897,  "england-superleague-women",         5),
+        (119445,  "ireland-premier-league",            5),
+        (29975,   "ireland-division-1",                5),
+        (7067,    "italy-serie-b",                     4),
+        (1122087, "india-super-league",                4),
+        (1924563, "canada-premier-league",             4),
+        (214147,  "colombia-primera-a",                4),
+        (28298,   "chile-primera-division",            8),
+        (58043,   "china-super-league",                8),
+        (11121,   "romania-liga-1",                    8),
+        (27735,   "croatia-hnl",                       5),
+        (30049,   "slovenia-league-1",                 4),
+        (27701,   "slovakia-super-league",             6),
+        (166963,  "serbia-1st-league",                 2),
+        (39969,   "denmark-1st-division",              6),
+        (52591,   "denmark-2nd-division",              6),
+        (2905446, "australia-a-league",                2),
+        (118587,  "uefa-champions-league",             1),
+        (118593,  "uefa-europa-league",                1),
+        (2252762, "uefa-conference-league",            1),
+        (38317,   "caf-champions-league",              1),
+        (31429,   "morocco-botola",                    3),
+        (108319,  "england-fa-cup",                    1),
+        (105759,  "england-championship",              2),
+        (13709,   "england-league-one",                2),
+        (24637,   "england-league-two",                3),
+        (52183,   "uruguay-primera-division",          2),
+        (119599,  "argentina-primera-division",        6),
+        (176125,  "russian-cup",                       1),
+        (2306111, "mexico-liga-mx",                    2),
     ],
 
-    # ── Basketball (sport_id=3) ───────────────────────────────────────────────
-    3: [
-        (0, "_all", 0),   # placeholder — fetch unfiltered (sport page gives results)
+    3: [  # Basketball — sport page gives all; navigate to root only
+        (0, "_sport_page", 0),
     ],
 
-    # ── Tennis (sport_id=4) ──────────────────────────────────────────────────
-    4: [
-        (0, "_all", 0),
+    4: [  # Tennis
+        (0, "_sport_page", 0),
     ],
 
-    # ── Ice Hockey (sport_id=2) ──────────────────────────────────────────────
-    2: [
-        (0, "_all", 0),
+    2: [  # Ice Hockey
+        (0, "_sport_page", 0),
     ],
 
-    # ── Volleyball (sport_id=6) ──────────────────────────────────────────────
-    6: [
-        (0, "_all", 0),
+    6: [  # Volleyball
+        (0, "_sport_page", 0),
     ],
 
-    # ── Cricket (sport_id=66) ────────────────────────────────────────────────
-    66: [
-        (0, "_all", 0),
+    66: [  # Cricket
+        (0, "_sport_page", 0),
     ],
 
-    # ── Table Tennis (sport_id=10) ───────────────────────────────────────────
-    10: [
-        (0, "_all", 0),
+    10: [  # Table Tennis
+        (0, "_sport_page", 0),
     ],
 
-    # ── MMA/Martial Arts (sport_id=56) ──────────────────────────────────────
-    56: [
-        (0, "_all", 0),
+    56: [  # MMA
+        (0, "_sport_page", 0),
     ],
 
-    # ── Rugby (sport_id=7) ───────────────────────────────────────────────────
-    7: [
-        (0, "_all", 0),
+    7: [  # Rugby
+        (0, "_sport_page", 0),
     ],
 
-    # ── Handball (sport_id=8) ────────────────────────────────────────────────
-    8: [
-        (0, "_all", 0),
+    8: [  # Handball
+        (0, "_sport_page", 0),
     ],
 
-    # ── Darts (sport_id=21) ──────────────────────────────────────────────────
-    21: [
-        (0, "_all", 0),
+    21: [  # Darts
+        (0, "_sport_page", 0),
     ],
 
-    # ── American Football (sport_id=13) ─────────────────────────────────────
-    13: [
-        (0, "_all", 0),
+    13: [  # American Football
+        (0, "_sport_page", 0),
     ],
 
-    # ── Baseball (sport_id=5) ────────────────────────────────────────────────
-    5: [
-        (0, "_all", 0),
+    5: [  # Baseball
+        (0, "_sport_page", 0),
     ],
 
-    # ── Esports (sport_id=40) ────────────────────────────────────────────────
-    40: [
-        (0, "_all", 0),
+    40: [  # Esports
+        (0, "_sport_page", 0),
     ],
 
-    # ── Boxing (sport_id=9) ──────────────────────────────────────────────────
-    9: [
-        (0, "_all", 0),
+    9: [  # Boxing
+        (0, "_sport_page", 0),
     ],
 
-    # ── UFC (sport_id=189) ───────────────────────────────────────────────────
-    189: [
-        (0, "_all", 0),
+    189: [  # UFC
+        (0, "_sport_page", 0),
     ],
 }
 
 # =============================================================================
-# MARKET PARSERS
+# PARSERS
 # =============================================================================
 
 _GROUP_TO_SLUG: dict[int, str] = {
@@ -281,8 +250,8 @@ _T_LABELS: dict[int, dict[int, str]] = {
 
 
 def _parse_events(events: list, extra: list | None = None) -> dict:
-    markets: dict[str, dict[str, float]] = defaultdict(dict)
-    def _p(ev: dict):
+    markets: dict = defaultdict(dict)
+    def _p(ev):
         gid=ev.get("G"); t=ev.get("T"); c=ev.get("C") or ev.get("CV")
         if None in (gid,t,c): return
         try: price=float(c)
@@ -303,7 +272,7 @@ def _parse_events(events: list, extra: list | None = None) -> dict:
 
 
 def _parse_game_zip(payload: dict) -> dict:
-    markets: dict[str, dict[str, float]] = defaultdict(dict)
+    markets: dict = defaultdict(dict)
     val = payload.get("Value") or {}
     if not isinstance(val, dict): return {}
     for group in val.get("Gn") or []:
@@ -354,7 +323,7 @@ def _parse_game(game: dict, bk: dict, sport_slug: str, mode: str) -> dict | None
 
 def _parse_value(value: list, bk: dict, sport_slug: str,
                  mode: str, sport_id: int | None) -> list[dict]:
-    matches=[]; seen:set=set()
+    out=[]; seen:set=set()
     for item in value:
         if not isinstance(item,dict): continue
         if "O1E" in item or "O1" in item:
@@ -363,7 +332,7 @@ def _parse_value(value: list, bk: dict, sport_slug: str,
             if gid and gid in seen: continue
             if gid: seen.add(gid)
             m=_parse_game(item,bk,sport_slug,mode)
-            if m: matches.append(m)
+            if m: out.append(m)
         elif "L" in item and isinstance(item.get("L"),list):
             if sport_id and item.get("I") not in (sport_id,None): continue
             for country in item["L"]:
@@ -376,30 +345,28 @@ def _parse_value(value: list, bk: dict, sport_slug: str,
                         if gid and gid in seen: continue
                         if gid: seen.add(gid)
                         m=_parse_game(game,bk,sport_slug,mode)
-                        if m: matches.append(m)
-    return matches
+                        if m: out.append(m)
+    return out
 
 # =============================================================================
-# CORE PLAYWRIGHT HARVEST — hardcoded competition IDs, no waiting
+# CORE — navigate to each competition page, collect natural response
 # =============================================================================
 
-async def _pw_harvest_sport(
-    bks:          list[dict],
-    sport_slug:   str,
-    mode:         str  = "upcoming",
-    headless:     bool = True,
-    wait_s:       int  = 30,
+async def _harvest_one_bk(
+    bk:          dict,
+    sport_slug:  str,
+    mode:        str  = "upcoming",
+    headless:    bool = True,
+    wait_s:      int  = 15,
     full_markets: bool = True,
-) -> dict[str, list[dict]]:
+    tab_concurrency: int = 5,
+) -> list[dict]:
     """
-    Harvest one sport from ALL bookmakers concurrently.
+    Navigate to each competition page and collect the natural API response.
+    Competition pages fire Get1x2_VZip?champs={LI} automatically.
+    We intercept those responses — pure browser navigation, no evaluate().
 
-    Per BK:
-      1. Navigate to sport page (establishes session, x-hd context)
-      2. page.evaluate(Promise.all([fetch(Get1x2_VZip?champs=LI), ...]))
-         for every hardcoded competition — browser handles x-hd
-      3. For sports with no hardcoded comps: intercept the natural page response
-      4. Optionally enrich with GetGameZip
+    tab_concurrency: how many competition tabs to open at once per BK.
     """
     from playwright.async_api import async_playwright
 
@@ -407,132 +374,149 @@ async def _pw_harvest_sport(
     page_slug  = SPORT_PAGE_SLUG.get(sport_slug, sport_slug)
     feed_path  = "live" if mode == "live" else "line"
     feed_api   = "LiveFeed" if mode == "live" else "LineFeed"
-    comps_raw  = _SPORT_COMPETITIONS.get(sport_id or 0, [(0,"_all",0)])
-    # Filter out placeholder (LI=0 means no comps hardcoded — use page interception)
-    hardcoded_lis = [(li,name) for li,name,gc in comps_raw if li > 0]
-    use_interception = len(hardcoded_lis) == 0
+    profile    = PROFILE_DIR / bk["slug"]
+    profile.mkdir(parents=True, exist_ok=True)
+    storage_f  = profile / "storage.json"
 
-    results: dict[str, list[dict]] = {}
+    # Decide which pages to visit
+    comps = _COMPETITIONS.get(sport_id or 0, [(0, "_sport_page", 0)])
+    use_sport_page_only = len(comps) == 1 and comps[0][0] == 0
+    hardcoded = [(li, slug) for li, slug, _ in comps if li > 0]
+
+    ctx_opts: dict = {
+        "viewport": {"width": 1366, "height": 900},
+        "user_agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+        ),
+        "ignore_https_errors": True,
+    }
+    if storage_f.exists():
+        try: ctx_opts["storage_state"] = str(storage_f)
+        except Exception: pass
+
+    all_matches:    list[dict] = []
+    seen_gids:      set        = set()
+    detail_payloads: dict[int, dict] = {}
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=headless,
-            args=["--no-sandbox","--disable-dev-shm-usage",
+            args=["--no-sandbox", "--disable-dev-shm-usage",
                   "--disable-blink-features=AutomationControlled"],
         )
+        ctx = await browser.new_context(**ctx_opts)
 
-        async def _harvest_one(bk: dict) -> tuple[str, list[dict]]:
-            slug     = bk["slug"]
-            p        = bk["partner_id"]
-            domain   = bk["domain"]
-            profile  = PROFILE_DIR / slug
-            profile.mkdir(parents=True, exist_ok=True)
-            storage_f = profile / "storage.json"
+        # ── Helper: navigate to one URL and collect the first matching response ─
 
-            ctx_opts: dict = {
-                "viewport": {"width":1366,"height":900},
-                "user_agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/148.0.0.0 Safari/537.36"
-                ),
-                "ignore_https_errors": True,
-            }
-            if storage_f.exists():
-                try: ctx_opts["storage_state"] = str(storage_f)
-                except Exception: pass
-
-            ctx  = await browser.new_context(**ctx_opts)
+        async def _fetch_page(url: str, expect_pattern: str,
+                               timeout_ms: int) -> dict | None:
+            """
+            Open a new tab, navigate to url, wait for a response matching
+            expect_pattern, close tab, return parsed JSON body or None.
+            """
             page = await ctx.new_page()
+            result: list[dict] = []
 
-            intercepted: list[dict] = []  # for use_interception mode
-            detail_payloads: dict[int, dict] = {}
+            async def _on_resp(resp):
+                if expect_pattern in resp.url and resp.status == 200:
+                    try:
+                        body = await resp.json()
+                        if body and body.get("ErrorCode") in (0, ""):
+                            result.append(body)
+                    except Exception:
+                        pass
 
-            async def _on_response(resp):
-                url = resp.url
-                if resp.status != 200: return
-                try:
-                    if "Get1x2_VZip" in url and use_interception:
-                        body = await resp.json()
-                        if body and body.get("ErrorCode") in (0,""):
-                            intercepted.append(body)
-                    elif "GetGameZip" in url:
-                        body = await resp.json()
-                        if body and body.get("ErrorCode") in (0,""):
-                            import re as _re
-                            m = _re.search(r'[?&]id=(\d+)', url)
-                            if m: detail_payloads[int(m.group(1))] = body
+            page.on("response", _on_resp)
+            try:
+                await page.goto(url, wait_until="domcontentloaded",
+                                timeout=timeout_ms)
+                # Wait until we have a result or time out
+                deadline = time.perf_counter() + timeout_ms / 1000
+                while time.perf_counter() < deadline:
+                    await asyncio.sleep(0.5)
+                    if result:
+                        break
+            except Exception as exc:
+                logger.debug("[pw:%s] nav error %s: %s", bk["slug"], url, exc)
+            finally:
+                try: await page.close()
                 except Exception: pass
 
-            page.on("response", _on_response)
+            return result[0] if result else None
 
-            page_url = f"{bk['base']}/en/{feed_path}/{page_slug}"
-            print(f"  [{slug}] → {page_url}")
-            try:
-                await page.goto(page_url, wait_until="domcontentloaded",
-                                timeout=wait_s * 1000)
-                await asyncio.sleep(3)   # let cookies + x-hd context settle
-            except Exception as exc:
-                logger.warning("[pw:%s] goto: %s", slug, exc)
-                await ctx.close()
-                return slug, []
+        # ── Visit sport root page first to establish session ──────────────────
+        sport_root = f"{bk['base']}/en/{feed_path}/{page_slug}"
+        print(f"  [{bk['slug']}] {sport_slug}: opening sport page…")
 
-            # ── Fetch all competitions via page.evaluate ──────────────────────
-            all_payloads: list[dict] = list(intercepted)   # page-load responses
+        root_body = await _fetch_page(sport_root, "Get1x2_VZip", wait_s * 1000)
+        if root_body:
+            for m in _parse_value(root_body.get("Value") or [], bk, sport_slug, mode, sport_id):
+                gid_str = m.get("external_id", "")
+                try: gid_int = int(gid_str)
+                except: gid_int = None
+                if gid_int and gid_int in seen_gids: continue
+                if gid_int: seen_gids.add(gid_int)
+                all_matches.append(m)
 
-            if hardcoded_lis:
-                batch_size = 8   # stay under Promise.all limits
-                for i in range(0, len(hardcoded_lis), batch_size):
-                    batch = hardcoded_lis[i:i+batch_size]
-                    fetches = ",\n".join(
-                        f'fetch("https://{domain}/service-api/{feed_api}/Get1x2_VZip'
-                        f'?sports={sport_id or 1}&champs={li}&count=40&lng=en&mode=4'
-                        f'&country=87&partner={p}&getEmpty=true&virtualSports=true",'
-                        f'{{"headers":{{"accept":"application/json",'
-                        f'"is-srv":"false","x-app-n":"__BETTING_APP__",'
-                        f'"x-svc-source":"__BETTING_APP__",'
-                        f'"content-type":"application/json"}}}}'
-                        f').then(r=>r.json()).catch(()=>null)'
-                        for li, _ in batch
+        if use_sport_page_only:
+            print(f"  [{bk['slug']}] {sport_slug}: {len(all_matches)} matches from sport page")
+        else:
+            print(f"  [{bk['slug']}] {sport_slug}: sport page → {len(all_matches)} matches; "
+                  f"fetching {len(hardcoded)} competitions…")
+
+            # ── Navigate to each competition page concurrently ────────────────
+            for batch_start in range(0, len(hardcoded), tab_concurrency):
+                batch = hardcoded[batch_start:batch_start + tab_concurrency]
+
+                tasks = []
+                for li, comp_slug in batch:
+                    comp_url = f"{bk['base']}/en/{feed_path}/{page_slug}/{li}-{comp_slug}"
+                    tasks.append(
+                        asyncio.create_task(
+                            _fetch_page(comp_url, "Get1x2_VZip", wait_s * 1000)
+                        )
                     )
-                    try:
-                        responses = await page.evaluate(f"Promise.all([{fetches}])")
-                        for rb in responses or []:
-                            if rb and rb.get("ErrorCode") in (0,"0","",None):
-                                all_payloads.append(rb)
-                    except Exception as exc:
-                        logger.debug("[pw:%s] champs batch %d: %s", slug, i, exc)
-                    await asyncio.sleep(0.2)
-            else:
-                # No hardcoded comps — wait for intercepted page-load responses
-                deadline = time.perf_counter() + wait_s
-                while time.perf_counter() < deadline:
-                    await asyncio.sleep(1)
-                    if intercepted: await asyncio.sleep(2); break
 
-            # ── Parse all payloads ────────────────────────────────────────────
-            matches: list[dict] = []
-            seen_gids: set = set()
-            for payload in all_payloads:
-                for m in _parse_value(payload.get("Value") or [], bk, sport_slug, mode, sport_id):
-                    gid_str = m.get("external_id","")
-                    try: gid_int = int(gid_str)
-                    except: gid_int = None
-                    if gid_int and gid_int in seen_gids: continue
-                    if gid_int: seen_gids.add(gid_int)
-                    matches.append(m)
+                responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # ── GetGameZip: full markets ──────────────────────────────────────
-            if full_markets and matches:
-                game_ids = []
-                for m in matches:
-                    try: game_ids.append(int(m["external_id"]))
-                    except: pass
+                for resp in responses:
+                    if not resp or isinstance(resp, Exception):
+                        continue
+                    for m in _parse_value(resp.get("Value") or [], bk, sport_slug,
+                                          mode, sport_id):
+                        gid_str = m.get("external_id", "")
+                        try: gid_int = int(gid_str)
+                        except: gid_int = None
+                        if gid_int and gid_int in seen_gids: continue
+                        if gid_int: seen_gids.add(gid_int)
+                        all_matches.append(m)
+
+                await asyncio.sleep(0.3)
+
+            print(f"  [{bk['slug']}] {sport_slug}: {len(all_matches)} total matches")
+
+        # ── GetGameZip: navigate to each match page for full markets ──────────
+        if full_markets and all_matches:
+            p = bk["partner_id"]
+            game_ids = []
+            for m in all_matches:
+                try: game_ids.append(int(m["external_id"]))
+                except: pass
+
+            # Open a single tab and use evaluate for GetGameZip
+            # (navigating to each match page would be too slow)
+            gz_page = await ctx.new_page()
+            gz_url  = f"{bk['base']}/en/{feed_path}/{page_slug}"
+            try:
+                await gz_page.goto(gz_url, wait_until="domcontentloaded",
+                                   timeout=wait_s * 1000)
+                await asyncio.sleep(2)
 
                 for i in range(0, len(game_ids), 8):
-                    batch = game_ids[i:i+8]
+                    batch = game_ids[i:i + 8]
                     fetches = ",\n".join(
-                        f'fetch("https://{domain}/service-api/{feed_api}/GetGameZip'
+                        f'fetch("https://{bk["domain"]}/service-api/{feed_api}/GetGameZip'
                         f'?id={gid}&lng=en&isSubGames=true&GroupEvents=true'
                         f'&countevents=250&grMode=4&partner={p}&topGroups='
                         f'&country=87&marketType=1&isNewBuilder=true",'
@@ -542,21 +526,26 @@ async def _pw_harvest_sport(
                         for gid in batch
                     )
                     try:
-                        responses = await page.evaluate(f"Promise.all([{fetches}])")
+                        responses = await gz_page.evaluate(f"Promise.all([{fetches}])")
                         for rb in responses or []:
                             if not rb or rb.get("ErrorCode") not in (0,"0","",None): continue
                             val = rb.get("Value")
-                            if val and isinstance(val,dict):
+                            if val and isinstance(val, dict):
                                 gid = val.get("I") or val.get("Id")
                                 if gid: detail_payloads[int(gid)] = rb
                     except Exception as exc:
-                        logger.debug("[pw:%s] GetGameZip batch: %s", slug, exc)
+                        logger.debug("[pw:%s] GetGameZip: %s", bk["slug"], exc)
                     await asyncio.sleep(0.2)
+            except Exception as exc:
+                logger.debug("[pw:%s] GetGameZip page: %s", bk["slug"], exc)
+            finally:
+                try: await gz_page.close()
+                except Exception: pass
 
-            # ── Enrich matches with full markets ──────────────────────────────
+            # Enrich matches
             enriched = 0
-            for m in matches:
-                try: gid_int = int(m.get("external_id",""))
+            for m in all_matches:
+                try: gid_int = int(m.get("external_id", ""))
                 except: continue
                 detail = detail_payloads.get(gid_int)
                 if not detail: continue
@@ -566,28 +555,46 @@ async def _pw_harvest_sport(
                     m["market_count"] = len(full_mkts)
                     enriched += 1
 
-            # ── Save cookies ──────────────────────────────────────────────────
-            try:
-                state = await ctx.storage_state()
-                with open(storage_f,"w") as f: json.dump(state,f)
-            except Exception: pass
+            avg = int(sum(m.get("market_count",0) for m in all_matches) / len(all_matches)) if all_matches else 0
+            print(f"  [{bk['slug']}] {sport_slug}: {enriched} enriched, avg {avg} markets/match")
 
-            await ctx.close()
-            avg = int(sum(m.get("market_count",0) for m in matches)/len(matches)) if matches else 0
-            print(f"  [{slug}] {sport_slug}: {len(matches)} matches "
-                  f"({enriched} enriched, avg {avg} markets)")
-            return slug, matches
+        # ── Save cookies ──────────────────────────────────────────────────────
+        try:
+            state = await ctx.storage_state()
+            with open(storage_f, "w") as f: json.dump(state, f)
+        except Exception: pass
 
-        tasks    = [asyncio.create_task(_harvest_one(bk)) for bk in bks]
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        await ctx.close()
         await browser.close()
 
-    for outcome in outcomes:
+    return all_matches
+
+
+async def _pw_harvest_sport(
+    bks:          list[dict],
+    sport_slug:   str,
+    mode:         str  = "upcoming",
+    headless:     bool = True,
+    wait_s:       int  = 15,
+    full_markets: bool = True,
+    tab_concurrency: int = 5,
+) -> dict[str, list[dict]]:
+    """Run _harvest_one_bk for all BKs concurrently (one browser per BK)."""
+    tasks = [
+        asyncio.create_task(
+            _harvest_one_bk(bk, sport_slug, mode, headless,
+                            wait_s, full_markets, tab_concurrency)
+        )
+        for bk in bks
+    ]
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+    results: dict[str, list[dict]] = {}
+    for bk, outcome in zip(bks, outcomes):
         if isinstance(outcome, Exception):
-            logger.error("[pw] task: %s", outcome)
-            continue
-        slug, matches = outcome
-        results[slug] = matches
+            logger.error("[pw:%s] error: %s", bk["slug"], outcome)
+            results[bk["slug"]] = []
+        else:
+            results[bk["slug"]] = outcome
     return results
 
 # =============================================================================
@@ -595,113 +602,120 @@ async def _pw_harvest_sport(
 # =============================================================================
 
 def fetch_bk_sport(bk, sport_slug, mode="upcoming", headless=True,
-                   wait_s=30, full_markets=True, verbose=True):
-    t0=time.perf_counter()
-    res=asyncio.run(_pw_harvest_sport([bk],sport_slug,mode,headless,wait_s,full_markets))
-    matches=res.get(bk["slug"],[])
-    ms=int((time.perf_counter()-t0)*1000)
+                   wait_s=15, full_markets=True, verbose=True):
+    t0 = time.perf_counter()
+    matches = asyncio.run(
+        _harvest_one_bk(bk, sport_slug, mode, headless, wait_s, full_markets)
+    )
+    ms = int((time.perf_counter() - t0) * 1000)
     if verbose:
-        s="✅" if matches else "⚠ "
+        s = "✅" if matches else "⚠ "
         print(f"  {s} {bk['slug']:<12} {sport_slug:<16} {mode:<9} — {len(matches):4} ({ms}ms)")
     return matches
 
 
 def fetch_sport_all_bks(sport_slug, mode="upcoming", bookmakers=None,
-                         headless=True, wait_s=30, max_matches=1500,
+                         headless=True, wait_s=15, max_matches=1500,
                          full_markets=True, verbose=True):
-    bks=bookmakers or B2B_BOOKMAKERS
-    t0=time.perf_counter()
-    if verbose: print(f"\n  {len(bks)} BKs × {sport_slug} [{mode}] concurrently…")
-    res=asyncio.run(_pw_harvest_sport(bks,sport_slug,mode,headless,wait_s,full_markets))
+    bks = bookmakers or B2B_BOOKMAKERS
+    t0  = time.perf_counter()
     if verbose:
-        total=sum(len(v) for v in res.values())
-        for slug,ms in sorted(res.items()):
-            s="✅" if ms else "⚠ "
-            print(f"  {s} {slug:<12} {len(ms):4} matches")
+        print(f"\n  {len(bks)} BKs × {sport_slug} [{mode}] concurrently…")
+    res = asyncio.run(
+        _pw_harvest_sport(bks, sport_slug, mode, headless, wait_s, full_markets)
+    )
+    if verbose:
+        total = sum(len(v) for v in res.values())
+        for slug, ms in sorted(res.items()):
+            s = "✅" if ms else "⚠ "
+            avg = int(sum(m.get("market_count",0) for m in ms) / len(ms)) if ms else 0
+            print(f"  {s} {slug:<12} {len(ms):4} matches  avg {avg} mkts")
         print(f"  → {total} total ({int((time.perf_counter()-t0)*1000)}ms)")
     return res
 
 
 def harvest_all_b2b(mode="upcoming", sports=None, bookmakers=None,
-                     bk_workers=7, headless=True, wait_s=30,
+                     bk_workers=7, headless=True, wait_s=15,
                      max_matches=1500, full_markets=True, verbose=True):
-    bks=bookmakers or B2B_BOOKMAKERS
-    sports=sports or ALL_SPORT_SLUGS
+    bks    = bookmakers or B2B_BOOKMAKERS
+    sports = sports or ALL_SPORT_SLUGS
     if verbose:
         print(f"\n{'═'*65}")
         print(f"B2B Playwright [{mode.upper()}] {len(bks)} BKs × {len(sports)} sports")
         print(f"{'═'*65}")
-    results={bk["slug"]:{} for bk in bks}
+    results = {bk["slug"]: {} for bk in bks}
     for sp in sports:
         if verbose: print(f"\n  ── {sp.upper()} ──")
-        per_bk=asyncio.run(_pw_harvest_sport(bks,sp,mode,headless,wait_s,full_markets))
+        per_bk = asyncio.run(
+            _pw_harvest_sport(bks, sp, mode, headless, wait_s, full_markets)
+        )
         for bk in bks:
-            results[bk["slug"]][sp]=per_bk.get(bk["slug"],[])
+            results[bk["slug"]][sp] = per_bk.get(bk["slug"], [])
     return results
 
 
 def merge_b2b(all_results, sport_slug):
-    unified=[]; key_idx={}
-    for bk_slug,sport_data in all_results.items():
-        for m in sport_data.get(sport_slug,[]):
-            home=m.get("home_team","").lower().strip()
-            away=m.get("away_team","").lower().strip()
-            start=(m.get("start_time") or "")[:16]
-            key=f"{home}|||{away}|||{start}"
+    unified = []; key_idx = {}
+    for bk_slug, sport_data in all_results.items():
+        for m in sport_data.get(sport_slug, []):
+            home  = m.get("home_team","").lower().strip()
+            away  = m.get("away_team","").lower().strip()
+            start = (m.get("start_time") or "")[:16]
+            key   = f"{home}|||{away}|||{start}"
             if key in key_idx:
-                ex=unified[key_idx[key]]
-                bi=(m.get("bookmakers") or {}).get(bk_slug) or {}
+                ex = unified[key_idx[key]]
+                bi = (m.get("bookmakers") or {}).get(bk_slug) or {}
                 if bi.get("markets"):
-                    ex["bookmakers"][bk_slug]=bi
+                    ex["bookmakers"][bk_slug] = bi
                     for mkt,outs in bi["markets"].items():
-                        em=ex["markets"].setdefault(mkt,{})
+                        em = ex["markets"].setdefault(mkt, {})
                         for out,price in outs.items():
-                            if price>em.get(out,0.0): em[out]=price
-                    ex["market_count"]=len(ex["markets"])
+                            if price > em.get(out, 0.0): em[out] = price
+                    ex["market_count"] = len(ex["markets"])
             else:
-                entry={**m,"bk_count":1,"bookmakers":dict(m.get("bookmakers") or {}),
-                       "markets":dict(m.get("markets") or {})}
-                key_idx[key]=len(unified); unified.append(entry)
+                entry = {**m, "bk_count":1,
+                         "bookmakers": dict(m.get("bookmakers") or {}),
+                         "markets":    dict(m.get("markets") or {})}
+                key_idx[key] = len(unified); unified.append(entry)
     return unified
 
 
 def merge_b2b_by_match(per_bk, sport_slug):
-    return merge_b2b({bk:{sport_slug:ms} for bk,ms in per_bk.items()},sport_slug)
+    return merge_b2b({bk:{sport_slug:ms} for bk,ms in per_bk.items()}, sport_slug)
 
 
 def print_raw_sample(bk, sport_slug="soccer", mode="upcoming"):
     print(f"\n🎭 {bk['slug']} / {sport_slug}")
-    matches=fetch_bk_sport(bk,sport_slug,mode,True,30,True,False)
+    matches = fetch_bk_sport(bk, sport_slug, mode, True, 15, True, False)
     if not matches: print("⚠  No matches"); return
-    best=max(matches,key=lambda m:m.get("market_count",0))
+    best = max(matches, key=lambda m: m.get("market_count", 0))
     print(f"Match: {best['home_team']} vs {best['away_team']}  |  {best.get('competition')}")
     print(f"Markets ({best['market_count']}):")
-    for mkt,outcomes in sorted(best.get("markets",{}).items()):
+    for mkt, outcomes in sorted(best.get("markets", {}).items()):
         print(f"  {mkt:<28} " + "  ".join(f"{o}={p:.2f}" for o,p in sorted(outcomes.items())))
 
 
 def print_sample_per_sport(all_results, sport_filter=None):
     for sp in ALL_SPORT_SLUGS:
-        if sport_filter and sp!=sport_filter: continue
-        merged=merge_b2b(all_results,sp)
+        if sport_filter and sp != sport_filter: continue
+        merged = merge_b2b(all_results, sp)
         if not merged: print(f"  {sp:<18} — no matches"); continue
-        best=max(merged,key=lambda m:m.get("market_count",0))
+        best = max(merged, key=lambda m: m.get("market_count", 0))
         print(f"\n{sp.upper()}: {best['home_team']} vs {best['away_team']}")
-        for mkt,outcomes in sorted(best.get("markets",{}).items()):
+        for mkt, outcomes in sorted(best.get("markets", {}).items()):
             print(f"  {mkt:<28} " + "  ".join(f"{o}={p:.2f}" for o,p in sorted(outcomes.items())))
 
 
 def fetch_sports_tree(bk=None, verbose=True):
-    bk=bk or B2B_BOOKMAKERS[0]
-    tree={}
-    for sport_slug in ALL_SPORT_SLUGS:
-        sid=B2B_SPORT_IDS.get(sport_slug)
-        comps=_SPORT_COMPETITIONS.get(sid or 0,[])
-        total=sum(gc for _,_,gc in comps if _ > 0)
-        tree[sport_slug]={"id":sid,"count":total,"competitions":len([c for c in comps if c[0]>0])}
+    tree = {}
+    for sp in ALL_SPORT_SLUGS:
+        sid   = B2B_SPORT_IDS.get(sp)
+        comps = [c for c in _COMPETITIONS.get(sid or 0, []) if c[0] > 0]
+        total = sum(gc for _,_,gc in comps)
+        tree[sp] = {"id": sid, "competitions": len(comps), "count": total}
     if verbose:
         print(f"\n{'─'*55}\n{'Sport':<22}{'ID':>4}  {'Comps':>6}  {'~Games':>7}\n{'─'*55}")
-        for sp,d in sorted(tree.items(),key=lambda x:-x[1]["count"]):
+        for sp, d in sorted(tree.items(), key=lambda x: -x[1]["count"]):
             print(f"  {sp:<20} {d['id']:>4}  {d['competitions']:>6}  {d['count']:>7}")
     return tree
 
@@ -715,83 +729,25 @@ def _save_sport_to_redis(sport, mode, matches, bk_slug="b2b"):
 
 
 def _save_results_to_redis(all_results, mode="upcoming"):
-    seen=set()
-    for bk_slug,sport_data in all_results.items():
-        for sport,matches in sport_data.items():
-            if matches: _save_sport_to_redis(sport,mode,matches,bk_slug); seen.add(sport)
+    seen = set()
+    for bk_slug, sport_data in all_results.items():
+        for sport, matches in sport_data.items():
+            if matches: _save_sport_to_redis(sport, mode, matches, bk_slug); seen.add(sport)
     for sport in seen:
-        per_bk={bk:d.get(sport,[]) for bk,d in all_results.items()}
-        merged=merge_b2b_by_match(per_bk,sport)
-        if merged: _save_sport_to_redis(sport,mode,merged,"b2b")
-
-# =============================================================================
-# CLI
-# =============================================================================
-
-def register_cli(flask_app):
-    import click
-
-    def _check_pw():
-        try: import playwright; return True  # noqa
-        except ImportError:
-            click.echo("❌ pip install playwright --break-system-packages && playwright install chromium")
-            return False
-
-    @flask_app.cli.command("b2b-pw-setup")
-    @click.option("--bk", default="1xbet")
-    def _setup(bk):
-        """Log in to a bookmaker — saves session cookies."""
-        if not _check_pw(): return
-        bk_obj=_BK_BY_SLUG.get(bk)
-        if not bk_obj: click.echo(f"❌ Unknown: {bk}"); return
-        from playwright.sync_api import sync_playwright
-        profile=PROFILE_DIR/bk; profile.mkdir(parents=True,exist_ok=True)
-        click.echo(f"\n🎭 Opening {bk_obj['base']} — log in then press ENTER.")
-        with sync_playwright() as pw:
-            ctx=pw.chromium.launch_persistent_context(
-                str(profile),headless=False,args=["--no-sandbox","--start-maximized"],
-                viewport={"width":1366,"height":768},
-                user_agent=("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"),
-            )
-            page=ctx.new_page(); page.goto(bk_obj["base"])
-            input("\n  ↳ Logged in? Press ENTER to save & close…\n")
-            try:
-                state=ctx.storage_state()
-                with open(profile/"storage.json","w") as f: json.dump(state,f)
-                click.echo(f"  💾 Saved → {profile/'storage.json'}")
-            except Exception as e: click.echo(f"  ⚠️  {e}")
-            ctx.close()
-
-    @flask_app.cli.command("b2b-pw-test")
-    @click.option("--bk",    default=None)
-    @click.option("--sport", default="soccer")
-    @click.option("--mode",  default="upcoming",type=click.Choice(["upcoming","live"]))
-    @click.option("--headless",default=True,is_flag=False,type=bool)
-    @click.option("--wait",  default=30)
-    @click.option("--no-full-markets",is_flag=True)
-    def _test(bk, sport, mode, headless, wait, no_full_markets):
-        """Test: all BKs concurrently for one sport."""
-        if not _check_pw(): return
-        bks=[_BK_BY_SLUG[bk]] if bk else B2B_BOOKMAKERS
-        click.echo(f"\n🎭 {len(bks)} BK(s) × {sport} [{mode}]")
-        per_bk=fetch_sport_all_bks(sport_slug=sport,mode=mode,bookmakers=bks,
-                                    headless=headless,wait_s=wait,
-                                    full_markets=not no_full_markets,verbose=True)
-        total=sum(len(v) for v in per_bk.values())
-        click.echo(f"\n  TOTAL: {total} matches")
+        merged = merge_b2b_by_match({bk:d.get(sport,[]) for bk,d in all_results.items()}, sport)
+        if merged: _save_sport_to_redis(sport, mode, merged, "b2b")
 
 
 if __name__ == "__main__":
     import sys, logging as _log
     _log.basicConfig(level=_log.INFO)
-    bk_slug=sys.argv[1] if len(sys.argv)>1 else "betwinner"
-    sport  =sys.argv[2] if len(sys.argv)>2 else "soccer"
-    hl     =sys.argv[3]!="false" if len(sys.argv)>3 else True
-    bk=_BK_BY_SLUG.get(bk_slug,B2B_BOOKMAKERS[0])
+    bk_slug = sys.argv[1] if len(sys.argv) > 1 else "betwinner"
+    sport   = sys.argv[2] if len(sys.argv) > 2 else "soccer"
+    hl      = sys.argv[3] != "false" if len(sys.argv) > 3 else True
+    bk = _BK_BY_SLUG.get(bk_slug, B2B_BOOKMAKERS[0])
     print(f"\n🎭 {bk['slug']} / {sport} / headless={hl}")
-    ms=fetch_bk_sport(bk,sport,"upcoming",hl,35,full_markets=True)
+    ms = fetch_bk_sport(bk, sport, "upcoming", hl, 15, full_markets=True)
     print(f"✅ {len(ms)} matches")
     if ms:
-        best=max(ms,key=lambda m:m.get("market_count",0))
+        best = max(ms, key=lambda m: m.get("market_count", 0))
         import pprint; pprint.pprint(best)
