@@ -354,10 +354,14 @@ async def _pw_harvest_sport(
                         body = await resp.json()
                         if body and body.get("ErrorCode") in (0,""):
                             tree_payloads.append(body)
+                            logger.debug("[pw:%s] GetSportsShortZip: %d items",
+                                         slug, len(body.get("Value") or []))
                     elif "Get1x2_VZip" in url:
                         body = await resp.json()
                         if body and body.get("ErrorCode") in (0,""):
                             champ_payloads.append(body)
+                            logger.debug("[pw:%s] Get1x2_VZip: %d items url=%s",
+                                         slug, len(body.get("Value") or []), url[:100])
                     elif "GetGameZip" in url:
                         body = await resp.json()
                         if body and body.get("ErrorCode") in (0,""):
@@ -372,31 +376,58 @@ async def _pw_harvest_sport(
             try:
                 await page.goto(page_url, wait_until="domcontentloaded",
                                 timeout=wait_s * 1000)
+                # Extra wait — some sites fire API requests after domcontentloaded
+                await asyncio.sleep(3)
             except Exception as exc:
                 logger.warning("[pw:%s] goto error: %s", slug, exc)
                 await ctx.close()
                 return slug, []
 
-            # ── Wait for GetSportsShortZip ────────────────────────────────────
+            # ── Wait for EITHER GetSportsShortZip OR Get1x2_VZip ─────────────
             deadline = time.perf_counter() + wait_s
             while time.perf_counter() < deadline:
                 await asyncio.sleep(1)
-                if tree_payloads: await asyncio.sleep(1); break
+                if tree_payloads or champ_payloads: await asyncio.sleep(2); break
 
-            # ── Extract competitions from tree ────────────────────────────────
+            # ── Extract competitions from tree (if GetSportsShortZip fired) ──
             comps: list[dict] = []
-            for tp in tree_payloads:
-                comps.extend(_extract_competitions(tp.get("Value") or [], sport_id or 0))
-            # Deduplicate
-            seen_li: set = set()
-            unique_comps: list[dict] = []
-            for c in comps:
-                if c["LI"] not in seen_li:
-                    seen_li.add(c["LI"])
-                    unique_comps.append(c)
-            comps = unique_comps
+            if tree_payloads:
+                for tp in tree_payloads:
+                    comps.extend(_extract_competitions(tp.get("Value") or [], sport_id or 0))
+                # Deduplicate by LI
+                seen_li: set = set()
+                unique_comps: list[dict] = []
+                for c in comps:
+                    if c["LI"] not in seen_li:
+                        seen_li.add(c["LI"])
+                        unique_comps.append(c)
+                comps = unique_comps
+                print(f"  [{slug}] {sport_slug}: {len(comps)} competitions "
+                      f"({sum(c['GC'] for c in comps)} games)")
+            else:
+                # GetSportsShortZip didn't fire — request it explicitly via fetch()
+                # This gives us competition LI IDs to iterate
+                try:
+                    gr_param = f"&gr={bk['gr']}" if bk.get("gr") else ""
+                    tree_js = (
+                        f'fetch("https://{domain}/service-api/LineFeed/GetSportsShortZip'
+                        f'?sports={sport_id or 1}&lng=en&country=87&partner={p}'
+                        f'&virtualSports=true&groupChamps=true{gr_param}",'
+                        f'{{"headers":{{"accept":"application/json","is-srv":"false",'
+                        f'"x-app-n":"__BETTING_APP__","x-svc-source":"__BETTING_APP__"}}}}'
+                        f').then(r=>r.json()).catch(()=>null)'
+                    )
+                    tree_resp = await page.evaluate(tree_js)
+                    if tree_resp and tree_resp.get("ErrorCode") in (0,""):
+                        comps = _extract_competitions(tree_resp.get("Value") or [], sport_id or 0)
+                        print(f"  [{slug}] {sport_slug}: {len(comps)} competitions "
+                              f"(fetched via evaluate, {sum(c['GC'] for c in comps)} games)")
+                    else:
+                        print(f"  [{slug}] {sport_slug}: GetSportsShortZip returned no data")
+                except Exception as exc:
+                    logger.debug("[pw:%s] GetSportsShortZip evaluate: %s", slug, exc)
 
-            # Collect games that already came embedded in GetSportsShortZip
+            # Collect games already embedded in GetSportsShortZip response
             embedded_games: list[dict] = []
             seen_embed: set = set()
             for c in comps:
@@ -406,9 +437,6 @@ async def _pw_harvest_sport(
                         if gid and gid not in seen_embed:
                             seen_embed.add(gid)
                             embedded_games.append(game)
-
-            print(f"  [{slug}] {sport_slug}: {len(comps)} competitions "
-                  f"({sum(c['GC'] for c in comps)} total games)")
 
             # ── Fetch each competition via browser fetch() ────────────────────
             # Group into batches of 10 to avoid Promise.all timeout
