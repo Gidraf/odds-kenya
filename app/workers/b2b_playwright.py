@@ -353,20 +353,18 @@ def _parse_value(value: list, bk: dict, sport_slug: str,
 # =============================================================================
 
 async def _harvest_one_bk(
-    bk:          dict,
-    sport_slug:  str,
-    mode:        str  = "upcoming",
-    headless:    bool = True,
-    wait_s:      int  = 15,
+    bk:           dict,
+    sport_slug:   str,
+    mode:         str  = "upcoming",
+    headless:     bool = True,
+    wait_s:       int  = 15,
     full_markets: bool = True,
-    tab_concurrency: int = 5,
+    tab_concurrency: int = 5,   # unused now, kept for API compat
 ) -> list[dict]:
     """
-    Navigate to each competition page and collect the natural API response.
-    Competition pages fire Get1x2_VZip?champs={LI} automatically.
-    We intercept those responses — pure browser navigation, no evaluate().
-
-    tab_concurrency: how many competition tabs to open at once per BK.
+    Navigate to each competition page on a SINGLE tab sequentially.
+    Each navigation naturally fires Get1x2_VZip?champs={LI} — we collect it.
+    Simple, stable, no tab explosion.
     """
     from playwright.async_api import async_playwright
 
@@ -378,14 +376,13 @@ async def _harvest_one_bk(
     profile.mkdir(parents=True, exist_ok=True)
     storage_f  = profile / "storage.json"
 
-    # Decide which pages to visit
-    comps = _COMPETITIONS.get(sport_id or 0, [(0, "_sport_page", 0)])
-    use_sport_page_only = len(comps) == 1 and comps[0][0] == 0
-    hardcoded = [(li, slug) for li, slug, _ in comps if li > 0]
+    comps      = _COMPETITIONS.get(sport_id or 0, [(0, "_sport_page", 0)])
+    hardcoded  = [(li, slug) for li, slug, _ in comps if li > 0]
+    sport_only = not hardcoded
 
     ctx_opts: dict = {
-        "viewport": {"width": 1366, "height": 900},
-        "user_agent": (
+        "viewport":            {"width": 1366, "height": 900},
+        "user_agent":          (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
         ),
@@ -395,63 +392,59 @@ async def _harvest_one_bk(
         try: ctx_opts["storage_state"] = str(storage_f)
         except Exception: pass
 
-    all_matches:    list[dict] = []
-    seen_gids:      set        = set()
+    all_matches:     list[dict] = []
+    seen_gids:       set        = set()
     detail_payloads: dict[int, dict] = {}
 
+    import re as _re
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=headless,
             args=["--no-sandbox", "--disable-dev-shm-usage",
                   "--disable-blink-features=AutomationControlled"],
         )
-        ctx = await browser.new_context(**ctx_opts)
+        ctx  = await browser.new_context(**ctx_opts)
+        page = await ctx.new_page()
 
-        # ── Helper: navigate to one URL and collect the first matching response ─
+        # ── Single shared response collector ─────────────────────────────────
+        pending: dict = {"body": None}
 
-        async def _fetch_page(url: str, expect_pattern: str,
-                               timeout_ms: int) -> dict | None:
-            """
-            Open a new tab, navigate to url, wait for a response matching
-            expect_pattern, close tab, return parsed JSON body or None.
-            """
-            page = await ctx.new_page()
-            result: list[dict] = []
-
-            async def _on_resp(resp):
-                if expect_pattern in resp.url and resp.status == 200:
-                    try:
-                        body = await resp.json()
-                        if body and body.get("ErrorCode") in (0, ""):
-                            result.append(body)
-                    except Exception:
-                        pass
-
-            page.on("response", _on_resp)
-            try:
-                await page.goto(url, wait_until="domcontentloaded",
-                                timeout=timeout_ms)
-                # Wait until we have a result or time out
-                deadline = time.perf_counter() + timeout_ms / 1000
-                while time.perf_counter() < deadline:
-                    await asyncio.sleep(0.5)
-                    if result:
-                        break
-            except Exception as exc:
-                logger.debug("[pw:%s] nav error %s: %s", bk["slug"], url, exc)
-            finally:
-                try: await page.close()
+        async def _on_resp(resp):
+            url = resp.url
+            print(f"    [NET:{bk['slug']}] {resp.status} {url[:110]}")
+            if "Get1x2_VZip" in url and resp.status == 200:
+                try:
+                    body = await resp.json()
+                    err  = body.get("ErrorCode") if body else "none"
+                    cnt  = len(body.get("Value") or []) if body else 0
+                    print(f"    [API:{bk['slug']}] ✅ Get1x2_VZip ErrorCode={err} items={cnt}")
+                    if body and body.get("ErrorCode") in (0, ""):
+                        pending["body"] = body
+                    else:
+                        print(f"    [API:{bk['slug']}] ❌ bad ErrorCode — body[:150]={str(body)[:150]}")
+                except Exception as exc:
+                    print(f"    [API:{bk['slug']}] ❌ json error: {exc}")
+            elif "Get1x2_VZip" in url:
+                print(f"    [API:{bk['slug']}] ⚠️  status={resp.status} url={url[:100]}")
+            elif "GetGameZip" in url and resp.status == 200:
+                try:
+                    body = await resp.json()
+                    if body and body.get("ErrorCode") in (0, ""):
+                        m = _re.search(r'[?&]id=(\d+)', url)
+                        if m: detail_payloads[int(m.group(1))] = body
                 except Exception: pass
 
-            return result[0] if result else None
+        page.on("response", _on_resp)
 
-        # ── Visit sport root page first to establish session ──────────────────
-        sport_root = f"{bk['base']}/en/{feed_path}/{page_slug}"
-        print(f"  [{bk['slug']}] {sport_slug}: opening sport page…")
+        def _collect_and_reset() -> list[dict]:
+            """Drain pending response into match list."""
+            body = pending.get("body")
+            pending["body"] = None
+            if not body: return []
+            return _parse_value(body.get("Value") or [], bk, sport_slug, mode, sport_id)
 
-        root_body = await _fetch_page(sport_root, "Get1x2_VZip", wait_s * 1000)
-        if root_body:
-            for m in _parse_value(root_body.get("Value") or [], bk, sport_slug, mode, sport_id):
+        def _add_matches(new_matches: list[dict]):
+            for m in new_matches:
                 gid_str = m.get("external_id", "")
                 try: gid_int = int(gid_str)
                 except: gid_int = None
@@ -459,91 +452,84 @@ async def _harvest_one_bk(
                 if gid_int: seen_gids.add(gid_int)
                 all_matches.append(m)
 
-        if use_sport_page_only:
-            print(f"  [{bk['slug']}] {sport_slug}: {len(all_matches)} matches from sport page")
-        else:
-            print(f"  [{bk['slug']}] {sport_slug}: sport page → {len(all_matches)} matches; "
-                  f"fetching {len(hardcoded)} competitions…")
+        async def _navigate_and_collect(url: str) -> int:
+            """Navigate, wait for API response, parse and add matches. Returns count added."""
+            pending["body"] = None
+            try:
+                await page.goto(url, wait_until="domcontentloaded",
+                                timeout=wait_s * 1000)
+            except Exception as exc:
+                print(f"    [NAV:{bk['slug']}] ❌ {url[-60:]}: {exc}")
+                return 0
+            # Wait up to wait_s for the API call to complete
+            deadline = time.perf_counter() + wait_s
+            while time.perf_counter() < deadline:
+                await asyncio.sleep(0.5)
+                if pending["body"]: break
+            before = len(all_matches)
+            _add_matches(_collect_and_reset())
+            added = len(all_matches) - before
+            return added
 
-            # ── Navigate to each competition page concurrently ────────────────
-            for batch_start in range(0, len(hardcoded), tab_concurrency):
-                batch = hardcoded[batch_start:batch_start + tab_concurrency]
+        # ── Step 1: sport root page ───────────────────────────────────────────
+        sport_root = f"{bk['base']}/en/{feed_path}/{page_slug}"
+        print(f"  [{bk['slug']}] ── {sport_root}")
+        added = await _navigate_and_collect(sport_root)
+        print(f"  [{bk['slug']}] sport root → {added} matches (total={len(all_matches)})")
 
-                tasks = []
-                for li, comp_slug in batch:
-                    comp_url = f"{bk['base']}/en/{feed_path}/{page_slug}/{li}-{comp_slug}"
-                    tasks.append(
-                        asyncio.create_task(
-                            _fetch_page(comp_url, "Get1x2_VZip", wait_s * 1000)
-                        )
-                    )
+        # ── Step 2: each competition page (sequential, same tab) ──────────────
+        if not sport_only:
+            print(f"  [{bk['slug']}] fetching {len(hardcoded)} competitions…")
+            for i, (li, comp_slug) in enumerate(hardcoded, 1):
+                comp_url = f"{bk['base']}/en/{feed_path}/{page_slug}/{li}-{comp_slug}"
+                added = await _navigate_and_collect(comp_url)
+                if added:
+                    print(f"  [{bk['slug']}] ({i}/{len(hardcoded)}) {comp_slug}: +{added} → total={len(all_matches)}")
+                else:
+                    print(f"  [{bk['slug']}] ({i}/{len(hardcoded)}) {comp_slug}: 0 (already seen or empty)")
 
-                responses = await asyncio.gather(*tasks, return_exceptions=True)
+        print(f"  [{bk['slug']}] {sport_slug}: {len(all_matches)} total matches")
 
-                for resp in responses:
-                    if not resp or isinstance(resp, Exception):
-                        continue
-                    for m in _parse_value(resp.get("Value") or [], bk, sport_slug,
-                                          mode, sport_id):
-                        gid_str = m.get("external_id", "")
-                        try: gid_int = int(gid_str)
-                        except: gid_int = None
-                        if gid_int and gid_int in seen_gids: continue
-                        if gid_int: seen_gids.add(gid_int)
-                        all_matches.append(m)
-
-                await asyncio.sleep(0.3)
-
-            print(f"  [{bk['slug']}] {sport_slug}: {len(all_matches)} total matches")
-
-        # ── GetGameZip: navigate to each match page for full markets ──────────
+        # ── Step 3: GetGameZip full markets (if requested) ────────────────────
         if full_markets and all_matches:
-            p = bk["partner_id"]
+            p        = bk["partner_id"]
             game_ids = []
             for m in all_matches:
                 try: game_ids.append(int(m["external_id"]))
                 except: pass
 
-            # Open a single tab and use evaluate for GetGameZip
-            # (navigating to each match page would be too slow)
-            gz_page = await ctx.new_page()
-            gz_url  = f"{bk['base']}/en/{feed_path}/{page_slug}"
+            # Navigate to sport root so we have a valid same-origin context
             try:
-                await gz_page.goto(gz_url, wait_until="domcontentloaded",
-                                   timeout=wait_s * 1000)
+                await page.goto(sport_root, wait_until="domcontentloaded",
+                                timeout=wait_s * 1000)
                 await asyncio.sleep(2)
+            except Exception: pass
 
-                for i in range(0, len(game_ids), 8):
-                    batch = game_ids[i:i + 8]
-                    fetches = ",\n".join(
-                        f'fetch("https://{bk["domain"]}/service-api/{feed_api}/GetGameZip'
-                        f'?id={gid}&lng=en&isSubGames=true&GroupEvents=true'
-                        f'&countevents=250&grMode=4&partner={p}&topGroups='
-                        f'&country=87&marketType=1&isNewBuilder=true",'
-                        f'{{"headers":{{"accept":"application/json","is-srv":"false",'
-                        f'"x-app-n":"__BETTING_APP__","x-svc-source":"__BETTING_APP__"}}}}'
-                        f').then(r=>r.json()).catch(()=>null)'
-                        for gid in batch
-                    )
-                    try:
-                        responses = await gz_page.evaluate(f"Promise.all([{fetches}])")
-                        for rb in responses or []:
-                            if not rb or rb.get("ErrorCode") not in (0,"0","",None): continue
-                            val = rb.get("Value")
-                            if val and isinstance(val, dict):
-                                gid = val.get("I") or val.get("Id")
-                                if gid: detail_payloads[int(gid)] = rb
-                    except Exception as exc:
-                        logger.debug("[pw:%s] GetGameZip: %s", bk["slug"], exc)
-                    await asyncio.sleep(0.2)
-            except Exception as exc:
-                logger.debug("[pw:%s] GetGameZip page: %s", bk["slug"], exc)
-            finally:
-                try: await gz_page.close()
-                except Exception: pass
-
-            # Enrich matches
             enriched = 0
+            for i in range(0, len(game_ids), 8):
+                batch   = game_ids[i:i+8]
+                fetches = ",\n".join(
+                    f'fetch("https://{bk["domain"]}/service-api/{feed_api}/GetGameZip'
+                    f'?id={gid}&lng=en&isSubGames=true&GroupEvents=true'
+                    f'&countevents=250&grMode=4&partner={p}&topGroups='
+                    f'&country=87&marketType=1&isNewBuilder=true",'
+                    f'{{"headers":{{"accept":"application/json","is-srv":"false",'
+                    f'"x-app-n":"__BETTING_APP__","x-svc-source":"__BETTING_APP__"}}}}'
+                    f').then(r=>r.json()).catch(()=>null)'
+                    for gid in batch
+                )
+                try:
+                    responses = await page.evaluate(f"Promise.all([{fetches}])")
+                    for rb in responses or []:
+                        if not rb or rb.get("ErrorCode") not in (0,"0","",None): continue
+                        val = rb.get("Value")
+                        if val and isinstance(val, dict):
+                            gid = val.get("I") or val.get("Id")
+                            if gid: detail_payloads[int(gid)] = rb
+                except Exception as exc:
+                    logger.debug("[pw:%s] GetGameZip batch: %s", bk["slug"], exc)
+                await asyncio.sleep(0.2)
+
             for m in all_matches:
                 try: gid_int = int(m.get("external_id", ""))
                 except: continue
@@ -555,8 +541,8 @@ async def _harvest_one_bk(
                     m["market_count"] = len(full_mkts)
                     enriched += 1
 
-            avg = int(sum(m.get("market_count",0) for m in all_matches) / len(all_matches)) if all_matches else 0
-            print(f"  [{bk['slug']}] {sport_slug}: {enriched} enriched, avg {avg} markets/match")
+            avg = int(sum(m.get("market_count",0) for m in all_matches)/len(all_matches)) if all_matches else 0
+            print(f"  [{bk['slug']}] {sport_slug}: {enriched} enriched, avg {avg} markets")
 
         # ── Save cookies ──────────────────────────────────────────────────────
         try:
@@ -568,6 +554,7 @@ async def _harvest_one_bk(
         await browser.close()
 
     return all_matches
+
 
 
 async def _pw_harvest_sport(
