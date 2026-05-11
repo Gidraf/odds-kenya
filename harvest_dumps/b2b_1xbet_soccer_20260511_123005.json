@@ -1,0 +1,5114 @@
+[
+  {
+    "b2b_match_id": "1xbet:716171081",
+    "external_id": "716171081",
+    "betradar_id": "",
+    "home_team": "Tottenham Hotspur",
+    "away_team": "Leeds United",
+    "start_time": "2026-05-11T19:00:00Z",
+    "competition": "England. Premier League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.251,
+        "12": 1.277,
+        "X2": 2.086
+      },
+      "asian_handicap": {
+        "1": 1.35,
+        "2": 3.22,
+        "1@-1": 2.33,
+        "2@-1": 8.9,
+        "1@1": 1.038,
+        "2@1": 1.55,
+        "1@-1.5": 3.55,
+        "2@-1.5": 9.9,
+        "1@1.5": 1.014,
+        "2@1.5": 1.363
+      },
+      "handicap_result": {
+        "1@0.5": 1.44,
+        "2@0.5": 2.75
+      },
+      "asian_handicap_2": {
+        "1@-0.25": 1.614,
+        "2@0.25": 2.526
+      },
+      "first_half_over_under": {
+        "Over": 1.67,
+        "Under": 2.097
+      },
+      "btts": {
+        "Yes": 1.75,
+        "No": 2.06
+      },
+      "over_under": {
+        "Over@2.5": 1.806,
+        "Under@2.5": 2.167,
+        "Over@1.5": 1.21,
+        "Under@1.5": 4.05,
+        "Over@2": 1.33,
+        "Under@2": 3.2,
+        "Over@3": 2.25,
+        "Under@3": 1.615,
+        "Over@3.5": 2.81,
+        "Under@3.5": 1.39
+      },
+      "match_winner": {
+        "1": 1.83,
+        "X": 4.115,
+        "2": 4.42
+      },
+      "asian_total": {
+        "Under@2.75": 1.939,
+        "Over@2.75": 2.002
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716171081",
+        "markets": {
+          "double_chance": {
+            "1X": 1.251,
+            "12": 1.277,
+            "X2": 2.086
+          },
+          "asian_handicap": {
+            "1": 1.35,
+            "2": 3.22,
+            "1@-1": 2.33,
+            "2@-1": 8.9,
+            "1@1": 1.038,
+            "2@1": 1.55,
+            "1@-1.5": 3.55,
+            "2@-1.5": 9.9,
+            "1@1.5": 1.014,
+            "2@1.5": 1.363
+          },
+          "handicap_result": {
+            "1@0.5": 1.44,
+            "2@0.5": 2.75
+          },
+          "asian_handicap_2": {
+            "1@-0.25": 1.614,
+            "2@0.25": 2.526
+          },
+          "first_half_over_under": {
+            "Over": 1.67,
+            "Under": 2.097
+          },
+          "btts": {
+            "Yes": 1.75,
+            "No": 2.06
+          },
+          "over_under": {
+            "Over@2.5": 1.806,
+            "Under@2.5": 2.167,
+            "Over@1.5": 1.21,
+            "Under@1.5": 4.05,
+            "Over@2": 1.33,
+            "Under@2": 3.2,
+            "Over@3": 2.25,
+            "Under@3": 1.615,
+            "Over@3.5": 2.81,
+            "Under@3.5": 1.39
+          },
+          "match_winner": {
+            "1": 1.83,
+            "X": 4.115,
+            "2": 4.42
+          },
+          "asian_total": {
+            "Under@2.75": 1.939,
+            "Over@2.75": 2.002
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716177173",
+    "external_id": "716177173",
+    "betradar_id": "",
+    "home_team": "Rayo Vallecano",
+    "away_team": "Girona",
+    "start_time": "2026-05-11T19:00:00Z",
+    "competition": "Spain. La Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.383,
+        "1X": 1.452,
+        "X2": 1.538
+      },
+      "handicap_result": {
+        "2@1.5": 1.52,
+        "1@1.5": 2.45
+      },
+      "btts": {
+        "No": 1.62,
+        "Yes": 2.26
+      },
+      "first_half_over_under": {
+        "Over": 1.7,
+        "Under": 2.054
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.758,
+        "1@-0.25": 2.24
+      },
+      "asian_total": {
+        "Over@2.25": 1.783,
+        "Under@2.25": 2.2
+      },
+      "asian_handicap": {
+        "1": 1.876,
+        "2": 2.073,
+        "1@-1": 4.15,
+        "2@-1": 4.9,
+        "1@1": 1.149,
+        "2@1": 1.2,
+        "1@-1.5": 5.0,
+        "2@-1.5": 5.75,
+        "1@1.5": 1.096,
+        "2@1.5": 1.129
+      },
+      "over_under": {
+        "Under@2.5": 1.929,
+        "Over@2.5": 2.012,
+        "Over@1.5": 1.28,
+        "Under@1.5": 3.4,
+        "Over@2": 1.47,
+        "Under@2": 2.6,
+        "Over@3": 2.6,
+        "Under@3": 1.47,
+        "Over@3.5": 3.2,
+        "Under@3.5": 1.31
+      },
+      "match_winner": {
+        "1": 2.663,
+        "2": 2.968,
+        "X": 3.3
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716177173",
+        "markets": {
+          "double_chance": {
+            "12": 1.383,
+            "1X": 1.452,
+            "X2": 1.538
+          },
+          "handicap_result": {
+            "2@1.5": 1.52,
+            "1@1.5": 2.45
+          },
+          "btts": {
+            "No": 1.62,
+            "Yes": 2.26
+          },
+          "first_half_over_under": {
+            "Over": 1.7,
+            "Under": 2.054
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.758,
+            "1@-0.25": 2.24
+          },
+          "asian_total": {
+            "Over@2.25": 1.783,
+            "Under@2.25": 2.2
+          },
+          "asian_handicap": {
+            "1": 1.876,
+            "2": 2.073,
+            "1@-1": 4.15,
+            "2@-1": 4.9,
+            "1@1": 1.149,
+            "2@1": 1.2,
+            "1@-1.5": 5.0,
+            "2@-1.5": 5.75,
+            "1@1.5": 1.096,
+            "2@1.5": 1.129
+          },
+          "over_under": {
+            "Under@2.5": 1.929,
+            "Over@2.5": 2.012,
+            "Over@1.5": 1.28,
+            "Under@1.5": 3.4,
+            "Over@2": 1.47,
+            "Under@2": 2.6,
+            "Over@3": 2.6,
+            "Under@3": 1.47,
+            "Over@3.5": 3.2,
+            "Under@3.5": 1.31
+          },
+          "match_winner": {
+            "1": 2.663,
+            "2": 2.968,
+            "X": 3.3
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716179558",
+    "external_id": "716179558",
+    "betradar_id": "",
+    "home_team": "Napoli",
+    "away_team": "Bologna 1909",
+    "start_time": "2026-05-11T18:45:00Z",
+    "competition": "Italy. Serie A",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.157,
+        "12": 1.259,
+        "X2": 2.481
+      },
+      "asian_handicap": {
+        "2@1.5": 1.57,
+        "1@-1.5": 2.644,
+        "1": 1.184,
+        "2": 4.33,
+        "1@-1": 1.94,
+        "2@1": 1.86,
+        "1@-2": 3.92,
+        "2@2": 1.21,
+        "1@-2.5": 4.7,
+        "2@2.5": 1.137
+      },
+      "match_winner": {
+        "1": 1.606,
+        "X": 4.32,
+        "2": 6.2
+      },
+      "asian_handicap_2": {
+        "2@1.25": 1.636,
+        "1@-1.25": 2.262
+      },
+      "handicap_result": {
+        "1@0.5": 1.66,
+        "2@0.5": 2.09
+      },
+      "btts": {
+        "Yes": 1.72,
+        "No": 2.14
+      },
+      "asian_total": {
+        "Under@2.75": 1.783,
+        "Over@2.75": 2.2
+      },
+      "first_half_over_under": {
+        "Under": 1.804,
+        "Over": 1.92
+      },
+      "over_under": {
+        "Over@2.5": 1.96,
+        "Under@2.5": 1.98,
+        "Over@1.5": 1.27,
+        "Under@1.5": 3.48,
+        "Over@2": 1.43,
+        "Under@2": 2.74,
+        "Over@3": 2.52,
+        "Under@3": 1.5,
+        "Over@3.5": 3.14,
+        "Under@3.5": 1.32
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716179558",
+        "markets": {
+          "double_chance": {
+            "1X": 1.157,
+            "12": 1.259,
+            "X2": 2.481
+          },
+          "asian_handicap": {
+            "2@1.5": 1.57,
+            "1@-1.5": 2.644,
+            "1": 1.184,
+            "2": 4.33,
+            "1@-1": 1.94,
+            "2@1": 1.86,
+            "1@-2": 3.92,
+            "2@2": 1.21,
+            "1@-2.5": 4.7,
+            "2@2.5": 1.137
+          },
+          "match_winner": {
+            "1": 1.606,
+            "X": 4.32,
+            "2": 6.2
+          },
+          "asian_handicap_2": {
+            "2@1.25": 1.636,
+            "1@-1.25": 2.262
+          },
+          "handicap_result": {
+            "1@0.5": 1.66,
+            "2@0.5": 2.09
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.14
+          },
+          "asian_total": {
+            "Under@2.75": 1.783,
+            "Over@2.75": 2.2
+          },
+          "first_half_over_under": {
+            "Under": 1.804,
+            "Over": 1.92
+          },
+          "over_under": {
+            "Over@2.5": 1.96,
+            "Under@2.5": 1.98,
+            "Over@1.5": 1.27,
+            "Under@1.5": 3.48,
+            "Over@2": 1.43,
+            "Under@2": 2.74,
+            "Over@3": 2.52,
+            "Under@3": 1.5,
+            "Over@3.5": 3.14,
+            "Under@3.5": 1.32
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716461084",
+    "external_id": "716461084",
+    "betradar_id": "",
+    "home_team": "Akron Tolyatti",
+    "away_team": "Rostov",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Russia. Premier League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.38,
+        "X2": 1.387,
+        "1X": 1.622
+      },
+      "btts": {
+        "No": 1.42,
+        "Yes": 2.8
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.542,
+        "1@-0.25": 2.726
+      },
+      "handicap_result": {
+        "2@1.5": 1.58,
+        "1@1.5": 2.36
+      },
+      "asian_handicap": {
+        "2": 1.721,
+        "1": 2.303,
+        "1@-1": 5.6,
+        "2@-1": 3.6,
+        "1@1": 1.24,
+        "2@1": 1.105,
+        "1@-1.5": 6.4,
+        "2@-1.5": 4.45,
+        "1@1.5": 1.148,
+        "2@1.5": 1.064
+      },
+      "over_under": {
+        "Under@2.5": 1.769,
+        "Over@2.5": 2.223,
+        "Over@1.5": 1.35,
+        "Under@1.5": 2.95,
+        "Over@2": 1.59,
+        "Under@2": 2.28,
+        "Over@3": 3.05,
+        "Under@3": 1.35,
+        "Over@3.5": 3.65,
+        "Under@3.5": 1.24
+      },
+      "first_half_over_under": {
+        "Over": 1.83,
+        "Under": 1.891
+      },
+      "asian_total": {
+        "Over@2.25": 1.945,
+        "Under@2.25": 1.996
+      },
+      "match_winner": {
+        "2": 2.444,
+        "1": 3.275,
+        "X": 3.32
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716461084",
+        "markets": {
+          "double_chance": {
+            "12": 1.38,
+            "X2": 1.387,
+            "1X": 1.622
+          },
+          "btts": {
+            "No": 1.42,
+            "Yes": 2.8
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.542,
+            "1@-0.25": 2.726
+          },
+          "handicap_result": {
+            "2@1.5": 1.58,
+            "1@1.5": 2.36
+          },
+          "asian_handicap": {
+            "2": 1.721,
+            "1": 2.303,
+            "1@-1": 5.6,
+            "2@-1": 3.6,
+            "1@1": 1.24,
+            "2@1": 1.105,
+            "1@-1.5": 6.4,
+            "2@-1.5": 4.45,
+            "1@1.5": 1.148,
+            "2@1.5": 1.064
+          },
+          "over_under": {
+            "Under@2.5": 1.769,
+            "Over@2.5": 2.223,
+            "Over@1.5": 1.35,
+            "Under@1.5": 2.95,
+            "Over@2": 1.59,
+            "Under@2": 2.28,
+            "Over@3": 3.05,
+            "Under@3": 1.35,
+            "Over@3.5": 3.65,
+            "Under@3.5": 1.24
+          },
+          "first_half_over_under": {
+            "Over": 1.83,
+            "Under": 1.891
+          },
+          "asian_total": {
+            "Over@2.25": 1.945,
+            "Under@2.25": 1.996
+          },
+          "match_winner": {
+            "2": 2.444,
+            "1": 3.275,
+            "X": 3.32
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716461078",
+    "external_id": "716461078",
+    "betradar_id": "",
+    "home_team": "Pari Nizhny Novgorod",
+    "away_team": "CSKA Moscow",
+    "start_time": "2026-05-11T12:15:00Z",
+    "competition": "Russia. Premier League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.351,
+        "X2": 1.373,
+        "1X": 1.686
+      },
+      "btts": {
+        "No": 1.46,
+        "Yes": 2.65
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.51,
+        "1@-0.25": 2.831
+      },
+      "asian_handicap": {
+        "2": 1.671,
+        "1": 2.4,
+        "1@-1": 5.9,
+        "2@-1": 3.3,
+        "1@1": 1.28,
+        "2@1": 1.094,
+        "1@-1.5": 6.75,
+        "2@-1.5": 4.15,
+        "1@1.5": 1.169,
+        "2@1.5": 1.055
+      },
+      "handicap_result": {
+        "2@1.5": 1.69,
+        "1@1.5": 2.17
+      },
+      "first_half_over_under": {
+        "Over": 1.74,
+        "Under": 1.999
+      },
+      "asian_total": {
+        "Over@2.25": 1.799,
+        "Under@2.25": 2.176
+      },
+      "over_under": {
+        "Under@2.5": 1.906,
+        "Over@2.5": 2.039,
+        "Over@1.5": 1.285,
+        "Under@1.5": 3.32,
+        "Over@2": 1.47,
+        "Under@2": 2.58,
+        "Over@3": 2.68,
+        "Under@3": 1.44,
+        "Over@3.5": 3.32,
+        "Under@3.5": 1.285
+      },
+      "match_winner": {
+        "2": 2.312,
+        "1": 3.36,
+        "X": 3.5
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716461078",
+        "markets": {
+          "double_chance": {
+            "12": 1.351,
+            "X2": 1.373,
+            "1X": 1.686
+          },
+          "btts": {
+            "No": 1.46,
+            "Yes": 2.65
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.51,
+            "1@-0.25": 2.831
+          },
+          "asian_handicap": {
+            "2": 1.671,
+            "1": 2.4,
+            "1@-1": 5.9,
+            "2@-1": 3.3,
+            "1@1": 1.28,
+            "2@1": 1.094,
+            "1@-1.5": 6.75,
+            "2@-1.5": 4.15,
+            "1@1.5": 1.169,
+            "2@1.5": 1.055
+          },
+          "handicap_result": {
+            "2@1.5": 1.69,
+            "1@1.5": 2.17
+          },
+          "first_half_over_under": {
+            "Over": 1.74,
+            "Under": 1.999
+          },
+          "asian_total": {
+            "Over@2.25": 1.799,
+            "Under@2.25": 2.176
+          },
+          "over_under": {
+            "Under@2.5": 1.906,
+            "Over@2.5": 2.039,
+            "Over@1.5": 1.285,
+            "Under@1.5": 3.32,
+            "Over@2": 1.47,
+            "Under@2": 2.58,
+            "Over@3": 2.68,
+            "Under@3": 1.44,
+            "Over@3.5": 3.32,
+            "Under@3.5": 1.285
+          },
+          "match_winner": {
+            "2": 2.312,
+            "1": 3.36,
+            "X": 3.5
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716461087",
+    "external_id": "716461087",
+    "betradar_id": "",
+    "home_team": "Spartak Moscow",
+    "away_team": "Rubin Kazan",
+    "start_time": "2026-05-11T14:30:00Z",
+    "competition": "Russia. Premier League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.15,
+        "12": 1.263,
+        "X2": 2.499
+      },
+      "asian_handicap": {
+        "2@1.5": 1.538,
+        "1@-1.5": 2.738,
+        "1": 1.165,
+        "2": 4.45,
+        "1@-1": 1.97,
+        "2@1": 1.85,
+        "1@-2": 4.25,
+        "2@2": 1.173,
+        "1@-2.5": 4.95,
+        "2@2.5": 1.111
+      },
+      "match_winner": {
+        "1": 1.599,
+        "X": 4.275,
+        "2": 6.41
+      },
+      "asian_handicap_2": {
+        "2@1.25": 1.678,
+        "1@-1.25": 2.385
+      },
+      "first_half_over_under": {
+        "Under": 1.717,
+        "Over": 2.03
+      },
+      "handicap_result": {
+        "1@0.5": 1.76,
+        "2@0.5": 2.07
+      },
+      "btts": {
+        "Yes": 1.77,
+        "No": 2.04
+      },
+      "asian_total": {
+        "Over@2.25": 1.83,
+        "Under@2.25": 2.133
+      },
+      "over_under": {
+        "Under@2.5": 1.873,
+        "Over@2.5": 2.078,
+        "Over@1.5": 1.3,
+        "Under@1.5": 3.22,
+        "Over@2": 1.5,
+        "Under@2": 2.49,
+        "Over@3": 2.78,
+        "Under@3": 1.41,
+        "Over@3.5": 3.5,
+        "Under@3.5": 1.26
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716461087",
+        "markets": {
+          "double_chance": {
+            "1X": 1.15,
+            "12": 1.263,
+            "X2": 2.499
+          },
+          "asian_handicap": {
+            "2@1.5": 1.538,
+            "1@-1.5": 2.738,
+            "1": 1.165,
+            "2": 4.45,
+            "1@-1": 1.97,
+            "2@1": 1.85,
+            "1@-2": 4.25,
+            "2@2": 1.173,
+            "1@-2.5": 4.95,
+            "2@2.5": 1.111
+          },
+          "match_winner": {
+            "1": 1.599,
+            "X": 4.275,
+            "2": 6.41
+          },
+          "asian_handicap_2": {
+            "2@1.25": 1.678,
+            "1@-1.25": 2.385
+          },
+          "first_half_over_under": {
+            "Under": 1.717,
+            "Over": 2.03
+          },
+          "handicap_result": {
+            "1@0.5": 1.76,
+            "2@0.5": 2.07
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 2.04
+          },
+          "asian_total": {
+            "Over@2.25": 1.83,
+            "Under@2.25": 2.133
+          },
+          "over_under": {
+            "Under@2.5": 1.873,
+            "Over@2.5": 2.078,
+            "Over@1.5": 1.3,
+            "Under@1.5": 3.22,
+            "Over@2": 1.5,
+            "Under@2": 2.49,
+            "Over@3": 2.78,
+            "Under@3": 1.41,
+            "Over@3.5": 3.5,
+            "Under@3.5": 1.26
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716461081",
+    "external_id": "716461081",
+    "betradar_id": "",
+    "home_team": "Dynamo Moscow",
+    "away_team": "Krasnodar",
+    "start_time": "2026-05-11T17:00:00Z",
+    "competition": "Russia. Premier League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.263,
+        "X2": 1.267,
+        "1X": 2.081
+      },
+      "asian_handicap": {
+        "2": 1.414,
+        "1": 3.245,
+        "1@-1": 8.1,
+        "2@-1": 2.32,
+        "1@1": 1.533,
+        "2@1": 1.041,
+        "1@-1.5": 9.0,
+        "2@-1.5": 2.96,
+        "1@1.5": 1.32,
+        "2@1.5": 1.015
+      },
+      "btts": {
+        "No": 1.43,
+        "Yes": 2.8
+      },
+      "asian_handicap_2": {
+        "2@-0.25": 1.54,
+        "1@0.25": 2.375
+      },
+      "first_half_over_under": {
+        "Over": 1.6,
+        "Under": 2.22
+      },
+      "over_under": {
+        "Over@2.5": 1.71,
+        "Under@2.5": 2.324,
+        "Over@1.5": 1.17,
+        "Under@1.5": 4.45,
+        "Over@2": 1.28,
+        "Under@2": 3.48,
+        "Over@3": 2.06,
+        "Under@3": 1.72,
+        "Over@3.5": 2.6,
+        "Under@3.5": 1.44
+      },
+      "handicap_result": {
+        "1@1.5": 1.72,
+        "2@1.5": 2.13
+      },
+      "match_winner": {
+        "2": 1.834,
+        "1": 4.225,
+        "X": 4.28
+      },
+      "asian_total": {
+        "Over@2.75": 1.895,
+        "Under@2.75": 2.052
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716461081",
+        "markets": {
+          "double_chance": {
+            "12": 1.263,
+            "X2": 1.267,
+            "1X": 2.081
+          },
+          "asian_handicap": {
+            "2": 1.414,
+            "1": 3.245,
+            "1@-1": 8.1,
+            "2@-1": 2.32,
+            "1@1": 1.533,
+            "2@1": 1.041,
+            "1@-1.5": 9.0,
+            "2@-1.5": 2.96,
+            "1@1.5": 1.32,
+            "2@1.5": 1.015
+          },
+          "btts": {
+            "No": 1.43,
+            "Yes": 2.8
+          },
+          "asian_handicap_2": {
+            "2@-0.25": 1.54,
+            "1@0.25": 2.375
+          },
+          "first_half_over_under": {
+            "Over": 1.6,
+            "Under": 2.22
+          },
+          "over_under": {
+            "Over@2.5": 1.71,
+            "Under@2.5": 2.324,
+            "Over@1.5": 1.17,
+            "Under@1.5": 4.45,
+            "Over@2": 1.28,
+            "Under@2": 3.48,
+            "Over@3": 2.06,
+            "Under@3": 1.72,
+            "Over@3.5": 2.6,
+            "Under@3.5": 1.44
+          },
+          "handicap_result": {
+            "1@1.5": 1.72,
+            "2@1.5": 2.13
+          },
+          "match_winner": {
+            "2": 1.834,
+            "1": 4.225,
+            "X": 4.28
+          },
+          "asian_total": {
+            "Over@2.75": 1.895,
+            "Under@2.75": 2.052
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718729508",
+    "external_id": "718729508",
+    "betradar_id": "",
+    "home_team": "Benfica",
+    "away_team": "Braga",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.085,
+        "12": 1.194,
+        "X2": 2.97
+      },
+      "match_winner": {
+        "1": 1.429,
+        "X": 5.03,
+        "2": 7.5
+      },
+      "btts": {
+        "No": 1.48,
+        "Yes": 2.46
+      },
+      "handicap_result": {
+        "1@0.5": 1.59,
+        "2@0.5": 2.2
+      },
+      "over_under": {
+        "Over@2.5": 1.679,
+        "Under@2.5": 2.297,
+        "Over@1.5": 1.144,
+        "Under@1.5": 4.4,
+        "Over@2": 1.24,
+        "Under@2": 3.52,
+        "Over@3": 1.98,
+        "Under@3": 1.71,
+        "Over@3.5": 2.48,
+        "Under@3.5": 1.43
+      },
+      "asian_handicap": {
+        "2@1.5": 1.746,
+        "1@-1.5": 2.182,
+        "1": 1.086,
+        "2": 5.5,
+        "1@-1": 1.61,
+        "2@1": 2.23,
+        "1@-2": 2.92,
+        "2@2": 1.31,
+        "1@-2.5": 3.58,
+        "2@2.5": 1.21
+      },
+      "first_half_over_under": {
+        "Over": 1.82,
+        "Under": 1.884
+      },
+      "asian_total": {
+        "Over@2.75": 1.84,
+        "Under@2.75": 2.051
+      },
+      "asian_handicap_2": {
+        "1@-1.25": 1.94,
+        "2@1.25": 1.94
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718729508",
+        "markets": {
+          "double_chance": {
+            "1X": 1.085,
+            "12": 1.194,
+            "X2": 2.97
+          },
+          "match_winner": {
+            "1": 1.429,
+            "X": 5.03,
+            "2": 7.5
+          },
+          "btts": {
+            "No": 1.48,
+            "Yes": 2.46
+          },
+          "handicap_result": {
+            "1@0.5": 1.59,
+            "2@0.5": 2.2
+          },
+          "over_under": {
+            "Over@2.5": 1.679,
+            "Under@2.5": 2.297,
+            "Over@1.5": 1.144,
+            "Under@1.5": 4.4,
+            "Over@2": 1.24,
+            "Under@2": 3.52,
+            "Over@3": 1.98,
+            "Under@3": 1.71,
+            "Over@3.5": 2.48,
+            "Under@3.5": 1.43
+          },
+          "asian_handicap": {
+            "2@1.5": 1.746,
+            "1@-1.5": 2.182,
+            "1": 1.086,
+            "2": 5.5,
+            "1@-1": 1.61,
+            "2@1": 2.23,
+            "1@-2": 2.92,
+            "2@2": 1.31,
+            "1@-2.5": 3.58,
+            "2@2.5": 1.21
+          },
+          "first_half_over_under": {
+            "Over": 1.82,
+            "Under": 1.884
+          },
+          "asian_total": {
+            "Over@2.75": 1.84,
+            "Under@2.75": 2.051
+          },
+          "asian_handicap_2": {
+            "1@-1.25": 1.94,
+            "2@1.25": 1.94
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718730175",
+    "external_id": "718730175",
+    "betradar_id": "",
+    "home_team": "Vitoria Guimaraes",
+    "away_team": "Casa Pia",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.216,
+        "12": 1.262,
+        "X2": 2.158
+      },
+      "asian_handicap": {
+        "2@1.5": 1.352,
+        "1@-1.5": 3.43,
+        "1": 1.25,
+        "2": 3.28,
+        "1@-1": 2.27,
+        "2@1": 1.59,
+        "1@-2": 5.25,
+        "2@2": 1.094,
+        "1@-2.5": 6.15,
+        "2@2.5": 1.06
+      },
+      "handicap_result": {
+        "1@0.5": 1.5,
+        "2@0.5": 2.375
+      },
+      "asian_total": {
+        "Under@2.75": 1.736,
+        "Over@2.75": 2.199
+      },
+      "match_winner": {
+        "1": 1.746,
+        "X": 4.09,
+        "2": 4.675
+      },
+      "first_half_over_under": {
+        "Over": 1.81,
+        "Under": 1.895
+      },
+      "asian_handicap_2": {
+        "2@0.75": 1.82,
+        "1@-0.75": 1.84
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.94
+      },
+      "over_under": {
+        "Over@2.5": 1.935,
+        "Under@2.5": 1.945,
+        "Over@1.5": 1.23,
+        "Under@1.5": 3.44,
+        "Over@2": 1.39,
+        "Under@2": 2.69,
+        "Over@3": 2.52,
+        "Under@3": 1.44,
+        "Over@3.5": 3.18,
+        "Under@3.5": 1.27
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718730175",
+        "markets": {
+          "double_chance": {
+            "1X": 1.216,
+            "12": 1.262,
+            "X2": 2.158
+          },
+          "asian_handicap": {
+            "2@1.5": 1.352,
+            "1@-1.5": 3.43,
+            "1": 1.25,
+            "2": 3.28,
+            "1@-1": 2.27,
+            "2@1": 1.59,
+            "1@-2": 5.25,
+            "2@2": 1.094,
+            "1@-2.5": 6.15,
+            "2@2.5": 1.06
+          },
+          "handicap_result": {
+            "1@0.5": 1.5,
+            "2@0.5": 2.375
+          },
+          "asian_total": {
+            "Under@2.75": 1.736,
+            "Over@2.75": 2.199
+          },
+          "match_winner": {
+            "1": 1.746,
+            "X": 4.09,
+            "2": 4.675
+          },
+          "first_half_over_under": {
+            "Over": 1.81,
+            "Under": 1.895
+          },
+          "asian_handicap_2": {
+            "2@0.75": 1.82,
+            "1@-0.75": 1.84
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.94
+          },
+          "over_under": {
+            "Over@2.5": 1.935,
+            "Under@2.5": 1.945,
+            "Over@1.5": 1.23,
+            "Under@1.5": 3.44,
+            "Over@2": 1.39,
+            "Under@2": 2.69,
+            "Over@3": 2.52,
+            "Under@3": 1.44,
+            "Over@3.5": 3.18,
+            "Under@3.5": 1.27
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718107815",
+    "external_id": "718107815",
+    "betradar_id": "",
+    "home_team": "Home",
+    "away_team": "Away",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Russia. Premier League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.084,
+        "X2": 1.634,
+        "1X": 1.752
+      },
+      "asian_handicap_2": {
+        "1@1.25": 1.524,
+        "2@-1.25": 2.523
+      },
+      "asian_handicap": {
+        "1@1.5": 1.53,
+        "2@-1.5": 2.764,
+        "1@-1": 2.636,
+        "2@-1": 2.382,
+        "1@1": 1.58,
+        "2@1": 1.485,
+        "2@-2": 3.37,
+        "1@2": 1.322,
+        "2@-2.5": 3.735,
+        "1@2.5": 1.274
+      },
+      "btts": {
+        "No": 1.686,
+        "Yes": 2.177
+      },
+      "handicap_result": {
+        "2@5.5": 1.762,
+        "1@5.5": 2.061
+      },
+      "asian_total": {
+        "Under@10.75": 1.793,
+        "Over@10.75": 2.021
+      },
+      "over_under": {
+        "Under@10.5": 1.959,
+        "Over@10.5": 1.981,
+        "Over@9.5": 1.573,
+        "Under@9.5": 2.399,
+        "Over@10": 1.708,
+        "Under@10": 2.141,
+        "Over@11": 2.165,
+        "Under@11": 1.693,
+        "Over@11.5": 2.416,
+        "Under@11.5": 1.566
+      },
+      "match_winner": {
+        "2": 2.047,
+        "1": 2.209,
+        "X": 6.82
+      }
+    },
+    "market_count": 8,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718107815",
+        "markets": {
+          "double_chance": {
+            "12": 1.084,
+            "X2": 1.634,
+            "1X": 1.752
+          },
+          "asian_handicap_2": {
+            "1@1.25": 1.524,
+            "2@-1.25": 2.523
+          },
+          "asian_handicap": {
+            "1@1.5": 1.53,
+            "2@-1.5": 2.764,
+            "1@-1": 2.636,
+            "2@-1": 2.382,
+            "1@1": 1.58,
+            "2@1": 1.485,
+            "2@-2": 3.37,
+            "1@2": 1.322,
+            "2@-2.5": 3.735,
+            "1@2.5": 1.274
+          },
+          "btts": {
+            "No": 1.686,
+            "Yes": 2.177
+          },
+          "handicap_result": {
+            "2@5.5": 1.762,
+            "1@5.5": 2.061
+          },
+          "asian_total": {
+            "Under@10.75": 1.793,
+            "Over@10.75": 2.021
+          },
+          "over_under": {
+            "Under@10.5": 1.959,
+            "Over@10.5": 1.981,
+            "Over@9.5": 1.573,
+            "Under@9.5": 2.399,
+            "Over@10": 1.708,
+            "Under@10": 2.141,
+            "Over@11": 2.165,
+            "Under@11": 1.693,
+            "Over@11.5": 2.416,
+            "Under@11.5": 1.566
+          },
+          "match_winner": {
+            "2": 2.047,
+            "1": 2.209,
+            "X": 6.82
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718730181",
+    "external_id": "718730181",
+    "betradar_id": "",
+    "home_team": "Estrela da Amadora",
+    "away_team": "Famalicao",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.294,
+        "12": 1.313,
+        "1X": 1.84
+      },
+      "btts": {
+        "No": 1.39,
+        "Yes": 2.75
+      },
+      "asian_handicap": {
+        "2": 1.484,
+        "1": 2.801,
+        "1@-1": 7.2,
+        "2@-1": 2.71,
+        "1@1": 1.36,
+        "2@1": 1.035,
+        "1@-1.5": 8.3,
+        "2@-1.5": 3.5,
+        "1@1.5": 1.22,
+        "2@1.5": 1.015
+      },
+      "asian_handicap_2": {
+        "2@-0.25": 1.65,
+        "1@0.25": 2.06
+      },
+      "asian_total": {
+        "Over@2.25": 1.682,
+        "Under@2.25": 2.292
+      },
+      "first_half_over_under": {
+        "Over": 1.7,
+        "Under": 2.038
+      },
+      "handicap_result": {
+        "2@1.5": 1.78,
+        "1@1.5": 1.92
+      },
+      "over_under": {
+        "Over@2.5": 1.915,
+        "Under@2.5": 1.965,
+        "Over@1.5": 1.22,
+        "Under@1.5": 3.54,
+        "Over@2": 1.38,
+        "Under@2": 2.73,
+        "Over@3": 2.44,
+        "Under@3": 1.47,
+        "Over@3.5": 2.99,
+        "Under@3.5": 1.3
+      },
+      "match_winner": {
+        "2": 2.029,
+        "X": 3.64,
+        "1": 3.795
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718730181",
+        "markets": {
+          "double_chance": {
+            "X2": 1.294,
+            "12": 1.313,
+            "1X": 1.84
+          },
+          "btts": {
+            "No": 1.39,
+            "Yes": 2.75
+          },
+          "asian_handicap": {
+            "2": 1.484,
+            "1": 2.801,
+            "1@-1": 7.2,
+            "2@-1": 2.71,
+            "1@1": 1.36,
+            "2@1": 1.035,
+            "1@-1.5": 8.3,
+            "2@-1.5": 3.5,
+            "1@1.5": 1.22,
+            "2@1.5": 1.015
+          },
+          "asian_handicap_2": {
+            "2@-0.25": 1.65,
+            "1@0.25": 2.06
+          },
+          "asian_total": {
+            "Over@2.25": 1.682,
+            "Under@2.25": 2.292
+          },
+          "first_half_over_under": {
+            "Over": 1.7,
+            "Under": 2.038
+          },
+          "handicap_result": {
+            "2@1.5": 1.78,
+            "1@1.5": 1.92
+          },
+          "over_under": {
+            "Over@2.5": 1.915,
+            "Under@2.5": 1.965,
+            "Over@1.5": 1.22,
+            "Under@1.5": 3.54,
+            "Over@2": 1.38,
+            "Under@2": 2.73,
+            "Over@3": 2.44,
+            "Under@3": 1.47,
+            "Over@3.5": 2.99,
+            "Under@3.5": 1.3
+          },
+          "match_winner": {
+            "2": 2.029,
+            "X": 3.64,
+            "1": 3.795
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718730187",
+    "external_id": "718730187",
+    "betradar_id": "",
+    "home_team": "Gil Vicente",
+    "away_team": "Arouca",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.193,
+        "12": 1.277,
+        "X2": 2.189
+      },
+      "asian_handicap": {
+        "2@1.5": 1.442,
+        "1@-1.5": 2.961,
+        "1": 1.23,
+        "2": 3.42,
+        "1@-1": 2.14,
+        "2@1": 1.66,
+        "1@-2": 4.45,
+        "2@2": 1.136,
+        "1@-2.5": 5.25,
+        "2@2.5": 1.094
+      },
+      "handicap_result": {
+        "1@0.5": 1.49,
+        "2@0.5": 2.4
+      },
+      "asian_handicap_2": {
+        "2@1.25": 1.568,
+        "1@-1.25": 2.543
+      },
+      "asian_total": {
+        "Over@2.25": 1.619,
+        "Under@2.25": 2.419
+      },
+      "match_winner": {
+        "1": 1.726,
+        "X": 3.95,
+        "2": 5.04
+      },
+      "btts": {
+        "Yes": 1.727,
+        "No": 2.07
+      },
+      "first_half_over_under": {
+        "Over": 1.74,
+        "Under": 1.977
+      },
+      "over_under": {
+        "Over@2.5": 1.833,
+        "Under@2.5": 2.06,
+        "Over@1.5": 1.21,
+        "Under@1.5": 3.62,
+        "Over@2": 1.333,
+        "Under@2": 2.93,
+        "Over@3": 2.24,
+        "Under@3": 1.55,
+        "Over@3.5": 2.8,
+        "Under@3.5": 1.34
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718730187",
+        "markets": {
+          "double_chance": {
+            "1X": 1.193,
+            "12": 1.277,
+            "X2": 2.189
+          },
+          "asian_handicap": {
+            "2@1.5": 1.442,
+            "1@-1.5": 2.961,
+            "1": 1.23,
+            "2": 3.42,
+            "1@-1": 2.14,
+            "2@1": 1.66,
+            "1@-2": 4.45,
+            "2@2": 1.136,
+            "1@-2.5": 5.25,
+            "2@2.5": 1.094
+          },
+          "handicap_result": {
+            "1@0.5": 1.49,
+            "2@0.5": 2.4
+          },
+          "asian_handicap_2": {
+            "2@1.25": 1.568,
+            "1@-1.25": 2.543
+          },
+          "asian_total": {
+            "Over@2.25": 1.619,
+            "Under@2.25": 2.419
+          },
+          "match_winner": {
+            "1": 1.726,
+            "X": 3.95,
+            "2": 5.04
+          },
+          "btts": {
+            "Yes": 1.727,
+            "No": 2.07
+          },
+          "first_half_over_under": {
+            "Over": 1.74,
+            "Under": 1.977
+          },
+          "over_under": {
+            "Over@2.5": 1.833,
+            "Under@2.5": 2.06,
+            "Over@1.5": 1.21,
+            "Under@1.5": 3.62,
+            "Over@2": 1.333,
+            "Under@2": 2.93,
+            "Over@3": 2.24,
+            "Under@3": 1.55,
+            "Over@3.5": 2.8,
+            "Under@3.5": 1.34
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718730178",
+    "external_id": "718730178",
+    "betradar_id": "",
+    "home_team": "Rio Ave",
+    "away_team": "Sporting Clube de Portugal",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.022,
+        "12": 1.102,
+        "1X": 4.8
+      },
+      "match_winner": {
+        "2": 1.207,
+        "X": 7.7,
+        "1": 13.6
+      },
+      "asian_handicap_2": {
+        "1@2.25": 1.662,
+        "2@-2.25": 2.329
+      },
+      "asian_handicap": {
+        "2@-1.5": 1.672,
+        "1@1.5": 2.31,
+        "1": 8.5,
+        "2": 1.023,
+        "2@-1": 1.24,
+        "1@1": 3.34,
+        "2@-2": 1.98,
+        "1@2": 1.77,
+        "2@-2.5": 2.42,
+        "1@2.5": 1.46
+      },
+      "handicap_result": {
+        "1@2.5": 1.75,
+        "2@2.5": 1.95
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.9
+      },
+      "over_under": {
+        "Under@3.5": 1.824,
+        "Over@3.5": 2.071,
+        "Over@2.5": 1.34,
+        "Under@2.5": 2.8,
+        "Over@3": 1.55,
+        "Under@3": 2.24,
+        "Over@4": 2.62,
+        "Under@4": 1.41,
+        "Over@4.5": 3.18,
+        "Under@4.5": 1.27
+      },
+      "first_half_over_under": {
+        "Over": 1.833,
+        "Under": 1.874
+      },
+      "asian_total": {
+        "Over@3.25": 1.859,
+        "Under@3.25": 2.028
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718730178",
+        "markets": {
+          "double_chance": {
+            "X2": 1.022,
+            "12": 1.102,
+            "1X": 4.8
+          },
+          "match_winner": {
+            "2": 1.207,
+            "X": 7.7,
+            "1": 13.6
+          },
+          "asian_handicap_2": {
+            "1@2.25": 1.662,
+            "2@-2.25": 2.329
+          },
+          "asian_handicap": {
+            "2@-1.5": 1.672,
+            "1@1.5": 2.31,
+            "1": 8.5,
+            "2": 1.023,
+            "2@-1": 1.24,
+            "1@1": 3.34,
+            "2@-2": 1.98,
+            "1@2": 1.77,
+            "2@-2.5": 2.42,
+            "1@2.5": 1.46
+          },
+          "handicap_result": {
+            "1@2.5": 1.75,
+            "2@2.5": 1.95
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.9
+          },
+          "over_under": {
+            "Under@3.5": 1.824,
+            "Over@3.5": 2.071,
+            "Over@2.5": 1.34,
+            "Under@2.5": 2.8,
+            "Over@3": 1.55,
+            "Under@3": 2.24,
+            "Over@4": 2.62,
+            "Under@4": 1.41,
+            "Over@4.5": 3.18,
+            "Under@4.5": 1.27
+          },
+          "first_half_over_under": {
+            "Over": 1.833,
+            "Under": 1.874
+          },
+          "asian_total": {
+            "Over@3.25": 1.859,
+            "Under@3.25": 2.028
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718729511",
+    "external_id": "718729511",
+    "betradar_id": "",
+    "home_team": "Santa Clara",
+    "away_team": "Nacional da Madeira",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.356,
+        "12": 1.373,
+        "X2": 1.633
+      },
+      "handicap_result": {
+        "1@0.5": 1.39,
+        "2@0.5": 2.75
+      },
+      "btts": {
+        "No": 1.59,
+        "Yes": 2.22
+      },
+      "asian_handicap": {
+        "1": 1.66,
+        "2": 2.334,
+        "1@-1": 3.35,
+        "2@-1": 5.6,
+        "1@1": 1.08,
+        "2@1": 1.24,
+        "1@-1.5": 4.2,
+        "2@-1.5": 6.45,
+        "1@1.5": 1.052,
+        "2@1.5": 1.153
+      },
+      "over_under": {
+        "Under@2.5": 1.772,
+        "Over@2.5": 2.143,
+        "Over@1.5": 1.31,
+        "Under@1.5": 2.94,
+        "Over@2": 1.533,
+        "Under@2": 2.28,
+        "Over@3": 2.85,
+        "Under@3": 1.35,
+        "Over@3.5": 3.44,
+        "Under@3.5": 1.23
+      },
+      "first_half_over_under": {
+        "Over": 1.8,
+        "Under": 1.905
+      },
+      "asian_total": {
+        "Over@2.25": 1.894,
+        "Under@2.25": 1.988
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.898,
+        "1@-0.25": 1.983
+      },
+      "match_winner": {
+        "1": 2.358,
+        "X": 3.245,
+        "2": 3.345
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718729511",
+        "markets": {
+          "double_chance": {
+            "1X": 1.356,
+            "12": 1.373,
+            "X2": 1.633
+          },
+          "handicap_result": {
+            "1@0.5": 1.39,
+            "2@0.5": 2.75
+          },
+          "btts": {
+            "No": 1.59,
+            "Yes": 2.22
+          },
+          "asian_handicap": {
+            "1": 1.66,
+            "2": 2.334,
+            "1@-1": 3.35,
+            "2@-1": 5.6,
+            "1@1": 1.08,
+            "2@1": 1.24,
+            "1@-1.5": 4.2,
+            "2@-1.5": 6.45,
+            "1@1.5": 1.052,
+            "2@1.5": 1.153
+          },
+          "over_under": {
+            "Under@2.5": 1.772,
+            "Over@2.5": 2.143,
+            "Over@1.5": 1.31,
+            "Under@1.5": 2.94,
+            "Over@2": 1.533,
+            "Under@2": 2.28,
+            "Over@3": 2.85,
+            "Under@3": 1.35,
+            "Over@3.5": 3.44,
+            "Under@3.5": 1.23
+          },
+          "first_half_over_under": {
+            "Over": 1.8,
+            "Under": 1.905
+          },
+          "asian_total": {
+            "Over@2.25": 1.894,
+            "Under@2.25": 1.988
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.898,
+            "1@-0.25": 1.983
+          },
+          "match_winner": {
+            "1": 2.358,
+            "X": 3.245,
+            "2": 3.345
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718730184",
+    "external_id": "718730184",
+    "betradar_id": "",
+    "home_team": "Tondela",
+    "away_team": "Moreirense",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.235,
+        "12": 1.309,
+        "X2": 1.984
+      },
+      "asian_handicap": {
+        "1": 1.374,
+        "2": 3.295,
+        "1@-1": 2.47,
+        "2@-1": 8.9,
+        "1@1": 1.008,
+        "2@1": 1.43,
+        "1@-1.5": 3.2,
+        "2@-1.5": 8.6,
+        "1@1.5": 1.02,
+        "2@1.5": 1.26
+      },
+      "handicap_result": {
+        "1@0.5": 1.51,
+        "2@0.5": 2.4
+      },
+      "asian_handicap_2": {
+        "1@-0.25": 1.641,
+        "2@0.25": 2.372
+      },
+      "btts": {
+        "No": 1.79,
+        "Yes": 1.92
+      },
+      "asian_total": {
+        "Over@2.25": 1.799,
+        "Under@2.25": 2.104
+      },
+      "first_half_over_under": {
+        "Over": 1.83,
+        "Under": 1.874
+      },
+      "over_under": {
+        "Under@2.5": 1.852,
+        "Over@2.5": 2.037,
+        "Over@1.5": 1.27,
+        "Under@1.5": 3.18,
+        "Over@2": 1.46,
+        "Under@2": 2.46,
+        "Over@3": 2.69,
+        "Under@3": 1.39,
+        "Over@3.5": 3.38,
+        "Under@3.5": 1.24
+      },
+      "match_winner": {
+        "1": 1.879,
+        "X": 3.675,
+        "2": 4.41
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718730184",
+        "markets": {
+          "double_chance": {
+            "1X": 1.235,
+            "12": 1.309,
+            "X2": 1.984
+          },
+          "asian_handicap": {
+            "1": 1.374,
+            "2": 3.295,
+            "1@-1": 2.47,
+            "2@-1": 8.9,
+            "1@1": 1.008,
+            "2@1": 1.43,
+            "1@-1.5": 3.2,
+            "2@-1.5": 8.6,
+            "1@1.5": 1.02,
+            "2@1.5": 1.26
+          },
+          "handicap_result": {
+            "1@0.5": 1.51,
+            "2@0.5": 2.4
+          },
+          "asian_handicap_2": {
+            "1@-0.25": 1.641,
+            "2@0.25": 2.372
+          },
+          "btts": {
+            "No": 1.79,
+            "Yes": 1.92
+          },
+          "asian_total": {
+            "Over@2.25": 1.799,
+            "Under@2.25": 2.104
+          },
+          "first_half_over_under": {
+            "Over": 1.83,
+            "Under": 1.874
+          },
+          "over_under": {
+            "Under@2.5": 1.852,
+            "Over@2.5": 2.037,
+            "Over@1.5": 1.27,
+            "Under@1.5": 3.18,
+            "Over@2": 1.46,
+            "Under@2": 2.46,
+            "Over@3": 2.69,
+            "Under@3": 1.39,
+            "Over@3.5": 3.38,
+            "Under@3.5": 1.24
+          },
+          "match_winner": {
+            "1": 1.879,
+            "X": 3.675,
+            "2": 4.41
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719312667",
+    "external_id": "719312667",
+    "betradar_id": "",
+    "home_team": "Home",
+    "away_team": "Away",
+    "start_time": "2026-05-11T19:15:00Z",
+    "competition": "Portugal. Primeira Liga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.06,
+        "1X": 1.39,
+        "X2": 2.14
+      },
+      "match_winner": {
+        "1": 1.65,
+        "2": 2.777,
+        "X": 7.5
+      },
+      "handicap_result": {
+        "2@9.5": 1.65,
+        "1@9.5": 2.05
+      },
+      "btts": {
+        "No": 1.78,
+        "Yes": 1.9
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.865,
+        "2@1.5": 2.022,
+        "1@-1": 1.788,
+        "2@-1": 3.17,
+        "1@1": 1.357,
+        "2@1": 2.026,
+        "1@-2": 2.123,
+        "2@2": 1.72,
+        "1@-2.5": 2.1,
+        "2@2.5": 1.63
+      },
+      "asian_total": {
+        "Under@19.75": 1.875,
+        "Over@19.75": 1.925
+      },
+      "asian_handicap_2": {
+        "1@-1.25": 1.903,
+        "2@1.25": 1.978
+      },
+      "over_under": {
+        "Over@19.5": 1.929,
+        "Under@19.5": 1.95,
+        "Over@18.5": 1.59,
+        "Under@18.5": 2.14,
+        "Over@19": 1.709,
+        "Under@19": 2.139,
+        "Over@20": 2.011,
+        "Under@20": 1.801,
+        "Over@20.5": 2.13,
+        "Under@20.5": 1.6
+      }
+    },
+    "market_count": 8,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719312667",
+        "markets": {
+          "double_chance": {
+            "12": 1.06,
+            "1X": 1.39,
+            "X2": 2.14
+          },
+          "match_winner": {
+            "1": 1.65,
+            "2": 2.777,
+            "X": 7.5
+          },
+          "handicap_result": {
+            "2@9.5": 1.65,
+            "1@9.5": 2.05
+          },
+          "btts": {
+            "No": 1.78,
+            "Yes": 1.9
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.865,
+            "2@1.5": 2.022,
+            "1@-1": 1.788,
+            "2@-1": 3.17,
+            "1@1": 1.357,
+            "2@1": 2.026,
+            "1@-2": 2.123,
+            "2@2": 1.72,
+            "1@-2.5": 2.1,
+            "2@2.5": 1.63
+          },
+          "asian_total": {
+            "Under@19.75": 1.875,
+            "Over@19.75": 1.925
+          },
+          "asian_handicap_2": {
+            "1@-1.25": 1.903,
+            "2@1.25": 1.978
+          },
+          "over_under": {
+            "Over@19.5": 1.929,
+            "Under@19.5": 1.95,
+            "Over@18.5": 1.59,
+            "Under@18.5": 2.14,
+            "Over@19": 1.709,
+            "Under@19": 2.139,
+            "Over@20": 2.011,
+            "Under@20": 1.801,
+            "Over@20.5": 2.13,
+            "Under@20.5": 1.6
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719159760",
+    "external_id": "719159760",
+    "betradar_id": "",
+    "home_team": "Neom SC",
+    "away_team": "Al Shabab Riyadh",
+    "start_time": "2026-05-11T16:50:00Z",
+    "competition": "Saudi Arabia. Saudi Professional League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.257,
+        "1X": 1.363,
+        "X2": 1.594
+      },
+      "first_half_over_under": {
+        "Over": 1.53,
+        "Under": 2.321
+      },
+      "handicap_result": {
+        "2@1.5": 1.54,
+        "1@1.5": 2.32
+      },
+      "asian_handicap": {
+        "1": 1.653,
+        "2": 2.153,
+        "1@-1": 3.28,
+        "2@-1": 4.95,
+        "1@1": 1.106,
+        "2@1": 1.25,
+        "1@-1.5": 4.15,
+        "2@-1.5": 5.95,
+        "1@1.5": 1.067,
+        "2@1.5": 1.159
+      },
+      "over_under": {
+        "Over@2.5": 1.658,
+        "Under@2.5": 2.144,
+        "Over@1.5": 1.156,
+        "Under@1.5": 4.15,
+        "Over@2": 1.25,
+        "Under@2": 3.28,
+        "Over@3": 2.03,
+        "Under@3": 1.63,
+        "Over@3.5": 2.56,
+        "Under@3.5": 1.4
+      },
+      "btts": {
+        "No": 1.76,
+        "Yes": 1.95
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.82,
+        "1@-0.25": 1.923
+      },
+      "asian_total": {
+        "Over@2.75": 1.829,
+        "Under@2.75": 1.912
+      },
+      "match_winner": {
+        "1": 2.232,
+        "2": 2.928,
+        "X": 3.57
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719159760",
+        "markets": {
+          "double_chance": {
+            "12": 1.257,
+            "1X": 1.363,
+            "X2": 1.594
+          },
+          "first_half_over_under": {
+            "Over": 1.53,
+            "Under": 2.321
+          },
+          "handicap_result": {
+            "2@1.5": 1.54,
+            "1@1.5": 2.32
+          },
+          "asian_handicap": {
+            "1": 1.653,
+            "2": 2.153,
+            "1@-1": 3.28,
+            "2@-1": 4.95,
+            "1@1": 1.106,
+            "2@1": 1.25,
+            "1@-1.5": 4.15,
+            "2@-1.5": 5.95,
+            "1@1.5": 1.067,
+            "2@1.5": 1.159
+          },
+          "over_under": {
+            "Over@2.5": 1.658,
+            "Under@2.5": 2.144,
+            "Over@1.5": 1.156,
+            "Under@1.5": 4.15,
+            "Over@2": 1.25,
+            "Under@2": 3.28,
+            "Over@3": 2.03,
+            "Under@3": 1.63,
+            "Over@3.5": 2.56,
+            "Under@3.5": 1.4
+          },
+          "btts": {
+            "No": 1.76,
+            "Yes": 1.95
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.82,
+            "1@-0.25": 1.923
+          },
+          "asian_total": {
+            "Over@2.75": 1.829,
+            "Under@2.75": 1.912
+          },
+          "match_winner": {
+            "1": 2.232,
+            "2": 2.928,
+            "X": 3.57
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718899429",
+    "external_id": "718899429",
+    "betradar_id": "",
+    "home_team": "Al-Taawon",
+    "away_team": "Al-Ahli Jeddah",
+    "start_time": "2026-05-11T18:00:00Z",
+    "competition": "Saudi Arabia. Saudi Professional League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.215,
+        "12": 1.232,
+        "1X": 1.917
+      },
+      "asian_handicap": {
+        "2": 1.363,
+        "1": 2.977,
+        "1@-1": 7.1,
+        "2@-1": 2.36,
+        "1@1": 1.5,
+        "2@1": 1.036,
+        "1@-1.5": 8.0,
+        "2@-1.5": 2.97,
+        "1@1.5": 1.3,
+        "2@1.5": 1.02
+      },
+      "btts": {
+        "Yes": 1.4,
+        "No": 2.64
+      },
+      "asian_total": {
+        "Over@2.25": 1.55,
+        "Under@2.25": 2.356
+      },
+      "first_half_over_under": {
+        "Over": 1.66,
+        "Under": 2.073
+      },
+      "over_under": {
+        "Over@2.5": 1.739,
+        "Under@2.5": 2.022,
+        "Over@1.5": 1.196,
+        "Under@1.5": 3.72,
+        "Over@2": 1.31,
+        "Under@2": 2.92,
+        "Over@3": 2.15,
+        "Under@3": 1.56,
+        "Over@3.5": 2.7,
+        "Under@3.5": 1.36
+      },
+      "asian_handicap_2": {
+        "1@0.75": 1.754,
+        "2@-0.75": 2.002
+      },
+      "handicap_result": {
+        "1@1.5": 1.77,
+        "2@1.5": 1.94
+      },
+      "match_winner": {
+        "2": 1.807,
+        "X": 3.79,
+        "1": 3.965
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718899429",
+        "markets": {
+          "double_chance": {
+            "X2": 1.215,
+            "12": 1.232,
+            "1X": 1.917
+          },
+          "asian_handicap": {
+            "2": 1.363,
+            "1": 2.977,
+            "1@-1": 7.1,
+            "2@-1": 2.36,
+            "1@1": 1.5,
+            "2@1": 1.036,
+            "1@-1.5": 8.0,
+            "2@-1.5": 2.97,
+            "1@1.5": 1.3,
+            "2@1.5": 1.02
+          },
+          "btts": {
+            "Yes": 1.4,
+            "No": 2.64
+          },
+          "asian_total": {
+            "Over@2.25": 1.55,
+            "Under@2.25": 2.356
+          },
+          "first_half_over_under": {
+            "Over": 1.66,
+            "Under": 2.073
+          },
+          "over_under": {
+            "Over@2.5": 1.739,
+            "Under@2.5": 2.022,
+            "Over@1.5": 1.196,
+            "Under@1.5": 3.72,
+            "Over@2": 1.31,
+            "Under@2": 2.92,
+            "Over@3": 2.15,
+            "Under@3": 1.56,
+            "Over@3.5": 2.7,
+            "Under@3.5": 1.36
+          },
+          "asian_handicap_2": {
+            "1@0.75": 1.754,
+            "2@-0.75": 2.002
+          },
+          "handicap_result": {
+            "1@1.5": 1.77,
+            "2@1.5": 1.94
+          },
+          "match_winner": {
+            "2": 1.807,
+            "X": 3.79,
+            "1": 3.965
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719702301",
+    "external_id": "719702301",
+    "betradar_id": "",
+    "home_team": "Millwall",
+    "away_team": "Hull City",
+    "start_time": "2026-05-11T19:00:00Z",
+    "competition": "England. Championship",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.22,
+        "12": 1.285,
+        "X2": 2.11
+      },
+      "asian_handicap": {
+        "2@1.5": 1.35,
+        "1@-1.5": 2.94,
+        "1": 1.29,
+        "2": 3.22,
+        "1@-1": 2.34,
+        "2@1": 1.6,
+        "1@-2": 4.9,
+        "2@2": 1.125,
+        "1@-2.5": 5.55,
+        "2@2.5": 1.082
+      },
+      "handicap_result": {
+        "1@0.5": 1.49,
+        "2@0.5": 2.44
+      },
+      "asian_total": {
+        "Over@2.25": 1.643,
+        "Under@2.25": 2.275
+      },
+      "first_half_over_under": {
+        "Over": 1.76,
+        "Under": 1.973
+      },
+      "match_winner": {
+        "1": 1.8,
+        "X": 3.9,
+        "2": 4.625
+      },
+      "asian_handicap_2": {
+        "2@0.75": 1.82,
+        "1@-0.75": 1.9
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.99
+      },
+      "over_under": {
+        "Over@2.5": 1.85,
+        "Under@2.5": 1.97,
+        "Over@1.5": 1.24,
+        "Under@1.5": 3.56,
+        "Over@2": 1.39,
+        "Under@2": 2.81,
+        "Over@3": 2.39,
+        "Under@3": 1.52,
+        "Over@3.5": 2.96,
+        "Under@3.5": 1.333
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719702301",
+        "markets": {
+          "double_chance": {
+            "1X": 1.22,
+            "12": 1.285,
+            "X2": 2.11
+          },
+          "asian_handicap": {
+            "2@1.5": 1.35,
+            "1@-1.5": 2.94,
+            "1": 1.29,
+            "2": 3.22,
+            "1@-1": 2.34,
+            "2@1": 1.6,
+            "1@-2": 4.9,
+            "2@2": 1.125,
+            "1@-2.5": 5.55,
+            "2@2.5": 1.082
+          },
+          "handicap_result": {
+            "1@0.5": 1.49,
+            "2@0.5": 2.44
+          },
+          "asian_total": {
+            "Over@2.25": 1.643,
+            "Under@2.25": 2.275
+          },
+          "first_half_over_under": {
+            "Over": 1.76,
+            "Under": 1.973
+          },
+          "match_winner": {
+            "1": 1.8,
+            "X": 3.9,
+            "2": 4.625
+          },
+          "asian_handicap_2": {
+            "2@0.75": 1.82,
+            "1@-0.75": 1.9
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.99
+          },
+          "over_under": {
+            "Over@2.5": 1.85,
+            "Under@2.5": 1.97,
+            "Over@1.5": 1.24,
+            "Under@1.5": 3.56,
+            "Over@2": 1.39,
+            "Under@2": 2.81,
+            "Over@3": 2.39,
+            "Under@3": 1.52,
+            "Over@3.5": 2.96,
+            "Under@3.5": 1.333
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718454882",
+    "external_id": "718454882",
+    "betradar_id": "",
+    "home_team": "Huesca",
+    "away_team": "Real Sociedad II",
+    "start_time": "2026-05-11T18:30:00Z",
+    "competition": "Spain. Segunda Division",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.284,
+        "1X": 1.286,
+        "X2": 1.839
+      },
+      "handicap_result": {
+        "1@0.5": 1.44,
+        "2@0.5": 2.55
+      },
+      "asian_handicap": {
+        "1": 1.483,
+        "2": 2.722,
+        "1@-1": 2.71,
+        "2@-1": 6.55,
+        "1@1": 1.05,
+        "2@1": 1.36,
+        "1@-1.5": 3.5,
+        "2@-1.5": 7.5,
+        "1@1.5": 1.029,
+        "2@1.5": 1.22
+      },
+      "btts": {
+        "No": 1.727,
+        "Yes": 2.07
+      },
+      "asian_handicap_2": {
+        "1@-0.25": 1.729,
+        "2@0.25": 2.158
+      },
+      "asian_total": {
+        "Over@2.25": 1.79,
+        "Under@2.25": 2.071
+      },
+      "first_half_over_under": {
+        "Over": 1.81,
+        "Under": 1.895
+      },
+      "over_under": {
+        "Under@2.5": 1.823,
+        "Over@2.5": 2.027,
+        "Over@1.5": 1.28,
+        "Under@1.5": 3.125,
+        "Over@2": 1.48,
+        "Under@2": 2.41,
+        "Over@3": 2.73,
+        "Under@3": 1.38,
+        "Over@3.5": 3.38,
+        "Under@3.5": 1.24
+      },
+      "match_winner": {
+        "1": 1.986,
+        "2": 3.705,
+        "X": 3.725
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718454882",
+        "markets": {
+          "double_chance": {
+            "12": 1.284,
+            "1X": 1.286,
+            "X2": 1.839
+          },
+          "handicap_result": {
+            "1@0.5": 1.44,
+            "2@0.5": 2.55
+          },
+          "asian_handicap": {
+            "1": 1.483,
+            "2": 2.722,
+            "1@-1": 2.71,
+            "2@-1": 6.55,
+            "1@1": 1.05,
+            "2@1": 1.36,
+            "1@-1.5": 3.5,
+            "2@-1.5": 7.5,
+            "1@1.5": 1.029,
+            "2@1.5": 1.22
+          },
+          "btts": {
+            "No": 1.727,
+            "Yes": 2.07
+          },
+          "asian_handicap_2": {
+            "1@-0.25": 1.729,
+            "2@0.25": 2.158
+          },
+          "asian_total": {
+            "Over@2.25": 1.79,
+            "Under@2.25": 2.071
+          },
+          "first_half_over_under": {
+            "Over": 1.81,
+            "Under": 1.895
+          },
+          "over_under": {
+            "Under@2.5": 1.823,
+            "Over@2.5": 2.027,
+            "Over@1.5": 1.28,
+            "Under@1.5": 3.125,
+            "Over@2": 1.48,
+            "Under@2": 2.41,
+            "Over@3": 2.73,
+            "Under@3": 1.38,
+            "Over@3.5": 3.38,
+            "Under@3.5": 1.24
+          },
+          "match_winner": {
+            "1": 1.986,
+            "2": 3.705,
+            "X": 3.725
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718386417",
+    "external_id": "718386417",
+    "betradar_id": "",
+    "home_team": "Yenisey Krasnoyarsk",
+    "away_team": "Arsenal Tula",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Russian Championship. League 1",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.312,
+        "1X": 1.361,
+        "X2": 1.629
+      },
+      "handicap_result": {
+        "1@0.5": 1.4,
+        "2@0.5": 2.7
+      },
+      "btts": {
+        "No": 1.53,
+        "Yes": 2.34
+      },
+      "asian_handicap": {
+        "1": 1.656,
+        "2": 2.256,
+        "1@-1": 3.5,
+        "2@-1": 5.8,
+        "1@1": 1.071,
+        "2@1": 1.22,
+        "1@-1.5": 4.55,
+        "2@-1.5": 7.0,
+        "1@1.5": 1.039,
+        "2@1.5": 1.13
+      },
+      "over_under": {
+        "Under@2.5": 1.72,
+        "Over@2.5": 2.147,
+        "Over@1.5": 1.31,
+        "Under@1.5": 2.92,
+        "Over@2": 1.55,
+        "Under@2": 2.22,
+        "Over@3": 3.06,
+        "Under@3": 1.3,
+        "Over@3.5": 3.8,
+        "Under@3.5": 1.188
+      },
+      "first_half_over_under": {
+        "Over": 1.84,
+        "Under": 1.864
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.874,
+        "1@-0.25": 1.947
+      },
+      "asian_total": {
+        "Over@2.25": 1.894,
+        "Under@2.25": 1.926
+      },
+      "match_winner": {
+        "1": 2.279,
+        "2": 3.145,
+        "X": 3.44
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718386417",
+        "markets": {
+          "double_chance": {
+            "12": 1.312,
+            "1X": 1.361,
+            "X2": 1.629
+          },
+          "handicap_result": {
+            "1@0.5": 1.4,
+            "2@0.5": 2.7
+          },
+          "btts": {
+            "No": 1.53,
+            "Yes": 2.34
+          },
+          "asian_handicap": {
+            "1": 1.656,
+            "2": 2.256,
+            "1@-1": 3.5,
+            "2@-1": 5.8,
+            "1@1": 1.071,
+            "2@1": 1.22,
+            "1@-1.5": 4.55,
+            "2@-1.5": 7.0,
+            "1@1.5": 1.039,
+            "2@1.5": 1.13
+          },
+          "over_under": {
+            "Under@2.5": 1.72,
+            "Over@2.5": 2.147,
+            "Over@1.5": 1.31,
+            "Under@1.5": 2.92,
+            "Over@2": 1.55,
+            "Under@2": 2.22,
+            "Over@3": 3.06,
+            "Under@3": 1.3,
+            "Over@3.5": 3.8,
+            "Under@3.5": 1.188
+          },
+          "first_half_over_under": {
+            "Over": 1.84,
+            "Under": 1.864
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.874,
+            "1@-0.25": 1.947
+          },
+          "asian_total": {
+            "Over@2.25": 1.894,
+            "Under@2.25": 1.926
+          },
+          "match_winner": {
+            "1": 2.279,
+            "2": 3.145,
+            "X": 3.44
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718386414",
+    "external_id": "718386414",
+    "betradar_id": "",
+    "home_team": "Ural",
+    "away_team": "KAMAZ",
+    "start_time": "2026-05-11T11:00:00Z",
+    "competition": "Russian Championship. League 1",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.246,
+        "12": 1.315,
+        "X2": 1.826
+      },
+      "asian_handicap": {
+        "1": 1.396,
+        "2": 3.02,
+        "1@-1": 2.75,
+        "2@-1": 7.5,
+        "1@1": 1.028,
+        "2@1": 1.41,
+        "1@-1.5": 3.38,
+        "2@-1.5": 8.5,
+        "1@1.5": 1.012,
+        "2@1.5": 1.24
+      },
+      "handicap_result": {
+        "1@0.5": 1.45,
+        "2@0.5": 2.51
+      },
+      "asian_handicap_2": {
+        "1@-0.25": 1.694,
+        "2@0.25": 2.189
+      },
+      "btts": {
+        "No": 1.75,
+        "Yes": 2.01
+      },
+      "asian_total": {
+        "Over@2.25": 1.758,
+        "Under@2.25": 2.091
+      },
+      "first_half_over_under": {
+        "Over": 1.78,
+        "Under": 1.926
+      },
+      "over_under": {
+        "Under@2.5": 1.841,
+        "Over@2.5": 1.984,
+        "Over@1.5": 1.27,
+        "Under@1.5": 3.14,
+        "Over@2": 1.45,
+        "Under@2": 2.46,
+        "Over@3": 2.62,
+        "Under@3": 1.4,
+        "Over@3.5": 3.2,
+        "Under@3.5": 1.26
+      },
+      "match_winner": {
+        "1": 1.98,
+        "X": 3.42,
+        "2": 4.0
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718386414",
+        "markets": {
+          "double_chance": {
+            "1X": 1.246,
+            "12": 1.315,
+            "X2": 1.826
+          },
+          "asian_handicap": {
+            "1": 1.396,
+            "2": 3.02,
+            "1@-1": 2.75,
+            "2@-1": 7.5,
+            "1@1": 1.028,
+            "2@1": 1.41,
+            "1@-1.5": 3.38,
+            "2@-1.5": 8.5,
+            "1@1.5": 1.012,
+            "2@1.5": 1.24
+          },
+          "handicap_result": {
+            "1@0.5": 1.45,
+            "2@0.5": 2.51
+          },
+          "asian_handicap_2": {
+            "1@-0.25": 1.694,
+            "2@0.25": 2.189
+          },
+          "btts": {
+            "No": 1.75,
+            "Yes": 2.01
+          },
+          "asian_total": {
+            "Over@2.25": 1.758,
+            "Under@2.25": 2.091
+          },
+          "first_half_over_under": {
+            "Over": 1.78,
+            "Under": 1.926
+          },
+          "over_under": {
+            "Under@2.5": 1.841,
+            "Over@2.5": 1.984,
+            "Over@1.5": 1.27,
+            "Under@1.5": 3.14,
+            "Over@2": 1.45,
+            "Under@2": 2.46,
+            "Over@3": 2.62,
+            "Under@3": 1.4,
+            "Over@3.5": 3.2,
+            "Under@3.5": 1.26
+          },
+          "match_winner": {
+            "1": 1.98,
+            "X": 3.42,
+            "2": 4.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718387155",
+    "external_id": "718387155",
+    "betradar_id": "",
+    "home_team": "Shinnik Yaroslavl",
+    "away_team": "Torpedo Moscow",
+    "start_time": "2026-05-11T14:00:00Z",
+    "competition": "Russian Championship. League 1",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.39,
+        "1X": 1.402,
+        "X2": 1.475
+      },
+      "btts": {
+        "Yes": 1.4,
+        "No": 2.7
+      },
+      "handicap_result": {
+        "1@0.5": 1.41,
+        "2@0.5": 2.7
+      },
+      "over_under": {
+        "Under@2.5": 1.593,
+        "Over@2.5": 2.384,
+        "Over@1.5": 1.444,
+        "Under@1.5": 2.67,
+        "Over@2": 1.72,
+        "Under@2": 1.95,
+        "Over@3": 3.42,
+        "Under@3": 1.23,
+        "Over@3.5": 4.1,
+        "Under@3.5": 1.16
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.687,
+        "1@-0.25": 2.201
+      },
+      "asian_total": {
+        "Under@2.25": 1.756,
+        "Over@2.25": 2.093
+      },
+      "first_half_over_under": {
+        "Under": 1.771,
+        "Over": 1.94
+      },
+      "asian_handicap": {
+        "1": 1.826,
+        "2": 2.002,
+        "1@-1": 4.3,
+        "2@-1": 4.95,
+        "1@1": 1.108,
+        "2@1": 1.148,
+        "1@-1.5": 5.2,
+        "2@-1.5": 5.85,
+        "1@1.5": 1.07,
+        "2@1.5": 1.096
+      },
+      "match_winner": {
+        "1": 2.67,
+        "2": 2.948,
+        "X": 3.0
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718387155",
+        "markets": {
+          "double_chance": {
+            "12": 1.39,
+            "1X": 1.402,
+            "X2": 1.475
+          },
+          "btts": {
+            "Yes": 1.4,
+            "No": 2.7
+          },
+          "handicap_result": {
+            "1@0.5": 1.41,
+            "2@0.5": 2.7
+          },
+          "over_under": {
+            "Under@2.5": 1.593,
+            "Over@2.5": 2.384,
+            "Over@1.5": 1.444,
+            "Under@1.5": 2.67,
+            "Over@2": 1.72,
+            "Under@2": 1.95,
+            "Over@3": 3.42,
+            "Under@3": 1.23,
+            "Over@3.5": 4.1,
+            "Under@3.5": 1.16
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.687,
+            "1@-0.25": 2.201
+          },
+          "asian_total": {
+            "Under@2.25": 1.756,
+            "Over@2.25": 2.093
+          },
+          "first_half_over_under": {
+            "Under": 1.771,
+            "Over": 1.94
+          },
+          "asian_handicap": {
+            "1": 1.826,
+            "2": 2.002,
+            "1@-1": 4.3,
+            "2@-1": 4.95,
+            "1@1": 1.108,
+            "2@1": 1.148,
+            "1@-1.5": 5.2,
+            "2@-1.5": 5.85,
+            "1@1.5": 1.07,
+            "2@1.5": 1.096
+          },
+          "match_winner": {
+            "1": 2.67,
+            "2": 2.948,
+            "X": 3.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719889540",
+    "external_id": "719889540",
+    "betradar_id": "",
+    "home_team": "Home",
+    "away_team": "Away",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Russian Championship. League 1",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.109,
+        "1X": 1.372,
+        "X2": 2.104
+      },
+      "asian_handicap_2": {
+        "2@1.75": 1.514,
+        "1@-1.75": 2.551
+      },
+      "asian_handicap": {
+        "2@1.5": 1.624,
+        "1@-1.5": 2.317,
+        "1@-1": 2.005,
+        "2@-1": 4.045,
+        "1@1": 1.241,
+        "2@1": 1.805,
+        "1@-2": 2.925,
+        "2@2": 1.407,
+        "1@-2.5": 3.335,
+        "2@2.5": 1.328
+      },
+      "handicap_result": {
+        "2@3.5": 1.63,
+        "1@3.5": 2.278
+      },
+      "btts": {
+        "Yes": 1.669,
+        "No": 2.205
+      },
+      "over_under": {
+        "Under@7.5": 1.749,
+        "Over@7.5": 2.103,
+        "Over@6.5": 1.634,
+        "Under@6.5": 2.27,
+        "Over@7": 1.827,
+        "Under@7": 1.979,
+        "Over@8": 2.524,
+        "Under@8": 1.524,
+        "Over@8.5": 2.874,
+        "Under@8.5": 1.419
+      },
+      "match_winner": {
+        "1": 1.775,
+        "2": 2.901,
+        "X": 5.9
+      },
+      "asian_total": {
+        "Under@7.25": 1.844,
+        "Over@7.25": 1.96
+      }
+    },
+    "market_count": 8,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719889540",
+        "markets": {
+          "double_chance": {
+            "12": 1.109,
+            "1X": 1.372,
+            "X2": 2.104
+          },
+          "asian_handicap_2": {
+            "2@1.75": 1.514,
+            "1@-1.75": 2.551
+          },
+          "asian_handicap": {
+            "2@1.5": 1.624,
+            "1@-1.5": 2.317,
+            "1@-1": 2.005,
+            "2@-1": 4.045,
+            "1@1": 1.241,
+            "2@1": 1.805,
+            "1@-2": 2.925,
+            "2@2": 1.407,
+            "1@-2.5": 3.335,
+            "2@2.5": 1.328
+          },
+          "handicap_result": {
+            "2@3.5": 1.63,
+            "1@3.5": 2.278
+          },
+          "btts": {
+            "Yes": 1.669,
+            "No": 2.205
+          },
+          "over_under": {
+            "Under@7.5": 1.749,
+            "Over@7.5": 2.103,
+            "Over@6.5": 1.634,
+            "Under@6.5": 2.27,
+            "Over@7": 1.827,
+            "Under@7": 1.979,
+            "Over@8": 2.524,
+            "Under@8": 1.524,
+            "Over@8.5": 2.874,
+            "Under@8.5": 1.419
+          },
+          "match_winner": {
+            "1": 1.775,
+            "2": 2.901,
+            "X": 5.9
+          },
+          "asian_total": {
+            "Under@7.25": 1.844,
+            "Over@7.25": 1.96
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718179922",
+    "external_id": "718179922",
+    "betradar_id": "",
+    "home_team": "Randers",
+    "away_team": "Odense",
+    "start_time": "2026-05-11T17:00:00Z",
+    "competition": "Denmark. Superliga",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.28,
+        "1X": 1.36,
+        "X2": 1.62
+      },
+      "first_half_over_under": {
+        "Over": 1.53,
+        "Under": 2.347
+      },
+      "handicap_result": {
+        "2@1.5": 1.58,
+        "1@1.5": 2.33
+      },
+      "asian_handicap": {
+        "1": 1.63,
+        "2": 2.2,
+        "1@-1": 3.1,
+        "2@-1": 4.8,
+        "1@1": 1.116,
+        "2@1": 1.28,
+        "1@-1.5": 3.82,
+        "2@-1.5": 5.55,
+        "1@1.5": 1.08,
+        "2@1.5": 1.185
+      },
+      "over_under": {
+        "Over@2.5": 1.65,
+        "Under@2.5": 2.19,
+        "Over@1.5": 1.165,
+        "Under@1.5": 4.1,
+        "Over@2": 1.27,
+        "Under@2": 3.3,
+        "Over@3": 1.99,
+        "Under@3": 1.7,
+        "Over@3.5": 2.45,
+        "Under@3.5": 1.44
+      },
+      "asian_total": {
+        "Over@2.75": 1.804,
+        "Under@2.75": 1.967
+      },
+      "btts": {
+        "No": 1.833,
+        "Yes": 1.94
+      },
+      "asian_handicap_2": {
+        "2@0.25": 1.852,
+        "1@-0.25": 1.893
+      },
+      "match_winner": {
+        "1": 2.23,
+        "2": 3.005,
+        "X": 3.5
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718179922",
+        "markets": {
+          "double_chance": {
+            "12": 1.28,
+            "1X": 1.36,
+            "X2": 1.62
+          },
+          "first_half_over_under": {
+            "Over": 1.53,
+            "Under": 2.347
+          },
+          "handicap_result": {
+            "2@1.5": 1.58,
+            "1@1.5": 2.33
+          },
+          "asian_handicap": {
+            "1": 1.63,
+            "2": 2.2,
+            "1@-1": 3.1,
+            "2@-1": 4.8,
+            "1@1": 1.116,
+            "2@1": 1.28,
+            "1@-1.5": 3.82,
+            "2@-1.5": 5.55,
+            "1@1.5": 1.08,
+            "2@1.5": 1.185
+          },
+          "over_under": {
+            "Over@2.5": 1.65,
+            "Under@2.5": 2.19,
+            "Over@1.5": 1.165,
+            "Under@1.5": 4.1,
+            "Over@2": 1.27,
+            "Under@2": 3.3,
+            "Over@3": 1.99,
+            "Under@3": 1.7,
+            "Over@3.5": 2.45,
+            "Under@3.5": 1.44
+          },
+          "asian_total": {
+            "Over@2.75": 1.804,
+            "Under@2.75": 1.967
+          },
+          "btts": {
+            "No": 1.833,
+            "Yes": 1.94
+          },
+          "asian_handicap_2": {
+            "2@0.25": 1.852,
+            "1@-0.25": 1.893
+          },
+          "match_winner": {
+            "1": 2.23,
+            "2": 3.005,
+            "X": 3.5
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:720031459",
+    "external_id": "720031459",
+    "betradar_id": "",
+    "home_team": "Atletico Cali",
+    "away_team": "Patriotas Boyaca",
+    "start_time": "2026-05-11T20:00:00Z",
+    "competition": "Copa Colombia",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.168,
+        "12": 1.29,
+        "1X": 1.71
+      },
+      "asian_handicap": {
+        "2": 1.36,
+        "1": 2.81,
+        "1@-1": 8.9,
+        "2@-1": 2.875,
+        "1@1": 1.32,
+        "2@1": 1.007,
+        "1@-1.5": 8.9,
+        "2@-1.5": 3.75,
+        "1@1.5": 1.192,
+        "2@1.5": 1.03
+      },
+      "over_under": {
+        "Under@2.5": 1.55,
+        "Over@2.5": 2.29,
+        "Over@1.5": 1.38,
+        "Under@1.5": 2.625,
+        "Over@2": 1.67,
+        "Under@2": 1.98,
+        "Over@3": 3.42,
+        "Under@3": 1.23,
+        "Over@3.5": 4.2,
+        "Under@3.5": 1.152
+      },
+      "asian_handicap_2": {
+        "1@0.75": 1.56,
+        "2@-0.75": 2.254
+      },
+      "btts": {
+        "Yes": 1.58,
+        "No": 2.23
+      },
+      "handicap_result": {
+        "2@1.5": 1.58,
+        "1@1.5": 2.24
+      },
+      "first_half_over_under": {
+        "Under": 1.712,
+        "Over": 2.0
+      },
+      "asian_total": {
+        "Under@2.25": 1.725,
+        "Over@2.25": 1.991
+      },
+      "match_winner": {
+        "2": 1.929,
+        "X": 2.99,
+        "1": 4.05
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:720031459",
+        "markets": {
+          "double_chance": {
+            "X2": 1.168,
+            "12": 1.29,
+            "1X": 1.71
+          },
+          "asian_handicap": {
+            "2": 1.36,
+            "1": 2.81,
+            "1@-1": 8.9,
+            "2@-1": 2.875,
+            "1@1": 1.32,
+            "2@1": 1.007,
+            "1@-1.5": 8.9,
+            "2@-1.5": 3.75,
+            "1@1.5": 1.192,
+            "2@1.5": 1.03
+          },
+          "over_under": {
+            "Under@2.5": 1.55,
+            "Over@2.5": 2.29,
+            "Over@1.5": 1.38,
+            "Under@1.5": 2.625,
+            "Over@2": 1.67,
+            "Under@2": 1.98,
+            "Over@3": 3.42,
+            "Under@3": 1.23,
+            "Over@3.5": 4.2,
+            "Under@3.5": 1.152
+          },
+          "asian_handicap_2": {
+            "1@0.75": 1.56,
+            "2@-0.75": 2.254
+          },
+          "btts": {
+            "Yes": 1.58,
+            "No": 2.23
+          },
+          "handicap_result": {
+            "2@1.5": 1.58,
+            "1@1.5": 2.24
+          },
+          "first_half_over_under": {
+            "Under": 1.712,
+            "Over": 2.0
+          },
+          "asian_total": {
+            "Under@2.25": 1.725,
+            "Over@2.25": 1.991
+          },
+          "match_winner": {
+            "2": 1.929,
+            "X": 2.99,
+            "1": 4.05
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:720043152",
+    "external_id": "720043152",
+    "betradar_id": "",
+    "home_team": "Independiente Medellin",
+    "away_team": "Fortaleza Zipaquira",
+    "start_time": "2026-05-11T21:00:00Z",
+    "competition": "Copa Colombia",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.056,
+        "12": 1.188,
+        "X2": 2.33
+      },
+      "match_winner": {
+        "1": 1.48,
+        "X": 3.74,
+        "2": 6.4
+      },
+      "asian_handicap": {
+        "2@1.5": 1.48,
+        "1@-1.5": 2.33,
+        "1": 1.128,
+        "2": 4.6,
+        "1@-1": 1.82,
+        "2@1": 1.85,
+        "1@-2": 3.58,
+        "2@2": 1.21,
+        "1@-2.5": 4.3,
+        "2@2.5": 1.145
+      },
+      "asian_handicap_2": {
+        "2@1.25": 1.609,
+        "1@-1.25": 2.069
+      },
+      "asian_total": {
+        "Under@2.75": 1.644,
+        "Over@2.75": 2.114
+      },
+      "btts": {
+        "Yes": 1.65,
+        "No": 2.1
+      },
+      "first_half_over_under": {
+        "Under": 1.733,
+        "Over": 1.97
+      },
+      "handicap_result": {
+        "1@0.5": 1.75,
+        "2@0.5": 1.95
+      },
+      "over_under": {
+        "Under@2.5": 1.83,
+        "Over@2.5": 1.87,
+        "Over@1.5": 1.26,
+        "Under@1.5": 3.2,
+        "Over@2": 1.41,
+        "Under@2": 2.52,
+        "Over@3": 2.46,
+        "Under@3": 1.43,
+        "Over@3.5": 3.05,
+        "Under@3.5": 1.285
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:720043152",
+        "markets": {
+          "double_chance": {
+            "1X": 1.056,
+            "12": 1.188,
+            "X2": 2.33
+          },
+          "match_winner": {
+            "1": 1.48,
+            "X": 3.74,
+            "2": 6.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.48,
+            "1@-1.5": 2.33,
+            "1": 1.128,
+            "2": 4.6,
+            "1@-1": 1.82,
+            "2@1": 1.85,
+            "1@-2": 3.58,
+            "2@2": 1.21,
+            "1@-2.5": 4.3,
+            "2@2.5": 1.145
+          },
+          "asian_handicap_2": {
+            "2@1.25": 1.609,
+            "1@-1.25": 2.069
+          },
+          "asian_total": {
+            "Under@2.75": 1.644,
+            "Over@2.75": 2.114
+          },
+          "btts": {
+            "Yes": 1.65,
+            "No": 2.1
+          },
+          "first_half_over_under": {
+            "Under": 1.733,
+            "Over": 1.97
+          },
+          "handicap_result": {
+            "1@0.5": 1.75,
+            "2@0.5": 1.95
+          },
+          "over_under": {
+            "Under@2.5": 1.83,
+            "Over@2.5": 1.87,
+            "Over@1.5": 1.26,
+            "Under@1.5": 3.2,
+            "Over@2": 1.41,
+            "Under@2": 2.52,
+            "Over@3": 2.46,
+            "Under@3": 1.43,
+            "Over@3.5": 3.05,
+            "Under@3.5": 1.285
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718370492",
+    "external_id": "718370492",
+    "betradar_id": "",
+    "home_team": "KS Cracovia",
+    "away_team": "RKS Radomiak Radom",
+    "start_time": "2026-05-11T17:00:00Z",
+    "competition": "Poland. Ekstraklasa",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.222,
+        "12": 1.3,
+        "X2": 1.78
+      },
+      "asian_handicap": {
+        "1": 1.37,
+        "2": 2.66,
+        "1@-1": 2.82,
+        "2@-1": 7.5,
+        "1@1": 1.029,
+        "2@1": 1.39,
+        "1@-1.5": 3.44,
+        "2@-1.5": 8.5,
+        "1@1.5": 1.013,
+        "2@1.5": 1.23
+      },
+      "handicap_result": {
+        "1@0.5": 1.46,
+        "2@0.5": 2.49
+      },
+      "asian_handicap_2": {
+        "2@0.75": 1.57,
+        "1@-0.75": 2.18
+      },
+      "btts": {
+        "No": 1.72,
+        "Yes": 2.05
+      },
+      "asian_total": {
+        "Over@2.25": 1.766,
+        "Under@2.25": 2.005
+      },
+      "over_under": {
+        "Under@2.5": 1.77,
+        "Over@2.5": 2.0,
+        "Over@1.5": 1.28,
+        "Under@1.5": 3.08,
+        "Over@2": 1.48,
+        "Under@2": 2.38,
+        "Over@3": 2.69,
+        "Under@3": 1.38,
+        "Over@3.5": 3.34,
+        "Under@3.5": 1.24
+      },
+      "first_half_over_under": {
+        "Over": 1.81,
+        "Under": 1.895
+      },
+      "match_winner": {
+        "1": 1.96,
+        "X": 3.28,
+        "2": 3.865
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718370492",
+        "markets": {
+          "double_chance": {
+            "1X": 1.222,
+            "12": 1.3,
+            "X2": 1.78
+          },
+          "asian_handicap": {
+            "1": 1.37,
+            "2": 2.66,
+            "1@-1": 2.82,
+            "2@-1": 7.5,
+            "1@1": 1.029,
+            "2@1": 1.39,
+            "1@-1.5": 3.44,
+            "2@-1.5": 8.5,
+            "1@1.5": 1.013,
+            "2@1.5": 1.23
+          },
+          "handicap_result": {
+            "1@0.5": 1.46,
+            "2@0.5": 2.49
+          },
+          "asian_handicap_2": {
+            "2@0.75": 1.57,
+            "1@-0.75": 2.18
+          },
+          "btts": {
+            "No": 1.72,
+            "Yes": 2.05
+          },
+          "asian_total": {
+            "Over@2.25": 1.766,
+            "Under@2.25": 2.005
+          },
+          "over_under": {
+            "Under@2.5": 1.77,
+            "Over@2.5": 2.0,
+            "Over@1.5": 1.28,
+            "Under@1.5": 3.08,
+            "Over@2": 1.48,
+            "Under@2": 2.38,
+            "Over@3": 2.69,
+            "Under@3": 1.38,
+            "Over@3.5": 3.34,
+            "Under@3.5": 1.24
+          },
+          "first_half_over_under": {
+            "Over": 1.81,
+            "Under": 1.895
+          },
+          "match_winner": {
+            "1": 1.96,
+            "X": 3.28,
+            "2": 3.865
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:718295746",
+    "external_id": "718295746",
+    "betradar_id": "",
+    "home_team": "Sirius",
+    "away_team": "Orgryte",
+    "start_time": "2026-05-11T17:00:00Z",
+    "competition": "Sweden. Allsvenskan",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.027,
+        "12": 1.099,
+        "X2": 3.88
+      },
+      "match_winner": {
+        "1": 1.24,
+        "X": 6.2,
+        "2": 10.0
+      },
+      "handicap_result": {
+        "1@0.5": 1.63,
+        "2@0.5": 2.11
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.66,
+        "2@1.5": 2.14,
+        "1": 1.032,
+        "2": 7.3,
+        "1@-1": 1.3,
+        "2@1": 3.04,
+        "1@-2": 1.97,
+        "2@2": 1.69,
+        "1@-2.5": 2.43,
+        "2@2.5": 1.44
+      },
+      "first_half_over_under": {
+        "Over": 1.72,
+        "Under": 2.007
+      },
+      "asian_total": {
+        "Over@3.25": 1.726,
+        "Under@3.25": 2.074
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.97
+      },
+      "asian_handicap_2": {
+        "1@-1.75": 1.806,
+        "2@1.75": 1.938
+      },
+      "over_under": {
+        "Under@3.5": 1.86,
+        "Over@3.5": 1.909,
+        "Over@2.5": 1.32,
+        "Under@2.5": 2.89,
+        "Over@3": 1.49,
+        "Under@3": 2.38,
+        "Over@4": 2.41,
+        "Under@4": 1.48,
+        "Over@4.5": 2.85,
+        "Under@4.5": 1.33
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:718295746",
+        "markets": {
+          "double_chance": {
+            "1X": 1.027,
+            "12": 1.099,
+            "X2": 3.88
+          },
+          "match_winner": {
+            "1": 1.24,
+            "X": 6.2,
+            "2": 10.0
+          },
+          "handicap_result": {
+            "1@0.5": 1.63,
+            "2@0.5": 2.11
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.66,
+            "2@1.5": 2.14,
+            "1": 1.032,
+            "2": 7.3,
+            "1@-1": 1.3,
+            "2@1": 3.04,
+            "1@-2": 1.97,
+            "2@2": 1.69,
+            "1@-2.5": 2.43,
+            "2@2.5": 1.44
+          },
+          "first_half_over_under": {
+            "Over": 1.72,
+            "Under": 2.007
+          },
+          "asian_total": {
+            "Over@3.25": 1.726,
+            "Under@3.25": 2.074
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.97
+          },
+          "asian_handicap_2": {
+            "1@-1.75": 1.806,
+            "2@1.75": 1.938
+          },
+          "over_under": {
+            "Under@3.5": 1.86,
+            "Over@3.5": 1.909,
+            "Over@2.5": 1.32,
+            "Under@2.5": 2.89,
+            "Over@3": 1.49,
+            "Under@3": 2.38,
+            "Over@4": 2.41,
+            "Under@4": 1.48,
+            "Over@4.5": 2.85,
+            "Under@4.5": 1.33
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719967796",
+    "external_id": "719967796",
+    "betradar_id": "",
+    "home_team": "Academico Viseu U23",
+    "away_team": "Santa Clara U23",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Portugal Cup U23",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "1X": 1.073,
+        "12": 1.156,
+        "X2": 2.35
+      },
+      "match_winner": {
+        "1": 1.47,
+        "X": 4.05,
+        "2": 5.76
+      },
+      "asian_handicap": {
+        "2@1.5": 1.5,
+        "1@-1.5": 2.28,
+        "1": 1.152,
+        "2": 4.2,
+        "1@-1": 1.79,
+        "2@1": 1.89,
+        "1@-2": 3.42,
+        "2@2": 1.23,
+        "1@-2.5": 4.1,
+        "2@2.5": 1.161
+      },
+      "asian_total": {
+        "Under@3.25": 1.537,
+        "Over@3.25": 2.301
+      },
+      "btts": {
+        "Yes": 1.55,
+        "No": 2.3
+      },
+      "handicap_result": {
+        "1@0.5": 1.6,
+        "2@0.5": 2.2
+      },
+      "over_under": {
+        "Over@2.5": 1.63,
+        "Under@2.5": 2.12,
+        "Over@1.5": 1.17,
+        "Under@1.5": 3.98,
+        "Over@2": 1.26,
+        "Under@2": 3.2,
+        "Over@3": 2.0,
+        "Under@3": 1.65,
+        "Over@3.5": 2.52,
+        "Under@3.5": 1.41
+      },
+      "asian_handicap_2": {
+        "2@1.25": 1.666,
+        "1@-1.25": 2.052
+      },
+      "first_half_over_under": {
+        "Over": 1.727,
+        "Under": 1.954
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719967796",
+        "markets": {
+          "double_chance": {
+            "1X": 1.073,
+            "12": 1.156,
+            "X2": 2.35
+          },
+          "match_winner": {
+            "1": 1.47,
+            "X": 4.05,
+            "2": 5.76
+          },
+          "asian_handicap": {
+            "2@1.5": 1.5,
+            "1@-1.5": 2.28,
+            "1": 1.152,
+            "2": 4.2,
+            "1@-1": 1.79,
+            "2@1": 1.89,
+            "1@-2": 3.42,
+            "2@2": 1.23,
+            "1@-2.5": 4.1,
+            "2@2.5": 1.161
+          },
+          "asian_total": {
+            "Under@3.25": 1.537,
+            "Over@3.25": 2.301
+          },
+          "btts": {
+            "Yes": 1.55,
+            "No": 2.3
+          },
+          "handicap_result": {
+            "1@0.5": 1.6,
+            "2@0.5": 2.2
+          },
+          "over_under": {
+            "Over@2.5": 1.63,
+            "Under@2.5": 2.12,
+            "Over@1.5": 1.17,
+            "Under@1.5": 3.98,
+            "Over@2": 1.26,
+            "Under@2": 3.2,
+            "Over@3": 2.0,
+            "Under@3": 1.65,
+            "Over@3.5": 2.52,
+            "Under@3.5": 1.41
+          },
+          "asian_handicap_2": {
+            "2@1.25": 1.666,
+            "1@-1.25": 2.052
+          },
+          "first_half_over_under": {
+            "Over": 1.727,
+            "Under": 1.954
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719306584",
+    "external_id": "719306584",
+    "betradar_id": "",
+    "home_team": "Cosmos Khimki",
+    "away_team": "Cherepovets",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Russian Championship. League 2. Division B. Group 2",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.24,
+        "X2": 1.28,
+        "1X": 1.6
+      },
+      "btts": {
+        "No": 1.4,
+        "Yes": 2.75
+      },
+      "asian_handicap_2": {
+        "1@0.75": 1.472,
+        "2@-0.75": 2.353
+      },
+      "asian_handicap": {
+        "2": 1.54,
+        "1": 2.27,
+        "1@-1": 5.4,
+        "2@-1": 3.04,
+        "1@1": 1.29,
+        "2@1": 1.087,
+        "1@-1.5": 6.25,
+        "2@-1.5": 3.8,
+        "1@1.5": 1.188,
+        "2@1.5": 1.057
+      },
+      "first_half_over_under": {
+        "Over": 1.65,
+        "Under": 2.067
+      },
+      "asian_total": {
+        "Under@2.75": 1.699,
+        "Over@2.75": 2.015
+      },
+      "handicap_result": {
+        "2@1.5": 1.7,
+        "1@1.5": 2.02
+      },
+      "over_under": {
+        "Over@2.5": 1.8,
+        "Under@2.5": 1.89,
+        "Over@1.5": 1.23,
+        "Under@1.5": 3.42,
+        "Over@2": 1.36,
+        "Under@2": 2.7,
+        "Over@3": 2.33,
+        "Under@3": 1.48,
+        "Over@3.5": 2.92,
+        "Under@3.5": 1.31
+      },
+      "match_winner": {
+        "2": 2.08,
+        "1": 3.11,
+        "X": 3.34
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719306584",
+        "markets": {
+          "double_chance": {
+            "12": 1.24,
+            "X2": 1.28,
+            "1X": 1.6
+          },
+          "btts": {
+            "No": 1.4,
+            "Yes": 2.75
+          },
+          "asian_handicap_2": {
+            "1@0.75": 1.472,
+            "2@-0.75": 2.353
+          },
+          "asian_handicap": {
+            "2": 1.54,
+            "1": 2.27,
+            "1@-1": 5.4,
+            "2@-1": 3.04,
+            "1@1": 1.29,
+            "2@1": 1.087,
+            "1@-1.5": 6.25,
+            "2@-1.5": 3.8,
+            "1@1.5": 1.188,
+            "2@1.5": 1.057
+          },
+          "first_half_over_under": {
+            "Over": 1.65,
+            "Under": 2.067
+          },
+          "asian_total": {
+            "Under@2.75": 1.699,
+            "Over@2.75": 2.015
+          },
+          "handicap_result": {
+            "2@1.5": 1.7,
+            "1@1.5": 2.02
+          },
+          "over_under": {
+            "Over@2.5": 1.8,
+            "Under@2.5": 1.89,
+            "Over@1.5": 1.23,
+            "Under@1.5": 3.42,
+            "Over@2": 1.36,
+            "Under@2": 2.7,
+            "Over@3": 2.33,
+            "Under@3": 1.48,
+            "Over@3.5": 2.92,
+            "Under@3.5": 1.31
+          },
+          "match_winner": {
+            "2": 2.08,
+            "1": 3.11,
+            "X": 3.34
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719635690",
+    "external_id": "719635690",
+    "betradar_id": "",
+    "home_team": "Epicentr U19",
+    "away_team": "Polissya Zhytomyr U19",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Ukraine Championship U19",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.001,
+        "12": 1.07,
+        "1X": 3.26
+      },
+      "match_winner": {
+        "2": 1.23,
+        "X": 5.33,
+        "1": 8.95
+      },
+      "over_under": {
+        "Under@3.5": 1.51,
+        "Over@3.5": 2.33,
+        "Over@2.5": 1.48,
+        "Under@2.5": 2.39,
+        "Over@3": 1.81,
+        "Under@3": 1.85,
+        "Over@4": 3.52,
+        "Under@4": 1.24
+      },
+      "handicap_result": {
+        "2@2.5": 1.59,
+        "1@2.5": 2.15
+      },
+      "btts": {
+        "Yes": 1.65,
+        "No": 2.01
+      },
+      "asian_handicap": {
+        "1@1.5": 1.82,
+        "2@-1.5": 1.84,
+        "2@-1": 1.42,
+        "1@1": 2.58,
+        "2@-2": 2.53,
+        "1@2": 1.43
+      },
+      "first_half_over_under": {
+        "Over": 1.83,
+        "Under": 1.83
+      }
+    },
+    "market_count": 7,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719635690",
+        "markets": {
+          "double_chance": {
+            "X2": 1.001,
+            "12": 1.07,
+            "1X": 3.26
+          },
+          "match_winner": {
+            "2": 1.23,
+            "X": 5.33,
+            "1": 8.95
+          },
+          "over_under": {
+            "Under@3.5": 1.51,
+            "Over@3.5": 2.33,
+            "Over@2.5": 1.48,
+            "Under@2.5": 2.39,
+            "Over@3": 1.81,
+            "Under@3": 1.85,
+            "Over@4": 3.52,
+            "Under@4": 1.24
+          },
+          "handicap_result": {
+            "2@2.5": 1.59,
+            "1@2.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.65,
+            "No": 2.01
+          },
+          "asian_handicap": {
+            "1@1.5": 1.82,
+            "2@-1.5": 1.84,
+            "2@-1": 1.42,
+            "1@1": 2.58,
+            "2@-2": 2.53,
+            "1@2": 1.43
+          },
+          "first_half_over_under": {
+            "Over": 1.83,
+            "Under": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719619599",
+    "external_id": "719619599",
+    "betradar_id": "",
+    "home_team": "Metallist 1925 U19",
+    "away_team": "Karpaty Lviv U19",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Ukraine Championship U19",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.15,
+        "1X": 1.43,
+        "X2": 1.48
+      },
+      "over_under": {
+        "Under@3.5": 1.66,
+        "Over@3.5": 2.04,
+        "Over@2.5": 1.37,
+        "Under@2.5": 2.74,
+        "Over@3": 1.59,
+        "Under@3": 2.15,
+        "Over@4": 2.86,
+        "Under@4": 1.35,
+        "Over@4.5": 3.51,
+        "Under@4.5": 1.24
+      },
+      "btts": {
+        "Yes": 1.76,
+        "No": 1.91
+      },
+      "asian_handicap": {
+        "1": 1.78,
+        "2": 1.88,
+        "1@-1": 3.59,
+        "2@-1": 3.9,
+        "1@1": 1.2,
+        "2@1": 1.23
+      },
+      "handicap_result": {
+        "1@1.5": 1.81,
+        "2@1.5": 1.85
+      },
+      "match_winner": {
+        "1": 2.24,
+        "2": 2.36,
+        "X": 3.93
+      }
+    },
+    "market_count": 6,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719619599",
+        "markets": {
+          "double_chance": {
+            "12": 1.15,
+            "1X": 1.43,
+            "X2": 1.48
+          },
+          "over_under": {
+            "Under@3.5": 1.66,
+            "Over@3.5": 2.04,
+            "Over@2.5": 1.37,
+            "Under@2.5": 2.74,
+            "Over@3": 1.59,
+            "Under@3": 2.15,
+            "Over@4": 2.86,
+            "Under@4": 1.35,
+            "Over@4.5": 3.51,
+            "Under@4.5": 1.24
+          },
+          "btts": {
+            "Yes": 1.76,
+            "No": 1.91
+          },
+          "asian_handicap": {
+            "1": 1.78,
+            "2": 1.88,
+            "1@-1": 3.59,
+            "2@-1": 3.9,
+            "1@1": 1.2,
+            "2@1": 1.23
+          },
+          "handicap_result": {
+            "1@1.5": 1.81,
+            "2@1.5": 1.85
+          },
+          "match_winner": {
+            "1": 2.24,
+            "2": 2.36,
+            "X": 3.93
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719817822",
+    "external_id": "719817822",
+    "betradar_id": "",
+    "home_team": "Melbourne Victory II",
+    "away_team": "Manningham United",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Australia. Victoria Premier League 1",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.176,
+        "1X": 1.22,
+        "X2": 1.81
+      },
+      "asian_handicap": {
+        "1": 1.4,
+        "2": 2.67,
+        "1@-1": 2.42,
+        "2@-1": 6.35,
+        "1@1": 1.055,
+        "2@1": 1.444,
+        "1@-1.5": 3.05,
+        "2@-1.5": 7.3,
+        "1@1.5": 1.033,
+        "2@1.5": 1.285
+      },
+      "first_half_over_under": {
+        "Over": 1.42,
+        "Under": 2.589
+      },
+      "handicap_result": {
+        "2@1.5": 1.54,
+        "1@1.5": 2.29
+      },
+      "asian_total": {
+        "Over@2.75": 1.545,
+        "Under@2.75": 2.277
+      },
+      "btts": {
+        "Yes": 1.58,
+        "No": 2.18
+      },
+      "over_under": {
+        "Under@3.5": 1.61,
+        "Over@3.5": 2.15,
+        "Over@2.5": 1.42,
+        "Under@2.5": 2.49,
+        "Over@3": 1.68,
+        "Under@3": 1.96,
+        "Over@4": 2.97,
+        "Under@4": 1.3,
+        "Over@4.5": 3.58,
+        "Under@4.5": 1.21
+      },
+      "asian_handicap_2": {
+        "1@-0.25": 1.614,
+        "2@0.25": 2.131
+      },
+      "match_winner": {
+        "1": 1.81,
+        "2": 3.48,
+        "X": 3.82
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817822",
+        "markets": {
+          "double_chance": {
+            "12": 1.176,
+            "1X": 1.22,
+            "X2": 1.81
+          },
+          "asian_handicap": {
+            "1": 1.4,
+            "2": 2.67,
+            "1@-1": 2.42,
+            "2@-1": 6.35,
+            "1@1": 1.055,
+            "2@1": 1.444,
+            "1@-1.5": 3.05,
+            "2@-1.5": 7.3,
+            "1@1.5": 1.033,
+            "2@1.5": 1.285
+          },
+          "first_half_over_under": {
+            "Over": 1.42,
+            "Under": 2.589
+          },
+          "handicap_result": {
+            "2@1.5": 1.54,
+            "1@1.5": 2.29
+          },
+          "asian_total": {
+            "Over@2.75": 1.545,
+            "Under@2.75": 2.277
+          },
+          "btts": {
+            "Yes": 1.58,
+            "No": 2.18
+          },
+          "over_under": {
+            "Under@3.5": 1.61,
+            "Over@3.5": 2.15,
+            "Over@2.5": 1.42,
+            "Under@2.5": 2.49,
+            "Over@3": 1.68,
+            "Under@3": 1.96,
+            "Over@4": 2.97,
+            "Under@4": 1.3,
+            "Over@4.5": 3.58,
+            "Under@4.5": 1.21
+          },
+          "asian_handicap_2": {
+            "1@-0.25": 1.614,
+            "2@0.25": 2.131
+          },
+          "match_winner": {
+            "1": 1.81,
+            "2": 3.48,
+            "X": 3.82
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719880441",
+    "external_id": "719880441",
+    "betradar_id": "",
+    "home_team": "Lee Man U22",
+    "away_team": "Hong Kong Football Club U22",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Hong Kong Cup U22",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.007,
+        "12": 1.09,
+        "1X": 3.22
+      },
+      "match_winner": {
+        "2": 1.26,
+        "X": 5.15,
+        "1": 8.75
+      },
+      "btts": {
+        "Yes": 1.55,
+        "No": 2.25
+      },
+      "asian_handicap_2": {
+        "2@-1.25": 1.592,
+        "1@1.25": 2.17
+      },
+      "first_half_over_under": {
+        "Over": 1.6,
+        "Under": 2.15
+      },
+      "asian_total": {
+        "Over@3.25": 1.698,
+        "Under@3.25": 2.018
+      },
+      "asian_handicap": {
+        "2@-1.5": 1.77,
+        "1@1.5": 1.909,
+        "1": 6.8,
+        "2": 1.043,
+        "2@-1": 1.39,
+        "1@1": 2.59,
+        "2@-2": 2.21,
+        "1@2": 1.53,
+        "2@-2.5": 2.7,
+        "1@2.5": 1.36
+      },
+      "handicap_result": {
+        "2@2.5": 1.8,
+        "1@2.5": 1.9
+      },
+      "over_under": {
+        "Under@3.5": 1.81,
+        "Over@3.5": 1.88,
+        "Over@2.5": 1.32,
+        "Under@2.5": 2.875,
+        "Over@3": 1.48,
+        "Under@3": 2.33,
+        "Over@4": 2.375,
+        "Under@4": 1.46,
+        "Over@4.5": 2.92,
+        "Under@4.5": 1.31
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719880441",
+        "markets": {
+          "double_chance": {
+            "X2": 1.007,
+            "12": 1.09,
+            "1X": 3.22
+          },
+          "match_winner": {
+            "2": 1.26,
+            "X": 5.15,
+            "1": 8.75
+          },
+          "btts": {
+            "Yes": 1.55,
+            "No": 2.25
+          },
+          "asian_handicap_2": {
+            "2@-1.25": 1.592,
+            "1@1.25": 2.17
+          },
+          "first_half_over_under": {
+            "Over": 1.6,
+            "Under": 2.15
+          },
+          "asian_total": {
+            "Over@3.25": 1.698,
+            "Under@3.25": 2.018
+          },
+          "asian_handicap": {
+            "2@-1.5": 1.77,
+            "1@1.5": 1.909,
+            "1": 6.8,
+            "2": 1.043,
+            "2@-1": 1.39,
+            "1@1": 2.59,
+            "2@-2": 2.21,
+            "1@2": 1.53,
+            "2@-2.5": 2.7,
+            "1@2.5": 1.36
+          },
+          "handicap_result": {
+            "2@2.5": 1.8,
+            "1@2.5": 1.9
+          },
+          "over_under": {
+            "Under@3.5": 1.81,
+            "Over@3.5": 1.88,
+            "Over@2.5": 1.32,
+            "Under@2.5": 2.875,
+            "Over@3": 1.48,
+            "Under@3": 2.33,
+            "Over@4": 2.375,
+            "Under@4": 1.46,
+            "Over@4.5": 2.92,
+            "Under@4.5": 1.31
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:720155497",
+    "external_id": "720155497",
+    "betradar_id": "",
+    "home_team": "AC Horsens U21",
+    "away_team": "Viborg U21",
+    "start_time": "2026-05-11T11:00:00Z",
+    "competition": "Denmark. Future Cup",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.124,
+        "12": 1.148,
+        "1X": 2.17
+      },
+      "first_half_over_under": {
+        "Over": 1.43,
+        "Under": 2.557
+      },
+      "btts": {
+        "No": 1.44,
+        "Yes": 2.51
+      },
+      "asian_handicap": {
+        "1@1.5": 1.46,
+        "2@-1.5": 2.375,
+        "1": 3.5,
+        "2": 1.22,
+        "2@-1": 1.9,
+        "1@1": 1.78,
+        "2@-2": 3.5,
+        "1@2": 1.22,
+        "2@-2.5": 4.2,
+        "1@2.5": 1.154
+      },
+      "handicap_result": {
+        "2@2.5": 1.52,
+        "1@2.5": 2.3
+      },
+      "match_winner": {
+        "2": 1.56,
+        "X": 4.15,
+        "1": 4.56
+      },
+      "asian_handicap_2": {
+        "2@-0.75": 1.692,
+        "1@0.75": 2.011
+      },
+      "over_under": {
+        "Under@3.5": 1.73,
+        "Over@3.5": 1.97,
+        "Over@2.5": 1.36,
+        "Under@2.5": 2.7,
+        "Over@3": 1.55,
+        "Under@3": 2.17,
+        "Over@4": 2.56,
+        "Under@4": 1.4,
+        "Over@4.5": 3.08,
+        "Under@4.5": 1.28
+      },
+      "asian_total": {
+        "Over@3.25": 1.778,
+        "Under@3.25": 1.911
+      }
+    },
+    "market_count": 9,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:720155497",
+        "markets": {
+          "double_chance": {
+            "X2": 1.124,
+            "12": 1.148,
+            "1X": 2.17
+          },
+          "first_half_over_under": {
+            "Over": 1.43,
+            "Under": 2.557
+          },
+          "btts": {
+            "No": 1.44,
+            "Yes": 2.51
+          },
+          "asian_handicap": {
+            "1@1.5": 1.46,
+            "2@-1.5": 2.375,
+            "1": 3.5,
+            "2": 1.22,
+            "2@-1": 1.9,
+            "1@1": 1.78,
+            "2@-2": 3.5,
+            "1@2": 1.22,
+            "2@-2.5": 4.2,
+            "1@2.5": 1.154
+          },
+          "handicap_result": {
+            "2@2.5": 1.52,
+            "1@2.5": 2.3
+          },
+          "match_winner": {
+            "2": 1.56,
+            "X": 4.15,
+            "1": 4.56
+          },
+          "asian_handicap_2": {
+            "2@-0.75": 1.692,
+            "1@0.75": 2.011
+          },
+          "over_under": {
+            "Under@3.5": 1.73,
+            "Over@3.5": 1.97,
+            "Over@2.5": 1.36,
+            "Under@2.5": 2.7,
+            "Over@3": 1.55,
+            "Under@3": 2.17,
+            "Over@4": 2.56,
+            "Under@4": 1.4,
+            "Over@4.5": 3.08,
+            "Under@4.5": 1.28
+          },
+          "asian_total": {
+            "Over@3.25": 1.778,
+            "Under@3.25": 1.911
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719998090",
+    "external_id": "719998090",
+    "betradar_id": "",
+    "home_team": "Caspiy Aktau (Women)",
+    "away_team": "Ulytau (Women)",
+    "start_time": "2026-05-11T11:00:00Z",
+    "competition": "Kazakhstan Championship. Women",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.05,
+        "12": 1.09,
+        "1X": 2.64
+      },
+      "match_winner": {
+        "2": 1.35,
+        "X": 4.82,
+        "1": 6.14
+      },
+      "asian_handicap": {
+        "1@1.5": 1.62,
+        "2@-1.5": 2.1,
+        "2@-1": 1.62,
+        "1@1": 2.1
+      },
+      "over_under": {
+        "Under@3.5": 1.62,
+        "Over@3.5": 2.1,
+        "Over@2.5": 1.4,
+        "Under@2.5": 2.66,
+        "Over@3": 1.64,
+        "Under@3": 2.07,
+        "Over@4": 2.99,
+        "Under@4": 1.32,
+        "Over@4.5": 3.68,
+        "Under@4.5": 1.22
+      }
+    },
+    "market_count": 4,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719998090",
+        "markets": {
+          "double_chance": {
+            "X2": 1.05,
+            "12": 1.09,
+            "1X": 2.64
+          },
+          "match_winner": {
+            "2": 1.35,
+            "X": 4.82,
+            "1": 6.14
+          },
+          "asian_handicap": {
+            "1@1.5": 1.62,
+            "2@-1.5": 2.1,
+            "2@-1": 1.62,
+            "1@1": 2.1
+          },
+          "over_under": {
+            "Under@3.5": 1.62,
+            "Over@3.5": 2.1,
+            "Over@2.5": 1.4,
+            "Under@2.5": 2.66,
+            "Over@3": 1.64,
+            "Under@3": 2.07,
+            "Over@4": 2.99,
+            "Under@4": 1.32,
+            "Over@4.5": 3.68,
+            "Under@4.5": 1.22
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719200979",
+    "external_id": "719200979",
+    "betradar_id": "",
+    "home_team": "Andranik",
+    "away_team": "Sardarapat",
+    "start_time": "2026-05-11T11:30:00Z",
+    "competition": "Armenia. First League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "X2": 1.1,
+        "12": 1.12,
+        "1X": 2.24
+      },
+      "asian_handicap": {
+        "1@1.5": 1.46,
+        "2@-1.5": 2.45,
+        "1": 3.76,
+        "2": 1.21,
+        "2@-1": 1.89,
+        "1@1": 1.78
+      },
+      "match_winner": {
+        "2": 1.49,
+        "X": 4.35,
+        "1": 4.81
+      },
+      "first_half_over_under": {
+        "Over": 1.52,
+        "Under": 2.3
+      },
+      "over_under": {
+        "Under@3.5": 1.56,
+        "Over@3.5": 2.21,
+        "Over@2.5": 1.44,
+        "Under@2.5": 2.52,
+        "Over@3": 1.72,
+        "Under@3": 1.96,
+        "Over@4": 3.24,
+        "Under@4": 1.27,
+        "Over@4.5": 3.96,
+        "Under@4.5": 1.19
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719200979",
+        "markets": {
+          "double_chance": {
+            "X2": 1.1,
+            "12": 1.12,
+            "1X": 2.24
+          },
+          "asian_handicap": {
+            "1@1.5": 1.46,
+            "2@-1.5": 2.45,
+            "1": 3.76,
+            "2": 1.21,
+            "2@-1": 1.89,
+            "1@1": 1.78
+          },
+          "match_winner": {
+            "2": 1.49,
+            "X": 4.35,
+            "1": 4.81
+          },
+          "first_half_over_under": {
+            "Over": 1.52,
+            "Under": 2.3
+          },
+          "over_under": {
+            "Under@3.5": 1.56,
+            "Over@3.5": 2.21,
+            "Over@2.5": 1.44,
+            "Under@2.5": 2.52,
+            "Over@3": 1.72,
+            "Under@3": 1.96,
+            "Over@4": 3.24,
+            "Under@4": 1.27,
+            "Over@4.5": 3.96,
+            "Under@4.5": 1.19
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719200980",
+    "external_id": "719200980",
+    "betradar_id": "",
+    "home_team": "Bentonit",
+    "away_team": "Lernayin Artsakh",
+    "start_time": "2026-05-11T11:30:00Z",
+    "competition": "Armenia. First League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "double_chance": {
+        "12": 1.13,
+        "1X": 1.27,
+        "X2": 1.75
+      },
+      "asian_handicap": {
+        "1": 1.47,
+        "2": 2.43,
+        "1@-1": 2.55,
+        "2@1": 1.43
+      },
+      "handicap_result": {
+        "2@1.5": 1.74,
+        "1@1.5": 1.93
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 3.07,
+        "X": 4.19
+      },
+      "over_under": {
+        "Over@3.5": 1.83,
+        "Under@3.5": 1.83,
+        "Over@2.5": 1.29,
+        "Under@2.5": 3.15,
+        "Over@3": 1.44,
+        "Under@3": 2.5,
+        "Over@4": 2.42,
+        "Under@4": 1.47,
+        "Over@4.5": 3.0,
+        "Under@4.5": 1.32
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719200980",
+        "markets": {
+          "double_chance": {
+            "12": 1.13,
+            "1X": 1.27,
+            "X2": 1.75
+          },
+          "asian_handicap": {
+            "1": 1.47,
+            "2": 2.43,
+            "1@-1": 2.55,
+            "2@1": 1.43
+          },
+          "handicap_result": {
+            "2@1.5": 1.74,
+            "1@1.5": 1.93
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 3.07,
+            "X": 4.19
+          },
+          "over_under": {
+            "Over@3.5": 1.83,
+            "Under@3.5": 1.83,
+            "Over@2.5": 1.29,
+            "Under@2.5": 3.15,
+            "Over@3": 1.44,
+            "Under@3": 2.5,
+            "Over@4": 2.42,
+            "Under@4": 1.47,
+            "Over@4.5": 3.0,
+            "Under@4.5": 1.32
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719201212",
+    "external_id": "719201212",
+    "betradar_id": "",
+    "home_team": "Syunik",
+    "away_team": "Pyunik Academia",
+    "start_time": "2026-05-11T11:30:00Z",
+    "competition": "Armenia. First League",
+    "sport": "soccer",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.13,
+        "X": 6.68,
+        "2": 10.7
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.57,
+        "2@1.5": 2.2,
+        "1@-2": 1.94,
+        "2@2": 1.73,
+        "1@-2.5": 2.46,
+        "2@2.5": 1.46
+      },
+      "handicap_result": {
+        "1@0.5": 1.58,
+        "2@0.5": 2.11
+      },
+      "btts": {
+        "Yes": 1.7,
+        "No": 1.99
+      },
+      "first_half_over_under": {
+        "Over": 1.7,
+        "Under": 1.98
+      },
+      "over_under": {
+        "Over@3.5": 1.83,
+        "Under@3.5": 1.83,
+        "Over@2.5": 1.29,
+        "Under@2.5": 3.16,
+        "Over@3": 1.44,
+        "Under@3": 2.51,
+        "Over@4": 2.4,
+        "Under@4": 1.48,
+        "Over@4.5": 2.98,
+        "Under@4.5": 1.32
+      },
+      "double_chance": {
+        "X2": 4.12
+      }
+    },
+    "market_count": 7,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719201212",
+        "markets": {
+          "match_winner": {
+            "1": 1.13,
+            "X": 6.68,
+            "2": 10.7
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.57,
+            "2@1.5": 2.2,
+            "1@-2": 1.94,
+            "2@2": 1.73,
+            "1@-2.5": 2.46,
+            "2@2.5": 1.46
+          },
+          "handicap_result": {
+            "1@0.5": 1.58,
+            "2@0.5": 2.11
+          },
+          "btts": {
+            "Yes": 1.7,
+            "No": 1.99
+          },
+          "first_half_over_under": {
+            "Over": 1.7,
+            "Under": 1.98
+          },
+          "over_under": {
+            "Over@3.5": 1.83,
+            "Under@3.5": 1.83,
+            "Over@2.5": 1.29,
+            "Under@2.5": 3.16,
+            "Over@3": 1.44,
+            "Under@3": 2.51,
+            "Over@4": 2.4,
+            "Under@4": 1.48,
+            "Over@4.5": 2.98,
+            "Under@4.5": 1.32
+          },
+          "double_chance": {
+            "X2": 4.12
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:30:19Z"
+  }
+]

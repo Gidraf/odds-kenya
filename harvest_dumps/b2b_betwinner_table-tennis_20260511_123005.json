@@ -1,0 +1,3018 @@
+[
+  {
+    "b2b_match_id": "betwinner:720114675",
+    "external_id": "720114675",
+    "betradar_id": "",
+    "home_team": "Michal Stibor",
+    "away_team": "Radovan Pisa",
+    "start_time": "2026-05-11T09:45:00Z",
+    "competition": "Setka Cup. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "asian_handicap": {
+        "1@0.5": 1.791,
+        "2@-0.5": 1.871
+      },
+      "btts": {
+        "No": 1.791,
+        "Yes": 1.871
+      },
+      "over_under": {
+        "Under@76.5": 1.8,
+        "Over@76.5": 1.86,
+        "Over@75.5": 1.791,
+        "Under@75.5": 1.871,
+        "Over@77.5": 1.948,
+        "Under@77.5": 1.725
+      },
+      "handicap_result": {
+        "2@39.5": 1.8,
+        "1@39.5": 1.86
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114675",
+        "markets": {
+          "asian_handicap": {
+            "1@0.5": 1.791,
+            "2@-0.5": 1.871
+          },
+          "btts": {
+            "No": 1.791,
+            "Yes": 1.871
+          },
+          "over_under": {
+            "Under@76.5": 1.8,
+            "Over@76.5": 1.86,
+            "Over@75.5": 1.791,
+            "Under@75.5": 1.871,
+            "Over@77.5": 1.948,
+            "Under@77.5": 1.725
+          },
+          "handicap_result": {
+            "2@39.5": 1.8,
+            "1@39.5": 1.86
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720045722",
+    "external_id": "720045722",
+    "betradar_id": "",
+    "home_team": "Aleksandra Jarkowska",
+    "away_team": "Marta Holak",
+    "start_time": "2026-05-11T09:50:00Z",
+    "competition": "Masters. Poland. Women",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.4,
+        "2": 2.889
+      },
+      "over_under": {
+        "Under@111.5": 1.71,
+        "Over@111.5": 2.06
+      },
+      "handicap_result": {
+        "1@52.5": 1.82,
+        "2@52.5": 1.92
+      },
+      "asian_handicap": {
+        "2@6.5": 1.85,
+        "1@-6.5": 1.89,
+        "1@-5.5": 1.76,
+        "2@5.5": 1.99,
+        "1@-7.5": 2.05,
+        "2@7.5": 1.72
+      },
+      "btts": {
+        "Yes": 1.87,
+        "No": 1.87
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720045722",
+        "markets": {
+          "match_winner": {
+            "1": 1.4,
+            "2": 2.889
+          },
+          "over_under": {
+            "Under@111.5": 1.71,
+            "Over@111.5": 2.06
+          },
+          "handicap_result": {
+            "1@52.5": 1.82,
+            "2@52.5": 1.92
+          },
+          "asian_handicap": {
+            "2@6.5": 1.85,
+            "1@-6.5": 1.89,
+            "1@-5.5": 1.76,
+            "2@5.5": 1.99,
+            "1@-7.5": 2.05,
+            "2@7.5": 1.72
+          },
+          "btts": {
+            "Yes": 1.87,
+            "No": 1.87
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719916612",
+    "external_id": "719916612",
+    "betradar_id": "",
+    "home_team": "Eugene Luppa",
+    "away_team": "Dmitry Savinov",
+    "start_time": "2026-05-11T09:50:00Z",
+    "competition": "Masters. Russia",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.47,
+        "1": 2.643
+      },
+      "over_under": {
+        "Under@111.5": 1.74,
+        "Over@111.5": 2.02
+      },
+      "asian_handicap": {
+        "1@5.5": 1.86,
+        "2@-5.5": 1.88,
+        "2@-4.5": 1.76,
+        "1@4.5": 1.99,
+        "2@-6.5": 2.02,
+        "1@6.5": 1.74
+      },
+      "btts": {
+        "Yes": 1.86,
+        "No": 1.88
+      },
+      "handicap_result": {
+        "1@56.5": 1.86,
+        "2@56.5": 1.88
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719916612",
+        "markets": {
+          "match_winner": {
+            "2": 1.47,
+            "1": 2.643
+          },
+          "over_under": {
+            "Under@111.5": 1.74,
+            "Over@111.5": 2.02
+          },
+          "asian_handicap": {
+            "1@5.5": 1.86,
+            "2@-5.5": 1.88,
+            "2@-4.5": 1.76,
+            "1@4.5": 1.99,
+            "2@-6.5": 2.02,
+            "1@6.5": 1.74
+          },
+          "btts": {
+            "Yes": 1.86,
+            "No": 1.88
+          },
+          "handicap_result": {
+            "1@56.5": 1.86,
+            "2@56.5": 1.88
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114644",
+    "external_id": "720114644",
+    "betradar_id": "",
+    "home_team": "Stefan Jakimenko",
+    "away_team": "Vitalii Korniichuk",
+    "start_time": "2026-05-11T09:50:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.54,
+        "2": 2.347
+      },
+      "btts": {
+        "Yes": 1.78,
+        "No": 1.88
+      },
+      "asian_handicap": {
+        "2@4.5": 1.8,
+        "1@-4.5": 1.86
+      },
+      "handicap_result": {
+        "2@37.5": 1.82,
+        "1@37.5": 1.84
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@74.5": 1.76,
+        "Under@74.5": 1.909,
+        "Over@76.5": 1.92,
+        "Under@76.5": 1.75
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114644",
+        "markets": {
+          "match_winner": {
+            "1": 1.54,
+            "2": 2.347
+          },
+          "btts": {
+            "Yes": 1.78,
+            "No": 1.88
+          },
+          "asian_handicap": {
+            "2@4.5": 1.8,
+            "1@-4.5": 1.86
+          },
+          "handicap_result": {
+            "2@37.5": 1.82,
+            "1@37.5": 1.84
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@74.5": 1.76,
+            "Under@74.5": 1.909,
+            "Over@76.5": 1.92,
+            "Under@76.5": 1.75
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720118120",
+    "external_id": "720118120",
+    "betradar_id": "",
+    "home_team": "Sergey Lizogub",
+    "away_team": "Sergey Krivoshey",
+    "start_time": "2026-05-11T09:55:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.44,
+        "1": 2.628
+      },
+      "handicap_result": {
+        "2@40.5": 1.78,
+        "1@40.5": 1.88
+      },
+      "over_under": {
+        "Under@75.5": 1.8,
+        "Over@75.5": 1.86,
+        "Over@74.5": 1.79,
+        "Under@74.5": 1.87,
+        "Over@76.5": 1.95,
+        "Under@76.5": 1.727
+      },
+      "asian_handicap": {
+        "1@5.5": 1.81,
+        "2@-5.5": 1.85
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720118120",
+        "markets": {
+          "match_winner": {
+            "2": 1.44,
+            "1": 2.628
+          },
+          "handicap_result": {
+            "2@40.5": 1.78,
+            "1@40.5": 1.88
+          },
+          "over_under": {
+            "Under@75.5": 1.8,
+            "Over@75.5": 1.86,
+            "Over@74.5": 1.79,
+            "Under@74.5": 1.87,
+            "Over@76.5": 1.95,
+            "Under@76.5": 1.727
+          },
+          "asian_handicap": {
+            "1@5.5": 1.81,
+            "2@-5.5": 1.85
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720009553",
+    "external_id": "720009553",
+    "betradar_id": "",
+    "home_team": "Maksim Afanasev A.",
+    "away_team": "Ivan Bukhtiyarov",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.86
+      },
+      "handicap_result": {
+        "1@38.5": 1.81,
+        "2@38.5": 1.85
+      },
+      "match_winner": {
+        "2": 1.82,
+        "1": 1.84
+      },
+      "asian_handicap": {
+        "1": 1.83,
+        "2": 1.83,
+        "1@-0.5": 1.88,
+        "2@-0.5": 1.865,
+        "1@0.5": 1.796,
+        "2@0.5": 1.78
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@73.5": 1.65,
+        "Under@73.5": 2.05,
+        "Over@74.5": 1.74,
+        "Under@74.5": 1.93,
+        "Over@76.5": 1.93,
+        "Under@76.5": 1.74,
+        "Over@77.5": 2.02,
+        "Under@77.5": 1.67
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720009553",
+        "markets": {
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.86
+          },
+          "handicap_result": {
+            "1@38.5": 1.81,
+            "2@38.5": 1.85
+          },
+          "match_winner": {
+            "2": 1.82,
+            "1": 1.84
+          },
+          "asian_handicap": {
+            "1": 1.83,
+            "2": 1.83,
+            "1@-0.5": 1.88,
+            "2@-0.5": 1.865,
+            "1@0.5": 1.796,
+            "2@0.5": 1.78
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@73.5": 1.65,
+            "Under@73.5": 2.05,
+            "Over@74.5": 1.74,
+            "Under@74.5": 1.93,
+            "Over@76.5": 1.93,
+            "Under@76.5": 1.74,
+            "Over@77.5": 2.02,
+            "Under@77.5": 1.67
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720054362",
+    "external_id": "720054362",
+    "betradar_id": "",
+    "home_team": "Mikhail Taltykin",
+    "away_team": "Evgeny Ledyaev",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.51,
+        "1": 2.42
+      },
+      "handicap_result": {
+        "1@39.5": 1.78,
+        "2@39.5": 1.88
+      },
+      "btts": {
+        "No": 1.8,
+        "Yes": 1.86
+      },
+      "over_under": {
+        "Under@75.5": 1.82,
+        "Over@75.5": 1.84,
+        "Over@74.5": 1.77,
+        "Under@74.5": 1.89,
+        "Over@76.5": 1.92,
+        "Under@76.5": 1.75
+      },
+      "asian_handicap": {
+        "1@4.5": 1.83,
+        "2@-4.5": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720054362",
+        "markets": {
+          "match_winner": {
+            "2": 1.51,
+            "1": 2.42
+          },
+          "handicap_result": {
+            "1@39.5": 1.78,
+            "2@39.5": 1.88
+          },
+          "btts": {
+            "No": 1.8,
+            "Yes": 1.86
+          },
+          "over_under": {
+            "Under@75.5": 1.82,
+            "Over@75.5": 1.84,
+            "Over@74.5": 1.77,
+            "Under@74.5": 1.89,
+            "Over@76.5": 1.92,
+            "Under@76.5": 1.75
+          },
+          "asian_handicap": {
+            "1@4.5": 1.83,
+            "2@-4.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719959805",
+    "external_id": "719959805",
+    "betradar_id": "",
+    "home_team": "Frantisek Just",
+    "away_team": "Martin Vizek",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.659,
+        "2": 2.039
+      },
+      "asian_handicap": {
+        "2@2.5": 1.805,
+        "1@-2.5": 1.855,
+        "1@-1.5": 1.786,
+        "2@1.5": 1.876
+      },
+      "btts": {
+        "Yes": 1.82,
+        "No": 1.84
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@74.5": 1.718,
+        "Under@74.5": 1.958,
+        "Over@76.5": 1.897,
+        "Under@76.5": 1.767,
+        "Over@77.5": 1.98,
+        "Under@77.5": 1.7
+      },
+      "handicap_result": {
+        "1@38.5": 1.83,
+        "2@38.5": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719959805",
+        "markets": {
+          "match_winner": {
+            "1": 1.659,
+            "2": 2.039
+          },
+          "asian_handicap": {
+            "2@2.5": 1.805,
+            "1@-2.5": 1.855,
+            "1@-1.5": 1.786,
+            "2@1.5": 1.876
+          },
+          "btts": {
+            "Yes": 1.82,
+            "No": 1.84
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@74.5": 1.718,
+            "Under@74.5": 1.958,
+            "Over@76.5": 1.897,
+            "Under@76.5": 1.767,
+            "Over@77.5": 1.98,
+            "Under@77.5": 1.7
+          },
+          "handicap_result": {
+            "1@38.5": 1.83,
+            "2@38.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719998145",
+    "external_id": "719998145",
+    "betradar_id": "",
+    "home_team": "Ladislav Novotny",
+    "away_team": "Jaroslav Strnad 1961",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.618,
+        "1": 2.106
+      },
+      "btts": {
+        "Yes": 1.81,
+        "No": 1.85
+      },
+      "asian_handicap": {
+        "1@2.5": 1.815,
+        "2@-2.5": 1.845,
+        "2@-3.5": 1.919,
+        "1@3.5": 1.749
+      },
+      "handicap_result": {
+        "2@39.5": 1.82,
+        "1@39.5": 1.84
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@73.5": 1.688,
+        "Under@73.5": 1.998,
+        "Over@74.5": 1.772,
+        "Under@74.5": 1.892,
+        "Over@76.5": 1.969,
+        "Under@76.5": 1.709
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719998145",
+        "markets": {
+          "match_winner": {
+            "2": 1.618,
+            "1": 2.106
+          },
+          "btts": {
+            "Yes": 1.81,
+            "No": 1.85
+          },
+          "asian_handicap": {
+            "1@2.5": 1.815,
+            "2@-2.5": 1.845,
+            "2@-3.5": 1.919,
+            "1@3.5": 1.749
+          },
+          "handicap_result": {
+            "2@39.5": 1.82,
+            "1@39.5": 1.84
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@73.5": 1.688,
+            "Under@73.5": 1.998,
+            "Over@74.5": 1.772,
+            "Under@74.5": 1.892,
+            "Over@76.5": 1.969,
+            "Under@76.5": 1.709
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719959727",
+    "external_id": "719959727",
+    "betradar_id": "",
+    "home_team": "Lukas Velebil",
+    "away_team": "Tadeas Zika",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.491,
+        "2": 2.367
+      },
+      "asian_handicap": {
+        "2@4.5": 1.78,
+        "1@-4.5": 1.88,
+        "1@-3.5": 1.75,
+        "2@3.5": 1.9
+      },
+      "handicap_result": {
+        "1@36.5": 1.79,
+        "2@36.5": 1.87
+      },
+      "over_under": {
+        "Over@74.5": 1.82,
+        "Under@74.5": 1.84,
+        "Over@73.5": 1.72,
+        "Under@73.5": 1.95,
+        "Over@75.5": 1.88,
+        "Under@75.5": 1.78,
+        "Over@76.5": 2.0,
+        "Under@76.5": 1.68
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719959727",
+        "markets": {
+          "match_winner": {
+            "1": 1.491,
+            "2": 2.367
+          },
+          "asian_handicap": {
+            "2@4.5": 1.78,
+            "1@-4.5": 1.88,
+            "1@-3.5": 1.75,
+            "2@3.5": 1.9
+          },
+          "handicap_result": {
+            "1@36.5": 1.79,
+            "2@36.5": 1.87
+          },
+          "over_under": {
+            "Over@74.5": 1.82,
+            "Under@74.5": 1.84,
+            "Over@73.5": 1.72,
+            "Under@73.5": 1.95,
+            "Over@75.5": 1.88,
+            "Under@75.5": 1.78,
+            "Over@76.5": 2.0,
+            "Under@76.5": 1.68
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719961943",
+    "external_id": "719961943",
+    "betradar_id": "",
+    "home_team": "Martin Stefek",
+    "away_team": "Rostislav Hasmanda",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.75,
+        "2": 1.96
+      },
+      "over_under": {
+        "Over@75.5": 1.8,
+        "Under@75.5": 1.86,
+        "Over@74.5": 1.72,
+        "Under@74.5": 1.952,
+        "Over@76.5": 1.87,
+        "Under@76.5": 1.79
+      },
+      "handicap_result": {
+        "1@38.5": 1.81,
+        "2@38.5": 1.85
+      },
+      "asian_handicap": {
+        "2@1.5": 1.82,
+        "1@-1.5": 1.84
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719961943",
+        "markets": {
+          "match_winner": {
+            "1": 1.75,
+            "2": 1.96
+          },
+          "over_under": {
+            "Over@75.5": 1.8,
+            "Under@75.5": 1.86,
+            "Over@74.5": 1.72,
+            "Under@74.5": 1.952,
+            "Over@76.5": 1.87,
+            "Under@76.5": 1.79
+          },
+          "handicap_result": {
+            "1@38.5": 1.81,
+            "2@38.5": 1.85
+          },
+          "asian_handicap": {
+            "2@1.5": 1.82,
+            "1@-1.5": 1.84
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719959831",
+    "external_id": "719959831",
+    "betradar_id": "",
+    "home_team": "Michal Koral",
+    "away_team": "Ivo Taichman",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "handicap_result": {
+        "1@38.5": 1.772,
+        "2@38.5": 1.892
+      },
+      "match_winner": {
+        "2": 1.79,
+        "1": 1.87
+      },
+      "btts": {
+        "Yes": 1.81,
+        "No": 1.85
+      },
+      "asian_handicap": {
+        "2@-0.5": 1.815,
+        "1@0.5": 1.845,
+        "1": 1.897,
+        "2": 1.767
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@74.5": 1.74,
+        "Under@74.5": 1.93,
+        "Over@76.5": 1.93,
+        "Under@76.5": 1.74,
+        "Over@77.5": 2.027,
+        "Under@77.5": 1.668
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719959831",
+        "markets": {
+          "handicap_result": {
+            "1@38.5": 1.772,
+            "2@38.5": 1.892
+          },
+          "match_winner": {
+            "2": 1.79,
+            "1": 1.87
+          },
+          "btts": {
+            "Yes": 1.81,
+            "No": 1.85
+          },
+          "asian_handicap": {
+            "2@-0.5": 1.815,
+            "1@0.5": 1.845,
+            "1": 1.897,
+            "2": 1.767
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@74.5": 1.74,
+            "Under@74.5": 1.93,
+            "Over@76.5": 1.93,
+            "Under@76.5": 1.74,
+            "Over@77.5": 2.027,
+            "Under@77.5": 1.668
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719977241",
+    "external_id": "719977241",
+    "betradar_id": "",
+    "home_team": "Alexey Chernyshov",
+    "away_team": "Aleksei Shubin",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Pro League. Minsk",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.65,
+        "1": 2.134
+      },
+      "btts": {
+        "No": 1.8,
+        "Yes": 1.86
+      },
+      "asian_handicap": {
+        "2@-2.5": 1.81,
+        "1@2.5": 1.85
+      },
+      "over_under": {
+        "Over@75.5": 1.81,
+        "Under@75.5": 1.85,
+        "Over@74.5": 1.727,
+        "Under@74.5": 1.95,
+        "Over@76.5": 1.88,
+        "Under@76.5": 1.78
+      },
+      "handicap_result": {
+        "1@39.5": 1.81,
+        "2@39.5": 1.85
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719977241",
+        "markets": {
+          "match_winner": {
+            "2": 1.65,
+            "1": 2.134
+          },
+          "btts": {
+            "No": 1.8,
+            "Yes": 1.86
+          },
+          "asian_handicap": {
+            "2@-2.5": 1.81,
+            "1@2.5": 1.85
+          },
+          "over_under": {
+            "Over@75.5": 1.81,
+            "Under@75.5": 1.85,
+            "Over@74.5": 1.727,
+            "Under@74.5": 1.95,
+            "Over@76.5": 1.88,
+            "Under@76.5": 1.78
+          },
+          "handicap_result": {
+            "1@39.5": 1.81,
+            "2@39.5": 1.85
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719990852",
+    "external_id": "719990852",
+    "betradar_id": "",
+    "home_team": "Sergey Trifuntov",
+    "away_team": "Andrey Svetlichny",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Russia. League DV",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.11,
+        "2": 5.1
+      },
+      "asian_handicap": {
+        "1@-8.5": 1.727,
+        "2@8.5": 1.946,
+        "1@-9.5": 1.946,
+        "2@9.5": 1.727
+      },
+      "btts": {
+        "No": 1.79,
+        "Yes": 1.87
+      },
+      "over_under": {
+        "Under@71.5": 1.8,
+        "Over@71.5": 1.86,
+        "Over@69.5": 1.709,
+        "Under@69.5": 1.969,
+        "Over@70.5": 1.78,
+        "Under@70.5": 1.88,
+        "Over@72.5": 1.958,
+        "Under@72.5": 1.718
+      },
+      "handicap_result": {
+        "1@32.5": 1.83,
+        "2@32.5": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719990852",
+        "markets": {
+          "match_winner": {
+            "1": 1.11,
+            "2": 5.1
+          },
+          "asian_handicap": {
+            "1@-8.5": 1.727,
+            "2@8.5": 1.946,
+            "1@-9.5": 1.946,
+            "2@9.5": 1.727
+          },
+          "btts": {
+            "No": 1.79,
+            "Yes": 1.87
+          },
+          "over_under": {
+            "Under@71.5": 1.8,
+            "Over@71.5": 1.86,
+            "Over@69.5": 1.709,
+            "Under@69.5": 1.969,
+            "Over@70.5": 1.78,
+            "Under@70.5": 1.88,
+            "Over@72.5": 1.958,
+            "Under@72.5": 1.718
+          },
+          "handicap_result": {
+            "1@32.5": 1.83,
+            "2@32.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114668",
+    "external_id": "720114668",
+    "betradar_id": "",
+    "home_team": "Maxim Stetsenko",
+    "away_team": "Alexander Ovsienko",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.79,
+        "2": 1.92
+      },
+      "handicap_result": {
+        "1@38.5": 1.79,
+        "2@38.5": 1.87
+      },
+      "over_under": {
+        "Under@76.5": 1.8,
+        "Over@76.5": 1.86,
+        "Over@75.5": 1.79,
+        "Under@75.5": 1.87,
+        "Over@77.5": 1.95,
+        "Under@77.5": 1.727
+      },
+      "asian_handicap": {
+        "1@-0.5": 1.81,
+        "2@0.5": 1.85
+      },
+      "btts": {
+        "No": 1.82,
+        "Yes": 1.84
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114668",
+        "markets": {
+          "match_winner": {
+            "1": 1.79,
+            "2": 1.92
+          },
+          "handicap_result": {
+            "1@38.5": 1.79,
+            "2@38.5": 1.87
+          },
+          "over_under": {
+            "Under@76.5": 1.8,
+            "Over@76.5": 1.86,
+            "Over@75.5": 1.79,
+            "Under@75.5": 1.87,
+            "Over@77.5": 1.95,
+            "Under@77.5": 1.727
+          },
+          "asian_handicap": {
+            "1@-0.5": 1.81,
+            "2@0.5": 1.85
+          },
+          "btts": {
+            "No": 1.82,
+            "Yes": 1.84
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114678",
+    "external_id": "720114678",
+    "betradar_id": "",
+    "home_team": "Marian Melisek",
+    "away_team": "Zdenek Kuksa",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "Setka Cup. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.633,
+        "1": 2.08
+      },
+      "handicap_result": {
+        "1@40.5": 1.81,
+        "2@40.5": 1.85
+      },
+      "over_under": {
+        "Over@77.5": 1.82,
+        "Under@77.5": 1.84,
+        "Over@76.5": 1.749,
+        "Under@76.5": 1.919,
+        "Over@78.5": 1.881,
+        "Under@78.5": 1.781
+      },
+      "asian_handicap": {
+        "1@2.5": 1.83,
+        "2@-2.5": 1.83
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114678",
+        "markets": {
+          "match_winner": {
+            "2": 1.633,
+            "1": 2.08
+          },
+          "handicap_result": {
+            "1@40.5": 1.81,
+            "2@40.5": 1.85
+          },
+          "over_under": {
+            "Over@77.5": 1.82,
+            "Under@77.5": 1.84,
+            "Over@76.5": 1.749,
+            "Under@76.5": 1.919,
+            "Over@78.5": 1.881,
+            "Under@78.5": 1.781
+          },
+          "asian_handicap": {
+            "1@2.5": 1.83,
+            "2@-2.5": 1.83
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114659",
+    "external_id": "720114659",
+    "betradar_id": "",
+    "home_team": "Ihor Emets",
+    "away_team": "Fedir Voinarovskyi",
+    "start_time": "2026-05-11T10:05:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.553,
+        "2": 2.318
+      },
+      "asian_handicap": {
+        "1@-3.5": 1.79,
+        "2@3.5": 1.87
+      },
+      "handicap_result": {
+        "2@38.5": 1.8,
+        "1@38.5": 1.86
+      },
+      "btts": {
+        "No": 1.82,
+        "Yes": 1.84
+      },
+      "over_under": {
+        "Over@76.5": 1.83,
+        "Under@76.5": 1.83,
+        "Over@75.5": 1.76,
+        "Under@75.5": 1.909,
+        "Over@77.5": 1.92,
+        "Under@77.5": 1.75
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114659",
+        "markets": {
+          "match_winner": {
+            "1": 1.553,
+            "2": 2.318
+          },
+          "asian_handicap": {
+            "1@-3.5": 1.79,
+            "2@3.5": 1.87
+          },
+          "handicap_result": {
+            "2@38.5": 1.8,
+            "1@38.5": 1.86
+          },
+          "btts": {
+            "No": 1.82,
+            "Yes": 1.84
+          },
+          "over_under": {
+            "Over@76.5": 1.83,
+            "Under@76.5": 1.83,
+            "Over@75.5": 1.76,
+            "Under@75.5": 1.909,
+            "Over@77.5": 1.92,
+            "Under@77.5": 1.75
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114653",
+    "external_id": "720114653",
+    "betradar_id": "",
+    "home_team": "Yuriy Parahailo",
+    "away_team": "Yaroslav Vorsulyak",
+    "start_time": "2026-05-11T10:05:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.47,
+        "1": 2.53
+      },
+      "handicap_result": {
+        "2@40.5": 1.77,
+        "1@40.5": 1.89
+      },
+      "asian_handicap": {
+        "2@-4.5": 1.78,
+        "1@4.5": 1.88
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.86
+      },
+      "over_under": {
+        "Under@75.5": 1.82,
+        "Over@75.5": 1.84,
+        "Over@74.5": 1.77,
+        "Under@74.5": 1.89,
+        "Over@76.5": 1.93,
+        "Under@76.5": 1.74
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114653",
+        "markets": {
+          "match_winner": {
+            "2": 1.47,
+            "1": 2.53
+          },
+          "handicap_result": {
+            "2@40.5": 1.77,
+            "1@40.5": 1.89
+          },
+          "asian_handicap": {
+            "2@-4.5": 1.78,
+            "1@4.5": 1.88
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.86
+          },
+          "over_under": {
+            "Under@75.5": 1.82,
+            "Over@75.5": 1.84,
+            "Over@74.5": 1.77,
+            "Under@74.5": 1.89,
+            "Over@76.5": 1.93,
+            "Under@76.5": 1.74
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719917925",
+    "external_id": "719917925",
+    "betradar_id": "",
+    "home_team": "Viktor Lyashenko",
+    "away_team": "Denis Vakalov",
+    "start_time": "2026-05-11T10:10:00Z",
+    "competition": "Masters. Russia",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.51,
+        "2": 2.507
+      },
+      "over_under": {
+        "Under@112.5": 1.7,
+        "Over@112.5": 2.07
+      },
+      "handicap_result": {
+        "2@54.5": 1.82,
+        "1@54.5": 1.92
+      },
+      "asian_handicap": {
+        "1@-4.5": 1.84,
+        "2@4.5": 1.9,
+        "1@-3.5": 1.74,
+        "2@3.5": 2.02,
+        "1@-5.5": 1.97,
+        "2@5.5": 1.78
+      },
+      "btts": {
+        "Yes": 1.86,
+        "No": 1.88
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719917925",
+        "markets": {
+          "match_winner": {
+            "1": 1.51,
+            "2": 2.507
+          },
+          "over_under": {
+            "Under@112.5": 1.7,
+            "Over@112.5": 2.07
+          },
+          "handicap_result": {
+            "2@54.5": 1.82,
+            "1@54.5": 1.92
+          },
+          "asian_handicap": {
+            "1@-4.5": 1.84,
+            "2@4.5": 1.9,
+            "1@-3.5": 1.74,
+            "2@3.5": 2.02,
+            "1@-5.5": 1.97,
+            "2@5.5": 1.78
+          },
+          "btts": {
+            "Yes": 1.86,
+            "No": 1.88
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720037851",
+    "external_id": "720037851",
+    "betradar_id": "",
+    "home_team": "Dmitry Narzukov",
+    "away_team": "Sergey Kulikov",
+    "start_time": "2026-05-11T10:15:00Z",
+    "competition": "Pro League",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.524,
+        "1": 2.29
+      },
+      "asian_handicap": {
+        "2@-3.5": 1.772,
+        "1@3.5": 1.892,
+        "2@-2.5": 1.68,
+        "1@2.5": 2.0,
+        "2@-4.5": 1.897,
+        "1@4.5": 1.767
+      },
+      "btts": {
+        "No": 1.786,
+        "Yes": 1.876
+      },
+      "over_under": {
+        "Over@74.5": 1.79,
+        "Under@74.5": 1.87,
+        "Over@73.5": 1.7,
+        "Under@73.5": 1.98,
+        "Over@75.5": 1.88,
+        "Under@75.5": 1.78,
+        "Over@76.5": 1.98,
+        "Under@76.5": 1.7
+      },
+      "handicap_result": {
+        "1@39.5": 1.82,
+        "2@39.5": 1.84
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720037851",
+        "markets": {
+          "match_winner": {
+            "2": 1.524,
+            "1": 2.29
+          },
+          "asian_handicap": {
+            "2@-3.5": 1.772,
+            "1@3.5": 1.892,
+            "2@-2.5": 1.68,
+            "1@2.5": 2.0,
+            "2@-4.5": 1.897,
+            "1@4.5": 1.767
+          },
+          "btts": {
+            "No": 1.786,
+            "Yes": 1.876
+          },
+          "over_under": {
+            "Over@74.5": 1.79,
+            "Under@74.5": 1.87,
+            "Over@73.5": 1.7,
+            "Under@73.5": 1.98,
+            "Over@75.5": 1.88,
+            "Under@75.5": 1.78,
+            "Over@76.5": 1.98,
+            "Under@76.5": 1.7
+          },
+          "handicap_result": {
+            "1@39.5": 1.82,
+            "2@39.5": 1.84
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720183696",
+    "external_id": "720183696",
+    "betradar_id": "",
+    "home_team": "Roman Kalnitsky",
+    "away_team": "Vladislav Turnaev",
+    "start_time": "2026-05-11T10:15:00Z",
+    "competition": "Pro League",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.727,
+        "2": 1.99
+      },
+      "over_under": {
+        "Over@75.5": 1.8,
+        "Under@75.5": 1.86,
+        "Over@74.5": 1.72,
+        "Under@74.5": 1.952,
+        "Over@76.5": 1.87,
+        "Under@76.5": 1.79
+      },
+      "handicap_result": {
+        "1@38.5": 1.82,
+        "2@38.5": 1.84
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.83,
+        "2@1.5": 1.83
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720183696",
+        "markets": {
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Over@75.5": 1.8,
+            "Under@75.5": 1.86,
+            "Over@74.5": 1.72,
+            "Under@74.5": 1.952,
+            "Over@76.5": 1.87,
+            "Under@76.5": 1.79
+          },
+          "handicap_result": {
+            "1@38.5": 1.82,
+            "2@38.5": 1.84
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.83,
+            "2@1.5": 1.83
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720107221",
+    "external_id": "720107221",
+    "betradar_id": "",
+    "home_team": "Matus Zelinka",
+    "away_team": "Radovan Pisa",
+    "start_time": "2026-05-11T10:15:00Z",
+    "competition": "Setka Cup. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.574,
+        "2": 2.185
+      },
+      "btts": {
+        "Yes": 1.791,
+        "No": 1.871
+      },
+      "handicap_result": {
+        "1@37.5": 1.8,
+        "2@37.5": 1.86
+      },
+      "over_under": {
+        "Over@75.5": 1.82,
+        "Under@75.5": 1.84,
+        "Over@74.5": 1.74,
+        "Under@74.5": 1.93,
+        "Over@76.5": 1.892,
+        "Under@76.5": 1.772
+      },
+      "asian_handicap": {
+        "1@-3.5": 1.83,
+        "2@3.5": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720107221",
+        "markets": {
+          "match_winner": {
+            "1": 1.574,
+            "2": 2.185
+          },
+          "btts": {
+            "Yes": 1.791,
+            "No": 1.871
+          },
+          "handicap_result": {
+            "1@37.5": 1.8,
+            "2@37.5": 1.86
+          },
+          "over_under": {
+            "Over@75.5": 1.82,
+            "Under@75.5": 1.84,
+            "Over@74.5": 1.74,
+            "Under@74.5": 1.93,
+            "Over@76.5": 1.892,
+            "Under@76.5": 1.772
+          },
+          "asian_handicap": {
+            "1@-3.5": 1.83,
+            "2@3.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114650",
+    "external_id": "720114650",
+    "betradar_id": "",
+    "home_team": "Sergey Skhabitskiy",
+    "away_team": "Aleksandr Leonenko",
+    "start_time": "2026-05-11T10:20:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.55,
+        "2": 2.327
+      },
+      "btts": {
+        "Yes": 1.78,
+        "No": 1.88
+      },
+      "asian_handicap": {
+        "2@4.5": 1.79,
+        "1@-4.5": 1.87
+      },
+      "handicap_result": {
+        "2@37.5": 1.82,
+        "1@37.5": 1.84
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@74.5": 1.76,
+        "Under@74.5": 1.909,
+        "Over@76.5": 1.92,
+        "Under@76.5": 1.75
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114650",
+        "markets": {
+          "match_winner": {
+            "1": 1.55,
+            "2": 2.327
+          },
+          "btts": {
+            "Yes": 1.78,
+            "No": 1.88
+          },
+          "asian_handicap": {
+            "2@4.5": 1.79,
+            "1@-4.5": 1.87
+          },
+          "handicap_result": {
+            "2@37.5": 1.82,
+            "1@37.5": 1.84
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@74.5": 1.76,
+            "Under@74.5": 1.909,
+            "Over@76.5": 1.92,
+            "Under@76.5": 1.75
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114665",
+    "external_id": "720114665",
+    "betradar_id": "",
+    "home_team": "Nikolay Treschetka",
+    "away_team": "Ivan Kryvyi",
+    "start_time": "2026-05-11T10:25:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "Yes": 1.76,
+        "No": 1.909
+      },
+      "handicap_result": {
+        "2@41.5": 1.76,
+        "1@41.5": 1.909
+      },
+      "asian_handicap": {
+        "1@0.5": 1.79,
+        "2@-0.5": 1.87
+      },
+      "over_under": {
+        "Under@80.5": 1.81,
+        "Over@80.5": 1.85,
+        "Over@79.5": 1.8,
+        "Under@79.5": 1.86,
+        "Over@81.5": 1.92,
+        "Under@81.5": 1.75
+      },
+      "match_winner": {
+        "1": 1.85,
+        "2": 1.85
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114665",
+        "markets": {
+          "btts": {
+            "Yes": 1.76,
+            "No": 1.909
+          },
+          "handicap_result": {
+            "2@41.5": 1.76,
+            "1@41.5": 1.909
+          },
+          "asian_handicap": {
+            "1@0.5": 1.79,
+            "2@-0.5": 1.87
+          },
+          "over_under": {
+            "Under@80.5": 1.81,
+            "Over@80.5": 1.85,
+            "Over@79.5": 1.8,
+            "Under@79.5": 1.86,
+            "Over@81.5": 1.92,
+            "Under@81.5": 1.75
+          },
+          "match_winner": {
+            "1": 1.85,
+            "2": 1.85
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720064076",
+    "external_id": "720064076",
+    "betradar_id": "",
+    "home_team": "Nikolaosz Kizakisz",
+    "away_team": "Rafael Turrini",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Challenger",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.03,
+        "1": 10.0
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720064076",
+        "markets": {
+          "match_winner": {
+            "2": 1.03,
+            "1": 10.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719918242",
+    "external_id": "719918242",
+    "betradar_id": "",
+    "home_team": "Dmitry Savinov",
+    "away_team": "Viktor Lyashenko",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Masters. Russia",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "asian_handicap": {
+        "1@1.5": 1.73,
+        "2@-1.5": 2.03,
+        "1@-1.5": 2.03,
+        "2@1.5": 1.73
+      },
+      "over_under": {
+        "Under@112.5": 1.76,
+        "Over@112.5": 2.0
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.91
+      },
+      "handicap_result": {
+        "1@55.5": 1.83,
+        "2@55.5": 1.91
+      },
+      "match_winner": {
+        "1": 1.88,
+        "2": 1.88
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719918242",
+        "markets": {
+          "asian_handicap": {
+            "1@1.5": 1.73,
+            "2@-1.5": 2.03,
+            "1@-1.5": 2.03,
+            "2@1.5": 1.73
+          },
+          "over_under": {
+            "Under@112.5": 1.76,
+            "Over@112.5": 2.0
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.91
+          },
+          "handicap_result": {
+            "1@55.5": 1.83,
+            "2@55.5": 1.91
+          },
+          "match_winner": {
+            "1": 1.88,
+            "2": 1.88
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720042623",
+    "external_id": "720042623",
+    "betradar_id": "",
+    "home_team": "Grigorii Solovov",
+    "away_team": "Denis Oleinikov",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Masters. Russia",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.45,
+        "2": 2.703
+      },
+      "over_under": {
+        "Under@111.5": 1.74,
+        "Over@111.5": 2.03
+      },
+      "asian_handicap": {
+        "1@-5.5": 1.85,
+        "2@5.5": 1.89,
+        "1@-4.5": 1.74,
+        "2@4.5": 2.02,
+        "1@-6.5": 2.0,
+        "2@6.5": 1.76
+      },
+      "btts": {
+        "Yes": 1.86,
+        "No": 1.88
+      },
+      "handicap_result": {
+        "1@53.5": 1.87,
+        "2@53.5": 1.87
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720042623",
+        "markets": {
+          "match_winner": {
+            "1": 1.45,
+            "2": 2.703
+          },
+          "over_under": {
+            "Under@111.5": 1.74,
+            "Over@111.5": 2.03
+          },
+          "asian_handicap": {
+            "1@-5.5": 1.85,
+            "2@5.5": 1.89,
+            "1@-4.5": 1.74,
+            "2@4.5": 2.02,
+            "1@-6.5": 2.0,
+            "2@6.5": 1.76
+          },
+          "btts": {
+            "Yes": 1.86,
+            "No": 1.88
+          },
+          "handicap_result": {
+            "1@53.5": 1.87,
+            "2@53.5": 1.87
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720044299",
+    "external_id": "720044299",
+    "betradar_id": "",
+    "home_team": "Ilya Semerkin",
+    "away_team": "Denis Medvedev",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Masters. Russia",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.47,
+        "2": 2.643
+      },
+      "over_under": {
+        "Under@111.5": 1.74,
+        "Over@111.5": 2.02
+      },
+      "asian_handicap": {
+        "2@5.5": 1.86,
+        "1@-5.5": 1.89,
+        "1@-4.5": 1.77,
+        "2@4.5": 1.98,
+        "1@-6.5": 2.03,
+        "2@6.5": 1.73
+      },
+      "btts": {
+        "Yes": 1.86,
+        "No": 1.88
+      },
+      "handicap_result": {
+        "1@53.5": 1.86,
+        "2@53.5": 1.89
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720044299",
+        "markets": {
+          "match_winner": {
+            "1": 1.47,
+            "2": 2.643
+          },
+          "over_under": {
+            "Under@111.5": 1.74,
+            "Over@111.5": 2.02
+          },
+          "asian_handicap": {
+            "2@5.5": 1.86,
+            "1@-5.5": 1.89,
+            "1@-4.5": 1.77,
+            "2@4.5": 1.98,
+            "1@-6.5": 2.03,
+            "2@6.5": 1.73
+          },
+          "btts": {
+            "Yes": 1.86,
+            "No": 1.88
+          },
+          "handicap_result": {
+            "1@53.5": 1.86,
+            "2@53.5": 1.89
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720008507",
+    "external_id": "720008507",
+    "betradar_id": "",
+    "home_team": "Denis Ivanov",
+    "away_team": "Eduard Golovachev",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.43,
+        "1": 2.659
+      },
+      "btts": {
+        "Yes": 1.79,
+        "No": 1.87
+      },
+      "asian_handicap": {
+        "1@5.5": 1.82,
+        "2@-5.5": 1.84
+      },
+      "over_under": {
+        "Over@75.5": 1.82,
+        "Under@75.5": 1.84,
+        "Over@74.5": 1.74,
+        "Under@74.5": 1.93,
+        "Over@76.5": 1.89,
+        "Under@76.5": 1.77
+      },
+      "handicap_result": {
+        "1@40.5": 1.83,
+        "2@40.5": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720008507",
+        "markets": {
+          "match_winner": {
+            "2": 1.43,
+            "1": 2.659
+          },
+          "btts": {
+            "Yes": 1.79,
+            "No": 1.87
+          },
+          "asian_handicap": {
+            "1@5.5": 1.82,
+            "2@-5.5": 1.84
+          },
+          "over_under": {
+            "Over@75.5": 1.82,
+            "Under@75.5": 1.84,
+            "Over@74.5": 1.74,
+            "Under@74.5": 1.93,
+            "Over@76.5": 1.89,
+            "Under@76.5": 1.77
+          },
+          "handicap_result": {
+            "1@40.5": 1.83,
+            "2@40.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720054358",
+    "external_id": "720054358",
+    "betradar_id": "",
+    "home_team": "Evgeny Ledyaev",
+    "away_team": "Sergey Burov",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.76,
+        "1": 1.95
+      },
+      "asian_handicap": {
+        "1@1.5": 1.8,
+        "2@-1.5": 1.86
+      },
+      "over_under": {
+        "Over@75.5": 1.8,
+        "Under@75.5": 1.86,
+        "Over@74.5": 1.72,
+        "Under@74.5": 1.952,
+        "Over@76.5": 1.87,
+        "Under@76.5": 1.79
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.86
+      },
+      "handicap_result": {
+        "2@39.5": 1.82,
+        "1@39.5": 1.84
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720054358",
+        "markets": {
+          "match_winner": {
+            "2": 1.76,
+            "1": 1.95
+          },
+          "asian_handicap": {
+            "1@1.5": 1.8,
+            "2@-1.5": 1.86
+          },
+          "over_under": {
+            "Over@75.5": 1.8,
+            "Under@75.5": 1.86,
+            "Over@74.5": 1.72,
+            "Under@74.5": 1.952,
+            "Over@76.5": 1.87,
+            "Under@76.5": 1.79
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.86
+          },
+          "handicap_result": {
+            "2@39.5": 1.82,
+            "1@39.5": 1.84
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720054757",
+    "external_id": "720054757",
+    "betradar_id": "",
+    "home_team": "Jakub Levicky",
+    "away_team": "Tomas Milkov",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.411,
+        "2": 2.604
+      },
+      "btts": {
+        "Yes": 1.79,
+        "No": 1.87
+      },
+      "asian_handicap": {
+        "2@5.5": 1.796,
+        "1@-5.5": 1.865,
+        "1@-4.5": 1.73,
+        "2@4.5": 1.94
+      },
+      "handicap_result": {
+        "2@36.5": 1.81,
+        "1@36.5": 1.85
+      },
+      "over_under": {
+        "Over@74.5": 1.83,
+        "Under@74.5": 1.83,
+        "Over@73.5": 1.74,
+        "Under@73.5": 1.93,
+        "Over@75.5": 1.93,
+        "Under@75.5": 1.74,
+        "Over@76.5": 2.02,
+        "Under@76.5": 1.67
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720054757",
+        "markets": {
+          "match_winner": {
+            "1": 1.411,
+            "2": 2.604
+          },
+          "btts": {
+            "Yes": 1.79,
+            "No": 1.87
+          },
+          "asian_handicap": {
+            "2@5.5": 1.796,
+            "1@-5.5": 1.865,
+            "1@-4.5": 1.73,
+            "2@4.5": 1.94
+          },
+          "handicap_result": {
+            "2@36.5": 1.81,
+            "1@36.5": 1.85
+          },
+          "over_under": {
+            "Over@74.5": 1.83,
+            "Under@74.5": 1.83,
+            "Over@73.5": 1.74,
+            "Under@73.5": 1.93,
+            "Over@75.5": 1.93,
+            "Under@75.5": 1.74,
+            "Over@76.5": 2.02,
+            "Under@76.5": 1.67
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719961991",
+    "external_id": "719961991",
+    "betradar_id": "",
+    "home_team": "Jaroslav Novotny",
+    "away_team": "Vaclav Dolezal",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.61,
+        "2": 2.202
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.86
+      },
+      "handicap_result": {
+        "1@37.5": 1.8,
+        "2@37.5": 1.86
+      },
+      "asian_handicap": {
+        "2@3.5": 1.81,
+        "1@-3.5": 1.85
+      },
+      "over_under": {
+        "Over@75.5": 1.82,
+        "Under@75.5": 1.84,
+        "Over@74.5": 1.74,
+        "Under@74.5": 1.93,
+        "Over@76.5": 1.89,
+        "Under@76.5": 1.77
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719961991",
+        "markets": {
+          "match_winner": {
+            "1": 1.61,
+            "2": 2.202
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.86
+          },
+          "handicap_result": {
+            "1@37.5": 1.8,
+            "2@37.5": 1.86
+          },
+          "asian_handicap": {
+            "2@3.5": 1.81,
+            "1@-3.5": 1.85
+          },
+          "over_under": {
+            "Over@75.5": 1.82,
+            "Under@75.5": 1.84,
+            "Over@74.5": 1.74,
+            "Under@74.5": 1.93,
+            "Over@76.5": 1.89,
+            "Under@76.5": 1.77
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719998143",
+    "external_id": "719998143",
+    "betradar_id": "",
+    "home_team": "Michal Vavrecka",
+    "away_team": "Adam Pokorny",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.7,
+        "2": 1.98
+      },
+      "btts": {
+        "No": 1.79,
+        "Yes": 1.87
+      },
+      "handicap_result": {
+        "2@38.5": 1.81,
+        "1@38.5": 1.85
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.815,
+        "2@1.5": 1.845,
+        "1@-0.5": 1.74,
+        "2@0.5": 1.93
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@74.5": 1.749,
+        "Under@74.5": 1.919,
+        "Over@76.5": 1.919,
+        "Under@76.5": 1.749,
+        "Over@77.5": 2.0,
+        "Under@77.5": 1.68
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719998143",
+        "markets": {
+          "match_winner": {
+            "1": 1.7,
+            "2": 1.98
+          },
+          "btts": {
+            "No": 1.79,
+            "Yes": 1.87
+          },
+          "handicap_result": {
+            "2@38.5": 1.81,
+            "1@38.5": 1.85
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.815,
+            "2@1.5": 1.845,
+            "1@-0.5": 1.74,
+            "2@0.5": 1.93
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@74.5": 1.749,
+            "Under@74.5": 1.919,
+            "Over@76.5": 1.919,
+            "Under@76.5": 1.749,
+            "Over@77.5": 2.0,
+            "Under@77.5": 1.68
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719959597",
+    "external_id": "719959597",
+    "betradar_id": "",
+    "home_team": "Milan Smesny",
+    "away_team": "Cesta Havrda",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "handicap_result": {
+        "1@38.5": 1.79,
+        "2@38.5": 1.87
+      },
+      "match_winner": {
+        "1": 1.8,
+        "2": 1.9
+      },
+      "over_under": {
+        "Under@76.5": 1.8,
+        "Over@76.5": 1.86,
+        "Over@75.5": 1.79,
+        "Under@75.5": 1.87,
+        "Over@77.5": 1.95,
+        "Under@77.5": 1.727
+      },
+      "btts": {
+        "No": 1.81,
+        "Yes": 1.85
+      },
+      "asian_handicap": {
+        "1@-0.5": 1.82,
+        "2@0.5": 1.84
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719959597",
+        "markets": {
+          "handicap_result": {
+            "1@38.5": 1.79,
+            "2@38.5": 1.87
+          },
+          "match_winner": {
+            "1": 1.8,
+            "2": 1.9
+          },
+          "over_under": {
+            "Under@76.5": 1.8,
+            "Over@76.5": 1.86,
+            "Over@75.5": 1.79,
+            "Under@75.5": 1.87,
+            "Over@77.5": 1.95,
+            "Under@77.5": 1.727
+          },
+          "btts": {
+            "No": 1.81,
+            "Yes": 1.85
+          },
+          "asian_handicap": {
+            "1@-0.5": 1.82,
+            "2@0.5": 1.84
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719967004",
+    "external_id": "719967004",
+    "betradar_id": "",
+    "home_team": "Nguyen Ba Hoang Tai",
+    "away_team": "Vladimir Cermak",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.375,
+        "1": 2.735
+      },
+      "handicap_result": {
+        "1@39.5": 1.78,
+        "2@39.5": 1.88
+      },
+      "btts": {
+        "No": 1.8,
+        "Yes": 1.86
+      },
+      "asian_handicap": {
+        "2@-5.5": 1.805,
+        "1@5.5": 1.855,
+        "2@-4.5": 1.688,
+        "1@4.5": 1.998
+      },
+      "over_under": {
+        "Over@74.5": 1.83,
+        "Under@74.5": 1.83,
+        "Over@73.5": 1.74,
+        "Under@73.5": 1.93,
+        "Over@75.5": 1.93,
+        "Under@75.5": 1.74,
+        "Over@76.5": 2.027,
+        "Under@76.5": 1.668
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719967004",
+        "markets": {
+          "match_winner": {
+            "2": 1.375,
+            "1": 2.735
+          },
+          "handicap_result": {
+            "1@39.5": 1.78,
+            "2@39.5": 1.88
+          },
+          "btts": {
+            "No": 1.8,
+            "Yes": 1.86
+          },
+          "asian_handicap": {
+            "2@-5.5": 1.805,
+            "1@5.5": 1.855,
+            "2@-4.5": 1.688,
+            "1@4.5": 1.998
+          },
+          "over_under": {
+            "Over@74.5": 1.83,
+            "Under@74.5": 1.83,
+            "Over@73.5": 1.74,
+            "Under@73.5": 1.93,
+            "Over@75.5": 1.93,
+            "Under@75.5": 1.74,
+            "Over@76.5": 2.027,
+            "Under@76.5": 1.668
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719977233",
+    "external_id": "719977233",
+    "betradar_id": "",
+    "home_team": "Rustam Abdeev",
+    "away_team": "Vitaly Lyalkov",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Pro League. Minsk",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "No": 1.79,
+        "Yes": 1.87
+      },
+      "asian_handicap": {
+        "1@0.5": 1.8,
+        "2@-0.5": 1.86
+      },
+      "over_under": {
+        "Under@76.5": 1.8,
+        "Over@76.5": 1.86,
+        "Over@75.5": 1.79,
+        "Under@75.5": 1.87,
+        "Over@77.5": 1.95,
+        "Under@77.5": 1.727
+      },
+      "handicap_result": {
+        "2@39.5": 1.8,
+        "1@39.5": 1.86
+      },
+      "match_winner": {
+        "1": 1.85,
+        "2": 1.85
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719977233",
+        "markets": {
+          "btts": {
+            "No": 1.79,
+            "Yes": 1.87
+          },
+          "asian_handicap": {
+            "1@0.5": 1.8,
+            "2@-0.5": 1.86
+          },
+          "over_under": {
+            "Under@76.5": 1.8,
+            "Over@76.5": 1.86,
+            "Over@75.5": 1.79,
+            "Under@75.5": 1.87,
+            "Over@77.5": 1.95,
+            "Under@77.5": 1.727
+          },
+          "handicap_result": {
+            "2@39.5": 1.8,
+            "1@39.5": 1.86
+          },
+          "match_winner": {
+            "1": 1.85,
+            "2": 1.85
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719990850",
+    "external_id": "719990850",
+    "betradar_id": "",
+    "home_team": "Vasily Egorov",
+    "away_team": "Pavel Kirdan",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Russia. League DV",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.727,
+        "2": 1.946
+      },
+      "handicap_result": {
+        "2@38.5": 1.79,
+        "1@38.5": 1.87
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.86
+      },
+      "asian_handicap": {
+        "2@1.5": 1.805,
+        "1@-1.5": 1.855,
+        "1@-0.5": 1.767,
+        "2@0.5": 1.897
+      },
+      "over_under": {
+        "Over@75.5": 1.83,
+        "Under@75.5": 1.83,
+        "Over@73.5": 1.688,
+        "Under@73.5": 1.998,
+        "Over@74.5": 1.78,
+        "Under@74.5": 1.88,
+        "Over@76.5": 1.991,
+        "Under@76.5": 1.693
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719990850",
+        "markets": {
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.946
+          },
+          "handicap_result": {
+            "2@38.5": 1.79,
+            "1@38.5": 1.87
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.86
+          },
+          "asian_handicap": {
+            "2@1.5": 1.805,
+            "1@-1.5": 1.855,
+            "1@-0.5": 1.767,
+            "2@0.5": 1.897
+          },
+          "over_under": {
+            "Over@75.5": 1.83,
+            "Under@75.5": 1.83,
+            "Over@73.5": 1.688,
+            "Under@73.5": 1.998,
+            "Over@74.5": 1.78,
+            "Under@74.5": 1.88,
+            "Over@76.5": 1.991,
+            "Under@76.5": 1.693
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114656",
+    "external_id": "720114656",
+    "betradar_id": "",
+    "home_team": "Oleg Kurilenko",
+    "away_team": "Dmitry Kuzmenko",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.69,
+        "2": 2.04
+      },
+      "asian_handicap": {
+        "2@2.5": 1.79,
+        "1@-2.5": 1.87
+      },
+      "over_under": {
+        "Over@75.5": 1.8,
+        "Under@75.5": 1.86,
+        "Over@74.5": 1.72,
+        "Under@74.5": 1.952,
+        "Over@76.5": 1.87,
+        "Under@76.5": 1.79
+      },
+      "btts": {
+        "Yes": 1.82,
+        "No": 1.84
+      },
+      "handicap_result": {
+        "1@38.5": 1.83,
+        "2@38.5": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114656",
+        "markets": {
+          "match_winner": {
+            "1": 1.69,
+            "2": 2.04
+          },
+          "asian_handicap": {
+            "2@2.5": 1.79,
+            "1@-2.5": 1.87
+          },
+          "over_under": {
+            "Over@75.5": 1.8,
+            "Under@75.5": 1.86,
+            "Over@74.5": 1.72,
+            "Under@74.5": 1.952,
+            "Over@76.5": 1.87,
+            "Under@76.5": 1.79
+          },
+          "btts": {
+            "Yes": 1.82,
+            "No": 1.84
+          },
+          "handicap_result": {
+            "1@38.5": 1.83,
+            "2@38.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114635",
+    "external_id": "720114635",
+    "betradar_id": "",
+    "home_team": "Sergei Semenec",
+    "away_team": "Oleksandr Osadchyi",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Setka Cup",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "handicap_result": {
+        "2@39.5": 1.78,
+        "1@39.5": 1.88
+      },
+      "over_under": {
+        "Under@76.5": 1.8,
+        "Over@76.5": 1.86,
+        "Over@75.5": 1.79,
+        "Under@75.5": 1.87,
+        "Over@77.5": 1.95,
+        "Under@77.5": 1.727
+      },
+      "btts": {
+        "No": 1.8,
+        "Yes": 1.86
+      },
+      "match_winner": {
+        "1": 1.82,
+        "2": 1.88
+      },
+      "asian_handicap": {
+        "2@0.5": 1.82,
+        "1@-0.5": 1.84
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114635",
+        "markets": {
+          "handicap_result": {
+            "2@39.5": 1.78,
+            "1@39.5": 1.88
+          },
+          "over_under": {
+            "Under@76.5": 1.8,
+            "Over@76.5": 1.86,
+            "Over@75.5": 1.79,
+            "Under@75.5": 1.87,
+            "Over@77.5": 1.95,
+            "Under@77.5": 1.727
+          },
+          "btts": {
+            "No": 1.8,
+            "Yes": 1.86
+          },
+          "match_winner": {
+            "1": 1.82,
+            "2": 1.88
+          },
+          "asian_handicap": {
+            "2@0.5": 1.82,
+            "1@-0.5": 1.84
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720114688",
+    "external_id": "720114688",
+    "betradar_id": "",
+    "home_team": "David Sabuka",
+    "away_team": "Zdenek Kuksa",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Setka Cup. Czech Republic",
+    "sport": "table-tennis",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.75,
+        "2": 1.918
+      },
+      "btts": {
+        "No": 1.781,
+        "Yes": 1.881
+      },
+      "handicap_result": {
+        "1@40.5": 1.791,
+        "2@40.5": 1.871
+      },
+      "asian_handicap": {
+        "1@-0.5": 1.8,
+        "2@0.5": 1.86
+      },
+      "over_under": {
+        "Over@79.5": 1.81,
+        "Under@79.5": 1.85,
+        "Over@78.5": 1.749,
+        "Under@78.5": 1.919,
+        "Over@80.5": 1.86,
+        "Under@80.5": 1.8
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720114688",
+        "markets": {
+          "match_winner": {
+            "1": 1.75,
+            "2": 1.918
+          },
+          "btts": {
+            "No": 1.781,
+            "Yes": 1.881
+          },
+          "handicap_result": {
+            "1@40.5": 1.791,
+            "2@40.5": 1.871
+          },
+          "asian_handicap": {
+            "1@-0.5": 1.8,
+            "2@0.5": 1.86
+          },
+          "over_under": {
+            "Over@79.5": 1.81,
+            "Under@79.5": 1.85,
+            "Over@78.5": 1.749,
+            "Under@78.5": 1.919,
+            "Over@80.5": 1.86,
+            "Under@80.5": 1.8
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:41:16Z"
+  }
+]

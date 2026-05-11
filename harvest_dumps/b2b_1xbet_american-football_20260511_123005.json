@@ -1,0 +1,668 @@
+[
+  {
+    "b2b_match_id": "1xbet:719896700",
+    "external_id": "719896700",
+    "betradar_id": "",
+    "home_team": "Griffins Saint Petersburg",
+    "away_team": "Capital Sharks Moscow",
+    "start_time": "2026-05-17T09:00:00Z",
+    "competition": "Russian Championship",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.34,
+        "T401": 3.52
+      },
+      "over_under": {
+        "Over@44.5": 1.82,
+        "Under@44.5": 1.84,
+        "Over@43.5": 1.62,
+        "Under@43.5": 2.1,
+        "Over@44": 1.71,
+        "Under@44": 1.97,
+        "Over@45": 1.94,
+        "Under@45": 1.73,
+        "Over@45.5": 2.07,
+        "Under@45.5": 1.64
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719896700",
+        "markets": {
+          "group_101": {
+            "T402": 1.34,
+            "T401": 3.52
+          },
+          "over_under": {
+            "Over@44.5": 1.82,
+            "Under@44.5": 1.84,
+            "Over@43.5": 1.62,
+            "Under@43.5": 2.1,
+            "Over@44": 1.71,
+            "Under@44": 1.97,
+            "Over@45": 1.94,
+            "Under@45": 1.73,
+            "Over@45.5": 2.07,
+            "Under@45.5": 1.64
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719891604",
+    "external_id": "719891604",
+    "betradar_id": "",
+    "home_team": "Spartak Moscow",
+    "away_team": "Spartans Moscow",
+    "start_time": "2026-05-17T09:00:00Z",
+    "competition": "Russian Championship",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.74,
+        "T402": 1.92
+      },
+      "over_under": {
+        "Over@49.5": 1.8,
+        "Under@49.5": 1.86,
+        "Over@48.5": 1.62,
+        "Under@48.5": 2.11,
+        "Over@49": 1.7,
+        "Under@49": 1.98,
+        "Over@50": 1.92,
+        "Under@50": 1.75,
+        "Over@50.5": 2.03,
+        "Under@50.5": 1.66
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719891604",
+        "markets": {
+          "group_101": {
+            "T401": 1.74,
+            "T402": 1.92
+          },
+          "over_under": {
+            "Over@49.5": 1.8,
+            "Under@49.5": 1.86,
+            "Over@48.5": 1.62,
+            "Under@48.5": 2.11,
+            "Over@49": 1.7,
+            "Under@49": 1.98,
+            "Over@50": 1.92,
+            "Under@50": 1.75,
+            "Over@50.5": 2.03,
+            "Under@50.5": 1.66
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:691228459",
+    "external_id": "691228459",
+    "betradar_id": "",
+    "home_team": "TCU Horned Frogs",
+    "away_team": "North Carolina Tar Heels",
+    "start_time": "2026-08-29T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.385,
+        "T402": 3.1
+      },
+      "asian_handicap": {
+        "1@-6.5": 1.87,
+        "2@6.5": 1.952
+      },
+      "over_under": {
+        "Over@50.5": 1.909,
+        "Under@50.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:691228459",
+        "markets": {
+          "group_101": {
+            "T401": 1.385,
+            "T402": 3.1
+          },
+          "asian_handicap": {
+            "1@-6.5": 1.87,
+            "2@6.5": 1.952
+          },
+          "over_under": {
+            "Over@50.5": 1.909,
+            "Under@50.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:691228458",
+    "external_id": "691228458",
+    "betradar_id": "",
+    "home_team": "Virginia Cavaliers",
+    "away_team": "North Carolina State Wolfpack",
+    "start_time": "2026-08-29T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.714,
+        "T402": 2.2
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.87,
+        "2@2.5": 1.952
+      },
+      "over_under": {
+        "Over@53.5": 1.909,
+        "Under@53.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:691228458",
+        "markets": {
+          "group_101": {
+            "T401": 1.714,
+            "T402": 2.2
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.87,
+            "2@2.5": 1.952
+          },
+          "over_under": {
+            "Over@53.5": 1.909,
+            "Under@53.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716750128",
+    "external_id": "716750128",
+    "betradar_id": "",
+    "home_team": "Mississippi Ole Miss Rebels",
+    "away_team": "Louisville Cardinals",
+    "start_time": "2026-09-05T16:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.345,
+        "T402": 3.35
+      },
+      "asian_handicap": {
+        "2@7.5": 1.87,
+        "1@-7.5": 1.952
+      },
+      "over_under": {
+        "Over@53.5": 1.909,
+        "Under@53.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716750128",
+        "markets": {
+          "group_101": {
+            "T401": 1.345,
+            "T402": 3.35
+          },
+          "asian_handicap": {
+            "2@7.5": 1.87,
+            "1@-7.5": 1.952
+          },
+          "over_under": {
+            "Over@53.5": 1.909,
+            "Under@53.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:691254297",
+    "external_id": "691254297",
+    "betradar_id": "",
+    "home_team": "Auburn Tigers",
+    "away_team": "Baylor Bears",
+    "start_time": "2026-09-05T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.345,
+        "T402": 3.35
+      },
+      "asian_handicap": {
+        "2@7.5": 1.87,
+        "1@-7.5": 1.952
+      },
+      "over_under": {
+        "Over@58.5": 1.909,
+        "Under@58.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:691254297",
+        "markets": {
+          "group_101": {
+            "T401": 1.345,
+            "T402": 3.35
+          },
+          "asian_handicap": {
+            "2@7.5": 1.87,
+            "1@-7.5": 1.952
+          },
+          "over_under": {
+            "Over@58.5": 1.909,
+            "Under@58.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716737549",
+    "external_id": "716737549",
+    "betradar_id": "",
+    "home_team": "California Golden Bears",
+    "away_team": "UCLA Bruins",
+    "start_time": "2026-09-05T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.8,
+        "T402": 2.05
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.909,
+        "2@1.5": 1.909
+      },
+      "over_under": {
+        "Over@53.5": 1.909,
+        "Under@53.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716737549",
+        "markets": {
+          "group_101": {
+            "T401": 1.8,
+            "T402": 2.05
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.909,
+            "2@1.5": 1.909
+          },
+          "over_under": {
+            "Over@53.5": 1.909,
+            "Under@53.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:691228460",
+    "external_id": "691228460",
+    "betradar_id": "",
+    "home_team": "LSU Fighting Tigers",
+    "away_team": "Clemson Tigers",
+    "start_time": "2026-09-05T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.2,
+        "T402": 4.75
+      },
+      "asian_handicap": {
+        "1@-11.5": 1.909,
+        "2@11.5": 1.909
+      },
+      "over_under": {
+        "Over@50.5": 1.909,
+        "Under@50.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:691228460",
+        "markets": {
+          "group_101": {
+            "T401": 1.2,
+            "T402": 4.75
+          },
+          "asian_handicap": {
+            "1@-11.5": 1.909,
+            "2@11.5": 1.909
+          },
+          "over_under": {
+            "Over@50.5": 1.909,
+            "Under@50.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:691237330",
+    "external_id": "691237330",
+    "betradar_id": "",
+    "home_team": "Notre Dame Fighting Irish",
+    "away_team": "Wisconsin Badgers",
+    "start_time": "2026-09-06T16:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.059,
+        "T402": 10.5
+      },
+      "asian_handicap": {
+        "1@-19.5": 1.909,
+        "2@19.5": 1.909
+      },
+      "over_under": {
+        "Over@46.5": 1.909,
+        "Under@46.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:691237330",
+        "markets": {
+          "group_101": {
+            "T401": 1.059,
+            "T402": 10.5
+          },
+          "asian_handicap": {
+            "1@-19.5": 1.909,
+            "2@19.5": 1.909
+          },
+          "over_under": {
+            "Over@46.5": 1.909,
+            "Under@46.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716749480",
+    "external_id": "716749480",
+    "betradar_id": "",
+    "home_team": "Southern Methodist Mustangs",
+    "away_team": "Florida State Seminoles",
+    "start_time": "2026-09-07T23:05:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.714,
+        "T402": 2.2
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.909,
+        "2@2.5": 1.909
+      },
+      "over_under": {
+        "Over@52.5": 1.909,
+        "Under@52.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716749480",
+        "markets": {
+          "group_101": {
+            "T401": 1.714,
+            "T402": 2.2
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.909,
+            "2@2.5": 1.909
+          },
+          "over_under": {
+            "Over@52.5": 1.909,
+            "Under@52.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:719622306",
+    "external_id": "719622306",
+    "betradar_id": "",
+    "home_team": "Los Angeles Rams",
+    "away_team": "San Francisco 49ers",
+    "start_time": "2026-09-11T00:35:00Z",
+    "competition": "USA. NFL",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.645,
+        "T402": 2.3
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.8,
+        "2@2.5": 2.05
+      },
+      "over_under": {
+        "Over@48.5": 1.909,
+        "Under@48.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719622306",
+        "markets": {
+          "group_101": {
+            "T401": 1.645,
+            "T402": 2.3
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.8,
+            "2@2.5": 2.05
+          },
+          "over_under": {
+            "Over@48.5": 1.909,
+            "Under@48.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:716737552",
+    "external_id": "716737552",
+    "betradar_id": "",
+    "home_team": "Michigan Wolverines",
+    "away_team": "Oklahoma Sooners",
+    "start_time": "2026-09-12T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.667,
+        "T402": 2.25
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.87,
+        "2@2.5": 1.952
+      },
+      "over_under": {
+        "Over@45.5": 1.909,
+        "Under@45.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:716737552",
+        "markets": {
+          "group_101": {
+            "T401": 1.667,
+            "T402": 2.25
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.87,
+            "2@2.5": 1.952
+          },
+          "over_under": {
+            "Over@45.5": 1.909,
+            "Under@45.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  },
+  {
+    "b2b_match_id": "1xbet:691237331",
+    "external_id": "691237331",
+    "betradar_id": "",
+    "home_team": "Texas Longhorns",
+    "away_team": "Ohio State Buckeyes",
+    "start_time": "2026-09-12T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.87,
+        "T402": 1.952
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.909,
+        "2@1.5": 1.909
+      },
+      "over_under": {
+        "Over@47.5": 1.909,
+        "Under@47.5": 1.909
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:691237331",
+        "markets": {
+          "group_101": {
+            "T401": 1.87,
+            "T402": 1.952
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.909,
+            "2@1.5": 1.909
+          },
+          "over_under": {
+            "Over@47.5": 1.909,
+            "Under@47.5": 1.909
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:42Z"
+  }
+]

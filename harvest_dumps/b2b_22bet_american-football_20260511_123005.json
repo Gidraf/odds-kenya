@@ -1,0 +1,668 @@
+[
+  {
+    "b2b_match_id": "22bet:719896700",
+    "external_id": "719896700",
+    "betradar_id": "",
+    "home_team": "Griffins Saint Petersburg",
+    "away_team": "Capital Sharks Moscow",
+    "start_time": "2026-05-17T09:00:00Z",
+    "competition": "Russian Championship",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.31,
+        "T401": 3.44
+      },
+      "over_under": {
+        "Over@44.5": 1.82,
+        "Under@44.5": 1.84,
+        "Over@43.5": 1.62,
+        "Under@43.5": 2.1,
+        "Over@44": 1.71,
+        "Under@44": 1.97,
+        "Over@45": 1.94,
+        "Under@45": 1.73,
+        "Over@45.5": 2.07,
+        "Under@45.5": 1.64
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719896700",
+        "markets": {
+          "group_101": {
+            "T402": 1.31,
+            "T401": 3.44
+          },
+          "over_under": {
+            "Over@44.5": 1.82,
+            "Under@44.5": 1.84,
+            "Over@43.5": 1.62,
+            "Under@43.5": 2.1,
+            "Over@44": 1.71,
+            "Under@44": 1.97,
+            "Over@45": 1.94,
+            "Under@45": 1.73,
+            "Over@45.5": 2.07,
+            "Under@45.5": 1.64
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:719891604",
+    "external_id": "719891604",
+    "betradar_id": "",
+    "home_team": "Spartak Moscow",
+    "away_team": "Spartans Moscow",
+    "start_time": "2026-05-17T09:00:00Z",
+    "competition": "Russian Championship",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.74,
+        "T402": 1.92
+      },
+      "over_under": {
+        "Over@49.5": 1.8,
+        "Under@49.5": 1.86,
+        "Over@48.5": 1.62,
+        "Under@48.5": 2.11,
+        "Over@49": 1.7,
+        "Under@49": 1.98,
+        "Over@50": 1.92,
+        "Under@50": 1.75,
+        "Over@50.5": 2.03,
+        "Under@50.5": 1.66
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719891604",
+        "markets": {
+          "group_101": {
+            "T401": 1.74,
+            "T402": 1.92
+          },
+          "over_under": {
+            "Over@49.5": 1.8,
+            "Under@49.5": 1.86,
+            "Over@48.5": 1.62,
+            "Under@48.5": 2.11,
+            "Over@49": 1.7,
+            "Under@49": 1.98,
+            "Over@50": 1.92,
+            "Under@50": 1.75,
+            "Over@50.5": 2.03,
+            "Under@50.5": 1.66
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:691228459",
+    "external_id": "691228459",
+    "betradar_id": "",
+    "home_team": "TCU Horned Frogs",
+    "away_team": "North Carolina Tar Heels",
+    "start_time": "2026-08-29T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.375,
+        "T402": 3.075
+      },
+      "asian_handicap": {
+        "1@-6.5": 1.86,
+        "2@6.5": 1.94
+      },
+      "over_under": {
+        "Over@50.5": 1.9,
+        "Under@50.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:691228459",
+        "markets": {
+          "group_101": {
+            "T401": 1.375,
+            "T402": 3.075
+          },
+          "asian_handicap": {
+            "1@-6.5": 1.86,
+            "2@6.5": 1.94
+          },
+          "over_under": {
+            "Over@50.5": 1.9,
+            "Under@50.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:691228458",
+    "external_id": "691228458",
+    "betradar_id": "",
+    "home_team": "Virginia Cavaliers",
+    "away_team": "North Carolina State Wolfpack",
+    "start_time": "2026-08-29T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.69,
+        "T402": 2.17
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.86,
+        "2@2.5": 1.94
+      },
+      "over_under": {
+        "Over@53.5": 1.9,
+        "Under@53.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:691228458",
+        "markets": {
+          "group_101": {
+            "T401": 1.69,
+            "T402": 2.17
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.86,
+            "2@2.5": 1.94
+          },
+          "over_under": {
+            "Over@53.5": 1.9,
+            "Under@53.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:716750128",
+    "external_id": "716750128",
+    "betradar_id": "",
+    "home_team": "Mississippi Ole Miss Rebels",
+    "away_team": "Louisville Cardinals",
+    "start_time": "2026-09-05T16:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.33,
+        "T402": 3.3
+      },
+      "asian_handicap": {
+        "2@7.5": 1.86,
+        "1@-7.5": 1.94
+      },
+      "over_under": {
+        "Over@53.5": 1.9,
+        "Under@53.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:716750128",
+        "markets": {
+          "group_101": {
+            "T401": 1.33,
+            "T402": 3.3
+          },
+          "asian_handicap": {
+            "2@7.5": 1.86,
+            "1@-7.5": 1.94
+          },
+          "over_under": {
+            "Over@53.5": 1.9,
+            "Under@53.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:691254297",
+    "external_id": "691254297",
+    "betradar_id": "",
+    "home_team": "Auburn Tigers",
+    "away_team": "Baylor Bears",
+    "start_time": "2026-09-05T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.33,
+        "T402": 3.3
+      },
+      "asian_handicap": {
+        "2@7.5": 1.86,
+        "1@-7.5": 1.94
+      },
+      "over_under": {
+        "Over@58.5": 1.9,
+        "Under@58.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:691254297",
+        "markets": {
+          "group_101": {
+            "T401": 1.33,
+            "T402": 3.3
+          },
+          "asian_handicap": {
+            "2@7.5": 1.86,
+            "1@-7.5": 1.94
+          },
+          "over_under": {
+            "Over@58.5": 1.9,
+            "Under@58.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:716737549",
+    "external_id": "716737549",
+    "betradar_id": "",
+    "home_team": "California Golden Bears",
+    "away_team": "UCLA Bruins",
+    "start_time": "2026-09-05T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.784,
+        "T402": 2.03
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.9,
+        "2@1.5": 1.9
+      },
+      "over_under": {
+        "Over@53.5": 1.9,
+        "Under@53.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:716737549",
+        "markets": {
+          "group_101": {
+            "T401": 1.784,
+            "T402": 2.03
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.9,
+            "2@1.5": 1.9
+          },
+          "over_under": {
+            "Over@53.5": 1.9,
+            "Under@53.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:691228460",
+    "external_id": "691228460",
+    "betradar_id": "",
+    "home_team": "LSU Fighting Tigers",
+    "away_team": "Clemson Tigers",
+    "start_time": "2026-09-05T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.19,
+        "T402": 4.7
+      },
+      "asian_handicap": {
+        "1@-11.5": 1.9,
+        "2@11.5": 1.9
+      },
+      "over_under": {
+        "Over@50.5": 1.9,
+        "Under@50.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:691228460",
+        "markets": {
+          "group_101": {
+            "T401": 1.19,
+            "T402": 4.7
+          },
+          "asian_handicap": {
+            "1@-11.5": 1.9,
+            "2@11.5": 1.9
+          },
+          "over_under": {
+            "Over@50.5": 1.9,
+            "Under@50.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:691237330",
+    "external_id": "691237330",
+    "betradar_id": "",
+    "home_team": "Notre Dame Fighting Irish",
+    "away_team": "Wisconsin Badgers",
+    "start_time": "2026-09-06T16:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.048,
+        "T402": 10.0
+      },
+      "asian_handicap": {
+        "1@-19.5": 1.9,
+        "2@19.5": 1.9
+      },
+      "over_under": {
+        "Over@46.5": 1.9,
+        "Under@46.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:691237330",
+        "markets": {
+          "group_101": {
+            "T401": 1.048,
+            "T402": 10.0
+          },
+          "asian_handicap": {
+            "1@-19.5": 1.9,
+            "2@19.5": 1.9
+          },
+          "over_under": {
+            "Over@46.5": 1.9,
+            "Under@46.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:716749480",
+    "external_id": "716749480",
+    "betradar_id": "",
+    "home_team": "Southern Methodist Mustangs",
+    "away_team": "Florida State Seminoles",
+    "start_time": "2026-09-07T23:05:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.69,
+        "T402": 2.17
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.9,
+        "2@2.5": 1.9
+      },
+      "over_under": {
+        "Over@52.5": 1.9,
+        "Under@52.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:716749480",
+        "markets": {
+          "group_101": {
+            "T401": 1.69,
+            "T402": 2.17
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.9,
+            "2@2.5": 1.9
+          },
+          "over_under": {
+            "Over@52.5": 1.9,
+            "Under@52.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:719622306",
+    "external_id": "719622306",
+    "betradar_id": "",
+    "home_team": "Los Angeles Rams",
+    "away_team": "San Francisco 49ers",
+    "start_time": "2026-09-11T00:35:00Z",
+    "competition": "USA. NFL",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.63,
+        "T402": 2.28
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.784,
+        "2@2.5": 2.03
+      },
+      "over_under": {
+        "Over@48.5": 1.9,
+        "Under@48.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719622306",
+        "markets": {
+          "group_101": {
+            "T401": 1.63,
+            "T402": 2.28
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.784,
+            "2@2.5": 2.03
+          },
+          "over_under": {
+            "Over@48.5": 1.9,
+            "Under@48.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:716737552",
+    "external_id": "716737552",
+    "betradar_id": "",
+    "home_team": "Michigan Wolverines",
+    "away_team": "Oklahoma Sooners",
+    "start_time": "2026-09-12T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.656,
+        "T402": 2.23
+      },
+      "asian_handicap": {
+        "1@-2.5": 1.86,
+        "2@2.5": 1.94
+      },
+      "over_under": {
+        "Over@45.5": 1.9,
+        "Under@45.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:716737552",
+        "markets": {
+          "group_101": {
+            "T401": 1.656,
+            "T402": 2.23
+          },
+          "asian_handicap": {
+            "1@-2.5": 1.86,
+            "2@2.5": 1.94
+          },
+          "over_under": {
+            "Over@45.5": 1.9,
+            "Under@45.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  },
+  {
+    "b2b_match_id": "22bet:691237331",
+    "external_id": "691237331",
+    "betradar_id": "",
+    "home_team": "Texas Longhorns",
+    "away_team": "Ohio State Buckeyes",
+    "start_time": "2026-09-12T17:00:00Z",
+    "competition": "NCAA",
+    "sport": "american-football",
+    "source": "22bet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.86,
+        "T402": 1.94
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.9,
+        "2@1.5": 1.9
+      },
+      "over_under": {
+        "Over@47.5": 1.9,
+        "Under@47.5": 1.9
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:691237331",
+        "markets": {
+          "group_101": {
+            "T401": 1.86,
+            "T402": 1.94
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.9,
+            "2@1.5": 1.9
+          },
+          "over_under": {
+            "Over@47.5": 1.9,
+            "Under@47.5": 1.9
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:46:50Z"
+  }
+]

@@ -1,6 +1,9 @@
-import httpx
-url = "https://1xbet.co.ke/service-api/LineFeed/GetGameZip?sports=1&champs=110163,225733&partner=61&tf=1200&tz=0&lng=en&GroupEvents=true&countryId=0&getEmpty=true&hot=false&grMode=2"
-headers = {"accept": "application/json, text/plain, */*"}
-resp = httpx.get(url, headers=headers)
-print("Status:", resp.status_code)
-print(resp.text[:500])
+from app.workers.b2b_harvester import _curl, B2B_BOOKMAKERS
+bk = B2B_BOOKMAKERS[-1] # paripesa
+
+url = f"https://{bk['domain']}/service-api/LineFeed/GetChampsZip?sport=2&partner={bk['partner_id']}&lng=en"
+print("Champs URL:", url)
+raw = _curl(url, f"https://{bk['domain']}/en/line")
+print("ErrorCode:", raw.get("ErrorCode") if raw else "None")
+val = raw.get("Value") if raw else None
+print("Value length:", len(val) if val else 0)

@@ -1,0 +1,2024 @@
+[
+  {
+    "b2b_match_id": "helabet:719525585",
+    "external_id": "719525585",
+    "betradar_id": "",
+    "home_team": "Turkey (Pro)",
+    "away_team": "France (Pro)",
+    "start_time": "2026-05-11T09:40:00Z",
+    "competition": "UPVL. Nations League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Over@94.5": 1.58,
+        "Under@94.5": 2.28
+      },
+      "match_winner": {
+        "2": 1.78,
+        "1": 1.96
+      },
+      "asian_handicap": {
+        "1@1.5": 1.82,
+        "2@-1.5": 1.92,
+        "1@-0.5": 2.03,
+        "2@0.5": 1.74,
+        "2@-2.5": 2.03,
+        "1@2.5": 1.73
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719525585",
+        "markets": {
+          "over_under": {
+            "Over@94.5": 1.58,
+            "Under@94.5": 2.28
+          },
+          "match_winner": {
+            "2": 1.78,
+            "1": 1.96
+          },
+          "asian_handicap": {
+            "1@1.5": 1.82,
+            "2@-1.5": 1.92,
+            "1@-0.5": 2.03,
+            "2@0.5": 1.74,
+            "2@-2.5": 2.03,
+            "1@2.5": 1.73
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719525586",
+    "external_id": "719525586",
+    "betradar_id": "",
+    "home_team": "Croatia (Pro)",
+    "away_team": "Turkey (Pro)",
+    "start_time": "2026-05-11T10:40:00Z",
+    "competition": "UPVL. Nations League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Over@94.5": 1.58,
+        "Under@94.5": 2.28
+      },
+      "match_winner": {
+        "1": 1.78,
+        "2": 1.96
+      },
+      "asian_handicap": {
+        "2@1.5": 1.82,
+        "1@-1.5": 1.92,
+        "2@-0.5": 2.03,
+        "1@0.5": 1.74,
+        "1@-2.5": 2.03,
+        "2@2.5": 1.73
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719525586",
+        "markets": {
+          "over_under": {
+            "Over@94.5": 1.58,
+            "Under@94.5": 2.28
+          },
+          "match_winner": {
+            "1": 1.78,
+            "2": 1.96
+          },
+          "asian_handicap": {
+            "2@1.5": 1.82,
+            "1@-1.5": 1.92,
+            "2@-0.5": 2.03,
+            "1@0.5": 1.74,
+            "1@-2.5": 2.03,
+            "2@2.5": 1.73
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720201208",
+    "external_id": "720201208",
+    "betradar_id": "",
+    "home_team": "Imperiya-Pro",
+    "away_team": "Enerdzhi-Pro",
+    "start_time": "2026-05-11T10:55:00Z",
+    "competition": "Belarus. Liga Pro",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "asian_handicap": {
+        "1@0.5": 1.81,
+        "2@-0.5": 1.86,
+        "1@-2.5": 2.01,
+        "2@2.5": 1.68,
+        "2@-3.5": 2.1,
+        "1@3.5": 1.62
+      },
+      "match_winner": {
+        "1": 1.82,
+        "2": 1.82
+      },
+      "btts": {
+        "Yes": 1.82,
+        "No": 1.84
+      },
+      "handicap_result": {
+        "1@90.5": 1.82,
+        "2@90.5": 1.84
+      },
+      "over_under": {
+        "Over@179.5": 1.83,
+        "Under@179.5": 1.84,
+        "Over@176.5": 1.666,
+        "Under@176.5": 2.03,
+        "Over@182.5": 2.01,
+        "Under@182.5": 1.68,
+        "Over@186.5": 2.27,
+        "Under@186.5": 1.52
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720201208",
+        "markets": {
+          "asian_handicap": {
+            "1@0.5": 1.81,
+            "2@-0.5": 1.86,
+            "1@-2.5": 2.01,
+            "2@2.5": 1.68,
+            "2@-3.5": 2.1,
+            "1@3.5": 1.62
+          },
+          "match_winner": {
+            "1": 1.82,
+            "2": 1.82
+          },
+          "btts": {
+            "Yes": 1.82,
+            "No": 1.84
+          },
+          "handicap_result": {
+            "1@90.5": 1.82,
+            "2@90.5": 1.84
+          },
+          "over_under": {
+            "Over@179.5": 1.83,
+            "Under@179.5": 1.84,
+            "Over@176.5": 1.666,
+            "Under@176.5": 2.03,
+            "Over@182.5": 2.01,
+            "Under@182.5": 1.68,
+            "Over@186.5": 2.27,
+            "Under@186.5": 1.52
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719525917",
+    "external_id": "719525917",
+    "betradar_id": "",
+    "home_team": "France (Pro)",
+    "away_team": "Croatia (Pro)",
+    "start_time": "2026-05-11T11:40:00Z",
+    "competition": "UPVL. Nations League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Over@94.5": 1.58,
+        "Under@94.5": 2.28
+      },
+      "asian_handicap": {
+        "2@0.5": 1.82,
+        "1@-0.5": 1.92,
+        "1@-1.5": 2.02,
+        "2@-1.5": 2.02,
+        "1@1.5": 1.74,
+        "2@1.5": 1.74
+      },
+      "match_winner": {
+        "1": 1.87,
+        "2": 1.87
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719525917",
+        "markets": {
+          "over_under": {
+            "Over@94.5": 1.58,
+            "Under@94.5": 2.28
+          },
+          "asian_handicap": {
+            "2@0.5": 1.82,
+            "1@-0.5": 1.92,
+            "1@-1.5": 2.02,
+            "2@-1.5": 2.02,
+            "1@1.5": 1.74,
+            "2@1.5": 1.74
+          },
+          "match_winner": {
+            "1": 1.87,
+            "2": 1.87
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720180886",
+    "external_id": "720180886",
+    "betradar_id": "",
+    "home_team": "Sao Jose Volei U21 (Women)",
+    "away_team": "Paineiras do Morumby U21 (Women)",
+    "start_time": "2026-05-11T13:00:00Z",
+    "competition": "Brazil Championship U21. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.519,
+        "1": 2.3
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720180886",
+        "markets": {
+          "match_winner": {
+            "2": 1.519,
+            "1": 2.3
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719968225",
+    "external_id": "719968225",
+    "betradar_id": "",
+    "home_team": "Gladiatory-Pro (4x4)",
+    "away_team": "Storm-Pro (4x4)",
+    "start_time": "2026-05-11T13:45:00Z",
+    "competition": "Belarus. Liga Pro 4x4",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "handicap_result": {
+        "1@48.5": 1.38,
+        "2@48.5": 2.8
+      },
+      "match_winner": {
+        "1": 1.75,
+        "2": 1.95
+      },
+      "btts": {
+        "No": 1.75,
+        "Yes": 1.95
+      },
+      "over_under": {
+        "Under@96.5": 1.83,
+        "Over@96.5": 1.87
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.85,
+        "2@1.5": 1.85
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719968225",
+        "markets": {
+          "handicap_result": {
+            "1@48.5": 1.38,
+            "2@48.5": 2.8
+          },
+          "match_winner": {
+            "1": 1.75,
+            "2": 1.95
+          },
+          "btts": {
+            "No": 1.75,
+            "Yes": 1.95
+          },
+          "over_under": {
+            "Under@96.5": 1.83,
+            "Over@96.5": 1.87
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.85,
+            "2@1.5": 1.85
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719968223",
+    "external_id": "719968223",
+    "betradar_id": "",
+    "home_team": "Varyagi-Pro (4x4)",
+    "away_team": "Thayfun-Pro (4x4)",
+    "start_time": "2026-05-11T14:25:00Z",
+    "competition": "Belarus. Liga Pro 4x4",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "No": 1.77,
+        "Yes": 1.93
+      },
+      "handicap_result": {
+        "2@50.5": 1.77,
+        "1@50.5": 1.93
+      },
+      "asian_handicap": {
+        "1@0.5": 1.8,
+        "2@-0.5": 1.9
+      },
+      "over_under": {
+        "Under@96.5": 1.83,
+        "Over@96.5": 1.87
+      },
+      "match_winner": {
+        "1": 1.85,
+        "2": 1.85
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719968223",
+        "markets": {
+          "btts": {
+            "No": 1.77,
+            "Yes": 1.93
+          },
+          "handicap_result": {
+            "2@50.5": 1.77,
+            "1@50.5": 1.93
+          },
+          "asian_handicap": {
+            "1@0.5": 1.8,
+            "2@-0.5": 1.9
+          },
+          "over_under": {
+            "Under@96.5": 1.83,
+            "Over@96.5": 1.87
+          },
+          "match_winner": {
+            "1": 1.85,
+            "2": 1.85
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720188564",
+    "external_id": "720188564",
+    "betradar_id": "",
+    "home_team": "Paulistano U21 (Women)",
+    "away_team": "Pinheiros U21 (Women)",
+    "start_time": "2026-05-11T15:00:00Z",
+    "competition": "Brazil Championship U21. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.299,
+        "1": 3.09
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720188564",
+        "markets": {
+          "match_winner": {
+            "2": 1.299,
+            "1": 3.09
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719988370",
+    "external_id": "719988370",
+    "betradar_id": "",
+    "home_team": "Sokol Slezske Predmesti (Women)",
+    "away_team": "Sokol Nechanice (Women)",
+    "start_time": "2026-05-11T15:30:00Z",
+    "competition": "Czech Republic. Regional League. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.47,
+        "2": 2.423
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719988370",
+        "markets": {
+          "match_winner": {
+            "1": 1.47,
+            "2": 2.423
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719988371",
+    "external_id": "719988371",
+    "betradar_id": "",
+    "home_team": "Paca Maniny",
+    "away_team": "Orion A",
+    "start_time": "2026-05-11T16:00:00Z",
+    "competition": "Czech Republic. Regional League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.01,
+        "2": 9.7
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719988371",
+        "markets": {
+          "match_winner": {
+            "1": 1.01,
+            "2": 9.7
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719056969",
+    "external_id": "719056969",
+    "betradar_id": "",
+    "home_team": "Arcada Galati",
+    "away_team": "Dinamo Bucuresti",
+    "start_time": "2026-05-11T16:30:00Z",
+    "competition": "Romania. Divizia A1",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.383,
+        "2": 2.702
+      },
+      "over_under": {
+        "Under@183.5": 1.815,
+        "Over@183.5": 1.845
+      },
+      "asian_handicap": {
+        "1@-6.5": 1.83,
+        "2@6.5": 1.83
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719056969",
+        "markets": {
+          "match_winner": {
+            "1": 1.383,
+            "2": 2.702
+          },
+          "over_under": {
+            "Under@183.5": 1.815,
+            "Over@183.5": 1.845
+          },
+          "asian_handicap": {
+            "1@-6.5": 1.83,
+            "2@6.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720034995",
+    "external_id": "720034995",
+    "betradar_id": "",
+    "home_team": "BDG (Women)",
+    "away_team": "BEAC II (Women)",
+    "start_time": "2026-05-11T17:10:00Z",
+    "competition": "Hungary. Budapest League 2. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.256,
+        "1": 3.37
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720034995",
+        "markets": {
+          "match_winner": {
+            "2": 1.256,
+            "1": 3.37
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719896352",
+    "external_id": "719896352",
+    "betradar_id": "",
+    "home_team": "Sovy-Pro (Women)",
+    "away_team": "Panteres-Pro (Women)",
+    "start_time": "2026-05-11T17:10:00Z",
+    "competition": "Russia. League Pro. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "Yes": 1.685,
+        "No": 2.002
+      },
+      "handicap_result": {
+        "1@87.5": 1.685,
+        "2@87.5": 2.002
+      },
+      "asian_handicap": {
+        "1@0.5": 1.801,
+        "2@-0.5": 1.86,
+        "1@-4.5": 2.218,
+        "2@4.5": 1.557,
+        "1@-6.5": 2.461,
+        "2@6.5": 1.457
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 1.83
+      },
+      "over_under": {
+        "Over@179.5": 1.83,
+        "Under@179.5": 1.83,
+        "Over@144.5": 1.327,
+        "Under@144.5": 2.948,
+        "Over@169.5": 1.453,
+        "Under@169.5": 2.471
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719896352",
+        "markets": {
+          "btts": {
+            "Yes": 1.685,
+            "No": 2.002
+          },
+          "handicap_result": {
+            "1@87.5": 1.685,
+            "2@87.5": 2.002
+          },
+          "asian_handicap": {
+            "1@0.5": 1.801,
+            "2@-0.5": 1.86,
+            "1@-4.5": 2.218,
+            "2@4.5": 1.557,
+            "1@-6.5": 2.461,
+            "2@6.5": 1.457
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 1.83
+          },
+          "over_under": {
+            "Over@179.5": 1.83,
+            "Under@179.5": 1.83,
+            "Over@144.5": 1.327,
+            "Under@144.5": 2.948,
+            "Over@169.5": 1.453,
+            "Under@169.5": 2.471
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720183418",
+    "external_id": "720183418",
+    "betradar_id": "",
+    "home_team": "SESI U21 (Women)",
+    "away_team": "Fluminense U21 (Women)",
+    "start_time": "2026-05-11T17:55:00Z",
+    "competition": "Brazil Championship U21. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.268,
+        "2": 3.285
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720183418",
+        "markets": {
+          "match_winner": {
+            "1": 1.268,
+            "2": 3.285
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719896350",
+    "external_id": "719896350",
+    "betradar_id": "",
+    "home_team": "Sovy-Pro (Women)",
+    "away_team": "Foxy-Pro (Women)",
+    "start_time": "2026-05-11T18:55:00Z",
+    "competition": "Russia. League Pro. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "Yes": 1.685,
+        "No": 2.002
+      },
+      "handicap_result": {
+        "1@87.5": 1.685,
+        "2@87.5": 2.002
+      },
+      "asian_handicap": {
+        "1@0.5": 1.801,
+        "2@-0.5": 1.86,
+        "1@-4.5": 2.218,
+        "2@4.5": 1.557,
+        "1@-6.5": 2.461,
+        "2@6.5": 1.457
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 1.83
+      },
+      "over_under": {
+        "Over@179.5": 1.83,
+        "Under@179.5": 1.83,
+        "Over@144.5": 1.327,
+        "Under@144.5": 2.948,
+        "Over@169.5": 1.453,
+        "Under@169.5": 2.471
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719896350",
+        "markets": {
+          "btts": {
+            "Yes": 1.685,
+            "No": 2.002
+          },
+          "handicap_result": {
+            "1@87.5": 1.685,
+            "2@87.5": 2.002
+          },
+          "asian_handicap": {
+            "1@0.5": 1.801,
+            "2@-0.5": 1.86,
+            "1@-4.5": 2.218,
+            "2@4.5": 1.557,
+            "1@-6.5": 2.461,
+            "2@6.5": 1.457
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 1.83
+          },
+          "over_under": {
+            "Over@179.5": 1.83,
+            "Under@179.5": 1.83,
+            "Over@144.5": 1.327,
+            "Under@144.5": 2.948,
+            "Over@169.5": 1.453,
+            "Under@169.5": 2.471
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720180885",
+    "external_id": "720180885",
+    "betradar_id": "",
+    "home_team": "Flamengo U21 (Women)",
+    "away_team": "Osasco U21 (Women)",
+    "start_time": "2026-05-11T19:55:00Z",
+    "competition": "Brazil Championship U21. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.589,
+        "2": 2.156
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720180885",
+        "markets": {
+          "match_winner": {
+            "1": 1.589,
+            "2": 2.156
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719525918",
+    "external_id": "719525918",
+    "betradar_id": "",
+    "home_team": "Argentina (Pro)",
+    "away_team": "Bolivia (Pro)",
+    "start_time": "2026-05-11T20:25:00Z",
+    "competition": "UPVL. Nations League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Over@94.5": 1.58,
+        "Under@94.5": 2.28
+      },
+      "match_winner": {
+        "2": 1.8,
+        "1": 1.95
+      },
+      "asian_handicap": {
+        "2@-0.5": 1.84,
+        "1@0.5": 1.9,
+        "1@-0.5": 2.01,
+        "2@0.5": 1.75,
+        "2@-1.5": 1.94,
+        "1@1.5": 1.81
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719525918",
+        "markets": {
+          "over_under": {
+            "Over@94.5": 1.58,
+            "Under@94.5": 2.28
+          },
+          "match_winner": {
+            "2": 1.8,
+            "1": 1.95
+          },
+          "asian_handicap": {
+            "2@-0.5": 1.84,
+            "1@0.5": 1.9,
+            "1@-0.5": 2.01,
+            "2@0.5": 1.75,
+            "2@-1.5": 1.94,
+            "1@1.5": 1.81
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719525919",
+    "external_id": "719525919",
+    "betradar_id": "",
+    "home_team": "Colombia (Pro)",
+    "away_team": "Argentina (Pro)",
+    "start_time": "2026-05-11T21:25:00Z",
+    "competition": "UPVL. Nations League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Over@94.5": 1.58,
+        "Under@94.5": 2.28
+      },
+      "match_winner": {
+        "1": 1.78,
+        "2": 1.96
+      },
+      "asian_handicap": {
+        "2@1.5": 1.82,
+        "1@-1.5": 1.92,
+        "2@-0.5": 2.03,
+        "1@0.5": 1.74,
+        "1@-2.5": 2.03,
+        "2@2.5": 1.73
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719525919",
+        "markets": {
+          "over_under": {
+            "Over@94.5": 1.58,
+            "Under@94.5": 2.28
+          },
+          "match_winner": {
+            "1": 1.78,
+            "2": 1.96
+          },
+          "asian_handicap": {
+            "2@1.5": 1.82,
+            "1@-1.5": 1.92,
+            "2@-0.5": 2.03,
+            "1@0.5": 1.74,
+            "1@-2.5": 2.03,
+            "2@2.5": 1.73
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719525920",
+    "external_id": "719525920",
+    "betradar_id": "",
+    "home_team": "Bolivia (Pro)",
+    "away_team": "Colombia (Pro)",
+    "start_time": "2026-05-11T22:25:00Z",
+    "competition": "UPVL. Nations League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Over@94.5": 1.58,
+        "Under@94.5": 2.28
+      },
+      "match_winner": {
+        "2": 1.78,
+        "1": 1.96
+      },
+      "asian_handicap": {
+        "1@1.5": 1.82,
+        "2@-1.5": 1.92,
+        "1@-0.5": 2.03,
+        "2@0.5": 1.74,
+        "2@-2.5": 2.03,
+        "1@2.5": 1.73
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719525920",
+        "markets": {
+          "over_under": {
+            "Over@94.5": 1.58,
+            "Under@94.5": 2.28
+          },
+          "match_winner": {
+            "2": 1.78,
+            "1": 1.96
+          },
+          "asian_handicap": {
+            "1@1.5": 1.82,
+            "2@-1.5": 1.92,
+            "1@-0.5": 2.03,
+            "2@0.5": 1.74,
+            "2@-2.5": 2.03,
+            "1@2.5": 1.73
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720199105",
+    "external_id": "720199105",
+    "betradar_id": "",
+    "home_team": "Hawaii Rainbow Warriors",
+    "away_team": "UC Irvine",
+    "start_time": "2026-05-11T22:55:00Z",
+    "competition": "NCAA",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.299,
+        "2": 3.09
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720199105",
+        "markets": {
+          "match_winner": {
+            "1": 1.299,
+            "2": 3.09
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719564485",
+    "external_id": "719564485",
+    "betradar_id": "",
+    "home_team": "Boca Juniors",
+    "away_team": "UBA",
+    "start_time": "2026-05-12T00:30:00Z",
+    "competition": "Argentina. Liga de Honor",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.318,
+        "2": 2.991
+      },
+      "handicap_result": {
+        "1@85.5": 1.78,
+        "2@85.5": 1.82
+      },
+      "over_under": {
+        "Under@180.5": 1.8,
+        "Over@180.5": 1.86,
+        "Over@179.5": 1.8,
+        "Under@179.5": 1.86,
+        "Over@181.5": 1.92,
+        "Under@181.5": 1.75
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.8
+      }
+    },
+    "market_count": 4,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719564485",
+        "markets": {
+          "match_winner": {
+            "1": 1.318,
+            "2": 2.991
+          },
+          "handicap_result": {
+            "1@85.5": 1.78,
+            "2@85.5": 1.82
+          },
+          "over_under": {
+            "Under@180.5": 1.8,
+            "Over@180.5": 1.86,
+            "Over@179.5": 1.8,
+            "Under@179.5": 1.86,
+            "Over@181.5": 1.92,
+            "Under@181.5": 1.75
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.8
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720180469",
+    "external_id": "720180469",
+    "betradar_id": "",
+    "home_team": "Saphire-Pro (Women)",
+    "away_team": "Granat-Pro (Women)",
+    "start_time": "2026-05-12T05:10:00Z",
+    "competition": "Russia. League Pro. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "Yes": 1.685,
+        "No": 2.002
+      },
+      "handicap_result": {
+        "1@87.5": 1.685,
+        "2@87.5": 2.002
+      },
+      "asian_handicap": {
+        "1@0.5": 1.801,
+        "2@-0.5": 1.86,
+        "1@-4.5": 2.218,
+        "2@4.5": 1.557,
+        "1@-6.5": 2.461,
+        "2@6.5": 1.457
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 1.83
+      },
+      "over_under": {
+        "Over@179.5": 1.83,
+        "Under@179.5": 1.83,
+        "Over@144.5": 1.327,
+        "Under@144.5": 2.948,
+        "Over@169.5": 1.453,
+        "Under@169.5": 2.471
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720180469",
+        "markets": {
+          "btts": {
+            "Yes": 1.685,
+            "No": 2.002
+          },
+          "handicap_result": {
+            "1@87.5": 1.685,
+            "2@87.5": 2.002
+          },
+          "asian_handicap": {
+            "1@0.5": 1.801,
+            "2@-0.5": 1.86,
+            "1@-4.5": 2.218,
+            "2@4.5": 1.557,
+            "1@-6.5": 2.461,
+            "2@6.5": 1.457
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 1.83
+          },
+          "over_under": {
+            "Over@179.5": 1.83,
+            "Under@179.5": 1.83,
+            "Over@144.5": 1.327,
+            "Under@144.5": 2.948,
+            "Over@169.5": 1.453,
+            "Under@169.5": 2.471
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720180471",
+    "external_id": "720180471",
+    "betradar_id": "",
+    "home_team": "Saphire-Pro (Women)",
+    "away_team": "Malahit-Pro (Women)",
+    "start_time": "2026-05-12T06:55:00Z",
+    "competition": "Russia. League Pro. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "Yes": 1.685,
+        "No": 2.002
+      },
+      "handicap_result": {
+        "1@87.5": 1.685,
+        "2@87.5": 2.002
+      },
+      "asian_handicap": {
+        "1@0.5": 1.801,
+        "2@-0.5": 1.86,
+        "1@-4.5": 2.218,
+        "2@4.5": 1.557,
+        "1@-6.5": 2.461,
+        "2@6.5": 1.457
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 1.83
+      },
+      "over_under": {
+        "Over@179.5": 1.83,
+        "Under@179.5": 1.83,
+        "Over@144.5": 1.327,
+        "Under@144.5": 2.948,
+        "Over@169.5": 1.453,
+        "Under@169.5": 2.471
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720180471",
+        "markets": {
+          "btts": {
+            "Yes": 1.685,
+            "No": 2.002
+          },
+          "handicap_result": {
+            "1@87.5": 1.685,
+            "2@87.5": 2.002
+          },
+          "asian_handicap": {
+            "1@0.5": 1.801,
+            "2@-0.5": 1.86,
+            "1@-4.5": 2.218,
+            "2@4.5": 1.557,
+            "1@-6.5": 2.461,
+            "2@6.5": 1.457
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 1.83
+          },
+          "over_under": {
+            "Over@179.5": 1.83,
+            "Under@179.5": 1.83,
+            "Over@144.5": 1.327,
+            "Under@144.5": 2.948,
+            "Over@169.5": 1.453,
+            "Under@169.5": 2.471
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:718455090",
+    "external_id": "718455090",
+    "betradar_id": "",
+    "home_team": "Lokomotiv Novosibirsk",
+    "away_team": "Dynamo-LO",
+    "start_time": "2026-05-12T13:00:00Z",
+    "competition": "Russian Cup",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.134,
+        "2": 4.9
+      },
+      "asian_handicap": {
+        "1@-11.5": 1.81,
+        "2@11.5": 1.86,
+        "1@-7.5": 1.36,
+        "2@7.5": 2.75,
+        "1@-9.5": 1.53,
+        "2@9.5": 2.28,
+        "1@-12.5": 1.98,
+        "2@12.5": 1.7,
+        "1@-13.5": 2.2,
+        "2@13.5": 1.55
+      },
+      "over_under": {
+        "Over@175.5": 1.82,
+        "Under@175.5": 1.85,
+        "Over@143.5": 1.5,
+        "Under@143.5": 2.31,
+        "Over@163.5": 1.66,
+        "Under@163.5": 2.04,
+        "Over@179.5": 2.01,
+        "Under@179.5": 1.68,
+        "Over@182.5": 2.24,
+        "Under@182.5": 1.533
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.83
+      },
+      "handicap_result": {
+        "1@80.5": 1.83,
+        "2@80.5": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:718455090",
+        "markets": {
+          "match_winner": {
+            "1": 1.134,
+            "2": 4.9
+          },
+          "asian_handicap": {
+            "1@-11.5": 1.81,
+            "2@11.5": 1.86,
+            "1@-7.5": 1.36,
+            "2@7.5": 2.75,
+            "1@-9.5": 1.53,
+            "2@9.5": 2.28,
+            "1@-12.5": 1.98,
+            "2@12.5": 1.7,
+            "1@-13.5": 2.2,
+            "2@13.5": 1.55
+          },
+          "over_under": {
+            "Over@175.5": 1.82,
+            "Under@175.5": 1.85,
+            "Over@143.5": 1.5,
+            "Under@143.5": 2.31,
+            "Over@163.5": 1.66,
+            "Under@163.5": 2.04,
+            "Over@179.5": 2.01,
+            "Under@179.5": 1.68,
+            "Over@182.5": 2.24,
+            "Under@182.5": 1.533
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.83
+          },
+          "handicap_result": {
+            "1@80.5": 1.83,
+            "2@80.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720199192",
+    "external_id": "720199192",
+    "betradar_id": "",
+    "home_team": "TK Tsukrainis (Women)",
+    "away_team": "KTU Kaunas (Women)",
+    "start_time": "2026-05-12T15:40:00Z",
+    "competition": "Lithuania. Kaunas Amateur League. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.195,
+        "1": 3.905
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720199192",
+        "markets": {
+          "match_winner": {
+            "2": 1.195,
+            "1": 3.905
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:718455094",
+    "external_id": "718455094",
+    "betradar_id": "",
+    "home_team": "Belogorie",
+    "away_team": "Dynamo Moscow",
+    "start_time": "2026-05-12T16:00:00Z",
+    "competition": "Russian Cup",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.27,
+        "1": 3.425
+      },
+      "handicap_result": {
+        "2@95.5": 1.81,
+        "1@95.5": 1.85
+      },
+      "asian_handicap": {
+        "1@8.5": 1.82,
+        "2@-8.5": 1.85,
+        "2@-4.5": 1.42,
+        "1@4.5": 2.53,
+        "2@-6.5": 1.58,
+        "1@6.5": 2.17,
+        "2@-9.5": 2.04,
+        "1@9.5": 1.66,
+        "2@-10.5": 2.27,
+        "1@10.5": 1.52
+      },
+      "over_under": {
+        "Over@182.5": 1.82,
+        "Under@182.5": 1.85,
+        "Over@167.5": 1.5,
+        "Under@167.5": 2.31,
+        "Over@178.5": 1.63,
+        "Under@178.5": 2.09,
+        "Over@185.5": 2.01,
+        "Under@185.5": 1.68,
+        "Over@189.5": 2.29,
+        "Under@189.5": 1.51
+      },
+      "btts": {
+        "No": 1.82,
+        "Yes": 1.84
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:718455094",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.425
+          },
+          "handicap_result": {
+            "2@95.5": 1.81,
+            "1@95.5": 1.85
+          },
+          "asian_handicap": {
+            "1@8.5": 1.82,
+            "2@-8.5": 1.85,
+            "2@-4.5": 1.42,
+            "1@4.5": 2.53,
+            "2@-6.5": 1.58,
+            "1@6.5": 2.17,
+            "2@-9.5": 2.04,
+            "1@9.5": 1.66,
+            "2@-10.5": 2.27,
+            "1@10.5": 1.52
+          },
+          "over_under": {
+            "Over@182.5": 1.82,
+            "Under@182.5": 1.85,
+            "Over@167.5": 1.5,
+            "Under@167.5": 2.31,
+            "Over@178.5": 1.63,
+            "Under@178.5": 2.09,
+            "Over@185.5": 2.01,
+            "Under@185.5": 1.68,
+            "Over@189.5": 2.29,
+            "Under@189.5": 1.51
+          },
+          "btts": {
+            "No": 1.82,
+            "Yes": 1.84
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720180477",
+    "external_id": "720180477",
+    "betradar_id": "",
+    "home_team": "Panteres-Pro (Women)",
+    "away_team": "Sovy-Pro (Women)",
+    "start_time": "2026-05-12T17:10:00Z",
+    "competition": "Russia. League Pro. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "asian_handicap": {
+        "1@0.5": 1.801,
+        "2@-0.5": 1.86
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 1.83
+      },
+      "over_under": {
+        "Over@179.5": 1.83,
+        "Under@179.5": 1.83
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720180477",
+        "markets": {
+          "asian_handicap": {
+            "1@0.5": 1.801,
+            "2@-0.5": 1.86
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 1.83
+          },
+          "over_under": {
+            "Over@179.5": 1.83,
+            "Under@179.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719987079",
+    "external_id": "719987079",
+    "betradar_id": "",
+    "home_team": "Fino Kaposvar",
+    "away_team": "MAV Elore",
+    "start_time": "2026-05-12T17:15:00Z",
+    "competition": "Hungary. NB I",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.659,
+        "2": 2.04
+      },
+      "handicap_result": {
+        "2@91.5": 1.78,
+        "1@91.5": 1.82
+      },
+      "btts": {
+        "Yes": 1.8,
+        "No": 1.8
+      },
+      "over_under": {
+        "Under@182.5": 1.82,
+        "Over@182.5": 1.84,
+        "Over@180.5": 1.72,
+        "Under@180.5": 1.96,
+        "Over@181.5": 1.79,
+        "Under@181.5": 1.87,
+        "Over@183.5": 1.92,
+        "Under@183.5": 1.75
+      }
+    },
+    "market_count": 4,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719987079",
+        "markets": {
+          "match_winner": {
+            "1": 1.659,
+            "2": 2.04
+          },
+          "handicap_result": {
+            "2@91.5": 1.78,
+            "1@91.5": 1.82
+          },
+          "btts": {
+            "Yes": 1.8,
+            "No": 1.8
+          },
+          "over_under": {
+            "Under@182.5": 1.82,
+            "Over@182.5": 1.84,
+            "Over@180.5": 1.72,
+            "Under@180.5": 1.96,
+            "Over@181.5": 1.79,
+            "Under@181.5": 1.87,
+            "Over@183.5": 1.92,
+            "Under@183.5": 1.75
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719688437",
+    "external_id": "719688437",
+    "betradar_id": "",
+    "home_team": "Maaseik",
+    "away_team": "Knack Randstad Roeselare",
+    "start_time": "2026-05-12T18:30:00Z",
+    "competition": "Belgium Championship",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.67,
+        "2": 2.087
+      },
+      "asian_handicap": {
+        "2@3.5": 1.81,
+        "1@-3.5": 1.86,
+        "1@-0.5": 1.65,
+        "2@0.5": 2.05,
+        "2@-2.5": 2.36,
+        "1@2.5": 1.48,
+        "1@-6.5": 2.17,
+        "2@6.5": 1.58,
+        "1@-8.5": 2.47,
+        "2@8.5": 1.44
+      },
+      "handicap_result": {
+        "1@90.5": 1.81,
+        "2@90.5": 1.85
+      },
+      "over_under": {
+        "Under@182.5": 1.83,
+        "Over@182.5": 1.84,
+        "Over@175.5": 1.51,
+        "Under@175.5": 2.29,
+        "Over@179.5": 1.666,
+        "Under@179.5": 2.03,
+        "Over@185.5": 2.04,
+        "Under@185.5": 1.66,
+        "Over@189.5": 2.29,
+        "Under@189.5": 1.51
+      },
+      "btts": {
+        "Yes": 1.83,
+        "No": 1.83
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719688437",
+        "markets": {
+          "match_winner": {
+            "1": 1.67,
+            "2": 2.087
+          },
+          "asian_handicap": {
+            "2@3.5": 1.81,
+            "1@-3.5": 1.86,
+            "1@-0.5": 1.65,
+            "2@0.5": 2.05,
+            "2@-2.5": 2.36,
+            "1@2.5": 1.48,
+            "1@-6.5": 2.17,
+            "2@6.5": 1.58,
+            "1@-8.5": 2.47,
+            "2@8.5": 1.44
+          },
+          "handicap_result": {
+            "1@90.5": 1.81,
+            "2@90.5": 1.85
+          },
+          "over_under": {
+            "Under@182.5": 1.83,
+            "Over@182.5": 1.84,
+            "Over@175.5": 1.51,
+            "Under@175.5": 2.29,
+            "Over@179.5": 1.666,
+            "Under@179.5": 2.03,
+            "Over@185.5": 2.04,
+            "Under@185.5": 1.66,
+            "Over@189.5": 2.29,
+            "Under@189.5": 1.51
+          },
+          "btts": {
+            "Yes": 1.83,
+            "No": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:720180475",
+    "external_id": "720180475",
+    "betradar_id": "",
+    "home_team": "Foxy-Pro (Women)",
+    "away_team": "Sovy-Pro (Women)",
+    "start_time": "2026-05-12T18:55:00Z",
+    "competition": "Russia. League Pro. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "asian_handicap": {
+        "1@0.5": 1.801,
+        "2@-0.5": 1.86
+      },
+      "match_winner": {
+        "1": 1.83,
+        "2": 1.83
+      },
+      "over_under": {
+        "Over@179.5": 1.83,
+        "Under@179.5": 1.83
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:720180475",
+        "markets": {
+          "asian_handicap": {
+            "1@0.5": 1.801,
+            "2@-0.5": 1.86
+          },
+          "match_winner": {
+            "1": 1.83,
+            "2": 1.83
+          },
+          "over_under": {
+            "Over@179.5": 1.83,
+            "Under@179.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719922220",
+    "external_id": "719922220",
+    "betradar_id": "",
+    "home_team": "CA Lanus (Women)",
+    "away_team": "Moron (Women)",
+    "start_time": "2026-05-14T00:30:00Z",
+    "competition": "Argentina. Superiores Primera. Women",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.12,
+        "2": 5.0
+      },
+      "over_under": {
+        "Over@134.5": 1.83,
+        "Under@134.5": 1.83
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719922220",
+        "markets": {
+          "match_winner": {
+            "1": 1.12,
+            "2": 5.0
+          },
+          "over_under": {
+            "Over@134.5": 1.83,
+            "Under@134.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719510477",
+    "external_id": "719510477",
+    "betradar_id": "",
+    "home_team": "Riobamba Hieleros",
+    "away_team": "Babahoyo Toreros",
+    "start_time": "2026-05-15T00:00:00Z",
+    "competition": "Ecuavoley 3x3. Ecuador. National League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.51,
+        "2": 2.326
+      },
+      "asian_handicap": {
+        "1@-4.5": 1.83,
+        "2@4.5": 1.83
+      },
+      "over_under": {
+        "Over@60.5": 1.83,
+        "Under@60.5": 1.83
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719510477",
+        "markets": {
+          "match_winner": {
+            "1": 1.51,
+            "2": 2.326
+          },
+          "asian_handicap": {
+            "1@-4.5": 1.83,
+            "2@4.5": 1.83
+          },
+          "over_under": {
+            "Over@60.5": 1.83,
+            "Under@60.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719513122",
+    "external_id": "719513122",
+    "betradar_id": "",
+    "home_team": "Guayaquil Astilleros",
+    "away_team": "Tena Jaguares",
+    "start_time": "2026-05-15T23:00:00Z",
+    "competition": "Ecuavoley 3x3. Ecuador. National League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.51,
+        "2": 2.326
+      },
+      "asian_handicap": {
+        "1@-4.5": 1.83,
+        "2@4.5": 1.83
+      },
+      "over_under": {
+        "Over@62.5": 1.83,
+        "Under@62.5": 1.83
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719513122",
+        "markets": {
+          "match_winner": {
+            "1": 1.51,
+            "2": 2.326
+          },
+          "asian_handicap": {
+            "1@-4.5": 1.83,
+            "2@4.5": 1.83
+          },
+          "over_under": {
+            "Over@62.5": 1.83,
+            "Under@62.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719514185",
+    "external_id": "719514185",
+    "betradar_id": "",
+    "home_team": "Machala Mineros",
+    "away_team": "Ibarra Nortenos",
+    "start_time": "2026-05-16T21:00:00Z",
+    "competition": "Ecuavoley 3x3. Ecuador. National League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.46,
+        "2": 2.603
+      },
+      "asian_handicap": {
+        "1@-5.5": 1.83,
+        "2@5.5": 1.83
+      },
+      "over_under": {
+        "Over@58.5": 1.83,
+        "Under@58.5": 1.83
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719514185",
+        "markets": {
+          "match_winner": {
+            "1": 1.46,
+            "2": 2.603
+          },
+          "asian_handicap": {
+            "1@-5.5": 1.83,
+            "2@5.5": 1.83
+          },
+          "over_under": {
+            "Over@58.5": 1.83,
+            "Under@58.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  },
+  {
+    "b2b_match_id": "helabet:719516905",
+    "external_id": "719516905",
+    "betradar_id": "",
+    "home_team": "Quito Granaderos",
+    "away_team": "Pinas Dorados",
+    "start_time": "2026-05-17T21:00:00Z",
+    "competition": "Ecuavoley 3x3. Ecuador. National League",
+    "sport": "volleyball",
+    "source": "helabet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.7,
+        "2": 1.98
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.83,
+        "2@1.5": 1.83
+      },
+      "over_under": {
+        "Over@62.5": 1.83,
+        "Under@62.5": 1.83
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719516905",
+        "markets": {
+          "match_winner": {
+            "1": 1.7,
+            "2": 1.98
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.83,
+            "2@1.5": 1.83
+          },
+          "over_under": {
+            "Over@62.5": 1.83,
+            "Under@62.5": 1.83
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:36:27Z"
+  }
+]

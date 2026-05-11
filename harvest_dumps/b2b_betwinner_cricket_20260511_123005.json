@@ -1,0 +1,1840 @@
+[
+  {
+    "b2b_match_id": "betwinner:719440733",
+    "external_id": "719440733",
+    "betradar_id": "",
+    "home_team": "Kings XI Punjab",
+    "away_team": "Delhi Capitals",
+    "start_time": "2026-05-11T14:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.648,
+        "T402": 2.245
+      },
+      "match_winner": {
+        "1": 1.667,
+        "2": 2.274,
+        "X": 55.0
+      },
+      "over_under": {
+        "Under@386.5": 1.748,
+        "Over@386.5": 1.92,
+        "Over@369.5": 1.25,
+        "Over@379.5": 1.5,
+        "Over@389.5": 1.75,
+        "Over@399.5": 2.2
+      },
+      "btts": {
+        "No": 1.748,
+        "Yes": 1.92
+      },
+      "handicap_result": {
+        "2@190.5": 1.748,
+        "1@190.5": 1.92
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719440733",
+        "markets": {
+          "group_101": {
+            "T401": 1.648,
+            "T402": 2.245
+          },
+          "match_winner": {
+            "1": 1.667,
+            "2": 2.274,
+            "X": 55.0
+          },
+          "over_under": {
+            "Under@386.5": 1.748,
+            "Over@386.5": 1.92,
+            "Over@369.5": 1.25,
+            "Over@379.5": 1.5,
+            "Over@389.5": 1.75,
+            "Over@399.5": 2.2
+          },
+          "btts": {
+            "No": 1.748,
+            "Yes": 1.92
+          },
+          "handicap_result": {
+            "2@190.5": 1.748,
+            "1@190.5": 1.92
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720068524",
+    "external_id": "720068524",
+    "betradar_id": "",
+    "home_team": "Nottinghamshire County",
+    "away_team": "Surrey County",
+    "start_time": "2026-05-11T10:00:00Z",
+    "competition": "County Championship Division One",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.363,
+        "T401": 2.978
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720068524",
+        "markets": {
+          "group_101": {
+            "T402": 1.363,
+            "T401": 2.978
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720054689",
+    "external_id": "720054689",
+    "betradar_id": "",
+    "home_team": "Lancashire 2nd XI",
+    "away_team": "Nottinghamshire 2nd XI",
+    "start_time": "2026-05-11T10:30:00Z",
+    "competition": "Second XI",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.65,
+        "T401": 2.1
+      },
+      "match_winner": {
+        "2": 1.653,
+        "1": 2.105,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720054689",
+        "markets": {
+          "group_101": {
+            "T402": 1.65,
+            "T401": 2.1
+          },
+          "match_winner": {
+            "2": 1.653,
+            "1": 2.105,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720087601",
+    "external_id": "720087601",
+    "betradar_id": "",
+    "home_team": "MT Kilimanjaro",
+    "away_team": "MT Elgon",
+    "start_time": "2026-05-11T11:00:00Z",
+    "competition": "East African Safari Challenge",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.79,
+        "T402": 1.99
+      },
+      "match_winner": {
+        "1": 1.793,
+        "2": 1.994,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720087601",
+        "markets": {
+          "group_101": {
+            "T401": 1.79,
+            "T402": 1.99
+          },
+          "match_winner": {
+            "1": 1.793,
+            "2": 1.994,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720061139",
+    "external_id": "720061139",
+    "betradar_id": "",
+    "home_team": "Sidra Impex",
+    "away_team": "Decoration 4 You",
+    "start_time": "2026-05-11T11:00:00Z",
+    "competition": "India. Qaum Nagori Teliyan League Tournament",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.2,
+        "T401": 4.0
+      },
+      "match_winner": {
+        "2": 1.202,
+        "1": 4.015,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720061139",
+        "markets": {
+          "group_101": {
+            "T402": 1.2,
+            "T401": 4.0
+          },
+          "match_winner": {
+            "2": 1.202,
+            "1": 4.015,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720054694",
+    "external_id": "720054694",
+    "betradar_id": "",
+    "home_team": "Worcestershire 2nd XI",
+    "away_team": "Glamorgan 2nd XI",
+    "start_time": "2026-05-11T12:00:00Z",
+    "competition": "Second XI",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.75,
+        "T402": 1.95
+      },
+      "match_winner": {
+        "1": 1.753,
+        "2": 1.954,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720054694",
+        "markets": {
+          "group_101": {
+            "T401": 1.75,
+            "T402": 1.95
+          },
+          "match_winner": {
+            "1": 1.753,
+            "2": 1.954,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720110506",
+    "external_id": "720110506",
+    "betradar_id": "",
+    "home_team": "Trinidad & Tobago Red Force",
+    "away_team": "Barbados Pride",
+    "start_time": "2026-05-11T13:30:00Z",
+    "competition": "West Indies Championship",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.729,
+        "T402": 2.084
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720110506",
+        "markets": {
+          "group_101": {
+            "T401": 1.729,
+            "T402": 2.084
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720061138",
+    "external_id": "720061138",
+    "betradar_id": "",
+    "home_team": "Shine Star Sabnam Menswear",
+    "away_team": "NYO",
+    "start_time": "2026-05-11T14:00:00Z",
+    "competition": "India. Qaum Nagori Teliyan League Tournament",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.1,
+        "T401": 5.75
+      },
+      "match_winner": {
+        "2": 1.101,
+        "1": 5.78,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720061138",
+        "markets": {
+          "group_101": {
+            "T402": 1.1,
+            "T401": 5.75
+          },
+          "match_winner": {
+            "2": 1.101,
+            "1": 5.78,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720099210",
+    "external_id": "720099210",
+    "betradar_id": "",
+    "home_team": "Pro Sports Titans",
+    "away_team": "AP XI",
+    "start_time": "2026-05-11T16:30:00Z",
+    "competition": "Kuwait. Ramadan League T10",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.75,
+        "T402": 2.0
+      },
+      "match_winner": {
+        "1": 1.753,
+        "2": 2.004,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720099210",
+        "markets": {
+          "group_101": {
+            "T401": 1.75,
+            "T402": 2.0
+          },
+          "match_winner": {
+            "1": 1.753,
+            "2": 2.004,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720099209",
+    "external_id": "720099209",
+    "betradar_id": "",
+    "home_team": "Al Mulla Exchange II",
+    "away_team": "Super Kings CC",
+    "start_time": "2026-05-11T18:30:00Z",
+    "competition": "Kuwait. Ramadan League T10",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.425,
+        "T402": 2.84
+      },
+      "match_winner": {
+        "1": 1.429,
+        "2": 2.838,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720099209",
+        "markets": {
+          "group_101": {
+            "T401": 1.425,
+            "T402": 2.84
+          },
+          "match_winner": {
+            "1": 1.429,
+            "2": 2.838,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720032028",
+    "external_id": "720032028",
+    "betradar_id": "",
+    "home_team": "Samoa",
+    "away_team": "Vanuatu",
+    "start_time": "2026-05-12T00:30:00Z",
+    "competition": "T20 World Cup. 2028. Qualification",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.41,
+        "2": 2.87,
+        "X": 25.0
+      },
+      "group_101": {
+        "T401": 1.41,
+        "T402": 2.866
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720032028",
+        "markets": {
+          "match_winner": {
+            "1": 1.41,
+            "2": 2.87,
+            "X": 25.0
+          },
+          "group_101": {
+            "T401": 1.41,
+            "T402": 2.866
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720198706",
+    "external_id": "720198706",
+    "betradar_id": "",
+    "home_team": "Kelantan",
+    "away_team": "Perak",
+    "start_time": "2026-05-12T02:00:00Z",
+    "competition": "Malaysia. Inter State Premier Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.123,
+        "T401": 5.76
+      },
+      "match_winner": {
+        "2": 1.124,
+        "1": 5.8,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720198706",
+        "markets": {
+          "group_101": {
+            "T402": 1.123,
+            "T401": 5.76
+          },
+          "match_winner": {
+            "2": 1.124,
+            "1": 5.8,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719742457",
+    "external_id": "719742457",
+    "betradar_id": "",
+    "home_team": "Nepal",
+    "away_team": "Scotland",
+    "start_time": "2026-05-12T03:45:00Z",
+    "competition": "World Cup. League 2",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.7,
+        "T401": 2.152
+      },
+      "match_winner": {
+        "2": 1.712,
+        "1": 2.169,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719742457",
+        "markets": {
+          "group_101": {
+            "T402": 1.7,
+            "T401": 2.152
+          },
+          "match_winner": {
+            "2": 1.712,
+            "1": 2.169,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720197512",
+    "external_id": "720197512",
+    "betradar_id": "",
+    "home_team": "Japan",
+    "away_team": "Indonesia",
+    "start_time": "2026-05-12T05:00:00Z",
+    "competition": "T20 World Cup. 2028. Qualification",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.22,
+        "T402": 4.19
+      },
+      "match_winner": {
+        "1": 1.222,
+        "2": 4.2,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720197512",
+        "markets": {
+          "group_101": {
+            "T401": 1.22,
+            "T402": 4.19
+          },
+          "match_winner": {
+            "1": 1.222,
+            "2": 4.2,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719119105",
+    "external_id": "719119105",
+    "betradar_id": "",
+    "home_team": "Seafarers",
+    "away_team": "Royals Netherlands",
+    "start_time": "2026-05-12T09:00:00Z",
+    "competition": "Netherlands. Pro Series",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.81,
+        "T401": 1.97
+      },
+      "match_winner": {
+        "2": 1.813,
+        "1": 1.974,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719119105",
+        "markets": {
+          "group_101": {
+            "T402": 1.81,
+            "T401": 1.97
+          },
+          "match_winner": {
+            "2": 1.813,
+            "1": 1.974,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719750938",
+    "external_id": "719750938",
+    "betradar_id": "",
+    "home_team": "Surrey (Women)",
+    "away_team": "Essex (Women)",
+    "start_time": "2026-05-12T09:30:00Z",
+    "competition": "Metro Bank. One Day Cup. Women",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.631,
+        "T402": 2.275
+      },
+      "match_winner": {
+        "1": 1.634,
+        "2": 2.28,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719750938",
+        "markets": {
+          "group_101": {
+            "T401": 1.631,
+            "T402": 2.275
+          },
+          "match_winner": {
+            "1": 1.634,
+            "2": 2.28,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719758045",
+    "external_id": "719758045",
+    "betradar_id": "",
+    "home_team": "Gujarat Titans",
+    "away_team": "Sunrisers Hyderabad",
+    "start_time": "2026-05-12T14:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Under@379.5": 1.748,
+        "Over@379.5": 1.92,
+        "Over@389.5": 2.0,
+        "Over@399.5": 2.4
+      },
+      "btts": {
+        "No": 1.748,
+        "Yes": 1.92
+      },
+      "handicap_result": {
+        "2@191.5": 1.748,
+        "1@191.5": 1.92
+      },
+      "group_101": {
+        "T402": 1.75,
+        "T401": 2.08
+      },
+      "match_winner": {
+        "2": 1.771,
+        "1": 2.106,
+        "X": 55.0
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719758045",
+        "markets": {
+          "over_under": {
+            "Under@379.5": 1.748,
+            "Over@379.5": 1.92,
+            "Over@389.5": 2.0,
+            "Over@399.5": 2.4
+          },
+          "btts": {
+            "No": 1.748,
+            "Yes": 1.92
+          },
+          "handicap_result": {
+            "2@191.5": 1.748,
+            "1@191.5": 1.92
+          },
+          "group_101": {
+            "T402": 1.75,
+            "T401": 2.08
+          },
+          "match_winner": {
+            "2": 1.771,
+            "1": 2.106,
+            "X": 55.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719750061",
+    "external_id": "719750061",
+    "betradar_id": "",
+    "home_team": "Pakistan (Women)",
+    "away_team": "Zimbabwe (Women)",
+    "start_time": "2026-05-12T14:30:00Z",
+    "competition": "Pakistan (Women) vs Zimbabwe (Women)",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.016,
+        "T402": 14.5
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719750061",
+        "markets": {
+          "group_101": {
+            "T401": 1.016,
+            "T402": 14.5
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:719747922",
+    "external_id": "719747922",
+    "betradar_id": "",
+    "home_team": "Micoud Eagles",
+    "away_team": "Choiseul Craft Masters",
+    "start_time": "2026-05-12T23:30:00Z",
+    "competition": "Saint Lucia. Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.719,
+        "T402": 2.099
+      },
+      "match_winner": {
+        "1": 1.722,
+        "2": 2.104,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719747922",
+        "markets": {
+          "group_101": {
+            "T401": 1.719,
+            "T402": 2.099
+          },
+          "match_winner": {
+            "1": 1.722,
+            "2": 2.104,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720024709",
+    "external_id": "720024709",
+    "betradar_id": "",
+    "home_team": "Lancashire (Women)",
+    "away_team": "Warwickshire (Women)",
+    "start_time": "2026-05-13T09:30:00Z",
+    "competition": "Metro Bank. One Day Cup. Women",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.784,
+        "T402": 2.03
+      },
+      "match_winner": {
+        "1": 1.8,
+        "2": 2.043,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720024709",
+        "markets": {
+          "group_101": {
+            "T401": 1.784,
+            "T402": 2.03
+          },
+          "match_winner": {
+            "1": 1.8,
+            "2": 2.043,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720034773",
+    "external_id": "720034773",
+    "betradar_id": "",
+    "home_team": "Somerset (Women)",
+    "away_team": "The Blaze (Women)",
+    "start_time": "2026-05-13T09:30:00Z",
+    "competition": "Metro Bank. One Day Cup. Women",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.45,
+        "T401": 2.744
+      },
+      "match_winner": {
+        "2": 1.463,
+        "1": 2.767,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720034773",
+        "markets": {
+          "group_101": {
+            "T402": 1.45,
+            "T401": 2.744
+          },
+          "match_winner": {
+            "2": 1.463,
+            "1": 2.767,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720033178",
+    "external_id": "720033178",
+    "betradar_id": "",
+    "home_team": "Yorkshire (Women)",
+    "away_team": "Hampshire (Women)",
+    "start_time": "2026-05-13T09:30:00Z",
+    "competition": "Metro Bank. One Day Cup. Women",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.78,
+        "T402": 2.032
+      },
+      "match_winner": {
+        "1": 1.795,
+        "2": 2.049,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720033178",
+        "markets": {
+          "group_101": {
+            "T401": 1.78,
+            "T402": 2.032
+          },
+          "match_winner": {
+            "1": 1.795,
+            "2": 2.049,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720054690",
+    "external_id": "720054690",
+    "betradar_id": "",
+    "home_team": "England (Women)",
+    "away_team": "New Zealand (Women)",
+    "start_time": "2026-05-13T12:00:00Z",
+    "competition": "England (Women) vs New Zealand (Women)",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.428,
+        "T402": 2.837
+      },
+      "match_winner": {
+        "1": 1.43,
+        "2": 2.845,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720054690",
+        "markets": {
+          "group_101": {
+            "T401": 1.428,
+            "T402": 2.837
+          },
+          "match_winner": {
+            "1": 1.43,
+            "2": 2.845,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720062262",
+    "external_id": "720062262",
+    "betradar_id": "",
+    "home_team": "Royal Challengers Bangalore",
+    "away_team": "Kolkata Knight Riders",
+    "start_time": "2026-05-13T14:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.656,
+        "T402": 2.23
+      },
+      "match_winner": {
+        "1": 1.674,
+        "2": 2.26,
+        "X": 55.0
+      },
+      "over_under": {
+        "Under@366.5": 1.748,
+        "Over@366.5": 1.92
+      },
+      "btts": {
+        "No": 1.748,
+        "Yes": 1.92
+      },
+      "handicap_result": {
+        "2@181.5": 1.748,
+        "1@181.5": 1.92
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720062262",
+        "markets": {
+          "group_101": {
+            "T401": 1.656,
+            "T402": 2.23
+          },
+          "match_winner": {
+            "1": 1.674,
+            "2": 2.26,
+            "X": 55.0
+          },
+          "over_under": {
+            "Under@366.5": 1.748,
+            "Over@366.5": 1.92
+          },
+          "btts": {
+            "No": 1.748,
+            "Yes": 1.92
+          },
+          "handicap_result": {
+            "2@181.5": 1.748,
+            "1@181.5": 1.92
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720142074",
+    "external_id": "720142074",
+    "betradar_id": "",
+    "home_team": "Stockholm Tigers",
+    "away_team": "Kista United",
+    "start_time": "2026-05-13T15:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.45,
+        "T401": 2.67
+      },
+      "match_winner": {
+        "2": 1.46,
+        "1": 2.68,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720142074",
+        "markets": {
+          "group_101": {
+            "T402": 1.45,
+            "T401": 2.67
+          },
+          "match_winner": {
+            "2": 1.46,
+            "1": 2.68,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720162272",
+    "external_id": "720162272",
+    "betradar_id": "",
+    "home_team": "Tsing Yi Smashers",
+    "away_team": "Sky Warriors Marvels",
+    "start_time": "2026-05-13T23:00:00Z",
+    "competition": "Hong Kong. KCC Morning League. 1st Grade",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.74,
+        "T401": 2.05
+      },
+      "match_winner": {
+        "2": 1.75,
+        "1": 2.06,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720162272",
+        "markets": {
+          "group_101": {
+            "T402": 1.74,
+            "T401": 2.05
+          },
+          "match_winner": {
+            "2": 1.75,
+            "1": 2.06,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720142573",
+    "external_id": "720142573",
+    "betradar_id": "",
+    "home_team": "Helsingborg Gymkhana Titans",
+    "away_team": "HCA Kings XI",
+    "start_time": "2026-05-14T08:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.33,
+        "T402": 3.19
+      },
+      "match_winner": {
+        "1": 1.34,
+        "2": 3.2,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720142573",
+        "markets": {
+          "group_101": {
+            "T401": 1.33,
+            "T402": 3.19
+          },
+          "match_winner": {
+            "1": 1.34,
+            "2": 3.2,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720142572",
+    "external_id": "720142572",
+    "betradar_id": "",
+    "home_team": "Landskrona XI",
+    "away_team": "Angelholms",
+    "start_time": "2026-05-14T08:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.69,
+        "T401": 2.12
+      },
+      "match_winner": {
+        "2": 1.7,
+        "1": 2.13,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720142572",
+        "markets": {
+          "group_101": {
+            "T402": 1.69,
+            "T401": 2.12
+          },
+          "match_winner": {
+            "2": 1.7,
+            "1": 2.13,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720139176",
+    "external_id": "720139176",
+    "betradar_id": "",
+    "home_team": "Djurgarden",
+    "away_team": "SMI Spartans",
+    "start_time": "2026-05-14T08:00:00Z",
+    "competition": "Sweden. Allsvenskan",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.49,
+        "T402": 2.43
+      },
+      "match_winner": {
+        "1": 1.5,
+        "2": 2.44,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720139176",
+        "markets": {
+          "group_101": {
+            "T401": 1.49,
+            "T402": 2.43
+          },
+          "match_winner": {
+            "1": 1.5,
+            "2": 2.44,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720139175",
+    "external_id": "720139175",
+    "betradar_id": "",
+    "home_team": "Rising Phoenix",
+    "away_team": "Stockholm Super Kings 1st XI",
+    "start_time": "2026-05-14T08:00:00Z",
+    "competition": "Sweden. Allsvenskan",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.83,
+        "T402": 1.83
+      },
+      "match_winner": {
+        "1": 1.84,
+        "2": 1.84,
+        "X": 50.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720139175",
+        "markets": {
+          "group_101": {
+            "T401": 1.83,
+            "T402": 1.83
+          },
+          "match_winner": {
+            "1": 1.84,
+            "2": 1.84,
+            "X": 50.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720145622",
+    "external_id": "720145622",
+    "betradar_id": "",
+    "home_team": "Lomma CC",
+    "away_team": "Kristianstad",
+    "start_time": "2026-05-14T10:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.23,
+        "T402": 3.94
+      },
+      "match_winner": {
+        "1": 1.24,
+        "2": 3.95,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720145622",
+        "markets": {
+          "group_101": {
+            "T401": 1.23,
+            "T402": 3.94
+          },
+          "match_winner": {
+            "1": 1.24,
+            "2": 3.95,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720145623",
+    "external_id": "720145623",
+    "betradar_id": "",
+    "home_team": "Ariana 1st XI",
+    "away_team": "Kristianstad",
+    "start_time": "2026-05-14T12:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.23,
+        "T402": 3.94
+      },
+      "match_winner": {
+        "1": 1.24,
+        "2": 3.95,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720145623",
+        "markets": {
+          "group_101": {
+            "T401": 1.23,
+            "T402": 3.94
+          },
+          "match_winner": {
+            "1": 1.24,
+            "2": 3.95,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720145624",
+    "external_id": "720145624",
+    "betradar_id": "",
+    "home_team": "Vasteras Lightening",
+    "away_team": "Stockholm CC",
+    "start_time": "2026-05-14T12:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.47,
+        "T402": 2.6
+      },
+      "match_winner": {
+        "1": 1.48,
+        "2": 2.61,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720145624",
+        "markets": {
+          "group_101": {
+            "T401": 1.47,
+            "T402": 2.6
+          },
+          "match_winner": {
+            "1": 1.48,
+            "2": 2.61,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:708284687",
+    "external_id": "708284687",
+    "betradar_id": "",
+    "home_team": "Kings XI Punjab",
+    "away_team": "Mumbai Indians",
+    "start_time": "2026-05-14T14:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.79,
+        "T401": 2.02
+      },
+      "match_winner": {
+        "2": 1.814,
+        "1": 2.048,
+        "X": 55.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:708284687",
+        "markets": {
+          "group_101": {
+            "T402": 1.79,
+            "T401": 2.02
+          },
+          "match_winner": {
+            "2": 1.814,
+            "1": 2.048,
+            "X": 55.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720145861",
+    "external_id": "720145861",
+    "betradar_id": "",
+    "home_team": "HCA Kings XI",
+    "away_team": "Angelholms",
+    "start_time": "2026-05-14T14:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.39,
+        "T401": 2.89
+      },
+      "match_winner": {
+        "2": 1.4,
+        "1": 2.9,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720145861",
+        "markets": {
+          "group_101": {
+            "T402": 1.39,
+            "T401": 2.89
+          },
+          "match_winner": {
+            "2": 1.4,
+            "1": 2.9,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720145860",
+    "external_id": "720145860",
+    "betradar_id": "",
+    "home_team": "Malmohus 1st XI",
+    "away_team": "Ariana 1st XI",
+    "start_time": "2026-05-14T14:00:00Z",
+    "competition": "Svenska Cup",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T401": 1.23,
+        "T402": 3.94
+      },
+      "match_winner": {
+        "1": 1.24,
+        "2": 3.95,
+        "X": 25.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720145860",
+        "markets": {
+          "group_101": {
+            "T401": 1.23,
+            "T402": 3.94
+          },
+          "match_winner": {
+            "1": 1.24,
+            "2": 3.95,
+            "X": 25.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:720014297",
+    "external_id": "720014297",
+    "betradar_id": "",
+    "home_team": "Lucknow Super Giants",
+    "away_team": "Chennai Super Kings",
+    "start_time": "2026-05-15T14:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.74,
+        "T401": 2.09
+      },
+      "over_under": {
+        "Under@351.5": 1.748,
+        "Over@351.5": 1.92
+      },
+      "btts": {
+        "No": 1.748,
+        "Yes": 1.92
+      },
+      "handicap_result": {
+        "2@177.5": 1.748,
+        "1@177.5": 1.92
+      },
+      "match_winner": {
+        "2": 1.763,
+        "1": 2.117,
+        "X": 55.0
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:720014297",
+        "markets": {
+          "group_101": {
+            "T402": 1.74,
+            "T401": 2.09
+          },
+          "over_under": {
+            "Under@351.5": 1.748,
+            "Over@351.5": 1.92
+          },
+          "btts": {
+            "No": 1.748,
+            "Yes": 1.92
+          },
+          "handicap_result": {
+            "2@177.5": 1.748,
+            "1@177.5": 1.92
+          },
+          "match_winner": {
+            "2": 1.763,
+            "1": 2.117,
+            "X": 55.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:708284684",
+    "external_id": "708284684",
+    "betradar_id": "",
+    "home_team": "Kolkata Knight Riders",
+    "away_team": "Gujarat Titans",
+    "start_time": "2026-05-16T14:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.8,
+        "T401": 2.01
+      },
+      "match_winner": {
+        "2": 1.823,
+        "1": 2.036,
+        "X": 55.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:708284684",
+        "markets": {
+          "group_101": {
+            "T402": 1.8,
+            "T401": 2.01
+          },
+          "match_winner": {
+            "2": 1.823,
+            "1": 2.036,
+            "X": 55.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:708285490",
+    "external_id": "708285490",
+    "betradar_id": "",
+    "home_team": "Kings XI Punjab",
+    "away_team": "Royal Challengers Bangalore",
+    "start_time": "2026-05-17T10:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.8,
+        "T401": 2.01
+      },
+      "match_winner": {
+        "2": 1.823,
+        "1": 2.036,
+        "X": 55.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:708285490",
+        "markets": {
+          "group_101": {
+            "T402": 1.8,
+            "T401": 2.01
+          },
+          "match_winner": {
+            "2": 1.823,
+            "1": 2.036,
+            "X": 55.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  },
+  {
+    "b2b_match_id": "betwinner:708285489",
+    "external_id": "708285489",
+    "betradar_id": "",
+    "home_team": "Delhi Capitals",
+    "away_team": "Rajasthan Royals",
+    "start_time": "2026-05-17T14:00:00Z",
+    "competition": "Indian Premier League",
+    "sport": "cricket",
+    "source": "betwinner",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "group_101": {
+        "T402": 1.77,
+        "T401": 2.05
+      },
+      "match_winner": {
+        "2": 1.792,
+        "1": 2.076,
+        "X": 55.0
+      }
+    },
+    "market_count": 2,
+    "bookmakers": {
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:708285489",
+        "markets": {
+          "group_101": {
+            "T402": 1.77,
+            "T401": 2.05
+          },
+          "match_winner": {
+            "2": 1.792,
+            "1": 2.076,
+            "X": 55.0
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:37:11Z"
+  }
+]

@@ -1,0 +1,2856 @@
+[
+  {
+    "b2b_match_id": "1xbet:719817512",
+    "external_id": "719817512",
+    "betradar_id": "",
+    "home_team": "Giovanni Matthee",
+    "away_team": "Pete Hughes",
+    "start_time": "2026-05-11T10:05:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.33,
+        "1": 3.05
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817512",
+        "markets": {
+          "match_winner": {
+            "2": 1.33,
+            "1": 3.05
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817512",
+        "markets": {
+          "match_winner": {
+            "2": 1.33,
+            "1": 3.05
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817512",
+        "markets": {
+          "match_winner": {
+            "2": 1.33,
+            "1": 3.05
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817512",
+        "markets": {
+          "match_winner": {
+            "2": 1.33,
+            "1": 3.05
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817512",
+        "markets": {
+          "match_winner": {
+            "2": 1.33,
+            "1": 3.05
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817512",
+        "markets": {
+          "match_winner": {
+            "2": 1.33,
+            "1": 3.05
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817512",
+        "markets": {
+          "match_winner": {
+            "2": 1.33,
+            "1": 3.05
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719817515",
+    "external_id": "719817515",
+    "betradar_id": "",
+    "home_team": "Henry Coates",
+    "away_team": "Bradley van der Velden",
+    "start_time": "2026-05-11T10:20:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.36,
+        "2": 2.894
+      },
+      "over_under": {
+        "Over@5.5": 1.62,
+        "Under@5.5": 2.13,
+        "Over@4.5": 1.125,
+        "Under@4.5": 6.0,
+        "Over@6.5": 3.25,
+        "Under@6.5": 1.333
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.727,
+        "2@1.5": 1.97,
+        "2@-1.5": 4.33,
+        "1@1.5": 1.2,
+        "1@-2.5": 2.75,
+        "2@-2.5": 10.0,
+        "1@2.5": 1.062,
+        "2@2.5": 1.4,
+        "1@-3.5": 8.0,
+        "2@3.5": 1.083
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817515",
+        "markets": {
+          "match_winner": {
+            "1": 1.36,
+            "2": 2.894
+          },
+          "over_under": {
+            "Over@5.5": 1.62,
+            "Under@5.5": 2.13,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.727,
+            "2@1.5": 1.97,
+            "2@-1.5": 4.33,
+            "1@1.5": 1.2,
+            "1@-2.5": 2.75,
+            "2@-2.5": 10.0,
+            "1@2.5": 1.062,
+            "2@2.5": 1.4,
+            "1@-3.5": 8.0,
+            "2@3.5": 1.083
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817515",
+        "markets": {
+          "match_winner": {
+            "1": 1.36,
+            "2": 2.894
+          },
+          "over_under": {
+            "Over@5.5": 1.62,
+            "Under@5.5": 2.13,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.727,
+            "2@1.5": 1.97,
+            "2@-1.5": 4.33,
+            "1@1.5": 1.2,
+            "1@-2.5": 2.75,
+            "2@-2.5": 9.8,
+            "1@2.5": 1.05,
+            "2@2.5": 1.4,
+            "1@-3.5": 7.9,
+            "2@3.5": 1.08
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817515",
+        "markets": {
+          "match_winner": {
+            "1": 1.36,
+            "2": 2.894
+          },
+          "over_under": {
+            "Over@5.5": 1.62,
+            "Under@5.5": 2.13,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.727,
+            "2@1.5": 1.97,
+            "2@-1.5": 4.33,
+            "1@1.5": 1.2,
+            "1@-2.5": 2.75,
+            "2@-2.5": 9.8,
+            "1@2.5": 1.05,
+            "2@2.5": 1.4,
+            "1@-3.5": 7.9,
+            "2@3.5": 1.08
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817515",
+        "markets": {
+          "match_winner": {
+            "1": 1.36,
+            "2": 2.894
+          },
+          "over_under": {
+            "Over@5.5": 1.62,
+            "Under@5.5": 2.13,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.727,
+            "2@1.5": 1.97,
+            "2@-1.5": 4.33,
+            "1@1.5": 1.2,
+            "1@-2.5": 2.75,
+            "2@-2.5": 9.8,
+            "1@2.5": 1.05,
+            "2@2.5": 1.4,
+            "1@-3.5": 7.9,
+            "2@3.5": 1.08
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817515",
+        "markets": {
+          "match_winner": {
+            "1": 1.36,
+            "2": 2.894
+          },
+          "over_under": {
+            "Over@5.5": 1.62,
+            "Under@5.5": 2.13,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.727,
+            "2@1.5": 1.97,
+            "2@-1.5": 4.33,
+            "1@1.5": 1.2,
+            "1@-2.5": 2.75,
+            "2@-2.5": 9.8,
+            "1@2.5": 1.05,
+            "2@2.5": 1.4,
+            "1@-3.5": 7.9,
+            "2@3.5": 1.08
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817515",
+        "markets": {
+          "match_winner": {
+            "1": 1.36,
+            "2": 2.894
+          },
+          "over_under": {
+            "Over@5.5": 1.62,
+            "Under@5.5": 2.13,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.727,
+            "2@1.5": 1.97,
+            "2@-1.5": 4.33,
+            "1@1.5": 1.2,
+            "1@-2.5": 2.75,
+            "2@-2.5": 9.8,
+            "1@2.5": 1.05,
+            "2@2.5": 1.4,
+            "1@-3.5": 7.9,
+            "2@3.5": 1.08
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817515",
+        "markets": {
+          "match_winner": {
+            "1": 1.36,
+            "2": 2.894
+          },
+          "over_under": {
+            "Over@5.5": 1.62,
+            "Under@5.5": 2.13,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.727,
+            "2@1.5": 1.97,
+            "2@-1.5": 4.33,
+            "1@1.5": 1.2,
+            "1@-2.5": 2.75,
+            "2@-2.5": 9.8,
+            "1@2.5": 1.05,
+            "2@2.5": 1.4,
+            "1@-3.5": 7.9,
+            "2@3.5": 1.08
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719817513",
+    "external_id": "719817513",
+    "betradar_id": "",
+    "home_team": "Graham Usher",
+    "away_team": "Pete Hughes",
+    "start_time": "2026-05-11T10:40:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.28,
+        "2": 3.345
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817513",
+        "markets": {
+          "match_winner": {
+            "1": 1.28,
+            "2": 3.345
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817513",
+        "markets": {
+          "match_winner": {
+            "1": 1.28,
+            "2": 3.345
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817513",
+        "markets": {
+          "match_winner": {
+            "1": 1.28,
+            "2": 3.345
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817513",
+        "markets": {
+          "match_winner": {
+            "1": 1.28,
+            "2": 3.345
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817513",
+        "markets": {
+          "match_winner": {
+            "1": 1.28,
+            "2": 3.345
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817513",
+        "markets": {
+          "match_winner": {
+            "1": 1.28,
+            "2": 3.345
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817513",
+        "markets": {
+          "match_winner": {
+            "1": 1.28,
+            "2": 3.345
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719817520",
+    "external_id": "719817520",
+    "betradar_id": "",
+    "home_team": "Aden Kirk",
+    "away_team": "Giovanni Matthee",
+    "start_time": "2026-05-11T10:55:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.084,
+        "2": 6.05
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817520",
+        "markets": {
+          "match_winner": {
+            "1": 1.084,
+            "2": 6.05
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817520",
+        "markets": {
+          "match_winner": {
+            "1": 1.084,
+            "2": 6.05
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817520",
+        "markets": {
+          "match_winner": {
+            "1": 1.084,
+            "2": 6.05
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817520",
+        "markets": {
+          "match_winner": {
+            "1": 1.084,
+            "2": 6.05
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817520",
+        "markets": {
+          "match_winner": {
+            "1": 1.084,
+            "2": 6.05
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817520",
+        "markets": {
+          "match_winner": {
+            "1": 1.084,
+            "2": 6.05
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817520",
+        "markets": {
+          "match_winner": {
+            "1": 1.084,
+            "2": 6.05
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719817514",
+    "external_id": "719817514",
+    "betradar_id": "",
+    "home_team": "Bradley van der Velden",
+    "away_team": "Graham Usher",
+    "start_time": "2026-05-11T11:15:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.48,
+        "1": 2.474
+      },
+      "over_under": {
+        "Over@5.5": 1.56,
+        "Under@5.5": 2.24,
+        "Over@4.5": 1.125,
+        "Under@4.5": 6.0,
+        "Over@6.5": 3.25,
+        "Under@6.5": 1.333
+      },
+      "asian_handicap": {
+        "1@1.5": 1.76,
+        "2@-1.5": 1.93,
+        "1@-1.5": 4.0,
+        "2@1.5": 1.222,
+        "1@-2.5": 7.0,
+        "2@-2.5": 3.5,
+        "1@2.5": 1.286,
+        "2@2.5": 1.1,
+        "2@-3.5": 8.0,
+        "1@3.5": 1.083
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817514",
+        "markets": {
+          "match_winner": {
+            "2": 1.48,
+            "1": 2.474
+          },
+          "over_under": {
+            "Over@5.5": 1.56,
+            "Under@5.5": 2.24,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@1.5": 1.76,
+            "2@-1.5": 1.93,
+            "1@-1.5": 4.0,
+            "2@1.5": 1.222,
+            "1@-2.5": 7.0,
+            "2@-2.5": 3.5,
+            "1@2.5": 1.286,
+            "2@2.5": 1.1,
+            "2@-3.5": 8.0,
+            "1@3.5": 1.083
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817514",
+        "markets": {
+          "match_winner": {
+            "2": 1.48,
+            "1": 2.474
+          },
+          "over_under": {
+            "Over@5.5": 1.56,
+            "Under@5.5": 2.24,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@1.5": 1.76,
+            "2@-1.5": 1.93,
+            "1@-1.5": 4.0,
+            "2@1.5": 1.222,
+            "1@-2.5": 6.95,
+            "2@-2.5": 3.5,
+            "1@2.5": 1.286,
+            "2@2.5": 1.1,
+            "2@-3.5": 7.9,
+            "1@3.5": 1.08
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817514",
+        "markets": {
+          "match_winner": {
+            "2": 1.48,
+            "1": 2.474
+          },
+          "over_under": {
+            "Over@5.5": 1.56,
+            "Under@5.5": 2.24,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@1.5": 1.76,
+            "2@-1.5": 1.93,
+            "1@-1.5": 4.0,
+            "2@1.5": 1.222,
+            "1@-2.5": 6.95,
+            "2@-2.5": 3.5,
+            "1@2.5": 1.286,
+            "2@2.5": 1.1,
+            "2@-3.5": 7.9,
+            "1@3.5": 1.08
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817514",
+        "markets": {
+          "match_winner": {
+            "2": 1.48,
+            "1": 2.474
+          },
+          "over_under": {
+            "Over@5.5": 1.56,
+            "Under@5.5": 2.24,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@1.5": 1.76,
+            "2@-1.5": 1.93,
+            "1@-1.5": 4.0,
+            "2@1.5": 1.222,
+            "1@-2.5": 6.95,
+            "2@-2.5": 3.5,
+            "1@2.5": 1.286,
+            "2@2.5": 1.1,
+            "2@-3.5": 7.9,
+            "1@3.5": 1.08
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817514",
+        "markets": {
+          "match_winner": {
+            "2": 1.48,
+            "1": 2.474
+          },
+          "over_under": {
+            "Over@5.5": 1.56,
+            "Under@5.5": 2.24,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@1.5": 1.76,
+            "2@-1.5": 1.93,
+            "1@-1.5": 4.0,
+            "2@1.5": 1.222,
+            "1@-2.5": 6.95,
+            "2@-2.5": 3.5,
+            "1@2.5": 1.286,
+            "2@2.5": 1.1,
+            "2@-3.5": 7.9,
+            "1@3.5": 1.08
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817514",
+        "markets": {
+          "match_winner": {
+            "2": 1.48,
+            "1": 2.474
+          },
+          "over_under": {
+            "Over@5.5": 1.56,
+            "Under@5.5": 2.24,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@1.5": 1.76,
+            "2@-1.5": 1.93,
+            "1@-1.5": 4.0,
+            "2@1.5": 1.222,
+            "1@-2.5": 6.95,
+            "2@-2.5": 3.5,
+            "1@2.5": 1.286,
+            "2@2.5": 1.1,
+            "2@-3.5": 7.9,
+            "1@3.5": 1.08
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817514",
+        "markets": {
+          "match_winner": {
+            "2": 1.48,
+            "1": 2.474
+          },
+          "over_under": {
+            "Over@5.5": 1.56,
+            "Under@5.5": 2.24,
+            "Over@4.5": 1.125,
+            "Under@4.5": 6.0,
+            "Over@6.5": 3.25,
+            "Under@6.5": 1.333
+          },
+          "asian_handicap": {
+            "1@1.5": 1.76,
+            "2@-1.5": 1.93,
+            "1@-1.5": 4.0,
+            "2@1.5": 1.222,
+            "1@-2.5": 6.95,
+            "2@-2.5": 3.5,
+            "1@2.5": 1.286,
+            "2@2.5": 1.1,
+            "2@-3.5": 7.9,
+            "1@3.5": 1.08
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719816540",
+    "external_id": "719816540",
+    "betradar_id": "",
+    "home_team": "Giovanni Matthee",
+    "away_team": "Henry Coates",
+    "start_time": "2026-05-11T11:30:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.122,
+        "1": 5.1
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719816540",
+        "markets": {
+          "match_winner": {
+            "2": 1.122,
+            "1": 5.1
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719816540",
+        "markets": {
+          "match_winner": {
+            "2": 1.122,
+            "1": 5.1
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719816540",
+        "markets": {
+          "match_winner": {
+            "2": 1.122,
+            "1": 5.1
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719816540",
+        "markets": {
+          "match_winner": {
+            "2": 1.122,
+            "1": 5.1
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719816540",
+        "markets": {
+          "match_winner": {
+            "2": 1.122,
+            "1": 5.1
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719816540",
+        "markets": {
+          "match_winner": {
+            "2": 1.122,
+            "1": 5.1
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719816540",
+        "markets": {
+          "match_winner": {
+            "2": 1.122,
+            "1": 5.1
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719817517",
+    "external_id": "719817517",
+    "betradar_id": "",
+    "home_team": "Pete Hughes",
+    "away_team": "Aden Kirk",
+    "start_time": "2026-05-11T11:50:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.27,
+        "1": 3.41
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817517",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817517",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817517",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817517",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817517",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817517",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817517",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719817516",
+    "external_id": "719817516",
+    "betradar_id": "",
+    "home_team": "Giovanni Matthee",
+    "away_team": "Bradley van der Velden",
+    "start_time": "2026-05-11T12:05:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.27,
+        "1": 3.41
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817516",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817516",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817516",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817516",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817516",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817516",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817516",
+        "markets": {
+          "match_winner": {
+            "2": 1.27,
+            "1": 3.41
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719816539",
+    "external_id": "719816539",
+    "betradar_id": "",
+    "home_team": "Aden Kirk",
+    "away_team": "Graham Usher",
+    "start_time": "2026-05-11T12:25:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "over_under": {
+        "Over@5.5": 1.53,
+        "Under@5.5": 2.31,
+        "Over@4.5": 1.1,
+        "Under@4.5": 7.0,
+        "Over@6.5": 2.75,
+        "Under@6.5": 1.4
+      },
+      "asian_handicap": {
+        "2@1.5": 1.61,
+        "1@-1.5": 2.15,
+        "2@-1.5": 3.0,
+        "1@1.5": 1.364,
+        "1@-2.5": 3.75,
+        "2@-2.5": 6.5,
+        "1@2.5": 1.111,
+        "2@2.5": 1.25,
+        "1@-3.5": 11.0,
+        "2@3.5": 1.05
+      },
+      "match_winner": {
+        "1": 1.62,
+        "2": 2.157
+      }
+    },
+    "market_count": 3,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719816539",
+        "markets": {
+          "over_under": {
+            "Over@5.5": 1.53,
+            "Under@5.5": 2.31,
+            "Over@4.5": 1.1,
+            "Under@4.5": 7.0,
+            "Over@6.5": 2.75,
+            "Under@6.5": 1.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.15,
+            "2@-1.5": 3.0,
+            "1@1.5": 1.364,
+            "1@-2.5": 3.75,
+            "2@-2.5": 6.5,
+            "1@2.5": 1.111,
+            "2@2.5": 1.25,
+            "1@-3.5": 11.0,
+            "2@3.5": 1.05
+          },
+          "match_winner": {
+            "1": 1.62,
+            "2": 2.157
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719816539",
+        "markets": {
+          "over_under": {
+            "Over@5.5": 1.53,
+            "Under@5.5": 2.31,
+            "Over@4.5": 1.1,
+            "Under@4.5": 6.95,
+            "Over@6.5": 2.75,
+            "Under@6.5": 1.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.15,
+            "2@-1.5": 3.0,
+            "1@1.5": 1.364,
+            "1@-2.5": 3.75,
+            "2@-2.5": 6.5,
+            "1@2.5": 1.111,
+            "2@2.5": 1.25,
+            "1@-3.5": 10.5,
+            "2@3.5": 1.04
+          },
+          "match_winner": {
+            "1": 1.62,
+            "2": 2.157
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719816539",
+        "markets": {
+          "over_under": {
+            "Over@5.5": 1.53,
+            "Under@5.5": 2.31,
+            "Over@4.5": 1.1,
+            "Under@4.5": 6.95,
+            "Over@6.5": 2.75,
+            "Under@6.5": 1.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.15,
+            "2@-1.5": 3.0,
+            "1@1.5": 1.364,
+            "1@-2.5": 3.75,
+            "2@-2.5": 6.5,
+            "1@2.5": 1.111,
+            "2@2.5": 1.25,
+            "1@-3.5": 10.5,
+            "2@3.5": 1.04
+          },
+          "match_winner": {
+            "1": 1.62,
+            "2": 2.157
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719816539",
+        "markets": {
+          "over_under": {
+            "Over@5.5": 1.53,
+            "Under@5.5": 2.31,
+            "Over@4.5": 1.1,
+            "Under@4.5": 6.95,
+            "Over@6.5": 2.75,
+            "Under@6.5": 1.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.15,
+            "2@-1.5": 3.0,
+            "1@1.5": 1.364,
+            "1@-2.5": 3.75,
+            "2@-2.5": 6.5,
+            "1@2.5": 1.111,
+            "2@2.5": 1.25,
+            "1@-3.5": 10.5,
+            "2@3.5": 1.04
+          },
+          "match_winner": {
+            "1": 1.62,
+            "2": 2.157
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719816539",
+        "markets": {
+          "over_under": {
+            "Over@5.5": 1.53,
+            "Under@5.5": 2.31,
+            "Over@4.5": 1.1,
+            "Under@4.5": 6.95,
+            "Over@6.5": 2.75,
+            "Under@6.5": 1.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.15,
+            "2@-1.5": 3.0,
+            "1@1.5": 1.364,
+            "1@-2.5": 3.75,
+            "2@-2.5": 6.5,
+            "1@2.5": 1.111,
+            "2@2.5": 1.25,
+            "1@-3.5": 10.5,
+            "2@3.5": 1.04
+          },
+          "match_winner": {
+            "1": 1.62,
+            "2": 2.157
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719816539",
+        "markets": {
+          "over_under": {
+            "Over@5.5": 1.53,
+            "Under@5.5": 2.31,
+            "Over@4.5": 1.1,
+            "Under@4.5": 6.95,
+            "Over@6.5": 2.75,
+            "Under@6.5": 1.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.15,
+            "2@-1.5": 3.0,
+            "1@1.5": 1.364,
+            "1@-2.5": 3.75,
+            "2@-2.5": 6.5,
+            "1@2.5": 1.111,
+            "2@2.5": 1.25,
+            "1@-3.5": 10.5,
+            "2@3.5": 1.04
+          },
+          "match_winner": {
+            "1": 1.62,
+            "2": 2.157
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719816539",
+        "markets": {
+          "over_under": {
+            "Over@5.5": 1.53,
+            "Under@5.5": 2.31,
+            "Over@4.5": 1.1,
+            "Under@4.5": 6.95,
+            "Over@6.5": 2.75,
+            "Under@6.5": 1.4
+          },
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.15,
+            "2@-1.5": 3.0,
+            "1@1.5": 1.364,
+            "1@-2.5": 3.75,
+            "2@-2.5": 6.5,
+            "1@2.5": 1.111,
+            "2@2.5": 1.25,
+            "1@-3.5": 10.5,
+            "2@3.5": 1.04
+          },
+          "match_winner": {
+            "1": 1.62,
+            "2": 2.157
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719817518",
+    "external_id": "719817518",
+    "betradar_id": "",
+    "home_team": "Henry Coates",
+    "away_team": "Pete Hughes",
+    "start_time": "2026-05-11T12:40:00Z",
+    "competition": "Modus Super Series. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "1": 1.25,
+        "2": 3.565
+      }
+    },
+    "market_count": 1,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719817518",
+        "markets": {
+          "match_winner": {
+            "1": 1.25,
+            "2": 3.565
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719817518",
+        "markets": {
+          "match_winner": {
+            "1": 1.25,
+            "2": 3.565
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719817518",
+        "markets": {
+          "match_winner": {
+            "1": 1.25,
+            "2": 3.565
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719817518",
+        "markets": {
+          "match_winner": {
+            "1": 1.25,
+            "2": 3.565
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719817518",
+        "markets": {
+          "match_winner": {
+            "1": 1.25,
+            "2": 3.565
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719817518",
+        "markets": {
+          "match_winner": {
+            "1": 1.25,
+            "2": 3.565
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719817518",
+        "markets": {
+          "match_winner": {
+            "1": 1.25,
+            "2": 3.565
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719267649",
+    "external_id": "719267649",
+    "betradar_id": "",
+    "home_team": "Josh Rock",
+    "away_team": "Gian van Veen",
+    "start_time": "2026-05-14T18:15:00Z",
+    "competition": "PDC Premier League. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "match_winner": {
+        "2": 1.61,
+        "1": 2.202
+      },
+      "handicap_result": {
+        "1@5.5": 1.62,
+        "2@5.5": 2.15
+      },
+      "btts": {
+        "Yes": 1.68,
+        "No": 2.05
+      },
+      "over_under": {
+        "Under@9.5": 1.74,
+        "Over@9.5": 1.98,
+        "Over@7.5": 1.12,
+        "Under@7.5": 5.1,
+        "Over@8.5": 1.36,
+        "Under@8.5": 2.84,
+        "Over@10.5": 3.74,
+        "Under@10.5": 1.22
+      },
+      "asian_handicap": {
+        "1@1.5": 1.75,
+        "2@-1.5": 1.96,
+        "1@-1.5": 2.84,
+        "2@1.5": 1.36,
+        "1@-2.5": 4.0,
+        "2@-2.5": 2.64,
+        "1@2.5": 1.41,
+        "2@2.5": 1.222,
+        "2@-3.5": 4.5,
+        "1@3.5": 1.167
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719267649",
+        "markets": {
+          "match_winner": {
+            "2": 1.61,
+            "1": 2.202
+          },
+          "handicap_result": {
+            "1@5.5": 1.62,
+            "2@5.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.68,
+            "No": 2.05
+          },
+          "over_under": {
+            "Under@9.5": 1.74,
+            "Over@9.5": 1.98,
+            "Over@7.5": 1.12,
+            "Under@7.5": 5.1,
+            "Over@8.5": 1.36,
+            "Under@8.5": 2.84,
+            "Over@10.5": 3.74,
+            "Under@10.5": 1.22
+          },
+          "asian_handicap": {
+            "1@1.5": 1.75,
+            "2@-1.5": 1.96,
+            "1@-1.5": 2.84,
+            "2@1.5": 1.36,
+            "1@-2.5": 4.0,
+            "2@-2.5": 2.64,
+            "1@2.5": 1.41,
+            "2@2.5": 1.222,
+            "2@-3.5": 4.5,
+            "1@3.5": 1.167
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719267649",
+        "markets": {
+          "match_winner": {
+            "2": 1.61,
+            "1": 2.202
+          },
+          "handicap_result": {
+            "1@5.5": 1.62,
+            "2@5.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.68,
+            "No": 2.05
+          },
+          "over_under": {
+            "Under@9.5": 1.74,
+            "Over@9.5": 1.98,
+            "Over@7.5": 1.12,
+            "Under@7.5": 5.1,
+            "Over@8.5": 1.36,
+            "Under@8.5": 2.84,
+            "Over@10.5": 3.74,
+            "Under@10.5": 1.22
+          },
+          "asian_handicap": {
+            "1@1.5": 1.75,
+            "2@-1.5": 1.96,
+            "1@-1.5": 2.84,
+            "2@1.5": 1.36,
+            "1@-2.5": 4.0,
+            "2@-2.5": 2.64,
+            "1@2.5": 1.41,
+            "2@2.5": 1.222,
+            "2@-3.5": 4.5,
+            "1@3.5": 1.167
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719267649",
+        "markets": {
+          "match_winner": {
+            "2": 1.61,
+            "1": 2.202
+          },
+          "handicap_result": {
+            "1@5.5": 1.62,
+            "2@5.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.68,
+            "No": 2.05
+          },
+          "over_under": {
+            "Under@9.5": 1.74,
+            "Over@9.5": 1.98,
+            "Over@7.5": 1.12,
+            "Under@7.5": 5.1,
+            "Over@8.5": 1.36,
+            "Under@8.5": 2.84,
+            "Over@10.5": 3.74,
+            "Under@10.5": 1.22
+          },
+          "asian_handicap": {
+            "1@1.5": 1.75,
+            "2@-1.5": 1.96,
+            "1@-1.5": 2.84,
+            "2@1.5": 1.36,
+            "1@-2.5": 4.0,
+            "2@-2.5": 2.64,
+            "1@2.5": 1.41,
+            "2@2.5": 1.222,
+            "2@-3.5": 4.5,
+            "1@3.5": 1.167
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719267649",
+        "markets": {
+          "match_winner": {
+            "2": 1.61,
+            "1": 2.202
+          },
+          "handicap_result": {
+            "1@5.5": 1.62,
+            "2@5.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.68,
+            "No": 2.05
+          },
+          "over_under": {
+            "Under@9.5": 1.74,
+            "Over@9.5": 1.98,
+            "Over@7.5": 1.12,
+            "Under@7.5": 5.1,
+            "Over@8.5": 1.36,
+            "Under@8.5": 2.84,
+            "Over@10.5": 3.74,
+            "Under@10.5": 1.22
+          },
+          "asian_handicap": {
+            "1@1.5": 1.75,
+            "2@-1.5": 1.96,
+            "1@-1.5": 2.84,
+            "2@1.5": 1.36,
+            "1@-2.5": 4.0,
+            "2@-2.5": 2.64,
+            "1@2.5": 1.41,
+            "2@2.5": 1.222,
+            "2@-3.5": 4.5,
+            "1@3.5": 1.167
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719267649",
+        "markets": {
+          "match_winner": {
+            "2": 1.61,
+            "1": 2.202
+          },
+          "handicap_result": {
+            "1@5.5": 1.62,
+            "2@5.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.68,
+            "No": 2.05
+          },
+          "over_under": {
+            "Under@9.5": 1.74,
+            "Over@9.5": 1.98,
+            "Over@7.5": 1.12,
+            "Under@7.5": 5.1,
+            "Over@8.5": 1.36,
+            "Under@8.5": 2.84,
+            "Over@10.5": 3.74,
+            "Under@10.5": 1.22
+          },
+          "asian_handicap": {
+            "1@1.5": 1.75,
+            "2@-1.5": 1.96,
+            "1@-1.5": 2.84,
+            "2@1.5": 1.36,
+            "1@-2.5": 4.0,
+            "2@-2.5": 2.64,
+            "1@2.5": 1.41,
+            "2@2.5": 1.222,
+            "2@-3.5": 4.5,
+            "1@3.5": 1.167
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719267649",
+        "markets": {
+          "match_winner": {
+            "2": 1.61,
+            "1": 2.202
+          },
+          "handicap_result": {
+            "1@5.5": 1.62,
+            "2@5.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.68,
+            "No": 2.05
+          },
+          "over_under": {
+            "Under@9.5": 1.74,
+            "Over@9.5": 1.98,
+            "Over@7.5": 1.12,
+            "Under@7.5": 5.1,
+            "Over@8.5": 1.36,
+            "Under@8.5": 2.84,
+            "Over@10.5": 3.74,
+            "Under@10.5": 1.22
+          },
+          "asian_handicap": {
+            "1@1.5": 1.75,
+            "2@-1.5": 1.96,
+            "1@-1.5": 2.84,
+            "2@1.5": 1.36,
+            "1@-2.5": 4.0,
+            "2@-2.5": 2.64,
+            "1@2.5": 1.41,
+            "2@2.5": 1.222,
+            "2@-3.5": 4.5,
+            "1@3.5": 1.167
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719267649",
+        "markets": {
+          "match_winner": {
+            "2": 1.61,
+            "1": 2.202
+          },
+          "handicap_result": {
+            "1@5.5": 1.62,
+            "2@5.5": 2.15
+          },
+          "btts": {
+            "Yes": 1.68,
+            "No": 2.05
+          },
+          "over_under": {
+            "Under@9.5": 1.74,
+            "Over@9.5": 1.98,
+            "Over@7.5": 1.12,
+            "Under@7.5": 5.1,
+            "Over@8.5": 1.36,
+            "Under@8.5": 2.84,
+            "Over@10.5": 3.74,
+            "Under@10.5": 1.22
+          },
+          "asian_handicap": {
+            "1@1.5": 1.75,
+            "2@-1.5": 1.96,
+            "1@-1.5": 2.84,
+            "2@1.5": 1.36,
+            "1@-2.5": 4.0,
+            "2@-2.5": 2.64,
+            "1@2.5": 1.41,
+            "2@2.5": 1.222,
+            "2@-3.5": 4.5,
+            "1@3.5": 1.167
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719267648",
+    "external_id": "719267648",
+    "betradar_id": "",
+    "home_team": "Gerwyn Price",
+    "away_team": "Michael van Gerwen",
+    "start_time": "2026-05-14T18:45:00Z",
+    "competition": "PDC Premier League. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "asian_handicap": {
+        "2@1.5": 1.61,
+        "1@-1.5": 2.17,
+        "2@-1.5": 2.55,
+        "1@1.5": 1.44,
+        "1@-2.5": 2.98,
+        "2@-2.5": 4.0,
+        "1@2.5": 1.222,
+        "2@2.5": 1.33,
+        "1@-3.5": 4.5,
+        "2@3.5": 1.167
+      },
+      "btts": {
+        "Yes": 1.72,
+        "No": 2.0
+      },
+      "handicap_result": {
+        "2@5.5": 1.72,
+        "1@5.5": 2.0
+      },
+      "match_winner": {
+        "1": 1.727,
+        "2": 1.99
+      },
+      "over_under": {
+        "Under@9.5": 1.76,
+        "Over@9.5": 1.95,
+        "Over@7.5": 1.11,
+        "Under@7.5": 5.3,
+        "Over@8.5": 1.35,
+        "Under@8.5": 2.88,
+        "Over@10.5": 3.72,
+        "Under@10.5": 1.222
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719267648",
+        "markets": {
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.17,
+            "2@-1.5": 2.55,
+            "1@1.5": 1.44,
+            "1@-2.5": 2.98,
+            "2@-2.5": 4.0,
+            "1@2.5": 1.222,
+            "2@2.5": 1.33,
+            "1@-3.5": 4.5,
+            "2@3.5": 1.167
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.0
+          },
+          "handicap_result": {
+            "2@5.5": 1.72,
+            "1@5.5": 2.0
+          },
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Under@9.5": 1.76,
+            "Over@9.5": 1.95,
+            "Over@7.5": 1.11,
+            "Under@7.5": 5.3,
+            "Over@8.5": 1.35,
+            "Under@8.5": 2.88,
+            "Over@10.5": 3.72,
+            "Under@10.5": 1.222
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719267648",
+        "markets": {
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.17,
+            "2@-1.5": 2.55,
+            "1@1.5": 1.44,
+            "1@-2.5": 2.98,
+            "2@-2.5": 4.0,
+            "1@2.5": 1.222,
+            "2@2.5": 1.33,
+            "1@-3.5": 4.5,
+            "2@3.5": 1.167
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.0
+          },
+          "handicap_result": {
+            "2@5.5": 1.72,
+            "1@5.5": 2.0
+          },
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Under@9.5": 1.76,
+            "Over@9.5": 1.95,
+            "Over@7.5": 1.11,
+            "Under@7.5": 5.3,
+            "Over@8.5": 1.35,
+            "Under@8.5": 2.88,
+            "Over@10.5": 3.72,
+            "Under@10.5": 1.222
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719267648",
+        "markets": {
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.17,
+            "2@-1.5": 2.55,
+            "1@1.5": 1.44,
+            "1@-2.5": 2.98,
+            "2@-2.5": 4.0,
+            "1@2.5": 1.222,
+            "2@2.5": 1.33,
+            "1@-3.5": 4.5,
+            "2@3.5": 1.167
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.0
+          },
+          "handicap_result": {
+            "2@5.5": 1.72,
+            "1@5.5": 2.0
+          },
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Under@9.5": 1.76,
+            "Over@9.5": 1.95,
+            "Over@7.5": 1.11,
+            "Under@7.5": 5.3,
+            "Over@8.5": 1.35,
+            "Under@8.5": 2.88,
+            "Over@10.5": 3.72,
+            "Under@10.5": 1.222
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719267648",
+        "markets": {
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.17,
+            "2@-1.5": 2.55,
+            "1@1.5": 1.44,
+            "1@-2.5": 2.98,
+            "2@-2.5": 4.0,
+            "1@2.5": 1.222,
+            "2@2.5": 1.33,
+            "1@-3.5": 4.5,
+            "2@3.5": 1.167
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.0
+          },
+          "handicap_result": {
+            "2@5.5": 1.72,
+            "1@5.5": 2.0
+          },
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Under@9.5": 1.76,
+            "Over@9.5": 1.95,
+            "Over@7.5": 1.11,
+            "Under@7.5": 5.3,
+            "Over@8.5": 1.35,
+            "Under@8.5": 2.88,
+            "Over@10.5": 3.72,
+            "Under@10.5": 1.222
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719267648",
+        "markets": {
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.17,
+            "2@-1.5": 2.55,
+            "1@1.5": 1.44,
+            "1@-2.5": 2.98,
+            "2@-2.5": 4.0,
+            "1@2.5": 1.222,
+            "2@2.5": 1.33,
+            "1@-3.5": 4.5,
+            "2@3.5": 1.167
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.0
+          },
+          "handicap_result": {
+            "2@5.5": 1.72,
+            "1@5.5": 2.0
+          },
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Under@9.5": 1.76,
+            "Over@9.5": 1.95,
+            "Over@7.5": 1.11,
+            "Under@7.5": 5.3,
+            "Over@8.5": 1.35,
+            "Under@8.5": 2.88,
+            "Over@10.5": 3.72,
+            "Under@10.5": 1.222
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719267648",
+        "markets": {
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.17,
+            "2@-1.5": 2.55,
+            "1@1.5": 1.44,
+            "1@-2.5": 2.98,
+            "2@-2.5": 4.0,
+            "1@2.5": 1.222,
+            "2@2.5": 1.33,
+            "1@-3.5": 4.5,
+            "2@3.5": 1.167
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.0
+          },
+          "handicap_result": {
+            "2@5.5": 1.72,
+            "1@5.5": 2.0
+          },
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Under@9.5": 1.76,
+            "Over@9.5": 1.95,
+            "Over@7.5": 1.11,
+            "Under@7.5": 5.3,
+            "Over@8.5": 1.35,
+            "Under@8.5": 2.88,
+            "Over@10.5": 3.72,
+            "Under@10.5": 1.222
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719267648",
+        "markets": {
+          "asian_handicap": {
+            "2@1.5": 1.61,
+            "1@-1.5": 2.17,
+            "2@-1.5": 2.55,
+            "1@1.5": 1.44,
+            "1@-2.5": 2.98,
+            "2@-2.5": 4.0,
+            "1@2.5": 1.222,
+            "2@2.5": 1.33,
+            "1@-3.5": 4.5,
+            "2@3.5": 1.167
+          },
+          "btts": {
+            "Yes": 1.72,
+            "No": 2.0
+          },
+          "handicap_result": {
+            "2@5.5": 1.72,
+            "1@5.5": 2.0
+          },
+          "match_winner": {
+            "1": 1.727,
+            "2": 1.99
+          },
+          "over_under": {
+            "Under@9.5": 1.76,
+            "Over@9.5": 1.95,
+            "Over@7.5": 1.11,
+            "Under@7.5": 5.3,
+            "Over@8.5": 1.35,
+            "Under@8.5": 2.88,
+            "Over@10.5": 3.72,
+            "Under@10.5": 1.222
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719267651",
+    "external_id": "719267651",
+    "betradar_id": "",
+    "home_team": "Luke Humphries",
+    "away_team": "Stephen Bunting",
+    "start_time": "2026-05-14T19:15:00Z",
+    "competition": "PDC Premier League. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "btts": {
+        "Yes": 1.38,
+        "No": 2.8
+      },
+      "match_winner": {
+        "1": 1.39,
+        "2": 2.808
+      },
+      "asian_handicap": {
+        "1@-1.5": 1.65,
+        "2@1.5": 2.11,
+        "2@-1.5": 3.74,
+        "1@1.5": 1.22,
+        "1@-2.5": 2.15,
+        "2@-2.5": 5.5,
+        "1@2.5": 1.125,
+        "2@2.5": 1.61,
+        "1@-3.5": 3.4,
+        "2@3.5": 1.3
+      },
+      "over_under": {
+        "Under@9.5": 1.66,
+        "Over@9.5": 2.09,
+        "Over@7.5": 1.14,
+        "Under@7.5": 4.6,
+        "Over@8.5": 1.42,
+        "Under@8.5": 2.61,
+        "Over@10.5": 4.05,
+        "Under@10.5": 1.19
+      },
+      "handicap_result": {
+        "2@4.5": 1.67,
+        "1@4.5": 2.07
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719267651",
+        "markets": {
+          "btts": {
+            "Yes": 1.38,
+            "No": 2.8
+          },
+          "match_winner": {
+            "1": 1.39,
+            "2": 2.808
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.65,
+            "2@1.5": 2.11,
+            "2@-1.5": 3.74,
+            "1@1.5": 1.22,
+            "1@-2.5": 2.15,
+            "2@-2.5": 5.5,
+            "1@2.5": 1.125,
+            "2@2.5": 1.61,
+            "1@-3.5": 3.4,
+            "2@3.5": 1.3
+          },
+          "over_under": {
+            "Under@9.5": 1.66,
+            "Over@9.5": 2.09,
+            "Over@7.5": 1.14,
+            "Under@7.5": 4.6,
+            "Over@8.5": 1.42,
+            "Under@8.5": 2.61,
+            "Over@10.5": 4.05,
+            "Under@10.5": 1.19
+          },
+          "handicap_result": {
+            "2@4.5": 1.67,
+            "1@4.5": 2.07
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719267651",
+        "markets": {
+          "btts": {
+            "Yes": 1.38,
+            "No": 2.8
+          },
+          "match_winner": {
+            "1": 1.39,
+            "2": 2.808
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.65,
+            "2@1.5": 2.11,
+            "2@-1.5": 3.74,
+            "1@1.5": 1.22,
+            "1@-2.5": 2.15,
+            "2@-2.5": 5.5,
+            "1@2.5": 1.125,
+            "2@2.5": 1.61,
+            "1@-3.5": 3.4,
+            "2@3.5": 1.3
+          },
+          "over_under": {
+            "Under@9.5": 1.66,
+            "Over@9.5": 2.09,
+            "Over@7.5": 1.14,
+            "Under@7.5": 4.6,
+            "Over@8.5": 1.42,
+            "Under@8.5": 2.61,
+            "Over@10.5": 4.05,
+            "Under@10.5": 1.19
+          },
+          "handicap_result": {
+            "2@4.5": 1.67,
+            "1@4.5": 2.07
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719267651",
+        "markets": {
+          "btts": {
+            "Yes": 1.38,
+            "No": 2.8
+          },
+          "match_winner": {
+            "1": 1.39,
+            "2": 2.808
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.65,
+            "2@1.5": 2.11,
+            "2@-1.5": 3.74,
+            "1@1.5": 1.22,
+            "1@-2.5": 2.15,
+            "2@-2.5": 5.5,
+            "1@2.5": 1.125,
+            "2@2.5": 1.61,
+            "1@-3.5": 3.4,
+            "2@3.5": 1.3
+          },
+          "over_under": {
+            "Under@9.5": 1.66,
+            "Over@9.5": 2.09,
+            "Over@7.5": 1.14,
+            "Under@7.5": 4.6,
+            "Over@8.5": 1.42,
+            "Under@8.5": 2.61,
+            "Over@10.5": 4.05,
+            "Under@10.5": 1.19
+          },
+          "handicap_result": {
+            "2@4.5": 1.67,
+            "1@4.5": 2.07
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719267651",
+        "markets": {
+          "btts": {
+            "Yes": 1.38,
+            "No": 2.8
+          },
+          "match_winner": {
+            "1": 1.39,
+            "2": 2.808
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.65,
+            "2@1.5": 2.11,
+            "2@-1.5": 3.74,
+            "1@1.5": 1.22,
+            "1@-2.5": 2.15,
+            "2@-2.5": 5.5,
+            "1@2.5": 1.125,
+            "2@2.5": 1.61,
+            "1@-3.5": 3.4,
+            "2@3.5": 1.3
+          },
+          "over_under": {
+            "Under@9.5": 1.66,
+            "Over@9.5": 2.09,
+            "Over@7.5": 1.14,
+            "Under@7.5": 4.6,
+            "Over@8.5": 1.42,
+            "Under@8.5": 2.61,
+            "Over@10.5": 4.05,
+            "Under@10.5": 1.19
+          },
+          "handicap_result": {
+            "2@4.5": 1.67,
+            "1@4.5": 2.07
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719267651",
+        "markets": {
+          "btts": {
+            "Yes": 1.38,
+            "No": 2.8
+          },
+          "match_winner": {
+            "1": 1.39,
+            "2": 2.808
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.65,
+            "2@1.5": 2.11,
+            "2@-1.5": 3.74,
+            "1@1.5": 1.22,
+            "1@-2.5": 2.15,
+            "2@-2.5": 5.5,
+            "1@2.5": 1.125,
+            "2@2.5": 1.61,
+            "1@-3.5": 3.4,
+            "2@3.5": 1.3
+          },
+          "over_under": {
+            "Under@9.5": 1.66,
+            "Over@9.5": 2.09,
+            "Over@7.5": 1.14,
+            "Under@7.5": 4.6,
+            "Over@8.5": 1.42,
+            "Under@8.5": 2.61,
+            "Over@10.5": 4.05,
+            "Under@10.5": 1.19
+          },
+          "handicap_result": {
+            "2@4.5": 1.67,
+            "1@4.5": 2.07
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719267651",
+        "markets": {
+          "btts": {
+            "Yes": 1.38,
+            "No": 2.8
+          },
+          "match_winner": {
+            "1": 1.39,
+            "2": 2.808
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.65,
+            "2@1.5": 2.11,
+            "2@-1.5": 3.74,
+            "1@1.5": 1.22,
+            "1@-2.5": 2.15,
+            "2@-2.5": 5.5,
+            "1@2.5": 1.125,
+            "2@2.5": 1.61,
+            "1@-3.5": 3.4,
+            "2@3.5": 1.3
+          },
+          "over_under": {
+            "Under@9.5": 1.66,
+            "Over@9.5": 2.09,
+            "Over@7.5": 1.14,
+            "Under@7.5": 4.6,
+            "Over@8.5": 1.42,
+            "Under@8.5": 2.61,
+            "Over@10.5": 4.05,
+            "Under@10.5": 1.19
+          },
+          "handicap_result": {
+            "2@4.5": 1.67,
+            "1@4.5": 2.07
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719267651",
+        "markets": {
+          "btts": {
+            "Yes": 1.38,
+            "No": 2.8
+          },
+          "match_winner": {
+            "1": 1.39,
+            "2": 2.808
+          },
+          "asian_handicap": {
+            "1@-1.5": 1.65,
+            "2@1.5": 2.11,
+            "2@-1.5": 3.74,
+            "1@1.5": 1.22,
+            "1@-2.5": 2.15,
+            "2@-2.5": 5.5,
+            "1@2.5": 1.125,
+            "2@2.5": 1.61,
+            "1@-3.5": 3.4,
+            "2@3.5": 1.3
+          },
+          "over_under": {
+            "Under@9.5": 1.66,
+            "Over@9.5": 2.09,
+            "Over@7.5": 1.14,
+            "Under@7.5": 4.6,
+            "Over@8.5": 1.42,
+            "Under@8.5": 2.61,
+            "Over@10.5": 4.05,
+            "Under@10.5": 1.19
+          },
+          "handicap_result": {
+            "2@4.5": 1.67,
+            "1@4.5": 2.07
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  },
+  {
+    "b2b_match_id": "1xbet:719267650",
+    "external_id": "719267650",
+    "betradar_id": "",
+    "home_team": "Jonny Clayton",
+    "away_team": "Luke Littler",
+    "start_time": "2026-05-14T19:45:00Z",
+    "competition": "PDC Premier League. 2026",
+    "sport": "darts",
+    "source": "1xbet",
+    "is_live": false,
+    "status": "upcoming",
+    "markets": {
+      "handicap_result": {
+        "1@5.5": 1.27,
+        "2@5.5": 3.4
+      },
+      "match_winner": {
+        "2": 1.29,
+        "1": 3.34
+      },
+      "over_under": {
+        "Under@9.5": 1.58,
+        "Over@9.5": 2.23,
+        "Over@7.5": 1.19,
+        "Under@7.5": 4.0,
+        "Over@8.5": 1.48,
+        "Under@8.5": 2.43,
+        "Over@10.5": 4.33,
+        "Under@10.5": 1.168
+      },
+      "btts": {
+        "Yes": 1.77,
+        "No": 1.93
+      },
+      "asian_handicap": {
+        "1@2.5": 1.79,
+        "2@-2.5": 1.92,
+        "1@-1.5": 4.5,
+        "2@-1.5": 1.49,
+        "1@1.5": 2.4,
+        "2@1.5": 1.167,
+        "2@-3.5": 2.83,
+        "1@3.5": 1.363,
+        "2@-4.5": 5.0,
+        "1@4.5": 1.143
+      }
+    },
+    "market_count": 5,
+    "bookmakers": {
+      "1xbet": {
+        "bookmaker": "1xBet",
+        "slug": "1xbet",
+        "match_id": "1xbet:719267650",
+        "markets": {
+          "handicap_result": {
+            "1@5.5": 1.27,
+            "2@5.5": 3.4
+          },
+          "match_winner": {
+            "2": 1.29,
+            "1": 3.34
+          },
+          "over_under": {
+            "Under@9.5": 1.58,
+            "Over@9.5": 2.23,
+            "Over@7.5": 1.19,
+            "Under@7.5": 4.0,
+            "Over@8.5": 1.48,
+            "Under@8.5": 2.43,
+            "Over@10.5": 4.33,
+            "Under@10.5": 1.168
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 1.93
+          },
+          "asian_handicap": {
+            "1@2.5": 1.79,
+            "2@-2.5": 1.92,
+            "1@-1.5": 4.5,
+            "2@-1.5": 1.49,
+            "1@1.5": 2.4,
+            "2@1.5": 1.167,
+            "2@-3.5": 2.83,
+            "1@3.5": 1.363,
+            "2@-4.5": 5.0,
+            "1@4.5": 1.143
+          }
+        }
+      },
+      "22bet": {
+        "bookmaker": "22Bet",
+        "slug": "22bet",
+        "match_id": "22bet:719267650",
+        "markets": {
+          "handicap_result": {
+            "1@5.5": 1.27,
+            "2@5.5": 3.4
+          },
+          "match_winner": {
+            "2": 1.29,
+            "1": 3.34
+          },
+          "over_under": {
+            "Under@9.5": 1.58,
+            "Over@9.5": 2.23,
+            "Over@7.5": 1.19,
+            "Under@7.5": 4.0,
+            "Over@8.5": 1.48,
+            "Under@8.5": 2.43,
+            "Over@10.5": 4.33,
+            "Under@10.5": 1.168
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 1.93
+          },
+          "asian_handicap": {
+            "1@2.5": 1.79,
+            "2@-2.5": 1.92,
+            "1@-1.5": 4.5,
+            "2@-1.5": 1.49,
+            "1@1.5": 2.4,
+            "2@1.5": 1.167,
+            "2@-3.5": 2.83,
+            "1@3.5": 1.363,
+            "2@-4.5": 5.0,
+            "1@4.5": 1.143
+          }
+        }
+      },
+      "betwinner": {
+        "bookmaker": "Betwinner",
+        "slug": "betwinner",
+        "match_id": "betwinner:719267650",
+        "markets": {
+          "handicap_result": {
+            "1@5.5": 1.27,
+            "2@5.5": 3.4
+          },
+          "match_winner": {
+            "2": 1.29,
+            "1": 3.34
+          },
+          "over_under": {
+            "Under@9.5": 1.58,
+            "Over@9.5": 2.23,
+            "Over@7.5": 1.19,
+            "Under@7.5": 4.0,
+            "Over@8.5": 1.48,
+            "Under@8.5": 2.43,
+            "Over@10.5": 4.33,
+            "Under@10.5": 1.168
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 1.93
+          },
+          "asian_handicap": {
+            "1@2.5": 1.79,
+            "2@-2.5": 1.92,
+            "1@-1.5": 4.5,
+            "2@-1.5": 1.49,
+            "1@1.5": 2.4,
+            "2@1.5": 1.167,
+            "2@-3.5": 2.83,
+            "1@3.5": 1.363,
+            "2@-4.5": 5.0,
+            "1@4.5": 1.143
+          }
+        }
+      },
+      "melbet": {
+        "bookmaker": "Melbet",
+        "slug": "melbet",
+        "match_id": "melbet:719267650",
+        "markets": {
+          "handicap_result": {
+            "1@5.5": 1.27,
+            "2@5.5": 3.4
+          },
+          "match_winner": {
+            "2": 1.29,
+            "1": 3.34
+          },
+          "over_under": {
+            "Under@9.5": 1.58,
+            "Over@9.5": 2.23,
+            "Over@7.5": 1.19,
+            "Under@7.5": 4.0,
+            "Over@8.5": 1.48,
+            "Under@8.5": 2.43,
+            "Over@10.5": 4.33,
+            "Under@10.5": 1.168
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 1.93
+          },
+          "asian_handicap": {
+            "1@2.5": 1.79,
+            "2@-2.5": 1.92,
+            "1@-1.5": 4.5,
+            "2@-1.5": 1.49,
+            "1@1.5": 2.4,
+            "2@1.5": 1.167,
+            "2@-3.5": 2.83,
+            "1@3.5": 1.363,
+            "2@-4.5": 5.0,
+            "1@4.5": 1.143
+          }
+        }
+      },
+      "megapari": {
+        "bookmaker": "Megapari",
+        "slug": "megapari",
+        "match_id": "megapari:719267650",
+        "markets": {
+          "handicap_result": {
+            "1@5.5": 1.27,
+            "2@5.5": 3.4
+          },
+          "match_winner": {
+            "2": 1.29,
+            "1": 3.34
+          },
+          "over_under": {
+            "Under@9.5": 1.58,
+            "Over@9.5": 2.23,
+            "Over@7.5": 1.19,
+            "Under@7.5": 4.0,
+            "Over@8.5": 1.48,
+            "Under@8.5": 2.43,
+            "Over@10.5": 4.33,
+            "Under@10.5": 1.168
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 1.93
+          },
+          "asian_handicap": {
+            "1@2.5": 1.79,
+            "2@-2.5": 1.92,
+            "1@-1.5": 4.5,
+            "2@-1.5": 1.49,
+            "1@1.5": 2.4,
+            "2@1.5": 1.167,
+            "2@-3.5": 2.83,
+            "1@3.5": 1.363,
+            "2@-4.5": 5.0,
+            "1@4.5": 1.143
+          }
+        }
+      },
+      "helabet": {
+        "bookmaker": "Helabet",
+        "slug": "helabet",
+        "match_id": "helabet:719267650",
+        "markets": {
+          "handicap_result": {
+            "1@5.5": 1.27,
+            "2@5.5": 3.4
+          },
+          "match_winner": {
+            "2": 1.29,
+            "1": 3.34
+          },
+          "over_under": {
+            "Under@9.5": 1.58,
+            "Over@9.5": 2.23,
+            "Over@7.5": 1.19,
+            "Under@7.5": 4.0,
+            "Over@8.5": 1.48,
+            "Under@8.5": 2.43,
+            "Over@10.5": 4.33,
+            "Under@10.5": 1.168
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 1.93
+          },
+          "asian_handicap": {
+            "1@2.5": 1.79,
+            "2@-2.5": 1.92,
+            "1@-1.5": 4.5,
+            "2@-1.5": 1.49,
+            "1@1.5": 2.4,
+            "2@1.5": 1.167,
+            "2@-3.5": 2.83,
+            "1@3.5": 1.363,
+            "2@-4.5": 5.0,
+            "1@4.5": 1.143
+          }
+        }
+      },
+      "paripesa": {
+        "bookmaker": "Paripesa",
+        "slug": "paripesa",
+        "match_id": "paripesa:719267650",
+        "markets": {
+          "handicap_result": {
+            "1@5.5": 1.27,
+            "2@5.5": 3.4
+          },
+          "match_winner": {
+            "2": 1.29,
+            "1": 3.34
+          },
+          "over_under": {
+            "Under@9.5": 1.58,
+            "Over@9.5": 2.23,
+            "Over@7.5": 1.19,
+            "Under@7.5": 4.0,
+            "Over@8.5": 1.48,
+            "Under@8.5": 2.43,
+            "Over@10.5": 4.33,
+            "Under@10.5": 1.168
+          },
+          "btts": {
+            "Yes": 1.77,
+            "No": 1.93
+          },
+          "asian_handicap": {
+            "1@2.5": 1.79,
+            "2@-2.5": 1.92,
+            "1@-1.5": 4.5,
+            "2@-1.5": 1.49,
+            "1@1.5": 2.4,
+            "2@1.5": 1.167,
+            "2@-3.5": 2.83,
+            "1@3.5": 1.363,
+            "2@-4.5": 5.0,
+            "1@4.5": 1.143
+          }
+        }
+      }
+    },
+    "harvested_at": "2026-05-11T09:45:13Z",
+    "bk_count": 1
+  }
+]
