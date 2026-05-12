@@ -359,13 +359,22 @@ async def _harvest_one_bk(
     headless:     bool = True,
     wait_s:       int  = 15,
     full_markets: bool = True,
-    tab_concurrency: int = 5,   # unused now, kept for API compat
+    output_dir:   str  = "harvest_dumps",
+    tab_concurrency: int = 5,   # unused, kept for API compat
 ) -> list[dict]:
     """
-    Navigate to each competition page on a SINGLE tab sequentially.
-    Each navigation naturally fires Get1x2_VZip?champs={LI} — we collect it.
-    Simple, stable, no tab explosion.
+    Navigate to the sport page then each competition page on a SINGLE tab.
+    For every page that returns data, saves a JSON file:
+
+      {output_dir}/{bk_slug}/{sport_slug}/
+          _sports_root.json            ← raw response from sport index page
+          germany-bundesliga.json      ← raw + parsed for each competition
+          england-premier-league.json
+          ...
+
+    Returns all parsed matches (flat list, deduped by game ID).
     """
+    import re as _re
     from playwright.async_api import async_playwright
 
     sport_id   = B2B_SPORT_IDS.get(sport_slug.lower())
@@ -376,8 +385,12 @@ async def _harvest_one_bk(
     profile.mkdir(parents=True, exist_ok=True)
     storage_f  = profile / "storage.json"
 
-    comps      = _COMPETITIONS.get(sport_id or 0, [(0, "_sport_page", 0)])
-    hardcoded  = [(li, slug) for li, slug, _ in comps if li > 0]
+    # Output directory for this BK + sport
+    bk_sport_dir = os.path.join(output_dir, bk["slug"], sport_slug)
+    os.makedirs(bk_sport_dir, exist_ok=True)
+
+    comps     = _COMPETITIONS.get(sport_id or 0, [(0, "_sport_page", 0)])
+    hardcoded = [(li, slug) for li, slug, _ in comps if li > 0]
     sport_only = not hardcoded
 
     ctx_opts: dict = {
@@ -396,7 +409,6 @@ async def _harvest_one_bk(
     seen_gids:       set        = set()
     detail_payloads: dict[int, dict] = {}
 
-    import re as _re
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=headless,
@@ -406,7 +418,6 @@ async def _harvest_one_bk(
         ctx  = await browser.new_context(**ctx_opts)
         page = await ctx.new_page()
 
-        # ── Single shared response collector ─────────────────────────────────
         pending: dict = {"body": None}
 
         async def _on_resp(resp):
@@ -421,11 +432,11 @@ async def _harvest_one_bk(
                     if body and body.get("ErrorCode") in (0, ""):
                         pending["body"] = body
                     else:
-                        print(f"    [API:{bk['slug']}] ❌ bad ErrorCode — body[:150]={str(body)[:150]}")
+                        print(f"    [API:{bk['slug']}] ❌ bad body={str(body)[:200]}")
                 except Exception as exc:
                     print(f"    [API:{bk['slug']}] ❌ json error: {exc}")
             elif "Get1x2_VZip" in url:
-                print(f"    [API:{bk['slug']}] ⚠️  status={resp.status} url={url[:100]}")
+                print(f"    [API:{bk['slug']}] ⚠️  status={resp.status}")
             elif "GetGameZip" in url and resp.status == 200:
                 try:
                     body = await resp.json()
@@ -437,7 +448,6 @@ async def _harvest_one_bk(
         page.on("response", _on_resp)
 
         def _collect_and_reset() -> list[dict]:
-            """Drain pending response into match list."""
             body = pending.get("body")
             pending["body"] = None
             if not body: return []
@@ -445,52 +455,77 @@ async def _harvest_one_bk(
 
         def _add_matches(new_matches: list[dict]):
             for m in new_matches:
-                gid_str = m.get("external_id", "")
-                try: gid_int = int(gid_str)
+                try: gid_int = int(m.get("external_id", ""))
                 except: gid_int = None
                 if gid_int and gid_int in seen_gids: continue
                 if gid_int: seen_gids.add(gid_int)
                 all_matches.append(m)
 
-        async def _navigate_and_collect(url: str) -> int:
-            """Navigate, wait for API response, parse and add matches. Returns count added."""
+        def _save_comp(filename: str, raw_body: dict | None, matches: list[dict]):
+            """Save raw API response + parsed matches into per-competition file."""
+            path = os.path.join(bk_sport_dir, filename)
+            payload = {
+                "bk":          bk["slug"],
+                "sport":       sport_slug,
+                "competition": filename.replace(".json", ""),
+                "match_count": len(matches),
+                "raw_value":   raw_body.get("Value") if raw_body else [],
+                "matches":     matches,
+            }
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+            print(f"    [SAVE:{bk['slug']}] {bk_sport_dir}/{filename} ({len(matches)} matches)")
+
+        async def _navigate_and_collect(url: str, save_as: str) -> int:
+            """Navigate, wait for API, parse, save file, return match count added."""
             pending["body"] = None
             try:
                 await page.goto(url, wait_until="domcontentloaded",
                                 timeout=wait_s * 1000)
             except Exception as exc:
-                print(f"    [NAV:{bk['slug']}] ❌ {url[-60:]}: {exc}")
+                print(f"    [NAV:{bk['slug']}] ❌ {url[-70:]}: {exc}")
                 return 0
-            # Wait up to wait_s for the API call to complete
+
             deadline = time.perf_counter() + wait_s
             while time.perf_counter() < deadline:
                 await asyncio.sleep(0.5)
                 if pending["body"]: break
+
+            raw_body = pending.get("body")
+            pending["body"] = None
+            if not raw_body:
+                print(f"    [TIMEOUT:{bk['slug']}] no response for {url[-70:]}")
+                return 0
+
+            new_matches = _parse_value(
+                raw_body.get("Value") or [], bk, sport_slug, mode, sport_id
+            )
             before = len(all_matches)
-            _add_matches(_collect_and_reset())
+            _add_matches(new_matches)
             added = len(all_matches) - before
+
+            _save_comp(save_as, raw_body, new_matches)
             return added
 
         # ── Step 1: sport root page ───────────────────────────────────────────
         sport_root = f"{bk['base']}/en/{feed_path}/{page_slug}"
         print(f"  [{bk['slug']}] ── {sport_root}")
-        added = await _navigate_and_collect(sport_root)
-        print(f"  [{bk['slug']}] sport root → {added} matches (total={len(all_matches)})")
+        added = await _navigate_and_collect(sport_root, "_sports_root.json")
+        print(f"  [{bk['slug']}] root → {added} (total={len(all_matches)})")
 
-        # ── Step 2: each competition page (sequential, same tab) ──────────────
+        # ── Step 2: each competition page ─────────────────────────────────────
         if not sport_only:
             print(f"  [{bk['slug']}] fetching {len(hardcoded)} competitions…")
             for i, (li, comp_slug) in enumerate(hardcoded, 1):
-                comp_url = f"{bk['base']}/en/{feed_path}/{page_slug}/{li}-{comp_slug}"
-                added = await _navigate_and_collect(comp_url)
-                if added:
-                    print(f"  [{bk['slug']}] ({i}/{len(hardcoded)}) {comp_slug}: +{added} → total={len(all_matches)}")
-                else:
-                    print(f"  [{bk['slug']}] ({i}/{len(hardcoded)}) {comp_slug}: 0 (already seen or empty)")
+                comp_url  = f"{bk['base']}/en/{feed_path}/{page_slug}/{li}-{comp_slug}"
+                save_name = f"{comp_slug}.json"
+                added     = await _navigate_and_collect(comp_url, save_name)
+                print(f"  [{bk['slug']}] ({i:>2}/{len(hardcoded)}) {comp_slug}: "
+                      f"+{added} → total={len(all_matches)}")
 
-        print(f"  [{bk['slug']}] {sport_slug}: {len(all_matches)} total matches")
+        print(f"  [{bk['slug']}] {sport_slug}: {len(all_matches)} matches total")
 
-        # ── Step 3: GetGameZip full markets (if requested) ────────────────────
+        # ── Step 3: GetGameZip full markets ───────────────────────────────────
         if full_markets and all_matches:
             p        = bk["partner_id"]
             game_ids = []
@@ -498,7 +533,6 @@ async def _harvest_one_bk(
                 try: game_ids.append(int(m["external_id"]))
                 except: pass
 
-            # Navigate to sport root so we have a valid same-origin context
             try:
                 await page.goto(sport_root, wait_until="domcontentloaded",
                                 timeout=wait_s * 1000)
@@ -527,7 +561,7 @@ async def _harvest_one_bk(
                             gid = val.get("I") or val.get("Id")
                             if gid: detail_payloads[int(gid)] = rb
                 except Exception as exc:
-                    logger.debug("[pw:%s] GetGameZip batch: %s", bk["slug"], exc)
+                    logger.debug("[pw:%s] GetGameZip: %s", bk["slug"], exc)
                 await asyncio.sleep(0.2)
 
             for m in all_matches:
@@ -542,7 +576,18 @@ async def _harvest_one_bk(
                     enriched += 1
 
             avg = int(sum(m.get("market_count",0) for m in all_matches)/len(all_matches)) if all_matches else 0
-            print(f"  [{bk['slug']}] {sport_slug}: {enriched} enriched, avg {avg} markets")
+            print(f"  [{bk['slug']}] enriched {enriched}/{len(all_matches)}, avg {avg} markets")
+
+            # Save enriched matches per competition back to files
+            comp_buckets: dict[str, list[dict]] = {}
+            for m in all_matches:
+                comp = m.get("competition", "unknown")
+                comp_buckets.setdefault(comp, []).append(m)
+            for comp_name, comp_matches in comp_buckets.items():
+                safe = re.sub(r'[^\w\-]', '-', comp_name.lower().strip()).strip('-') or "misc"
+                path = os.path.join(bk_sport_dir, f"{safe}_enriched.json")
+                with open(path, "w") as f:
+                    json.dump(comp_matches, f, indent=2, default=str)
 
         # ── Save cookies ──────────────────────────────────────────────────────
         try:
@@ -564,13 +609,14 @@ async def _pw_harvest_sport(
     headless:     bool = True,
     wait_s:       int  = 15,
     full_markets: bool = True,
+    output_dir:   str  = "harvest_dumps",
     tab_concurrency: int = 5,
 ) -> dict[str, list[dict]]:
     """Run _harvest_one_bk for all BKs concurrently (one browser per BK)."""
     tasks = [
         asyncio.create_task(
             _harvest_one_bk(bk, sport_slug, mode, headless,
-                            wait_s, full_markets, tab_concurrency)
+                            wait_s, full_markets, output_dir)
         )
         for bk in bks
     ]
@@ -589,10 +635,11 @@ async def _pw_harvest_sport(
 # =============================================================================
 
 def fetch_bk_sport(bk, sport_slug, mode="upcoming", headless=True,
-                   wait_s=15, full_markets=True, verbose=True):
+                   wait_s=15, full_markets=True, verbose=True,
+                   output_dir="harvest_dumps"):
     t0 = time.perf_counter()
     matches = asyncio.run(
-        _harvest_one_bk(bk, sport_slug, mode, headless, wait_s, full_markets)
+        _harvest_one_bk(bk, sport_slug, mode, headless, wait_s, full_markets, output_dir)
     )
     ms = int((time.perf_counter() - t0) * 1000)
     if verbose:
@@ -603,13 +650,14 @@ def fetch_bk_sport(bk, sport_slug, mode="upcoming", headless=True,
 
 def fetch_sport_all_bks(sport_slug, mode="upcoming", bookmakers=None,
                          headless=True, wait_s=15, max_matches=1500,
-                         full_markets=True, verbose=True):
+                         full_markets=True, verbose=True,
+                         output_dir="harvest_dumps"):
     bks = bookmakers or B2B_BOOKMAKERS
     t0  = time.perf_counter()
     if verbose:
         print(f"\n  {len(bks)} BKs × {sport_slug} [{mode}] concurrently…")
     res = asyncio.run(
-        _pw_harvest_sport(bks, sport_slug, mode, headless, wait_s, full_markets)
+        _pw_harvest_sport(bks, sport_slug, mode, headless, wait_s, full_markets, output_dir)
     )
     if verbose:
         total = sum(len(v) for v in res.values())
@@ -623,7 +671,8 @@ def fetch_sport_all_bks(sport_slug, mode="upcoming", bookmakers=None,
 
 def harvest_all_b2b(mode="upcoming", sports=None, bookmakers=None,
                      bk_workers=7, headless=True, wait_s=15,
-                     max_matches=1500, full_markets=True, verbose=True):
+                     max_matches=1500, full_markets=True, verbose=True,
+                     output_dir="harvest_dumps"):
     bks    = bookmakers or B2B_BOOKMAKERS
     sports = sports or ALL_SPORT_SLUGS
     if verbose:
@@ -634,7 +683,7 @@ def harvest_all_b2b(mode="upcoming", sports=None, bookmakers=None,
     for sp in sports:
         if verbose: print(f"\n  ── {sp.upper()} ──")
         per_bk = asyncio.run(
-            _pw_harvest_sport(bks, sp, mode, headless, wait_s, full_markets)
+            _pw_harvest_sport(bks, sp, mode, headless, wait_s, full_markets, output_dir)
         )
         for bk in bks:
             results[bk["slug"]][sp] = per_bk.get(bk["slug"], [])
