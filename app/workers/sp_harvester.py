@@ -3,69 +3,29 @@ app/workers/sp_harvester.py
 ============================
 Sportpesa Kenya harvester – FULL MARKETS for ALL sports (markets=all).
 
-Enhancements:
-- Dynamic User-Agent on every request (fake_useragent)
-- Client Hint headers to match UA
-- Session priming (homepage GET to obtain cookies)
-- Automatic proxy rotation every hour from the free-proxy-list CDN
-- Fallback to direct connection if proxies fail
+Now using Playwright to bypass Akamai Bot Manager.
+All API requests reuse the same browser context, so once the Akamai
+challenge is solved, cookies (bm_*, ak_bmsc, etc.) are attached automatically.
 """
 
 from __future__ import annotations
 
 import random
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
 
-import requests
-from requests.adapters import HTTPAdapter
-from requests.exceptions import (
-    ProxyError,
-    ConnectTimeout,
-    ConnectionError as ReqConnectionError,
-)
-from urllib3.util.retry import Retry
-from fake_useragent import UserAgent
+from playwright.sync_api import sync_playwright, Browser, BrowserContext, Error as PlaywrightError
 
 from app.workers.sp_mapper import normalize_sp_market
 from app.workers.canonical_mapper import normalize_outcome
 from app.workers.tasks_analytics import scrape_sportpesa_match_analytics
 
 # =============================================================================
-# CONSTANTS & HTTP SESSION
+# CONSTANTS
 # =============================================================================
 
-# Uncomment the next block to use curl_cffi for full TLS impersonation
-# from curl_cffi import requests as curl_requests
-# SP_SESSION = curl_requests.Session()
-# SP_SESSION.impersonate = "chrome120"
-# SP_SESSION.mount = lambda *args, **kwargs: None   # not needed
-
-SP_SESSION = requests.Session()
-_retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-SP_SESSION.mount('https://', HTTPAdapter(max_retries=_retries, pool_connections=10, pool_maxsize=10))
-
 _BASE = "https://www.ke.sportpesa.com"
-
-# Base headers common to every request – User-Agent is added inside _get()
-_BASE_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-GB,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "X-Requested-With": "XMLHttpRequest",
-    "X-App-Timezone": "Africa/Nairobi",
-    "Origin": "https://www.ke.sportpesa.com",
-    "Referer": "https://www.ke.sportpesa.com/",
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Dest": "empty",
-    "Connection": "keep-alive",
-}
-
-# Dynamic User-Agent engine
-ua = UserAgent(browsers=['chrome', 'safari', 'edge'], os=['android', 'ios'])
 
 # ── Sport slug → SP sport_id ──────────────────────────────────────────────────
 SP_SPORT_ID: dict[str, str] = {
@@ -118,22 +78,34 @@ _SPORT_MARKET_IDS: dict[str, str] = {
 _DEFAULT_MARKET_IDS = "all"
 _ESOCCER_IDS = {"126"}
 
-# ── Proxy configuration ──────────────────────────────────────────────────────
+# ── Proxy configuration (optional) ───────────────────────────────────────────
+# If USE_PROXIES is True, the browser will be launched with a random proxy
+# from the free‑proxy‑list (refreshed hourly). Set to False to ignore proxies.
+USE_PROXIES = False   # Change to True if you want proxy rotation
 PROXY_URL = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt"
-REFRESH_INTERVAL = 3600   # 1 hour
-USE_PROXIES = True        # set to False to disable proxies entirely
+REFRESH_INTERVAL = 3600
+
+# ── Playwright global state ──────────────────────────────────────────────────
+_PLAYWRIGHT = None          # sync_playwright instance
+_BROWSER: Browser | None = None
+_CONTEXT: BrowserContext | None = None
+_CONTEXT_LOCK = __import__('threading').Lock()
+
+
+# =============================================================================
+# PROXY HELPERS (if enabled)
+# =============================================================================
 
 _proxy_list: list[str] = []
 _proxy_list_timestamp: float = 0.0
-_proxy_lock = threading.Lock()
 
 
 def _refresh_proxy_list() -> None:
-    """Download and parse the proxy list. Called with the lock held."""
     global _proxy_list, _proxy_list_timestamp
     try:
         print("[sp:proxy] Refreshing proxy list …")
-        resp = requests.get(PROXY_URL, timeout=10)
+        import requests as req
+        resp = req.get(PROXY_URL, timeout=10)
         resp.raise_for_status()
         lines = resp.text.splitlines()
         new_proxies = []
@@ -155,143 +127,190 @@ def _refresh_proxy_list() -> None:
 
 
 def _maybe_refresh_proxies() -> None:
-    """Check if the proxy list is too old, and refresh if needed (thread‑safe)."""
     if not USE_PROXIES:
         return
     if time.time() - _proxy_list_timestamp > REFRESH_INTERVAL:
-        with _proxy_lock:
+        with _CONTEXT_LOCK:
             if time.time() - _proxy_list_timestamp > REFRESH_INTERVAL:
                 _refresh_proxy_list()
 
 
-def _get_random_proxy() -> dict[str, str] | None:
-    """Return a random proxy dict for requests, or None if list is empty."""
+def _get_random_proxy() -> str | None:
+    """Return a proxy string like 'http://1.2.3.4:5678' or None if list empty."""
     _maybe_refresh_proxies()
     if not _proxy_list:
         return None
     proxy_str = random.choice(_proxy_list)
-    return {
-        "http": f"http://{proxy_str}",
-        "https": f"http://{proxy_str}",
+    return f"http://{proxy_str}"
+
+
+# =============================================================================
+# PLAYWRIGHT LIFECYCLE
+# =============================================================================
+
+def _launch_playwright() -> None:
+    """
+    Launch a persistent Chromium browser and context.
+    The context is used for all API requests – this ensures that Akamai
+    cookies (bm_*, ak_bmsc, etc.) are present after the homepage visit.
+    """
+    global _PLAYWRIGHT, _BROWSER, _CONTEXT
+
+    if _CONTEXT is not None:
+        return   # already launched
+
+    print("[sp:pw] Launching Playwright Chromium …")
+    _PLAYWRIGHT = sync_playwright().start()
+
+    launch_args = {
+        "headless": True,
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ],
     }
 
+    # If proxies are enabled, pick one and set it
+    if USE_PROXIES:
+        proxy = _get_random_proxy()
+        if proxy:
+            launch_args["proxy"] = {"server": proxy}
+            print(f"[sp:pw] Using proxy: {proxy}")
 
-# =============================================================================
-# SESSION PRIMING
-# =============================================================================
+    _BROWSER = _PLAYWRIGHT.chromium.launch(**launch_args)
 
-def _prime_session() -> None:
-    """Load the main page to set cookies (ASP.NET_SessionId etc.)."""
+    # Create a context that mimics a modern Android device
+    _CONTEXT = _BROWSER.new_context(
+        viewport={"width": 412, "height": 915},
+        user_agent="Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36",
+        locale="en-GB",
+        timezone_id="Africa/Nairobi",
+        # We'll override the UA on a per-request basis later, but this is the default
+    )
+
+    # Visit the homepage to trigger the Akamai challenge and set cookies
     try:
-        print("[sp] Priming session (homepage GET) …")
-        headers = {
-            **_BASE_HEADERS,
-            "User-Agent": ua.random,
-            "Accept": "text/html,application/xhtml+xml",
-        }
-        SP_SESSION.get(
-            "https://www.ke.sportpesa.com/",
-            headers=headers,
-            timeout=15,
-        )
-        print("[sp] Session primed successfully.")
+        page = _CONTEXT.new_page()
+        print("[sp:pw] Visiting homepage to solve Akamai challenge …")
+        page.goto(_BASE + "/", wait_until="domcontentloaded", timeout=30000)
+        # Wait for network idle so that all JS challenges complete
+        page.wait_for_load_state("networkidle", timeout=30000)
+        print("[sp:pw] Homepage loaded – Akamai challenge should be solved.")
+        # We don’t need the page anymore, close it.
+        page.close()
     except Exception as exc:
-        print(f"[sp] Warning: session prime failed ({exc}) – continuing anyway.")
+        print(f"[sp:pw] Warning during homepage visit: {exc}")
+        # Proceed anyway; maybe the challenge is not required for some calls.
 
 
-_prime_session()   # executed at import time
+def _get_pw_request_context() -> BrowserContext:
+    """Return the Playwright BrowserContext, initialising it if necessary."""
+    with _CONTEXT_LOCK:
+        if _CONTEXT is None:
+            _launch_playwright()
+        return _CONTEXT
+
+
+def _teardown_playwright() -> None:
+    """Close browser and stop playwright."""
+    global _PLAYWRIGHT, _BROWSER, _CONTEXT
+    if _CONTEXT:
+        try:
+            _CONTEXT.close()
+        except:
+            pass
+        _CONTEXT = None
+    if _BROWSER:
+        try:
+            _BROWSER.close()
+        except:
+            pass
+        _BROWSER = None
+    if _PLAYWRIGHT:
+        try:
+            _PLAYWRIGHT.stop()
+        except:
+            pass
+        _PLAYWRIGHT = None
+
+
+# Register a clean shutdown when the Python process exits
+import atexit
+atexit.register(_teardown_playwright)
 
 
 # =============================================================================
-# HTTP
+# HTTP (using Playwright's APIRequest)
 # =============================================================================
+
+# We'll reuse the same default headers, but Playwright manages cookies.
+_BASE_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-GB,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "X-Requested-With": "XMLHttpRequest",
+    "X-App-Timezone": "Africa/Nairobi",
+    "Origin": "https://www.ke.sportpesa.com",
+    "Referer": "https://www.ke.sportpesa.com/",   # will be updated per request
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Connection": "keep-alive",
+    "Sec-CH-UA": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+    "Sec-CH-UA-Mobile": "?1",
+    "Sec-CH-UA-Platform": '"Android"',
+    "Priority": "u=1, i",
+}
+
 
 def _get(
     path: str,
     params: dict | None = None,
     timeout: int = 20,
 ) -> tuple[Any, dict]:
-    """Send GET request with fresh UA, client hints, and proxy rotation."""
-    random_ua = ua.random
+    """
+    Send a GET request using the Playwright APIRequestContext.
+    This inherits all cookies (including Akamai's) from the browser context.
+    Returns (json_data, response_headers_dict).
+    """
+    context = _get_pw_request_context()
 
-    # Build matching client hints
-    if "Chrome" in random_ua:
-        sec_ch_ua = '"Chromium";v="146", "Not;A=Brand";v="24", "Google Chrome";v="146"'
-        platform = '"Android"' if "Android" in random_ua else '"Windows"'
-        mobile = "?1" if "Android" in random_ua else "?0"
-    elif "Safari" in random_ua and "Chrome" not in random_ua:
-        sec_ch_ua = ""
-        platform = '"macOS"' if "Macintosh" in random_ua else '"iOS"'
-        mobile = "?1" if "iPhone" in random_ua or "iPad" in random_ua else "?0"
-    else:
-        sec_ch_ua = ""
-        platform = ""
-        mobile = ""
-
-    headers = {**_BASE_HEADERS, "User-Agent": random_ua}
-    if sec_ch_ua:
-        headers["Sec-CH-UA"] = sec_ch_ua
-    if platform:
-        headers["Sec-CH-UA-Platform"] = platform
-    if mobile:
-        headers["Sec-CH-UA-Mobile"] = mobile
-
+    # Build URL
     url = f"{_BASE}{path}"
 
-    # Proxy rotation – try up to 3 proxies, then direct
-    max_proxy_attempts = 3 if USE_PROXIES else 0
-    for attempt in range(max_proxy_attempts + 1):
-        if attempt < max_proxy_attempts:
-            proxies = _get_random_proxy()
-        else:
-            proxies = None
+    # Use a referer that includes the sport when possible
+    # (We'll pass a custom referer if provided, but default to the base)
+    headers = dict(_BASE_HEADERS)
 
-        try:
-            r = SP_SESSION.get(
-                url,
-                headers=headers,
-                params=params,
-                timeout=timeout,
-                allow_redirects=True,
-                proxies=proxies,
-            )
-            if r.status_code == 304:
-                return None, {}
-            if not r.ok:
-                print(f"[sp] HTTP {r.status_code} → {url}")
-                return None, dict(r.headers)
-            return r.json(), dict(r.headers)
-
-        except (ProxyError, ConnectTimeout, ReqConnectionError) as e:
-            if attempt < max_proxy_attempts:
-                print(f"[sp:proxy] Attempt {attempt+1} failed ({e}) – trying another proxy.")
-                time.sleep(0.5)
-                continue
-            print(f"[sp] request error {url}: {e}")
-            return None, {}
-
-        except requests.exceptions.JSONDecodeError as e:
-            print(f"[sp] JSON decode {url}: {e}")
-            return None, {}
-
-        except Exception as exc:
-            print(f"[sp] request error {url}: {exc}")
-            return None, {}
-
-    return None, {}
-
-
-def _parse_content_range(header: str | None) -> int | None:
-    if not header:
-        return None
+    # Playwright's request expects a slightly different parameter structure.
+    # We'll use the context's `request` attribute.
     try:
-        return int(header.split("/")[-1].strip())
-    except (IndexError, ValueError):
-        return None
+        response = context.request.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
+    except PlaywrightError as e:
+        print(f"[sp:pw] request error {url}: {e}")
+        return None, {}
+
+    if response.status == 304:
+        return None, {}
+    if not response.ok:
+        print(f"[sp:pw] HTTP {response.status} → {url}")
+        return None, response.headers
+
+    try:
+        data = response.json()
+        return data, response.headers
+    except Exception as e:
+        print(f"[sp:pw] JSON decode {url}: {e}")
+        return None, response.headers
 
 
 # =============================================================================
-# RAW API FETCHERS (unchanged logic)
+# RAW API FETCHERS (unchanged logic, now using _get())
 # =============================================================================
 
 def _fetch_upcoming_page(
@@ -409,6 +428,15 @@ def _fetch_markets(
         return result
     print(f"[sp:mkts] all {max_tries} attempts empty for game={gid}")
     return []
+
+
+def _parse_content_range(header: str | None) -> int | None:
+    if not header:
+        return None
+    try:
+        return int(header.split("/")[-1].strip())
+    except (IndexError, ValueError):
+        return None
 
 
 # =============================================================================
@@ -782,30 +810,22 @@ def fetch_live(
 
 
 # =============================================================================
-# ADDITIONAL FUNCTIONS (kept for backward compatibility)
+# COMPATIBILITY WRAPPERS (to keep old imports happy)
 # =============================================================================
 
-def fetch_match_markets(
-    game_id: str | int,
-    market_ids: str = "all",
-    debug: bool = False,
-) -> list[dict]:
-    """Convenience wrapper for _fetch_markets."""
+def fetch_match_markets(game_id: str | int, market_ids: str = "all", debug: bool = False) -> list[dict]:
     return _fetch_markets(game_id, market_ids, debug=debug)
 
 
 def _fetch_markets_for_debug(game_id: str | int, market_ids: str = "all") -> list[dict]:
-    """Debug version – always prints market IDs."""
     return _fetch_markets(game_id, market_ids, debug=True)
 
 
 def _parse_markets_for_debug(raw_list: list[dict], game_id: str = "", sport_id: int = 1):
-    """Debug version of _parse_markets (returns the dict)."""
     return _parse_markets(raw_list, game_id, sport_id)
 
 
 def fetch_sport_ids() -> dict[str, str]:
-    """Return the SP_SPORT_ID mapping."""
     return SP_SPORT_ID
 
 
