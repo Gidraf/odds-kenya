@@ -129,7 +129,7 @@ def _get_client() -> httpx.Client:
     import os
     if _shared_client is None:
         with _client_lock:
-            _PROXY = os.environ.get("_PROXY", "socks5h://[100.68.207.107]")
+            _PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
             if _shared_client is None:
                 _shared_client = httpx.Client(headers=HEADERS, timeout=20.0, limits=_POOL_LIMITS,
                                proxies={"all://": _PROXY})

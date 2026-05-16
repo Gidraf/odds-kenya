@@ -9,6 +9,7 @@ Uses unified OdiBets mappers (odibet_mappers.py) for market canonicalisation.
 """
 
 
+import requests
 import re
 import logging
 from typing import Any, Dict, Optional, Tuple
@@ -32,6 +33,8 @@ log = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 # SPORT SLUG MAP
 # ══════════════════════════════════════════════════════════════════════════════
+
+ # ← ADD THIS
  
 _OD_ID_TO_SLUG: dict[int, dict[str, str]] = {
     # ── Core soccer markets seen in production ────────────────────────────────

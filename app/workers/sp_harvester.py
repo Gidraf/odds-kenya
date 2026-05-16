@@ -22,7 +22,7 @@ from app.workers.tasks_analytics import scrape_sportpesa_match_analytics
 # =============================================================================
 # CONSTANTS & HTTP SESSION
 # =============================================================================
-_PROXY = os.environ.get("_PROXY", "socks5h://[100.68.207.107]")
+_PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
 
 SP_SESSION = requests.Session()
 SP_SESSION.proxies = {"http": _PROXY, "https": _PROXY}

@@ -98,7 +98,7 @@ def _get(url: str, params: dict | None = None, timeout: float = 8.0) -> dict | N
     for attempt in range(3):
         try:
             import os
-            _PROXY = os.environ.get("_PROXY", "socks5h://[100.68.207.107]")
+            _PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
 
             r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout,
               proxies={"all://": _PROXY})
