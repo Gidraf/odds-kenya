@@ -109,7 +109,7 @@ def _sp_stream_slice(sport_slug: str, page: int, page_size: int) -> list[dict]:
 
 @celery.task(
     name="tasks.sp.merge_pages",
-    bind=True, max_retries=5, default_retry_delay=15,
+    bind=True, max_retries=25, default_retry_delay=15,
     soft_time_limit=3600, time_limit=9000, acks_late=True,
 )
 def sp_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
@@ -119,7 +119,7 @@ def sp_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
     done        = pages_done_count("sp", "upcoming", sport_slug)
     min_required = max(1, int(expected_pages * 0.6))
 
-    if done < min_required and attempt < 4:
+    if done < min_required and attempt < 20:
         raise self.retry(
             kwargs={"sport_slug": sport_slug, "expected_pages": expected_pages,
                     "attempt": attempt + 1},
@@ -243,7 +243,7 @@ def bt_harvest_page(self, sport_slug: str, page: int,
 
 @celery.task(
     name="tasks.bt.merge_pages",
-    bind=True, max_retries=5, default_retry_delay=15,
+    bind=True, max_retries=25, default_retry_delay=15,
     soft_time_limit=3600, time_limit=9000, acks_late=True,
 )
 def bt_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
@@ -253,7 +253,7 @@ def bt_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
     done         = pages_done_count("bt", "upcoming", sport_slug)
     min_required = max(1, int(expected_pages * 0.6))
 
-    if done < min_required and attempt < 4:
+    if done < min_required and attempt < 20:
         raise self.retry(
             kwargs={"sport_slug": sport_slug, "expected_pages": expected_pages,
                     "attempt": attempt + 1},
@@ -343,7 +343,7 @@ def od_harvest_date_chunk(self, sport_slug: str, dates: list[str], chunk_idx: in
 
 @celery.task(
     name="tasks.od.merge_pages",
-    bind=True, max_retries=5, default_retry_delay=15,
+    bind=True, max_retries=25, default_retry_delay=15,
     soft_time_limit=3600, time_limit=9000, acks_late=True,
 )
 def od_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
@@ -353,7 +353,7 @@ def od_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
     done         = pages_done_count("od", "upcoming", sport_slug)
     min_required = max(1, int(expected_pages * 0.6))
 
-    if done < min_required and attempt < 4:
+    if done < min_required and attempt < 20:
         raise self.retry(
             kwargs={"sport_slug": sport_slug, "expected_pages": expected_pages,
                     "attempt": attempt + 1},
