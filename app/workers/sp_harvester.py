@@ -3,14 +3,13 @@ app/workers/sp_harvester.py
 ============================
 Sportpesa Kenya harvester – FULL MARKETS for ALL sports (markets=all).
 
-Now using Playwright to bypass Akamai Bot Manager.
-All API requests reuse the same browser context, so once the Akamai
-challenge is solved, cookies (bm_*, ak_bmsc, etc.) are attached automatically.
+Playwright integration with thread‑safe serialisation to bypass Akamai.
 """
 
 from __future__ import annotations
 
 import random
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
@@ -78,27 +77,44 @@ _SPORT_MARKET_IDS: dict[str, str] = {
 _DEFAULT_MARKET_IDS = "all"
 _ESOCCER_IDS = {"126"}
 
-# ── Proxy configuration (optional) ───────────────────────────────────────────
-# If USE_PROXIES is True, the browser will be launched with a random proxy
-# from the free‑proxy‑list (refreshed hourly). Set to False to ignore proxies.
-USE_PROXIES = False   # Change to True if you want proxy rotation
+# ── Proxy configuration (optional, not used by default) ──────────────────────
+USE_PROXIES = False
 PROXY_URL = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt"
 REFRESH_INTERVAL = 3600
 
-# ── Playwright global state ──────────────────────────────────────────────────
-_PLAYWRIGHT = None          # sync_playwright instance
+# ── Playwright global state + thread lock ────────────────────────────────────
+_PLAYWRIGHT = None
 _BROWSER: Browser | None = None
 _CONTEXT: BrowserContext | None = None
-_CONTEXT_LOCK = __import__('threading').Lock()
+_CONTEXT_LOCK = threading.Lock()   # protects context creation
+_PW_LOCK = threading.Lock()        # serialises ALL Playwright API calls
+
+# ── Base headers matching the working curl exactly ───────────────────────────
+_BASE_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "X-Requested-With": "XMLHttpRequest",
+    "X-App-Timezone": "Africa/Nairobi",
+    "Origin": "https://www.ke.sportpesa.com",
+    # Referer will be set per sport dynamically
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Connection": "keep-alive",
+    "Sec-CH-UA": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+    "Sec-CH-UA-Mobile": "?1",
+    "Sec-CH-UA-Platform": '"Android"',
+    "Priority": "u=1, i",
+}
 
 
 # =============================================================================
-# PROXY HELPERS (if enabled)
+# PROXY HELPERS (unchanged)
 # =============================================================================
 
 _proxy_list: list[str] = []
 _proxy_list_timestamp: float = 0.0
-
 
 def _refresh_proxy_list() -> None:
     global _proxy_list, _proxy_list_timestamp
@@ -125,7 +141,6 @@ def _refresh_proxy_list() -> None:
     except Exception as exc:
         print(f"[sp:proxy] Failed to refresh proxy list: {exc} – using cached list.")
 
-
 def _maybe_refresh_proxies() -> None:
     if not USE_PROXIES:
         return
@@ -134,36 +149,23 @@ def _maybe_refresh_proxies() -> None:
             if time.time() - _proxy_list_timestamp > REFRESH_INTERVAL:
                 _refresh_proxy_list()
 
-
 def _get_random_proxy() -> str | None:
-    """Return a proxy string like 'http://1.2.3.4:5678' or None if list empty."""
     _maybe_refresh_proxies()
     if not _proxy_list:
         return None
-    proxy_str = random.choice(_proxy_list)
-    return f"http://{proxy_str}"
+    return f"http://{random.choice(_proxy_list)}"
 
 
 # =============================================================================
-# PLAYWRIGHT LIFECYCLE
+# PLAYWRIGHT LIFECYCLE (thread‑safe)
 # =============================================================================
-
-import threading
-
-# Replace the three globals + lock with thread-local storage
-_tls = threading.local()   # each thread: _tls.playwright, _tls.browser, _tls.context
-
 
 def _launch_playwright() -> None:
-    """
-    Launch a per-thread Playwright Chromium browser + context.
-    Called lazily the first time each worker thread needs a context.
-    """
-    if getattr(_tls, "context", None) is not None:
-        return  # already launched on this thread
-
-    print(f"[sp:pw] Launching Playwright on thread {threading.current_thread().name} …")
-    _tls.playwright = sync_playwright().start()
+    global _PLAYWRIGHT, _BROWSER, _CONTEXT
+    if _CONTEXT is not None:
+        return
+    print("[sp:pw] Launching Playwright Chromium …")
+    _PLAYWRIGHT = sync_playwright().start()
 
     launch_args = {
         "headless": True,
@@ -172,16 +174,13 @@ def _launch_playwright() -> None:
             "--no-sandbox",
         ],
     }
-
     if USE_PROXIES:
         proxy = _get_random_proxy()
         if proxy:
             launch_args["proxy"] = {"server": proxy}
-            print(f"[sp:pw] Using proxy: {proxy}")
 
-    _tls.browser = _tls.playwright.chromium.launch(**launch_args)
-
-    _tls.context = _tls.browser.new_context(
+    _BROWSER = _PLAYWRIGHT.chromium.launch(**launch_args)
+    _CONTEXT = _BROWSER.new_context(
         viewport={"width": 412, "height": 915},
         user_agent="Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36",
         locale="en-GB",
@@ -189,121 +188,101 @@ def _launch_playwright() -> None:
     )
 
     try:
-        page = _tls.context.new_page()
-        print(f"[sp:pw] [{threading.current_thread().name}] Visiting homepage …")
-        page.goto(_BASE + "/", wait_until="domcontentloaded", timeout=30000)
+        page = _CONTEXT.new_page()
+        print("[sp:pw] Visiting homepage to solve Akamai challenge …")
+        page.goto(_BASE + "/", wait_until="domcontentloaded", timeout=60000)
+        # Wait for network idle and extra time for JS challenge to complete
         page.wait_for_load_state("networkidle", timeout=30000)
-        print(f"[sp:pw] [{threading.current_thread().name}] Akamai challenge solved.")
+        # Optionally wait for a known element that appears after the challenge
+        # page.wait_for_selector("selector-of-something", timeout=10000)
+        print("[sp:pw] Homepage loaded – Akamai challenge should be solved.")
         page.close()
     except Exception as exc:
         print(f"[sp:pw] Warning during homepage visit: {exc}")
 
 
 def _get_pw_request_context() -> BrowserContext:
-    """Return this thread's BrowserContext, initialising it if necessary."""
-    if getattr(_tls, "context", None) is None:
-        _launch_playwright()
-    return _tls.context
-
-
-def _teardown_playwright() -> None:
-    """Close the browser for the current thread."""
-    ctx = getattr(_tls, "context", None)
-    if ctx:
-        try:
-            ctx.close()
-        except Exception:
-            pass
-        _tls.context = None
-
-    browser = getattr(_tls, "browser", None)
-    if browser:
-        try:
-            browser.close()
-        except Exception:
-            pass
-        _tls.browser = None
-
-    pw = getattr(_tls, "playwright", None)
-    if pw:
-        try:
-            pw.stop()
-        except Exception:
-            pass
-        _tls.playwright = None
-
-def _get_pw_request_context() -> BrowserContext:
-    """Return the Playwright BrowserContext, initialising it if necessary."""
     with _CONTEXT_LOCK:
         if _CONTEXT is None:
             _launch_playwright()
         return _CONTEXT
 
 
+def _teardown_playwright() -> None:
+    global _PLAYWRIGHT, _BROWSER, _CONTEXT
+    if _CONTEXT:
+        try:
+            _CONTEXT.close()
+        except:
+            pass
+        _CONTEXT = None
+    if _BROWSER:
+        try:
+            _BROWSER.close()
+        except:
+            pass
+        _BROWSER = None
+    if _PLAYWRIGHT:
+        try:
+            _PLAYWRIGHT.stop()
+        except:
+            pass
+        _PLAYWRIGHT = None
 
-# Register a clean shutdown when the Python process exits
 import atexit
 atexit.register(_teardown_playwright)
 
 
 # =============================================================================
-# HTTP (using Playwright's APIRequest)
+# HTTP (serialised, with sport‑specific Referer)
 # =============================================================================
-
-# We'll reuse the same default headers, but Playwright manages cookies.
-_BASE_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-GB,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "X-Requested-With": "XMLHttpRequest",
-    "X-App-Timezone": "Africa/Nairobi",
-    "Origin": "https://www.ke.sportpesa.com",
-    "Referer": "https://www.ke.sportpesa.com/",   # will be updated per request
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Dest": "empty",
-    "Connection": "keep-alive",
-    "Sec-CH-UA": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-    "Sec-CH-UA-Mobile": "?1",
-    "Sec-CH-UA-Platform": '"Android"',
-    "Priority": "u=1, i",
-}
-
 
 def _get(
     path: str,
     params: dict | None = None,
     timeout: int = 20,
+    referer: str | None = None,
 ) -> tuple[Any, dict]:
-    context = _get_pw_request_context()
-    url = f"{_BASE}{path}"
-    headers = dict(_BASE_HEADERS)
+    """
+    Thread‑safe GET request using the Playwright APIRequestContext.
+    All calls are serialised behind a single lock to avoid greenlet errors.
+    """
+    with _PW_LOCK:
+        context = _get_pw_request_context()
+        url = f"{_BASE}{path}"
+        headers = dict(_BASE_HEADERS)
+        if referer:
+            headers["Referer"] = referer
+        else:
+            headers["Referer"] = "https://www.ke.sportpesa.com/"
 
-    try:
-        response = context.request.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=timeout * 1000,  # seconds → milliseconds
-        )
-    except PlaywrightError as e:
-        print(f"[sp:pw] request error {url}: {e}")
-        return None, {}
+        try:
+            response = context.request.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=timeout * 1000,   # milliseconds
+            )
+        except PlaywrightError as e:
+            print(f"[sp:pw] request error {url}: {e}")
+            return None, {}
 
-    if response.status == 304:
-        return None, {}
-    if not response.ok:
-        print(f"[sp:pw] HTTP {response.status} → {url}")
-        return None, response.headers
+        if response.status == 304:
+            return None, {}
+        if not response.ok:
+            print(f"[sp:pw] HTTP {response.status} → {url}")
+            return None, response.headers
 
-    try:
-        data = response.json()
-        return data, response.headers
-    except Exception as e:
-        print(f"[sp:pw] JSON decode {url}: {e}")
-        return None, response.headers
+        try:
+            data = response.json()
+            return data, response.headers
+        except Exception as e:
+            print(f"[sp:pw] JSON decode {url}: {e}")
+            return None, response.headers
+
+
 # =============================================================================
-# RAW API FETCHERS (unchanged logic, now using _get())
+# RAW API FETCHERS (now with sport‑specific referer)
 # =============================================================================
 
 def _fetch_upcoming_page(
@@ -313,6 +292,11 @@ def _fetch_upcoming_page(
     page_size: int,
     offset: int,
 ) -> tuple[list[dict], int | None]:
+    # Build sport‑specific referer like the curl: /en/sports-betting/football-1/upcoming-games/
+    sport_slug = [k for k, v in SP_SPORT_ID.items() if v == sport_id]
+    sport_slug = sport_slug[0] if sport_slug else "football"
+    referer = f"https://www.ke.sportpesa.com/en/sports-betting/{sport_slug}-{sport_id}/upcoming-games/"
+
     raw, headers = _get("/api/upcoming/games", params={
         "type": "prematch",
         "sportId": sport_id,
@@ -321,7 +305,8 @@ def _fetch_upcoming_page(
         "o": "leagues",
         "pag_count": str(page_size),
         "pag_min": str(offset + 1),
-    })
+    }, referer=referer)
+
     total = _parse_content_range(
         headers.get("content-range") or headers.get("Content-Range")
     )
@@ -441,7 +426,6 @@ def _str_field(v: Any) -> str:
         return str(v.get("name") or v.get("title") or v.get("short") or "")
     return str(v) if v else ""
 
-
 def _parse_timestamp(item: dict) -> str | None:
     for key in ("dateTimestamp", "startTimestamp", "timestamp"):
         ts = item.get(key)
@@ -458,7 +442,6 @@ def _parse_timestamp(item: dict) -> str | None:
         if dt:
             return str(dt)
     return None
-
 
 def _parse_match_item(item: dict) -> dict | None:
     sp_game_id = str(item.get("id") or "")
@@ -503,7 +486,6 @@ def _parse_match_item(item: dict) -> dict | None:
         "_inline_mkts": inline,
         "_markets_count": item.get("marketsCount", 0),
     }
-
 
 def _parse_markets(
     raw_list: list[dict],
@@ -561,7 +543,6 @@ def _parse_markets(
     if game_id and not ou_seen and not any("total" in k for k in result):
         print(f"[sp:ou] {game_id}: No Over/Under markets detected")
     return result
-
 
 def _build_match(
     parsed: dict,
@@ -626,7 +607,6 @@ def _collect_raw_items(
         if max_items and len(raw_items) >= max_items:
             break
     return raw_items[:max_items] if max_items else raw_items
-
 
 def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
     slug = sport_slug.lower().replace(" ", "-")
@@ -702,7 +682,6 @@ def fetch_upcoming_stream(
     if inline_count:
         print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} matches used inline fallback")
 
-
 def _is_near_term(start_time_str: str, days: int = 3) -> bool:
     if not start_time_str:
         return False
@@ -719,7 +698,6 @@ def _is_near_term(start_time_str: str, days: int = 3) -> bool:
         return timedelta(0) <= delta <= timedelta(days=days)
     except Exception:
         return False
-
 
 def fetch_live_stream(
     sport_slug: str,
@@ -784,7 +762,6 @@ def fetch_upcoming(
     print(f"[sp] {sport_slug}: {len(results)} normalised")
     return results
 
-
 def fetch_live(
     sport_slug: str,
     fetch_full_markets: bool = True,
@@ -803,20 +780,17 @@ def fetch_live(
 
 
 # =============================================================================
-# COMPATIBILITY WRAPPERS (to keep old imports happy)
+# COMPATIBILITY WRAPPERS
 # =============================================================================
 
 def fetch_match_markets(game_id: str | int, market_ids: str = "all", debug: bool = False) -> list[dict]:
     return _fetch_markets(game_id, market_ids, debug=debug)
 
-
 def _fetch_markets_for_debug(game_id: str | int, market_ids: str = "all") -> list[dict]:
     return _fetch_markets(game_id, market_ids, debug=True)
 
-
 def _parse_markets_for_debug(raw_list: list[dict], game_id: str = "", sport_id: int = 1):
     return _parse_markets(raw_list, game_id, sport_id)
-
 
 def fetch_sport_ids() -> dict[str, str]:
     return SP_SPORT_ID
