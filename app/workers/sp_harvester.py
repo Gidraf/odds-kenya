@@ -1,29 +1,50 @@
 """
-app/workers/sp_harvester.py – Playwright version (dynamic cookies, fixed intercepts)
+app/workers/sp_harvester.py
+============================
 Sportpesa Kenya harvester – FULL MARKETS for ALL sports (markets=all).
-Uses a real Chromium browser to intercept all API calls.
 """
 
 from __future__ import annotations
 
-import time
 import random
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import os
 from app.workers.sp_mapper import normalize_sp_market
 from app.workers.canonical_mapper import normalize_outcome
 from app.workers.tasks_analytics import scrape_sportpesa_match_analytics
 
 # =============================================================================
-# CONSTANTS
+# CONSTANTS & HTTP SESSION
 # =============================================================================
+_PROXY = os.environ.get("_PROXY", "socks5h://[100.68.207.107]")
+
+SP_SESSION = requests.Session()
+SP_SESSION.proxies = {"http": _PROXY, "https": _PROXY}
+_retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+SP_SESSION.mount('https://', HTTPAdapter(max_retries=_retries, pool_connections=10, pool_maxsize=10))
 
 _BASE = "https://www.ke.sportpesa.com"
 
-# Sport slug → SP sport_id
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept":           "application/json, text/plain, */*",
+    "Accept-Language":  "en-GB,en-US;q=0.9,en;q=0.8",
+    "X-Requested-With": "XMLHttpRequest",
+    "X-App-Timezone":   "Africa/Nairobi",
+    "Origin":           "https://www.ke.sportpesa.com",
+    "Referer":          "https://www.ke.sportpesa.com/",
+}
+
+# ── Sport slug → SP sport_id ──────────────────────────────────────────────────
 SP_SPORT_ID: dict[str, str] = {
     "soccer":            "1",
     "football":          "1",
@@ -53,29 +74,198 @@ SP_SPORT_ID: dict[str, str] = {
     "baseball":          "3",
 }
 
-# SP sport_id → URL slug used on the website
-_SPORT_ID_TO_SLUG: dict[str, str] = {
-    "1":   "football",
-    "2":   "basketball",
-    "5":   "tennis",
-    "4":   "ice-hockey",
-    "23":  "volleyball",
-    "6":   "handball",
-    "16":  "table-tennis",
-    "12":  "rugby",
-    "21":  "cricket",
-    "10":  "boxing",
-    "117": "mma",
-    "49":  "darts",
-    "15":  "american-football",
-    "3":   "baseball",
-    "126": "esports",          # eFootball
+# ── Sport ID → market IDs for /api/games/markets ─────────────────────────────
+# Set to "all" for every sport to fetch all available markets.
+_SPORT_MARKET_IDS: dict[str, str] = {
+    "1":   "all",      # Soccer
+    "126": "all",      # eFootball
+    "2":   "all",      # Basketball
+    "5":   "all",      # Tennis
+    "4":   "all",      # Ice Hockey
+    "23":  "all",      # Volleyball
+    "6":   "all",      # Handball
+    "16":  "all",      # Table Tennis
+    "12":  "all",      # Rugby
+    "21":  "all",      # Cricket
+    "10":  "all",      # Boxing
+    "117": "all",      # MMA
+    "49":  "all",      # Darts
+    "15":  "all",      # American Football
+    "3":   "all",      # Baseball
 }
-
+_DEFAULT_MARKET_IDS = "all"
 _ESOCCER_IDS = {"126"}
 
+
 # =============================================================================
-# PARSERS (unchanged from original)
+# HTTP
+# =============================================================================
+
+def _get(
+    path:    str,
+    params:  dict | None = None,
+    timeout: int         = 20,
+) -> tuple[Any, dict]:
+    url = f"{_BASE}{path}"
+    try:
+        r = SP_SESSION.get(url, headers=_HEADERS, params=params,
+                           timeout=timeout, allow_redirects=True)
+        if r.status_code == 304:
+            return None, {}
+        if not r.ok:
+            print(f"[sp] HTTP {r.status_code} → {url}")
+            return None, dict(r.headers)
+        return r.json(), dict(r.headers)
+    except requests.exceptions.JSONDecodeError as e:
+        print(f"[sp] JSON decode {url}: {e}")
+        return None, {}
+    except Exception as exc:
+        print(f"[sp] request error {url}: {exc}")
+        return None, {}
+
+
+def _parse_content_range(header: str | None) -> int | None:
+    if not header:
+        return None
+    try:
+        return int(header.split("/")[-1].strip())
+    except (IndexError, ValueError):
+        return None
+
+
+# =============================================================================
+# RAW SP API FETCHERS
+# =============================================================================
+
+def _fetch_upcoming_page(
+    sport_id:  str,
+    ts_start:  int,
+    ts_end:    int,
+    page_size: int,
+    offset:    int,
+) -> tuple[list[dict], int | None]:
+    raw, headers = _get("/api/upcoming/games", params={
+        "type":           "prematch",
+        "sportId":        sport_id,
+        "section":        "upcoming",
+        "markets_layout": "single",
+        "o":              "leagues",
+        "pag_count":      str(page_size),
+        "pag_min":        str(offset + 1),
+    })
+    total = _parse_content_range(
+        headers.get("content-range") or headers.get("Content-Range")
+    )
+    if isinstance(raw, list):
+        return raw, total
+    if isinstance(raw, dict):
+        for key in ("data", "games", "items", "results"):
+            if isinstance(raw.get(key), list):
+                return raw[key], total
+    return [], total
+
+
+def _fetch_live_list(sport_id: str) -> list[dict]:
+    raw, _ = _get(f"/api/live/sports/{sport_id}/events", params={"limit": 100})
+    if raw:
+        for key in ("events", "data", "items"):
+            if isinstance(raw.get(key), list) and raw[key]:
+                return raw[key]
+        if isinstance(raw, list):
+            return raw
+    raw, _ = _get("/api/live/games", params={"sportId": sport_id})
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("data", "games", "items", "events"):
+            if isinstance(raw.get(key), list):
+                return raw[key]
+    return []
+
+
+def _fetch_live_event_details_markets(event_id: str | int) -> list[dict]:
+    raw, _ = _get(f"/api/live/events/{event_id}/details")
+    if raw and isinstance(raw, dict):
+        return raw.get("markets", [])
+    return []
+
+
+def _extract_market_list(raw: Any, gid: str) -> list[dict]:
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        if gid in raw and isinstance(raw[gid], list):
+            return raw[gid]
+        try:
+            ikey = int(gid)
+            if ikey in raw and isinstance(raw[ikey], list):
+                return raw[ikey]
+        except (ValueError, TypeError):
+            pass
+        for wrapper in ("data", "result"):
+            inner = raw.get(wrapper)
+            if isinstance(inner, dict):
+                if gid in inner and isinstance(inner[gid], list):
+                    return inner[gid]
+                for v in inner.values():
+                    if isinstance(v, list) and v:
+                        return v
+        if isinstance(raw.get("markets"), list):
+            return raw["markets"]
+        for v in raw.values():
+            if isinstance(v, list) and v:
+                return v
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def _fetch_markets(
+    game_id:    str | int,
+    market_ids: str,
+    debug:      bool = False,
+    max_tries:  int  = 2,
+) -> list[dict]:
+    gid = str(game_id)
+    backoff = [0, 1.5]
+
+    for attempt in range(max_tries):
+        if attempt > 0:
+            time.sleep(backoff[min(attempt, len(backoff) - 1)])
+
+        params = {
+            "games": gid,
+        }
+        if market_ids.lower() == "all":
+            params["markets"] = "all"
+        else:
+            params["markets"] = market_ids
+
+        raw, headers = _get("/api/games/markets", params=params)
+
+        rl = headers.get("x-rate-limit-remaining") or headers.get("X-RateLimit-Remaining")
+        if rl == "0":
+            print(f"[sp:mkts] rate-limit=0 game={gid} — sleeping 2s")
+            time.sleep(2.0)
+
+        result = _extract_market_list(raw, gid)
+
+        if not result:
+            print(f"[sp:mkts] empty game={gid} attempt={attempt}")
+            continue
+
+        if debug:
+            mkt_ids = [m.get("id") for m in result]
+            ou_ids = [i for i in mkt_ids if i in (52, 18, 56)]
+            print(f"[sp:mkts] OK game={gid}  {len(result)} mkts  ou_ids={ou_ids}  ids={mkt_ids[:12]}")
+        return result
+
+    print(f"[sp:mkts] all {max_tries} attempts empty for game={gid}")
+    return []
+
+
+# =============================================================================
+# PARSERS
 # =============================================================================
 
 def _str_field(v: Any) -> str:
@@ -104,10 +294,12 @@ def _parse_match_item(item: dict) -> dict | None:
     sp_game_id = str(item.get("id") or "")
     if not sp_game_id:
         return None
+
     betradar_id = str(
         item.get("betradarId") or item.get("betradar_id") or
         item.get("betRadarId") or ""
     )
+
     comps = item.get("competitors") or item.get("teams") or []
     if isinstance(comps, list) and len(comps) >= 2:
         home = _str_field(comps[0].get("name") or comps[0])
@@ -115,10 +307,12 @@ def _parse_match_item(item: dict) -> dict | None:
     else:
         home = _str_field(item.get("home") or item.get("homeName") or "")
         away = _str_field(item.get("away") or item.get("awayName") or "")
+
     comp_raw = item.get("competition") or item.get("league") or {}
     competition = _str_field(comp_raw) or _str_field(
         item.get("leagueName") or item.get("competitionName") or ""
     )
+
     sport_raw = item.get("sport") or {}
     sport_name = _str_field(sport_raw)
     sp_sport_id: int = 1
@@ -129,6 +323,11 @@ def _parse_match_item(item: dict) -> dict | None:
             pass
     elif isinstance(sport_raw, int):
         sp_sport_id = sport_raw
+
+    inline = item.get("markets") or item.get("odds") or []
+    if isinstance(inline, dict):
+        inline = list(inline.values())
+
     return {
         "betradar_id": betradar_id,
         "sp_game_id": sp_game_id,
@@ -138,7 +337,8 @@ def _parse_match_item(item: dict) -> dict | None:
         "competition": competition,
         "sport": sport_name,
         "sp_sport_id": sp_sport_id,
-        "_inline_mkts": item.get("markets") or item.get("odds") or [],
+        "_inline_mkts": inline,
+        "_markets_count": item.get("marketsCount", 0),
     }
 
 def _parse_markets(
@@ -147,6 +347,8 @@ def _parse_markets(
     sport_id: int = 1,
 ) -> dict[str, dict[str, float]]:
     markets: dict[str, dict[str, float]] = {}
+    ou_seen = False
+
     for mkt in raw_list:
         if not isinstance(mkt, dict):
             continue
@@ -157,6 +359,10 @@ def _parse_markets(
             mkt_id = int(mkt_id)
         except (TypeError, ValueError):
             continue
+
+        if mkt_id in (52, 18, 56):
+            ou_seen = True
+
         spec_val = mkt.get("specValue")
         if spec_val is None:
             spec_val = mkt.get("spec") or mkt.get("handicap")
@@ -170,11 +376,14 @@ def _parse_markets(
                     if sv is not None and sv != 0:
                         spec_val = sv
                         break
+
         mkt_key = normalize_sp_market(mkt_id, spec_val, sport_id)
         markets.setdefault(mkt_key, {})
+
         sels = mkt.get("selections") or mkt.get("outcomes") or mkt.get("odds") or []
         if isinstance(sels, dict):
             sels = list(sels.values())
+
         for sel in sels:
             if not isinstance(sel, dict):
                 continue
@@ -191,9 +400,18 @@ def _parse_markets(
             out_key = normalize_outcome(mkt_key, short)
             if price > markets[mkt_key].get(out_key, 0.0):
                 markets[mkt_key][out_key] = round(price, 3)
-    return {k: v for k, v in markets.items() if v}
 
-def _build_match(parsed: dict, markets: dict, sport_slug: str, status: str = "upcoming") -> dict:
+    result = {k: v for k, v in markets.items() if v}
+    if game_id and not ou_seen and not any("total" in k for k in result):
+        print(f"[sp:ou] {game_id}: No Over/Under markets detected")
+    return result
+
+def _build_match(
+    parsed: dict,
+    markets: dict,
+    sport_slug: str,
+    status: str = "upcoming",
+) -> dict:
     return {
         "betradar_id": parsed["betradar_id"],
         "sp_game_id": parsed["sp_game_id"],
@@ -209,6 +427,140 @@ def _build_match(parsed: dict, markets: dict, sport_slug: str, status: str = "up
         "market_count": len(markets),
         "harvested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+
+# =============================================================================
+# RAW ITEM COLLECTOR
+# =============================================================================
+
+def _collect_raw_items(
+    sport_id: str,
+    days: int,
+    page_size: int,
+    max_items: int | None,
+    is_esoccer: bool = False,
+) -> list[dict]:
+    raw_items: list[dict] = []
+    seen_ids: set[str] = set()
+    now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
+
+    for day_off in range(days):
+        day = now_eat + timedelta(days=day_off)
+        ts_s = int(day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        ts_e = ts_s + 86400
+        offset = 0
+
+        while True:
+            items, total_hint = _fetch_upcoming_page(sport_id, ts_s, ts_e, page_size, offset)
+            if not items:
+                break
+            added = 0
+            for it in items:
+                gid = str(it.get("id") or "")
+                if gid and gid not in seen_ids:
+                    seen_ids.add(gid)
+                    raw_items.append(it)
+                    added += 1
+            offset += page_size
+            if added < page_size:
+                break
+            if total_hint and len(seen_ids) >= total_hint:
+                break
+            if max_items and len(raw_items) >= max_items:
+                break
+        if max_items and len(raw_items) >= max_items:
+            break
+    return raw_items[:max_items] if max_items else raw_items
+
+def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
+    slug = sport_slug.lower().replace(" ", "-")
+    sport_id = SP_SPORT_ID.get(slug)
+    if not sport_id:
+        print(f"[sp] unknown sport: {sport_slug!r}")
+        return "", "", False, 7, 1500
+    is_esoccer = sport_id in _ESOCCER_IDS
+    market_ids = _SPORT_MARKET_IDS.get(sport_id, _DEFAULT_MARKET_IDS)
+    market_ids = market_ids.replace("\n", "").replace(" ", "")
+    days_default = 7
+    max_default = 1500
+    return sport_id, market_ids, is_esoccer, days_default, max_default
+
+
+# =============================================================================
+# PUBLIC API — STREAMING GENERATORS (with offset)
+# =============================================================================
+
+def fetch_upcoming_stream(
+    sport_slug:         str,
+    days:               int | None   = None,
+    max_matches:        int | None   = None,
+    offset:             int          = 0,
+    fetch_full_markets: bool         = True,
+    sleep_between:      float        = 0.3,
+    debug_ou:           bool         = False,
+    **_,
+) -> Generator[dict, None, None]:
+    """
+    Yield one normalised match dict at a time as markets are fetched.
+    fetch_full_markets=True (default) is required to see O/U, handicap, etc.
+    offset: skip first N matches (useful for parallel processing)
+    """
+    sport_id, market_ids, is_esoccer, days_default, max_default = _get_config(sport_slug)
+    if not sport_id:
+        return
+
+    days  = days        or days_default
+    max_m = max_matches or max_default
+
+    # Fetch enough raw items to cover offset + max_m
+    fetch_limit = (max_m + offset) if max_m is not None else None
+    raw_items = _collect_raw_items(sport_id, days, 30, fetch_limit, is_esoccer=is_esoccer)
+    print(f"[sp:{sport_slug}] {len(raw_items)} raw items (sportId={sport_id})")
+
+    inline_count = 0
+    skipped = 0
+    yielded = 0
+    for item in raw_items:
+        if skipped < offset:
+            skipped += 1
+            continue
+
+        parsed = _parse_match_item(item)
+        if not parsed:
+            continue
+
+        if fetch_full_markets and parsed["sp_game_id"]:
+            raw_mkts = _fetch_markets(parsed["sp_game_id"], market_ids, debug=debug_ou)
+            if not raw_mkts:
+                raw_mkts = parsed["_inline_mkts"]
+                inline_count += 1
+            time.sleep(sleep_between)
+        else:
+            raw_mkts = parsed["_inline_mkts"]
+
+        markets = _parse_markets(
+            raw_mkts,
+            game_id  = parsed["sp_game_id"] if debug_ou else "",
+            sport_id = parsed.get("sp_sport_id") or int(sport_id),
+        )
+        match_dict = _build_match(parsed, markets, sport_slug)
+        yield match_dict
+
+        yielded += 1
+        if max_m and yielded >= max_m:
+            break
+
+        if _is_near_term(match_dict.get("start_time"), days=3):
+            scrape_sportpesa_match_analytics.apply_async(
+                args=[match_dict["sp_game_id"]],
+                kwargs={"unified_match_id": None},
+                queue="analytics",
+                countdown=random.uniform(5, 30),
+            )
+
+    if inline_count:
+        print(f"[sp:{sport_slug}] WARNING: {inline_count}/{len(raw_items)} "
+              "matches used inline fallback (primary market only)")
 
 def _is_near_term(start_time_str: str, days: int = 3) -> bool:
     if not start_time_str:
@@ -227,294 +579,51 @@ def _is_near_term(start_time_str: str, days: int = 3) -> bool:
     except Exception:
         return False
 
-# =============================================================================
-# PLAYWRIGHT HELPERS
-# =============================================================================
-
-def _new_context(playwright, headless=True):
-    """Creates a Chromium browser context with dynamic cookies."""
-    browser = playwright.chromium.launch(headless=headless)
-    context = browser.new_context(
-        viewport={"width": 1280, "height": 800},
-        user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
-        ),
-        extra_http_headers={
-            "X-App-Timezone": "Africa/Nairobi",
-            "X-Requested-With": "XMLHttpRequest",
-        },
-    )
-    page = context.new_page()
-
-    # Visit the homepage to obtain all necessary cookies (ak_bmsc, bm_sv, etc.)
-    page.goto("https://www.ke.sportpesa.com", wait_until="domcontentloaded", timeout=30000)
-
-    # Set a few harmless cookies to avoid pop-ups and enforce desired settings
-    page.evaluate("""
-        document.cookie = "locale=en; path=/; domain=.ke.sportpesa.com";
-        document.cookie = "device_view=full; path=/; domain=.ke.sportpesa.com";
-        document.cookie = "settings=" + encodeURIComponent(JSON.stringify({
-            betslip: {
-                acceptOdds: true,
-                amount: null,
-                direct: false,
-                betSpinnerSkipAnimation: false,
-                globalBetSpinnerEnabled: true
-            },
-            markets_layout: "multiple",
-            "single-wallet-first-phase": "1"
-        })) + "; path=/; domain=.ke.sportpesa.com";
-    """)
-
-    # Wait for the bot‑protection cookie to appear (up to 15 seconds)
-    try:
-        page.wait_for_function("document.cookie.indexOf('ak_bmsc') > -1", timeout=15000)
-    except PlaywrightTimeout:
-        print("[pw] WARNING: ak_bmsc cookie not set – bot detection may block requests")
-    # Extra settle time
-    page.wait_for_timeout(2000)
-    page.close()
-    return browser, context
-
-import os 
-DEBUG_SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "debug_screenshots")  # adjust as needed
-os.makedirs(DEBUG_SCREENSHOT_DIR, exist_ok=True)
-
-def _save_debug_screenshot(page, name_prefix: str):
-    """Save a full-page screenshot with a timestamp."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"{name_prefix}_{ts}.png"
-    path = os.path.join(DEBUG_SCREENSHOT_DIR, fname)
-    try:
-        page.screenshot(path=path, full_page=True)
-        print(f"[pw] screenshot saved → {path}")
-    except Exception as e:
-        print(f"[pw] failed to save screenshot: {e}")
-
-def _intercept_api(page, url_substring: str, trigger, timeout=30000, debug_screenshot=False):
-    with page.expect_response(
-        lambda resp: url_substring in resp.url and resp.status == 200,
-        timeout=timeout
-    ) as resp_info:
-        trigger()
-    try:
-        resp = resp_info.value
-        return resp.json()
-    except PlaywrightTimeout:
-        if debug_screenshot:
-            _save_debug_screenshot(page, f"timeout_{url_substring.replace('/', '_')}")
-        raise   # re-raise to be handled higher up
-
-def _extract_items(raw: Any) -> list[dict]:
-    """Extract a list of game items from different API response formats."""
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, dict):
-        for key in ("data", "games", "items", "results"):
-            if isinstance(raw.get(key), list):
-                return raw[key]
-    return []
-
-# =============================================================================
-# UPCOMING – collect all game IDs, then fetch markets
-# =============================================================================
-
-def _collect_upcoming_game_ids(
-    page, upcoming_url: str, sport_id: str, max_items: int | None
-) -> list[dict]:
-    """Collect all raw game objects from all pages for a sport."""
-    collected = []
-
-    # Initial page load – intercept the upcoming games API response
-    data = _intercept_api(page, "/api/upcoming/games", lambda: page.goto(
-        upcoming_url, wait_until="domcontentloaded", timeout=30000
-    ))
-    items = _extract_items(data)
-    collected.extend(items)
-
-    # Pagination loop
-    while True:
-        if max_items and len(collected) >= max_items:
-            break
-
-        # Find a clickable "Next" element
-        next_btn = page.query_selector('button.next-button:not([disabled])')
-        if not next_btn:
-            next_li = page.query_selector(
-                'ul.event-list-pagination li[translate="next"]:not(.page-disabled)'
-            )
-            if next_li:
-                next_btn = next_li
-            else:
-                break
-
-        data = _intercept_api(page, "/api/upcoming/games", lambda: next_btn.click())
-        items = _extract_items(data)
-        collected.extend(items)
-
-    return collected[:max_items] if max_items else collected
-
-def _fetch_markets_for_game(page, game_id: str, sport_id: str) -> list[dict]:
-    """Navigate to the game's markets page and intercept the /api/games/markets response."""
-    url = f"{_BASE}/games/{game_id}/markets?sportId={sport_id}&section=upcoming-games&filterDay=-1"
-    data = _intercept_api(page, "/api/games/markets", lambda: page.goto(
-        url, wait_until="domcontentloaded", timeout=30000
-    ))
-    # Extract the market list from the response
-    if isinstance(data, dict):
-        for key in ("data", "result", game_id, int(game_id) if game_id.isdigit() else None):
-            if key and isinstance(data.get(key), list):
-                return data[key]
-        for v in data.values():
-            if isinstance(v, list):
-                return v
-    elif isinstance(data, list):
-        return data
-    return []
-
-# =============================================================================
-# PUBLIC API – UPCOMING STREAM (generator)
-# =============================================================================
-
-def fetch_upcoming_stream(
+def fetch_live_stream(
     sport_slug:         str,
-    days:               int | None   = None,      # ignored for now, kept for compatibility
-    max_matches:        int | None   = None,
-    offset:             int          = 0,
-    fetch_full_markets: bool         = True,
-    sleep_between:      float        = 0.3,
-    debug_ou:           bool         = False,
-    **_
+    fetch_full_markets: bool  = True,
+    sleep_between:      float = 0.3,
+    debug_ou:           bool  = False,
+    **_,
 ) -> Generator[dict, None, None]:
-    """
-    Yield one normalised match dict at a time.
-    fetch_full_markets=True (default) fetches all markets via Playwright.
-    offset: skip first N matches.
-    """
-    slug = sport_slug.lower().replace(" ", "-")
-    sport_id = SP_SPORT_ID.get(slug)
+    sport_id, market_ids, _, _, _ = _get_config(sport_slug)
     if not sport_id:
-        print(f"[sp] unknown sport: {sport_slug!r}")
         return
 
-    sport_url_slug = _SPORT_ID_TO_SLUG.get(sport_id, slug)
-    upcoming_url = f"{_BASE}/en/sports-betting/{sport_url_slug}-{sport_id}/upcoming-games/?filterDay=-1"
+    raw_items = _fetch_live_list(sport_id)
+    print(f"[sp:{sport_slug}:live] {len(raw_items)} live events (sportId={sport_id})")
 
-    with sync_playwright() as pw:
-        browser, context = _new_context(pw, headless=True)
-        try:
-            page = context.new_page()
-            # Step 1: Collect all game items from all pages
-            all_items = _collect_upcoming_game_ids(page, upcoming_url, sport_id, max_matches)
-            page.close()
-        finally:
-            # We'll close the browser after the loop, but we need to keep the context alive
-            # for the markets fetch. We'll reuse the same context by opening new pages.
-            # However, the `with` block will close the browser. We need to restructure.
-            # Instead, we fetch markets inside the same context but in a second phase.
-            # To keep the generator working, we must stay inside the browser context.
-            # So we'll fetch all markets before leaving the `with` block and then yield.
-            # We'll collect all finished match dicts and then yield them.
-            # But the original generator yields one at a time. To preserve that we could
-            # use a list and yield after, but that's simpler and still compatible.
-            pass
+    inline_count = 0
+    for item in raw_items:
+        parsed = _parse_match_item(item)
+        if not parsed:
+            continue
 
-    # Because the generator must stay inside the playwright context, we'll restructure
-    # to a single function that opens the context, collects all matches (with markets),
-    # and then yields them. The caller expects a generator; we can make it a regular
-    # function that returns a list and then wrap it? The original code used generators.
-    # To avoid breaking the API, we'll keep the generator by yielding from inside the
-    # context manager. That means we need to do the markets fetching inside the loop.
+        if fetch_full_markets and parsed["sp_game_id"]:
+            raw_mkts = _fetch_live_event_details_markets(parsed["sp_game_id"])
+            if not raw_mkts:
+                raw_mkts = _fetch_markets(parsed["sp_game_id"], market_ids, debug=debug_ou)
+            if not raw_mkts:
+                raw_mkts = parsed["_inline_mkts"]
+                inline_count += 1
+            time.sleep(sleep_between)
+        else:
+            raw_mkts = parsed["_inline_mkts"]
 
-    # I'll rewrite the function entirely to keep the context open during the whole process.
-    # This means we open one browser context per sport, collect all game IDs, then
-    # for each game open a new page to fetch its markets, yield the match, and finally
-    # close the browser when the generator is exhausted (or on error).
+        markets = _parse_markets(
+            raw_mkts,
+            game_id  = parsed["sp_game_id"] if debug_ou else "",
+            sport_id = parsed.get("sp_sport_id") or int(sport_id),
+        )
+        yield _build_match(parsed, markets, sport_slug, status="live")
 
-    # Here is the corrected version that stays inside the context:
+    if inline_count:
+        print(f"[sp:{sport_slug}:live] {inline_count}/{len(raw_items)} used inline fallback")
 
-def fetch_upcoming_stream(
-    sport_slug:         str,
-    days:               int | None   = None,
-    max_matches:        int | None   = None,
-    offset:             int          = 0,
-    fetch_full_markets: bool         = True,
-    sleep_between:      float        = 0.3,
-    debug_ou:           bool         = False,
-    **_
-) -> Generator[dict, None, None]:
-    slug = sport_slug.lower().replace(" ", "-")
-    sport_id = SP_SPORT_ID.get(slug)
-    if not sport_id:
-        print(f"[sp] unknown sport: {sport_slug!r}")
-        return
 
-    sport_url_slug = _SPORT_ID_TO_SLUG.get(sport_id, slug)
-    upcoming_url = f"{_BASE}/en/sports-betting/{sport_url_slug}-{sport_id}/upcoming-games/?filterDay=-1"
-
-    with sync_playwright() as pw:
-        browser, context = _new_context(pw, headless=True)
-        try:
-            # 1. Collect all game IDs (raw items)
-            listing_page = context.new_page()
-            try:
-                all_items = _collect_upcoming_game_ids(listing_page, upcoming_url, sport_id, max_matches)
-            finally:
-                listing_page.close()
-
-            # Apply offset and limit
-            if offset:
-                all_items = all_items[offset:]
-            if max_matches:
-                all_items = all_items[:max_matches]
-
-            inline_count = 0
-            yielded = 0
-            for item in all_items:
-                parsed = _parse_match_item(item)
-                if not parsed:
-                    continue
-                game_id = parsed["sp_game_id"]
-                raw_mkts = []
-                if fetch_full_markets and game_id:
-                    # Open a new page to fetch markets (avoids interfering with pagination)
-                    market_page = context.new_page()
-                    try:
-                        raw_mkts = _fetch_markets_for_game(market_page, game_id, sport_id)
-                        if not raw_mkts:
-                            raw_mkts = parsed["_inline_mkts"]
-                            inline_count += 1
-                    finally:
-                        market_page.close()
-                    time.sleep(sleep_between)
-                else:
-                    raw_mkts = parsed["_inline_mkts"]
-
-                markets = _parse_markets(
-                    raw_mkts,
-                    game_id=game_id if debug_ou else "",
-                    sport_id=parsed.get("sp_sport_id", int(sport_id)),
-                )
-                match_dict = _build_match(parsed, markets, sport_slug)
-                yield match_dict
-
-                yielded += 1
-                if max_matches and yielded >= max_matches:
-                    break
-
-                # Trigger analytics for near-term matches
-                if _is_near_term(match_dict.get("start_time"), days=3):
-                    scrape_sportpesa_match_analytics.apply_async(
-                        args=[match_dict["sp_game_id"]],
-                        kwargs={"unified_match_id": None},
-                        queue="analytics",
-                        countdown=random.uniform(5, 30),
-                    )
-            if inline_count:
-                print(f"[sp:{sport_slug}] {inline_count} games used inline fallback markets")
-        finally:
-            browser.close()
+# =============================================================================
+# PUBLIC API — BLOCKING (with offset)
+# =============================================================================
 
 def fetch_upcoming(
     sport_slug:         str,
@@ -524,113 +633,46 @@ def fetch_upcoming(
     fetch_full_markets: bool       = True,
     sleep_between:      float      = 0.3,
     debug_ou:           bool       = False,
-    **_
+    **_,
 ) -> list[dict]:
-    return list(fetch_upcoming_stream(
-        sport_slug, days=days, max_matches=max_matches, offset=offset,
-        fetch_full_markets=fetch_full_markets, sleep_between=sleep_between,
-        debug_ou=debug_ou
+    results = list(fetch_upcoming_stream(
+        sport_slug,
+        days               = days,
+        max_matches        = max_matches,
+        offset             = offset,
+        fetch_full_markets = fetch_full_markets,
+        sleep_between      = sleep_between,
+        debug_ou           = debug_ou,
     ))
+    print(f"[sp] {sport_slug}: {len(results)} normalised")
+    return results
 
-# =============================================================================
-# LIVE
-# =============================================================================
-
-def fetch_live_stream(
-    sport_slug:         str,
-    fetch_full_markets: bool  = True,
-    sleep_between:      float = 0.3,
-    debug_ou:           bool  = False,
-    **_
-) -> Generator[dict, None, None]:
-    """
-    Yield live matches with full markets (intercepted via Playwright).
-    """
-    slug = sport_slug.lower().replace(" ", "-")
-    sport_id = SP_SPORT_ID.get(slug)
-    if not sport_id:
-        print(f"[sp] unknown sport: {sport_slug!r}")
-        return
-    live_url = f"{_BASE}/en/live/events?sportId={sport_id}"
-
-    with sync_playwright() as pw:
-        browser, context = _new_context(pw, headless=True)
-        try:
-            page = context.new_page()
-            # Navigate to the live page and intercept the event list API
-            data = _intercept_api(page, f"/api/live/sports/{sport_id}/events", lambda: page.goto(
-                live_url, wait_until="domcontentloaded", timeout=30000
-            ))
-            event_items = _extract_items(data)
-            # Fallback to generic live games endpoint if needed
-            if not event_items:
-                data2 = _intercept_api(page, "/api/live/games", lambda: page.goto(
-                    f"{_BASE}/api/live/games?sportId={sport_id}", wait_until="domcontentloaded", timeout=30000
-                ))
-                event_items = _extract_items(data2)
-
-            inline_count = 0
-            for item in event_items:
-                parsed = _parse_match_item(item)
-                if not parsed:
-                    continue
-                game_id = parsed["sp_game_id"]
-                raw_mkts = []
-                if fetch_full_markets and game_id:
-                    # Use page.evaluate to fetch markets from within the page context
-                    try:
-                        raw_mkts = page.evaluate("""
-                            async (gameId) => {
-                                const resp = await fetch('/api/games/markets?games=' + gameId + '&markets=all');
-                                const json = await resp.json();
-                                // The response may have the game ID as a key
-                                if (json && typeof json === 'object' && !Array.isArray(json)) {
-                                    return json[gameId] || json.markets || [];
-                                }
-                                return json;
-                            }
-                        """, game_id)
-                        if isinstance(raw_mkts, dict):
-                            raw_mkts = raw_mkts.get(game_id) or raw_mkts.get(str(game_id)) or raw_mkts.get("markets") or []
-                    except Exception as e:
-                        print(f"[pw] live markets fetch error {game_id}: {e}")
-                    if not raw_mkts:
-                        raw_mkts = parsed["_inline_mkts"]
-                        inline_count += 1
-                    time.sleep(sleep_between)
-                else:
-                    raw_mkts = parsed["_inline_mkts"]
-
-                markets = _parse_markets(
-                    raw_mkts,
-                    game_id=game_id if debug_ou else "",
-                    sport_id=parsed.get("sp_sport_id", int(sport_id)),
-                )
-                yield _build_match(parsed, markets, sport_slug, status="live")
-
-            if inline_count:
-                print(f"[sp:{sport_slug}:live] {inline_count} events used inline fallback")
-        finally:
-            browser.close()
 
 def fetch_live(
     sport_slug:         str,
     fetch_full_markets: bool  = True,
     sleep_between:      float = 0.3,
     debug_ou:           bool  = False,
-    **_
+    **_,
 ) -> list[dict]:
-    return list(fetch_live_stream(
+    results = list(fetch_live_stream(
         sport_slug,
-        fetch_full_markets=fetch_full_markets,
-        sleep_between=sleep_between,
-        debug_ou=debug_ou
+        fetch_full_markets = fetch_full_markets,
+        sleep_between      = sleep_between,
+        debug_ou           = debug_ou,
     ))
+    print(f"[sp:live] {sport_slug}: {len(results)} live")
+    return results
+
 
 __all__ = [
     "fetch_upcoming_stream",
     "fetch_live_stream",
     "fetch_upcoming",
     "fetch_live",
+    "fetch_match_markets",
+    "_fetch_markets_for_debug",
+    "_parse_markets_for_debug",
+    "fetch_sport_ids",
     "SP_SPORT_ID",
 ]

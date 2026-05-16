@@ -12,25 +12,26 @@ x-celery-common: &celery-common
     SECRET_KEY: ${SECRET_KEY}
     DATABASE_URL: ${DATABASE_URL}
     JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM}
-    JWT_PUBLIC_KEY_PEM:  ${JWT_PUBLIC_KEY_PEM}
+    JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM}
     RESPONSE_SIGNING_SECRET: ${RESPONSE_SIGNING_SECRET}
 
     # Redis — use Docker service name "redis6382" (not host.docker.internal)
     # Password has NO @ prefix → no %40 encoding needed
-    REDIS_URL:        "redis://:${REDIS_PASSWORD}@redis6382:6382/0"
-    REDIS_CACHE_URL:  "redis://:${REDIS_PASSWORD}@redis6382:6382/2"
-    REDIS_HOST:       "redis6382"
-    REDIS_PORT:       "6382"
-    REDIS_PASSWORD:   "${REDIS_PASSWORD}"
-    REDIS_DB:         "0"
+    REDIS_URL: "redis://:${REDIS_PASSWORD}@redis6382:6382/0"
+    REDIS_CACHE_URL: "redis://:${REDIS_PASSWORD}@redis6382:6382/2"
+    REDIS_HOST: "redis6382"
+    REDIS_PORT: "6382"
+    REDIS_PASSWORD: "${REDIS_PASSWORD}"
+    REDIS_DB: "0"
 
-    CELERY_BROKER_URL:     "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic"
+    CELERY_BROKER_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic"
     CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD}@redis6382:6382/1"
 
-    MINIO_ENDPOINT:   ${MINIO_ENDPOINT:-host.docker.internal:6500}
+    MINIO_ENDPOINT: ${MINIO_ENDPOINT:-host.docker.internal:6500}
     MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
     MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-    MINIO_SECURE:     "false"
+    MINIO_SECURE: "false"
+    _PROXY: "socks5://gidraf:Winners1127@100.65.45.69:1080"
 
     ENABLE_HARVESTER: "0"
     TZ: Africa/Nairobi
@@ -48,19 +49,13 @@ services:
     container_name: redis6382
     restart: unless-stopped
     command: >
-      redis-server
-      --port 6382
-      --requirepass ${REDIS_PASSWORD}
-      --save 60 1000
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --notify-keyspace-events "Ex"
+      redis-server --port 6382 --requirepass ${REDIS_PASSWORD} --save 60 1000 --maxmemory 512mb --maxmemory-policy allkeys-lru --notify-keyspace-events "Ex"
     ports:
       - "6382:6382"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6382", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: [ "CMD", "redis-cli", "-p", "6382", "-a", "${REDIS_PASSWORD}", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,13 +68,7 @@ services:
     container_name: odds-kenya-web-1
     build: .
     command: >
-      gunicorn -k gevent -w 1 -b 0.0.0.0:5000
-      --timeout 300
-      --keep-alive 5
-      --worker-connections 1000
-      --log-level info
-      --worker-tmp-dir /tmp
-      run:flask_app
+      gunicorn -k gevent -w 1 -b 0.0.0.0:5000 --timeout 300 --keep-alive 5 --worker-connections 1000 --log-level info --worker-tmp-dir /tmp run:flask_app
     expose:
       - "5000"
     environment:
@@ -88,7 +77,7 @@ services:
     # Healthcheck disabled until /health is registered in Flask
     # Re-enable after copying health_blueprint.py into app/api/health.py
     healthcheck:
-      test: ["CMD-SHELL", "true"]
+      test: [ "CMD-SHELL", "true" ]
       interval: 10s
       timeout: 5s
       retries: 1
@@ -115,13 +104,7 @@ services:
     <<: *celery-common
     container_name: kinetic-flower
     command: >
-      celery -A app.workers.celery_app flower
-      --broker=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic
-      --port=5555
-      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASS:-flower_pass}
-      --url_prefix=flower
-      --persistent=true
-      --db=/tmp/flower.db
+      celery -A app.workers.celery_app flower --broker=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASS:-flower_pass} --url_prefix=flower --persistent=true --db=/tmp/flower.db
     ports:
       - "5555:5555"
 
@@ -130,39 +113,21 @@ services:
     <<: *celery-common
     container_name: odds-kenya-celery-harvest-1
     command: >
-      celery -A app.workers.celery_app worker
-      --queues=harvest,live
-      --concurrency=8
-      --prefetch-multiplier=1
-      --max-tasks-per-child=200
-      --loglevel=info
-      --hostname=harvest@%h
+      celery -A app.workers.celery_app worker --queues=harvest,live --concurrency=8 --prefetch-multiplier=1 --max-tasks-per-child=200 --loglevel=info --hostname=harvest@%h
 
   # ── Celery: Results ────────────────────────────────────────────────────────
   celery-results:
     <<: *celery-common
     container_name: odds-kenya-celery-results-1
     command: >
-      celery -A app.workers.celery_app worker
-      --queues=results,ev_arb,notify
-      --concurrency=6
-      --prefetch-multiplier=2
-      --max-tasks-per-child=500
-      --loglevel=info
-      --hostname=results@%h
+      celery -A app.workers.celery_app worker --queues=results,ev_arb,notify --concurrency=6 --prefetch-multiplier=2 --max-tasks-per-child=500 --loglevel=info --hostname=results@%h
 
   # ── Celery: Analytics ──────────────────────────────────────────────────────
   celery-analytics:
     <<: *celery-common
     container_name: odds-kenya-celery-analytics-1
     command: >
-      celery -A app.workers.celery_app worker
-      --queues=analytics
-      --concurrency=2
-      --prefetch-multiplier=1
-      --max-tasks-per-child=50
-      --loglevel=info
-      --hostname=analytics@%h
+      celery -A app.workers.celery_app worker --queues=analytics --concurrency=2 --prefetch-multiplier=1 --max-tasks-per-child=50 --loglevel=info --hostname=analytics@%h
 
   # ── Celery: Beat ───────────────────────────────────────────────────────────
   celery-beat:
@@ -174,7 +139,7 @@ services:
              --loglevel=info
              --scheduler celery.beat:Scheduler"
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "celery.*beat"]
+      test: [ "CMD", "pgrep", "-f", "celery.*beat" ]
       interval: 30s
       timeout: 10s
       retries: 3
