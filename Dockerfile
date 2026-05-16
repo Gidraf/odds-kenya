@@ -54,10 +54,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 EXPOSE 5000
 
-CMD ["gunicorn", "-k", "gevent", "-w", "1",
-"--graceful-timeout", "30",
-"--timeout", "300",
-"--keep-alive", "5",
-"--worker-connections", "1000",
-"-b", "0.0.0.0:5000",
-"run:flask_app"]
+CMD gunicorn -k gevent -w 1 \
+    --graceful-timeout 30 \
+    --timeout 300 \
+    --keep-alive 5 \
+    --worker-connections 1000 \
+    -b 0.0.0.0:5000 \
+    run:flask_app
