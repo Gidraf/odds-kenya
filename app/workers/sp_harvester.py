@@ -277,17 +277,34 @@ def _new_context(playwright, headless=True):
     page.close()
     return browser, context
 
-def _intercept_api(page, url_substring: str, trigger, timeout=30000) -> Any:
-    """
-    Execute trigger() while waiting for a response whose URL contains url_substring.
-    Returns the parsed JSON body.
-    """
+import os 
+DEBUG_SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "debug_screenshots")  # adjust as needed
+os.makedirs(DEBUG_SCREENSHOT_DIR, exist_ok=True)
+
+def _save_debug_screenshot(page, name_prefix: str):
+    """Save a full-page screenshot with a timestamp."""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"{name_prefix}_{ts}.png"
+    path = os.path.join(DEBUG_SCREENSHOT_DIR, fname)
+    try:
+        page.screenshot(path=path, full_page=True)
+        print(f"[pw] screenshot saved → {path}")
+    except Exception as e:
+        print(f"[pw] failed to save screenshot: {e}")
+
+def _intercept_api(page, url_substring: str, trigger, timeout=30000, debug_screenshot=False):
     with page.expect_response(
         lambda resp: url_substring in resp.url and resp.status == 200,
         timeout=timeout
     ) as resp_info:
         trigger()
-    return resp_info.value.json()
+    try:
+        resp = resp_info.value
+        return resp.json()
+    except PlaywrightTimeout:
+        if debug_screenshot:
+            _save_debug_screenshot(page, f"timeout_{url_substring.replace('/', '_')}")
+        raise   # re-raise to be handled higher up
 
 def _extract_items(raw: Any) -> list[dict]:
     """Extract a list of game items from different API response formats."""
