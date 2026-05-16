@@ -95,20 +95,13 @@ def sp_harvest_page(self, sport_slug: str, page: int,
 def _sp_stream_slice(sport_slug: str, page: int, page_size: int) -> list[dict]:
     from app.workers.sp_harvester import fetch_upcoming_stream
     skip   = (page - 1) * page_size
-    taken  = 0
     result: list[dict] = []
     try:
         for match in fetch_upcoming_stream(
             sport_slug, fetch_full_markets=True,
-            max_matches=skip + page_size, days=OD_DAYS_AHEAD, sleep_between=0.05,
+            max_matches=page_size, offset=skip, days=OD_DAYS_AHEAD, sleep_between=0.05,
         ):
-            if taken < skip:
-                taken += 1
-                continue
             result.append(match)
-            taken += 1
-            if len(result) >= page_size:
-                break
     except Exception as exc:
         logger.warning("[sp:stream_slice] %s p%d: %s", sport_slug, page, exc)
     return result
