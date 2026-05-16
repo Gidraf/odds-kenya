@@ -51,6 +51,35 @@ SP_SESSION.mount('https://', HTTPAdapter(max_retries=_retries, pool_connections=
 
 _BASE = "https://www.ke.sportpesa.com"
 
+SP_SPORT_ID: dict[str, str] = {
+    "soccer":            "1",
+    "football":          "1",
+    "esoccer":           "126",
+    "efootball":         "126",
+    "e-football":        "126",
+    "virtual-football":  "126",
+    "basketball":        "2",
+    "tennis":            "5",
+    "ice-hockey":        "4",
+    "icehockey":         "4",
+    "volleyball":        "23",
+    "cricket":           "21",
+    "rugby":             "12",
+    "rugby-league":      "12",
+    "rugby-union":       "12",
+    "boxing":            "10",
+    "handball":          "6",
+    "table-tennis":      "16",
+    "tabletennis":       "16",
+    "mma":               "117",
+    "ufc":               "117",
+    "darts":             "49",
+    "american-football": "15",
+    "americanfootball":  "15",
+    "nfl":               "15",
+    "baseball":          "3",
+}
+
 # Base headers common to every request – User‑Agent will be added fresh inside _get()
 _BASE_HEADERS = {
     "Accept": "application/json, text/plain, */*",
