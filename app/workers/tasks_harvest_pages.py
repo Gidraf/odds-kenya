@@ -224,15 +224,17 @@ def bt_harvest_page(self, sport_slug: str, page: int,
     )
     t0 = time.perf_counter()
     try:
-        # fetch_upcoming_matches handles pagination internally; slice the page
-        all_matches = fetch_upcoming_matches(
+        from app.workers.bt_harvester import fetch_upcoming_stream
+        offset = (page - 1) * page_size
+        matches = []
+        for match in fetch_upcoming_stream(
             sport_slug=sport_slug,
             days=OD_DAYS_AHEAD,
-            max_pages=page,        # fetch up to this page
-            fetch_full=False,      # full markets done in merge step
-        )
-        offset = (page - 1) * page_size
-        matches = all_matches[offset: offset + page_size]
+            max_matches=page_size,
+            offset=offset,
+            fetch_full_markets=False,
+        ):
+            matches.append(match)
     except Exception as exc:
         raise self.retry(exc=exc, countdown=10)
 

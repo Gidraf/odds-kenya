@@ -365,6 +365,7 @@ def fetch_upcoming_stream(
     sport_slug: str = "soccer",
     days: int = 30,
     max_matches: int | None = None,
+    offset: int = 0,
     max_pages: int = 30,
     fetch_full_markets: bool = True,
     sleep_between: float = 0.3,
@@ -373,10 +374,14 @@ def fetch_upcoming_stream(
     bt_sport_id = slug_to_bt_sport_id(sport_slug)
     period_id = days_to_period_id(days)
     count = 0
-    for page in range(1, max_pages + 1):
+    limit = 50
+    start_page = (offset // limit) + 1
+    items_to_skip_on_first_page = offset % limit
+    
+    for page in range(start_page, start_page + max_pages):
         params = {
             "page": page,
-            "limit": 50,
+            "limit": limit,
             "tab": "upcoming",
             "sub_type_id": _ALL_SUB_TYPE_IDS,
             "sport_id": bt_sport_id,
@@ -390,9 +395,14 @@ def fetch_upcoming_stream(
         raw = data.get("data") or []
         if not raw:
             break
-        for r in raw:
+            
+        for i, r in enumerate(raw):
+            if page == start_page and i < items_to_skip_on_first_page:
+                continue
+                
             if max_matches and count >= max_matches:
                 return
+                
             norm = _normalise_match(r, source="upcoming")
             if not norm:
                 continue
@@ -404,10 +414,11 @@ def fetch_upcoming_stream(
                 time.sleep(sleep_between)
             count += 1
             yield norm
+            
         meta = data.get("meta") or {}
         total = int(meta.get("total") or 0)
-        limit = int(meta.get("limit") or 50)
-        if page * limit >= total:
+        api_limit = int(meta.get("limit") or limit)
+        if page * api_limit >= total:
             break
 
 def fetch_live_stream(sport_slug: str, **kwargs) -> Generator[dict, None, None]:
