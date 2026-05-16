@@ -1,5 +1,5 @@
 """
-app/workers/sp_harvester.py – Playwright version
+app/workers/sp_harvester.py – Playwright version (dynamic cookies, fixed intercepts)
 Sportpesa Kenya harvester – FULL MARKETS for ALL sports (markets=all).
 Uses a real Chromium browser to intercept all API calls.
 """
@@ -23,7 +23,7 @@ from app.workers.tasks_analytics import scrape_sportpesa_match_analytics
 
 _BASE = "https://www.ke.sportpesa.com"
 
-# Sport slug → SP sport_id (kept as before)
+# Sport slug → SP sport_id
 SP_SPORT_ID: dict[str, str] = {
     "soccer":            "1",
     "football":          "1",
@@ -53,7 +53,7 @@ SP_SPORT_ID: dict[str, str] = {
     "baseball":          "3",
 }
 
-# SP sport_id → URL slug used on the SportPesa website
+# SP sport_id → URL slug used on the website
 _SPORT_ID_TO_SLUG: dict[str, str] = {
     "1":   "football",
     "2":   "basketball",
@@ -74,21 +74,8 @@ _SPORT_ID_TO_SLUG: dict[str, str] = {
 
 _ESOCCER_IDS = {"126"}
 
-# Cookies taken from a working session – they prevent annoying pop-ups and bot checks
-_COOKIES = [
-    {"name": "visited", "value": "1", "domain": ".ke.sportpesa.com", "path": "/"},
-    {"name": "settings", "value": "%7B%22betslip%22%3A%7B%22acceptOdds%22%3Atrue%2C%22amount%22%3Anull%2C%22direct%22%3Afalse%2C%22betSpinnerSkipAnimation%22%3Afalse%2C%22globalBetSpinnerEnabled%22%3Atrue%7D%2C%22markets_layout%22%3A%22multiple%22%2C%22single-wallet-first-phase%22%3A%221%22%7D", "domain": ".ke.sportpesa.com", "path": "/"},
-    {"name": "_ga", "value": "GA1.1.1758714192.1765178328", "domain": ".ke.sportpesa.com", "path": "/"},
-    {"name": "spkessid", "value": "25fc9dad193a25829b456512ce145639", "domain": ".ke.sportpesa.com", "path": "/"},
-    {"name": "device_view", "value": "full", "domain": ".ke.sportpesa.com", "path": "/"},
-    {"name": "locale", "value": "en", "domain": ".ke.sportpesa.com", "path": "/"},
-    # You may need to refresh the ak_bmsc and bm_sv cookies occasionally.
-    {"name": "ak_bmsc", "value": "E4E1D76684AC35FFA934A28F80ACEB58~000000000000000000000000000000~YAAQ5mrXFyW63B+eAQAA0auOMB/32AH8j0nc28EKKiXmSagzMJvziitKwGuq/lEEyrpg24LOzZ6z/f2hefNm6aTUpLOZLEbAZup3J/Q81mskWkmxoyEIX1HZ0RHI19Ognww7OfRTgJY7zuZsP8rYCKyJBHFoiWQIKFyHvjuawb7EhBeZbkHJr9rUxSRcrbV6cGLVeIzB6SIIqKACBU6ND4dHUr6SvgpOkum1RKVBEHHDLCH5jZTgcCzC30ALeMhmPh0qXioS9zPJU+WG1dFt20u8vJejB4QMk6uSl199+HfD+tx7sg4JipBWAy7x7dR9dZdXJ9727LqsfjZJOsGnqYPwuCbQNmswskvWiV4BLq+dVWGSlv9h9uRbRkslf4jrX2CmyvDJo5ldjrx9Ehy0ODk=", "domain": ".ke.sportpesa.com", "path": "/"},
-    {"name": "bm_sv", "value": "1F2A08DE525489CF2A57728F46F01B6A~YAAQXqERAr7ubCKeAQAAqlDTMB9q6UpPaXmnX1Zt5rDym35YRsCZiqkEWtqiLpmF6iBpXtr9N7iKR+Zzf+pIuAmnyyku97fSGqCogCX6IzwuyPyZvn3WtPEH60hbc9oMXD6FrZ750BIqaPrA2/I08An8+nWooiyPIsc1u1OfioiTURxYhY4ArRoG7YD8+H8MB/TOkxFS9vNMdMsiaVhXk52Xrm94C6bZAUupXE5Ac8HjVaL5Pdz8KDpMbi9Wabimery4Z9KgEA==~1", "domain": ".ke.sportpesa.com", "path": "/"},
-]
-
 # =============================================================================
-# PARSERS (unchanged from original – kept for reference)
+# PARSERS (unchanged from original)
 # =============================================================================
 
 def _str_field(v: Any) -> str:
@@ -245,6 +232,7 @@ def _is_near_term(start_time_str: str, days: int = 3) -> bool:
 # =============================================================================
 
 def _new_context(playwright, headless=True):
+    """Creates a Chromium browser context with dynamic cookies."""
     browser = playwright.chromium.launch(headless=headless)
     context = browser.new_context(
         viewport={"width": 1280, "height": 800},
@@ -259,9 +247,10 @@ def _new_context(playwright, headless=True):
     )
     page = context.new_page()
 
-    # Set a few harmless cookies before visiting the site to avoid pop-ups.
-    # The rest will be set by the site itself.
+    # Visit the homepage to obtain all necessary cookies (ak_bmsc, bm_sv, etc.)
     page.goto("https://www.ke.sportpesa.com", wait_until="domcontentloaded", timeout=30000)
+
+    # Set a few harmless cookies to avoid pop-ups and enforce desired settings
     page.evaluate("""
         document.cookie = "locale=en; path=/; domain=.ke.sportpesa.com";
         document.cookie = "device_view=full; path=/; domain=.ke.sportpesa.com";
@@ -278,112 +267,102 @@ def _new_context(playwright, headless=True):
         })) + "; path=/; domain=.ke.sportpesa.com";
     """)
 
-    # Wait for the homepage to fully settle (bot detection scripts, etc.).
-    # Adjust the timeout based on your network.
-    page.wait_for_timeout(5000)
-
-    # Now the context is fully “warmed up” — all required cookies are present.
+    # Wait for the bot‑protection cookie to appear (up to 15 seconds)
+    try:
+        page.wait_for_function("document.cookie.indexOf('ak_bmsc') > -1", timeout=15000)
+    except PlaywrightTimeout:
+        print("[pw] WARNING: ak_bmsc cookie not set – bot detection may block requests")
+    # Extra settle time
+    page.wait_for_timeout(2000)
     page.close()
     return browser, context
 
+def _intercept_api(page, url_substring: str, trigger, timeout=30000) -> Any:
+    """
+    Execute trigger() while waiting for a response whose URL contains url_substring.
+    Returns the parsed JSON body.
+    """
+    with page.expect_response(
+        lambda resp: url_substring in resp.url and resp.status == 200,
+        timeout=timeout
+    ) as resp_info:
+        trigger()
+    return resp_info.value.json()
 
-def _wait_for_api_response(page, url_substring: str, timeout: int = 30000):
-    """Wait for a response whose URL contains the given substring and return its JSON body."""
-    try:
-        with page.expect_response(lambda resp: url_substring in resp.url and resp.status == 200, timeout=timeout) as resp_info:
-            pass  # just waiting, the response will be captured
-        response = resp_info.value
-        return response.json()
-    except PlaywrightTimeout:
-        print(f"[pw] timeout waiting for {url_substring}")
-        return None
-    except Exception as e:
-        print(f"[pw] error waiting for {url_substring}: {e}")
-        return None
-
-# =============================================================================
-# UPCOMING – scrape all pages and then fetch markets
-# =============================================================================
-
-def _collect_upcoming_game_ids(page, sport_id: str, max_items: int | None) -> list[dict]:
-    """Collect all raw game objects (from all pages) for a sport."""
-    collected = []
-    # We start with the initial page load; the API call with pag_min=1 is triggered automatically.
-    # We'll intercept that response, then click through pages.
-    current_page = 1
-    while True:
-        # Wait for the upcoming API response that loads this page.
-        # The URL pattern is fixed; the pag_min parameter changes.
-        # We rely on the page loading the first response, then we click "Next".
-        # But we need to capture the data from each response. After page load or click,
-        # a new request is made. We'll use a loop that waits for the next upcoming response.
-        data = _wait_for_api_response(page, "/api/upcoming/games")
-        if not data:
-            break
-        if isinstance(data, dict):
-            for key in ("data", "games", "items", "results"):
-                if isinstance(data.get(key), list):
-                    data = data[key]
-                    break
-        if not isinstance(data, list):
-            break
-        for item in data:
-            if max_items and len(collected) >= max_items:
-                break
-            gid = str(item.get("id") or "")
-            if gid:
-                collected.append(item)
-        if max_items and len(collected) >= max_items:
-            break
-        # Check for next page button
-        next_btn = page.query_selector('button.next-button:not([disabled])')
-        if not next_btn:
-            # Also check the pagination list for "Next" li
-            next_li = page.query_selector('ul.event-list-pagination li[translate="next"]:not(.page-disabled)')
-            if next_li:
-                next_li.click()
-            else:
-                break
-        else:
-            next_btn.click()
-        # Wait a moment for the next request to fire
-        page.wait_for_timeout(1000)
-        current_page += 1
-    return collected
-
-def _fetch_markets_for_game(page, game_id: str, sport_id: str) -> list[dict]:
-    """Navigate to a game's markets page and intercept the markets API response."""
-    url = f"{_BASE}/games/{game_id}/markets?sportId={sport_id}&section=upcoming-games&filterDay=-1"
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    except Exception as e:
-        print(f"[pw] goto markets page for {game_id}: {e}")
-        return []
-    # The markets API call is triggered automatically; wait for it
-    markets_data = _wait_for_api_response(page, "/api/games/markets")
-    if not markets_data:
-        return []
-    # Extract list of markets from the response
-    if isinstance(markets_data, dict):
-        # Try to locate the list inside the dict
-        for key in ("data", "result", game_id, int(game_id) if game_id.isdigit() else None):
-            if key and isinstance(markets_data.get(key), list):
-                return markets_data[key]
-        # fallback: if the dict contains a list somewhere
-        for v in markets_data.values():
-            if isinstance(v, list):
-                return v
-    elif isinstance(markets_data, list):
-        return markets_data
+def _extract_items(raw: Any) -> list[dict]:
+    """Extract a list of game items from different API response formats."""
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("data", "games", "items", "results"):
+            if isinstance(raw.get(key), list):
+                return raw[key]
     return []
 
 # =============================================================================
-# PUBLIC API – UPCOMING STREAM (synchronous generator)
+# UPCOMING – collect all game IDs, then fetch markets
+# =============================================================================
+
+def _collect_upcoming_game_ids(
+    page, upcoming_url: str, sport_id: str, max_items: int | None
+) -> list[dict]:
+    """Collect all raw game objects from all pages for a sport."""
+    collected = []
+
+    # Initial page load – intercept the upcoming games API response
+    data = _intercept_api(page, "/api/upcoming/games", lambda: page.goto(
+        upcoming_url, wait_until="domcontentloaded", timeout=30000
+    ))
+    items = _extract_items(data)
+    collected.extend(items)
+
+    # Pagination loop
+    while True:
+        if max_items and len(collected) >= max_items:
+            break
+
+        # Find a clickable "Next" element
+        next_btn = page.query_selector('button.next-button:not([disabled])')
+        if not next_btn:
+            next_li = page.query_selector(
+                'ul.event-list-pagination li[translate="next"]:not(.page-disabled)'
+            )
+            if next_li:
+                next_btn = next_li
+            else:
+                break
+
+        data = _intercept_api(page, "/api/upcoming/games", lambda: next_btn.click())
+        items = _extract_items(data)
+        collected.extend(items)
+
+    return collected[:max_items] if max_items else collected
+
+def _fetch_markets_for_game(page, game_id: str, sport_id: str) -> list[dict]:
+    """Navigate to the game's markets page and intercept the /api/games/markets response."""
+    url = f"{_BASE}/games/{game_id}/markets?sportId={sport_id}&section=upcoming-games&filterDay=-1"
+    data = _intercept_api(page, "/api/games/markets", lambda: page.goto(
+        url, wait_until="domcontentloaded", timeout=30000
+    ))
+    # Extract the market list from the response
+    if isinstance(data, dict):
+        for key in ("data", "result", game_id, int(game_id) if game_id.isdigit() else None):
+            if key and isinstance(data.get(key), list):
+                return data[key]
+        for v in data.values():
+            if isinstance(v, list):
+                return v
+    elif isinstance(data, list):
+        return data
+    return []
+
+# =============================================================================
+# PUBLIC API – UPCOMING STREAM (generator)
 # =============================================================================
 
 def fetch_upcoming_stream(
     sport_slug:         str,
-    days:               int | None   = None,      # ignored, kept for compatibility
+    days:               int | None   = None,      # ignored for now, kept for compatibility
     max_matches:        int | None   = None,
     offset:             int          = 0,
     fetch_full_markets: bool         = True,
@@ -396,71 +375,129 @@ def fetch_upcoming_stream(
     fetch_full_markets=True (default) fetches all markets via Playwright.
     offset: skip first N matches.
     """
-    # Map slug to sport_id
     slug = sport_slug.lower().replace(" ", "-")
     sport_id = SP_SPORT_ID.get(slug)
     if not sport_id:
         print(f"[sp] unknown sport: {sport_slug!r}")
         return
+
     sport_url_slug = _SPORT_ID_TO_SLUG.get(sport_id, slug)
     upcoming_url = f"{_BASE}/en/sports-betting/{sport_url_slug}-{sport_id}/upcoming-games/?filterDay=-1"
 
     with sync_playwright() as pw:
-        browser, context = _new_context(pw)
-        page = context.new_page()
+        browser, context = _new_context(pw, headless=True)
         try:
-            page.goto(upcoming_url, wait_until="domcontentloaded", timeout=30000)
-            # Collect all game items from all pages
-            all_items = _collect_upcoming_game_ids(page, sport_id, max_matches)
+            page = context.new_page()
+            # Step 1: Collect all game items from all pages
+            all_items = _collect_upcoming_game_ids(page, upcoming_url, sport_id, max_matches)
+            page.close()
+        finally:
+            # We'll close the browser after the loop, but we need to keep the context alive
+            # for the markets fetch. We'll reuse the same context by opening new pages.
+            # However, the `with` block will close the browser. We need to restructure.
+            # Instead, we fetch markets inside the same context but in a second phase.
+            # To keep the generator working, we must stay inside the browser context.
+            # So we'll fetch all markets before leaving the `with` block and then yield.
+            # We'll collect all finished match dicts and then yield them.
+            # But the original generator yields one at a time. To preserve that we could
+            # use a list and yield after, but that's simpler and still compatible.
+            pass
+
+    # Because the generator must stay inside the playwright context, we'll restructure
+    # to a single function that opens the context, collects all matches (with markets),
+    # and then yields them. The caller expects a generator; we can make it a regular
+    # function that returns a list and then wrap it? The original code used generators.
+    # To avoid breaking the API, we'll keep the generator by yielding from inside the
+    # context manager. That means we need to do the markets fetching inside the loop.
+
+    # I'll rewrite the function entirely to keep the context open during the whole process.
+    # This means we open one browser context per sport, collect all game IDs, then
+    # for each game open a new page to fetch its markets, yield the match, and finally
+    # close the browser when the generator is exhausted (or on error).
+
+    # Here is the corrected version that stays inside the context:
+
+def fetch_upcoming_stream(
+    sport_slug:         str,
+    days:               int | None   = None,
+    max_matches:        int | None   = None,
+    offset:             int          = 0,
+    fetch_full_markets: bool         = True,
+    sleep_between:      float        = 0.3,
+    debug_ou:           bool         = False,
+    **_
+) -> Generator[dict, None, None]:
+    slug = sport_slug.lower().replace(" ", "-")
+    sport_id = SP_SPORT_ID.get(slug)
+    if not sport_id:
+        print(f"[sp] unknown sport: {sport_slug!r}")
+        return
+
+    sport_url_slug = _SPORT_ID_TO_SLUG.get(sport_id, slug)
+    upcoming_url = f"{_BASE}/en/sports-betting/{sport_url_slug}-{sport_id}/upcoming-games/?filterDay=-1"
+
+    with sync_playwright() as pw:
+        browser, context = _new_context(pw, headless=True)
+        try:
+            # 1. Collect all game IDs (raw items)
+            listing_page = context.new_page()
+            try:
+                all_items = _collect_upcoming_game_ids(listing_page, upcoming_url, sport_id, max_matches)
+            finally:
+                listing_page.close()
+
+            # Apply offset and limit
+            if offset:
+                all_items = all_items[offset:]
+            if max_matches:
+                all_items = all_items[:max_matches]
+
+            inline_count = 0
+            yielded = 0
+            for item in all_items:
+                parsed = _parse_match_item(item)
+                if not parsed:
+                    continue
+                game_id = parsed["sp_game_id"]
+                raw_mkts = []
+                if fetch_full_markets and game_id:
+                    # Open a new page to fetch markets (avoids interfering with pagination)
+                    market_page = context.new_page()
+                    try:
+                        raw_mkts = _fetch_markets_for_game(market_page, game_id, sport_id)
+                        if not raw_mkts:
+                            raw_mkts = parsed["_inline_mkts"]
+                            inline_count += 1
+                    finally:
+                        market_page.close()
+                    time.sleep(sleep_between)
+                else:
+                    raw_mkts = parsed["_inline_mkts"]
+
+                markets = _parse_markets(
+                    raw_mkts,
+                    game_id=game_id if debug_ou else "",
+                    sport_id=parsed.get("sp_sport_id", int(sport_id)),
+                )
+                match_dict = _build_match(parsed, markets, sport_slug)
+                yield match_dict
+
+                yielded += 1
+                if max_matches and yielded >= max_matches:
+                    break
+
+                # Trigger analytics for near-term matches
+                if _is_near_term(match_dict.get("start_time"), days=3):
+                    scrape_sportpesa_match_analytics.apply_async(
+                        args=[match_dict["sp_game_id"]],
+                        kwargs={"unified_match_id": None},
+                        queue="analytics",
+                        countdown=random.uniform(5, 30),
+                    )
+            if inline_count:
+                print(f"[sp:{sport_slug}] {inline_count} games used inline fallback markets")
         finally:
             browser.close()
-
-    # Apply offset and limit
-    if offset:
-        all_items = all_items[offset:]
-    if max_matches:
-        all_items = all_items[:max_matches]
-
-    inline_count = 0
-    yielded = 0
-    for item in all_items:
-        parsed = _parse_match_item(item)
-        if not parsed:
-            continue
-        game_id = parsed["sp_game_id"]
-        markets = {}
-        if fetch_full_markets and game_id:
-            # Need a fresh browser context for each market fetch to avoid referer issues?
-            # We'll reuse a new browser inside the loop for simplicity.
-            with sync_playwright() as pw:
-                browser2, context2 = _new_context(pw)
-                page2 = context2.new_page()
-                try:
-                    raw_mkts = _fetch_markets_for_game(page2, game_id, sport_id)
-                    if not raw_mkts:
-                        raw_mkts = parsed["_inline_mkts"]
-                        inline_count += 1
-                finally:
-                    browser2.close()
-            time.sleep(sleep_between)
-        else:
-            raw_mkts = parsed["_inline_mkts"]
-        markets = _parse_markets(raw_mkts, game_id if debug_ou else "", int(sport_id))
-        match_dict = _build_match(parsed, markets, sport_slug)
-        yield match_dict
-        yielded += 1
-        if max_matches and yielded >= max_matches:
-            break
-        # Trigger analytics for near-term matches
-        if _is_near_term(match_dict.get("start_time"), days=3):
-            scrape_sportpesa_match_analytics.apply_async(
-                args=[match_dict["sp_game_id"]],
-                kwargs={"unified_match_id": None},
-                queue="analytics",
-                countdown=random.uniform(5, 30),
-            )
-    if inline_count:
-        print(f"[sp:{sport_slug}] {inline_count} games used inline fallback markets")
 
 def fetch_upcoming(
     sport_slug:         str,
@@ -482,49 +519,6 @@ def fetch_upcoming(
 # LIVE
 # =============================================================================
 
-def _collect_live_event_markets(page, sport_id: str, max_matches: int | None) -> list[dict]:
-    """
-    Intercept the live/event/markets API and parse out individual events with their markets.
-    Returns a list of ready-to-yield match dicts (without market normalization yet).
-    """
-    matches = []
-    while True:
-        data = _wait_for_api_response(page, "/api/live/event/markets")
-        if not data:
-            break
-        if isinstance(data, dict):
-            # The live markets response usually has a "markets" key containing a dict keyed by eventId
-            events_markets = data.get("markets") or data.get("data") or data
-            if isinstance(events_markets, dict):
-                for event_id, market_list in events_markets.items():
-                    if not isinstance(market_list, list):
-                        continue
-                    # We need the event metadata; the response sometimes includes event info separately.
-                    # In the provided curl, the request parameters already include event IDs; the response
-                    # contains the markets keyed by eventId, but we lack home/away/start time.
-                    # We must extract event details from the live listing page or from the API response itself.
-                    # The live page also makes a separate call for event details? Let's handle common patterns.
-                    # For simplicity, we'll parse what we have. The response often contains minimal info.
-                    # A better approach: before intercepting markets, we can extract event data from the page's
-                    # initial HTML or from another API call that lists events. We'll keep a placeholder.
-                    # However, the original code used _fetch_live_list() and then parsed items.
-                    # We can still do that: first intercept the live event list, then for each batch we get
-                    # the markets. We'll adapt _fetch_live_list to use Playwright.
-        # Since this function becomes complex, we'll use a different strategy:
-        # We'll first get the list of live events and their details via the page's data,
-        # then use the markets API to attach odds. The live page likely has embedded JSON.
-        # To keep the code compact and functional, I'll implement a two-step:
-        #   1. Navigate to live page, wait for an API call that returns event details (maybe /api/live/events?).
-        #   2. Then wait for the markets call.
-        # This matches the original logic where _fetch_live_list was called first.
-        pass
-    return matches
-
-# Due to complexity, I'll rewrite live fetching using the original pattern:
-# - Fetch the list of live events (navigate to live page, capture /api/live/sports/{sport_id}/events or similar)
-# - For each event, get its markets (the page automatically loads markets for the first batch; we need to handle "Next" clicks that load more events and their markets).
-# I'll provide a simplified but functional version that mimics the original behaviour.
-
 def fetch_live_stream(
     sport_slug:         str,
     fetch_full_markets: bool  = True,
@@ -543,63 +537,64 @@ def fetch_live_stream(
     live_url = f"{_BASE}/en/live/events?sportId={sport_id}"
 
     with sync_playwright() as pw:
-        browser, context = _new_context(pw)
-        page = context.new_page()
-        # Step 1: load the live page and get event list from the API response
-        page.goto(live_url, wait_until="domcontentloaded", timeout=30000)
-        # The page immediately calls something like /api/live/sports/{id}/events
-        events_data = _wait_for_api_response(page, f"/api/live/sports/{sport_id}/events")
-        if not events_data:
-            # try alternate endpoint
-            events_data = _wait_for_api_response(page, "/api/live/games")
-        # Extract event items
-        event_items = []
-        if isinstance(events_data, dict):
-            for key in ("events", "data", "items"):
-                if isinstance(events_data.get(key), list):
-                    event_items = events_data[key]
-                    break
-        elif isinstance(events_data, list):
-            event_items = events_data
+        browser, context = _new_context(pw, headless=True)
+        try:
+            page = context.new_page()
+            # Navigate to the live page and intercept the event list API
+            data = _intercept_api(page, f"/api/live/sports/{sport_id}/events", lambda: page.goto(
+                live_url, wait_until="domcontentloaded", timeout=30000
+            ))
+            event_items = _extract_items(data)
+            # Fallback to generic live games endpoint if needed
+            if not event_items:
+                data2 = _intercept_api(page, "/api/live/games", lambda: page.goto(
+                    f"{_BASE}/api/live/games?sportId={sport_id}", wait_until="domcontentloaded", timeout=30000
+                ))
+                event_items = _extract_items(data2)
 
-        # For each event we need to get its markets. The page also calls the markets API for the first batch.
-        # We can intercept that response and match it to the events.
-        # However, it's easier: we already have the event IDs; we can navigate to each event's page or
-        # directly call the markets API from the page context using fetch().
-        # I'll choose to use page.evaluate() to fetch the markets for the event IDs we have.
-        # The original live code did: for each raw event, call _fetch_live_event_details_markets or _fetch_markets.
-        # We'll do a similar loop.
-        inline_count = 0
-        for item in event_items:
-            parsed = _parse_match_item(item)
-            if not parsed:
-                continue
-            game_id = parsed["sp_game_id"]
-            raw_mkts = []
-            if fetch_full_markets and game_id:
-                # Use page.evaluate to fetch markets from within the page (keeps referer and cookies)
-                try:
-                    raw_mkts = page.evaluate("""
-                        async (gameId) => {
-                            const resp = await fetch('/api/games/markets?games=' + gameId + '&markets=all');
-                            return await resp.json();
-                        }
-                    """, game_id)
-                    # The response might be nested
-                    if isinstance(raw_mkts, dict):
-                        raw_mkts = raw_mkts.get(game_id) or raw_mkts.get(str(game_id)) or raw_mkts.get("markets") or []
-                except Exception as e:
-                    print(f"[pw] live markets fetch error {game_id}: {e}")
-                if not raw_mkts:
+            inline_count = 0
+            for item in event_items:
+                parsed = _parse_match_item(item)
+                if not parsed:
+                    continue
+                game_id = parsed["sp_game_id"]
+                raw_mkts = []
+                if fetch_full_markets and game_id:
+                    # Use page.evaluate to fetch markets from within the page context
+                    try:
+                        raw_mkts = page.evaluate("""
+                            async (gameId) => {
+                                const resp = await fetch('/api/games/markets?games=' + gameId + '&markets=all');
+                                const json = await resp.json();
+                                // The response may have the game ID as a key
+                                if (json && typeof json === 'object' && !Array.isArray(json)) {
+                                    return json[gameId] || json.markets || [];
+                                }
+                                return json;
+                            }
+                        """, game_id)
+                        if isinstance(raw_mkts, dict):
+                            raw_mkts = raw_mkts.get(game_id) or raw_mkts.get(str(game_id)) or raw_mkts.get("markets") or []
+                    except Exception as e:
+                        print(f"[pw] live markets fetch error {game_id}: {e}")
+                    if not raw_mkts:
+                        raw_mkts = parsed["_inline_mkts"]
+                        inline_count += 1
+                    time.sleep(sleep_between)
+                else:
                     raw_mkts = parsed["_inline_mkts"]
-                    inline_count += 1
-                time.sleep(sleep_between)
-            else:
-                raw_mkts = parsed["_inline_mkts"]
-            markets = _parse_markets(raw_mkts, game_id if debug_ou else "", int(sport_id))
-            yield _build_match(parsed, markets, sport_slug, status="live")
-        if inline_count:
-            print(f"[sp:{sport_slug}:live] {inline_count} events used inline fallback")
+
+                markets = _parse_markets(
+                    raw_mkts,
+                    game_id=game_id if debug_ou else "",
+                    sport_id=parsed.get("sp_sport_id", int(sport_id)),
+                )
+                yield _build_match(parsed, markets, sport_slug, status="live")
+
+            if inline_count:
+                print(f"[sp:{sport_slug}:live] {inline_count} events used inline fallback")
+        finally:
+            browser.close()
 
 def fetch_live(
     sport_slug:         str,
@@ -614,10 +609,6 @@ def fetch_live(
         sleep_between=sleep_between,
         debug_ou=debug_ou
     ))
-
-# =============================================================================
-# Additional utilities (kept for compatibility)
-# =============================================================================
 
 __all__ = [
     "fetch_upcoming_stream",
