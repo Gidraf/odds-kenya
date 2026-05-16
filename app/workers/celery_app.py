@@ -68,14 +68,24 @@ def make_celery(flask_app=None):
         },
 
         beat_schedule = {
-            "harvest-all-paged-5min": {
-                "task":     "tasks.ops.beat.harvest_all_paged",
+            "sp-harvest-5min": {
+                "task":     "tasks.sp.harvest_all_upcoming",
                 "schedule": 300,
                 "options":  {"queue": "harvest"},
+            },
+            "bt-od-harvest-5min": {
+                "task":     "tasks.bt_od.harvest_all_paged",
+                "schedule": 300,
+                "options":  {"queue": "harvest", "countdown": 60},
             },
             "b2b-harvest-10min": {
                 "task":     "tasks.b2b.harvest_all_upcoming",
                 "schedule": 600,
+                "options":  {"queue": "harvest"},
+            },
+            "harvest-all-paged-5min": {
+                "task":     "tasks.ops.beat.harvest_all_paged",
+                "schedule": 300,
                 "options":  {"queue": "harvest"},
             },
             "b2b-live-90s": {
@@ -116,7 +126,7 @@ def make_celery(flask_app=None):
 
             def __call__(self, *args, **kwargs):
                 with flask_app.app_context():
-                    return super().__call__(*args, **kwargs)
+                    return self.run(*args, **kwargs)
 
         celery.Task = ContextTask
     else:
@@ -131,7 +141,7 @@ def make_celery(flask_app=None):
                     from app import create_app
                     self.__class__._flask_app = create_app()
                 with self.__class__._flask_app.app_context():
-                    return super().__call__(*args, **kwargs)
+                    return self.run(*args, **kwargs)
         
         celery.Task = LazyContextTask
 
