@@ -268,28 +268,16 @@ def _get(
     params: dict | None = None,
     timeout: int = 20,
 ) -> tuple[Any, dict]:
-    """
-    Send a GET request using the Playwright APIRequestContext.
-    This inherits all cookies (including Akamai's) from the browser context.
-    Returns (json_data, response_headers_dict).
-    """
     context = _get_pw_request_context()
-
-    # Build URL
     url = f"{_BASE}{path}"
-
-    # Use a referer that includes the sport when possible
-    # (We'll pass a custom referer if provided, but default to the base)
     headers = dict(_BASE_HEADERS)
 
-    # Playwright's request expects a slightly different parameter structure.
-    # We'll use the context's `request` attribute.
     try:
         response = context.request.get(
             url,
             params=params,
             headers=headers,
-            timeout=timeout,
+            timeout=timeout * 1000,  # seconds → milliseconds
         )
     except PlaywrightError as e:
         print(f"[sp:pw] request error {url}: {e}")
@@ -307,8 +295,6 @@ def _get(
     except Exception as e:
         print(f"[sp:pw] JSON decode {url}: {e}")
         return None, response.headers
-
-
 # =============================================================================
 # RAW API FETCHERS (unchanged logic, now using _get())
 # =============================================================================
