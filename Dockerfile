@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt \
-    gunicorn gevent playwright
+    gunicorn gevent playwright \
+    'httpx[socks]' 'requests[socks]'
 
 # ============================================================
 # Stage 2: Final
@@ -28,11 +29,13 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PLAYWRIGHT_BROWSERS_PATH=/home/appuser/.cache/ms-playwright
 
+# FIX 1: libasound2 → libasound2t64 (Debian Bookworm)
+# FIX 2: added ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl ffmpeg \
+    libpq5 curl ffmpeg ca-certificates \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-    libgbm1 libasound2 libpango-1.0-0 libcairo2 libxshmfence1 \
+    libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libxshmfence1 \
     libglib2.0-0 libdbus-1-3 libexpat1 libx11-6 libx11-xcb1 \
     libxcb1 libxext6 libxcb-dri3-0 fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
@@ -47,17 +50,18 @@ COPY --chown=appuser:appuser . .
 
 USER appuser
 
-RUN python -m playwright install chromium
+# FIX 3: --with-deps ensures all browser deps are bundled
+RUN python -m playwright install --with-deps chromium
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5000/health || exit 1
 
 EXPOSE 5000
 
-CMD gunicorn -k gevent -w 1 \
-    --graceful-timeout 30 \
-    --timeout 300 \
-    --keep-alive 5 \
-    --worker-connections 1000 \
-    -b 0.0.0.0:5000 \
-    run:flask_app
+CMD ["gunicorn", "-k", "gevent", "-w", "1", \
+    "--graceful-timeout", "30", \
+    "--timeout", "300", \
+    "--keep-alive", "5", \
+    "--worker-connections", "1000", \
+    "-b", "0.0.0.0:5000", \
+    "run:flask_app"]
