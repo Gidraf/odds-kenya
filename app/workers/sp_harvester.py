@@ -148,19 +148,22 @@ def _get_random_proxy() -> str | None:
 # PLAYWRIGHT LIFECYCLE
 # =============================================================================
 
+import threading
+
+# Replace the three globals + lock with thread-local storage
+_tls = threading.local()   # each thread: _tls.playwright, _tls.browser, _tls.context
+
+
 def _launch_playwright() -> None:
     """
-    Launch a persistent Chromium browser and context.
-    The context is used for all API requests – this ensures that Akamai
-    cookies (bm_*, ak_bmsc, etc.) are present after the homepage visit.
+    Launch a per-thread Playwright Chromium browser + context.
+    Called lazily the first time each worker thread needs a context.
     """
-    global _PLAYWRIGHT, _BROWSER, _CONTEXT
+    if getattr(_tls, "context", None) is not None:
+        return  # already launched on this thread
 
-    if _CONTEXT is not None:
-        return   # already launched
-
-    print("[sp:pw] Launching Playwright Chromium …")
-    _PLAYWRIGHT = sync_playwright().start()
+    print(f"[sp:pw] Launching Playwright on thread {threading.current_thread().name} …")
+    _tls.playwright = sync_playwright().start()
 
     launch_args = {
         "headless": True,
@@ -170,38 +173,64 @@ def _launch_playwright() -> None:
         ],
     }
 
-    # If proxies are enabled, pick one and set it
     if USE_PROXIES:
         proxy = _get_random_proxy()
         if proxy:
             launch_args["proxy"] = {"server": proxy}
             print(f"[sp:pw] Using proxy: {proxy}")
 
-    _BROWSER = _PLAYWRIGHT.chromium.launch(**launch_args)
+    _tls.browser = _tls.playwright.chromium.launch(**launch_args)
 
-    # Create a context that mimics a modern Android device
-    _CONTEXT = _BROWSER.new_context(
+    _tls.context = _tls.browser.new_context(
         viewport={"width": 412, "height": 915},
         user_agent="Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36",
         locale="en-GB",
         timezone_id="Africa/Nairobi",
-        # We'll override the UA on a per-request basis later, but this is the default
     )
 
-    # Visit the homepage to trigger the Akamai challenge and set cookies
     try:
-        page = _CONTEXT.new_page()
-        print("[sp:pw] Visiting homepage to solve Akamai challenge …")
+        page = _tls.context.new_page()
+        print(f"[sp:pw] [{threading.current_thread().name}] Visiting homepage …")
         page.goto(_BASE + "/", wait_until="domcontentloaded", timeout=30000)
-        # Wait for network idle so that all JS challenges complete
         page.wait_for_load_state("networkidle", timeout=30000)
-        print("[sp:pw] Homepage loaded – Akamai challenge should be solved.")
-        # We don’t need the page anymore, close it.
+        print(f"[sp:pw] [{threading.current_thread().name}] Akamai challenge solved.")
         page.close()
     except Exception as exc:
         print(f"[sp:pw] Warning during homepage visit: {exc}")
-        # Proceed anyway; maybe the challenge is not required for some calls.
 
+
+def _get_pw_request_context() -> BrowserContext:
+    """Return this thread's BrowserContext, initialising it if necessary."""
+    if getattr(_tls, "context", None) is None:
+        _launch_playwright()
+    return _tls.context
+
+
+def _teardown_playwright() -> None:
+    """Close the browser for the current thread."""
+    ctx = getattr(_tls, "context", None)
+    if ctx:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        _tls.context = None
+
+    browser = getattr(_tls, "browser", None)
+    if browser:
+        try:
+            browser.close()
+        except Exception:
+            pass
+        _tls.browser = None
+
+    pw = getattr(_tls, "playwright", None)
+    if pw:
+        try:
+            pw.stop()
+        except Exception:
+            pass
+        _tls.playwright = None
 
 def _get_pw_request_context() -> BrowserContext:
     """Return the Playwright BrowserContext, initialising it if necessary."""
@@ -210,28 +239,6 @@ def _get_pw_request_context() -> BrowserContext:
             _launch_playwright()
         return _CONTEXT
 
-
-def _teardown_playwright() -> None:
-    """Close browser and stop playwright."""
-    global _PLAYWRIGHT, _BROWSER, _CONTEXT
-    if _CONTEXT:
-        try:
-            _CONTEXT.close()
-        except:
-            pass
-        _CONTEXT = None
-    if _BROWSER:
-        try:
-            _BROWSER.close()
-        except:
-            pass
-        _BROWSER = None
-    if _PLAYWRIGHT:
-        try:
-            _PLAYWRIGHT.stop()
-        except:
-            pass
-        _PLAYWRIGHT = None
 
 
 # Register a clean shutdown when the Python process exits
