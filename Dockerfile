@@ -29,8 +29,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PLAYWRIGHT_BROWSERS_PATH=/home/appuser/.cache/ms-playwright
 
-# FIX 1: libasound2 → libasound2t64 (Debian Bookworm)
-# FIX 2: added ca-certificates
+COPY --from=builder /install /usr/local
+
+# FIX: install ALL deps as root (system packages + playwright browser deps)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl ffmpeg ca-certificates \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
@@ -38,9 +39,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libxshmfence1 \
     libglib2.0-0 libdbus-1-3 libexpat1 libx11-6 libx11-xcb1 \
     libxcb1 libxext6 libxcb-dri3-0 fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /install /usr/local
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m playwright install-deps chromium
 
 WORKDIR /app
 
@@ -48,10 +48,10 @@ RUN mkdir -p /app/logs && chown -R appuser:appuser /app
 
 COPY --chown=appuser:appuser . .
 
+# Switch to appuser AFTER all root installs, then install browser binary only
 USER appuser
 
-# FIX 3: --with-deps ensures all browser deps are bundled
-RUN python -m playwright install --with-deps chromium
+RUN python -m playwright install chromium
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5000/health || exit 1
