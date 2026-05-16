@@ -126,7 +126,7 @@ def make_celery(flask_app=None):
 
             def __call__(self, *args, **kwargs):
                 with flask_app.app_context():
-                    return self.run(*args, **kwargs)
+                    return super().__call__(*args, **kwargs)
 
         celery.Task = ContextTask
     else:
@@ -141,7 +141,7 @@ def make_celery(flask_app=None):
                     from app import create_app
                     self.__class__._flask_app = create_app()
                 with self.__class__._flask_app.app_context():
-                    return self.run(*args, **kwargs)
+                    return super().__call__(*args, **kwargs)
         
         celery.Task = LazyContextTask
 
