@@ -135,7 +135,7 @@ def b2b_harvest_bk_sport(
 
 @celery.task(
     name="tasks.b2b.merge_sport",
-    bind=True, max_retries=25, default_retry_delay=15,
+    bind=True, max_retries=200, default_retry_delay=15,
     soft_time_limit=6000, time_limit=9000, acks_late=True,
 )
 def b2b_merge_sport(
@@ -156,7 +156,7 @@ def b2b_merge_sport(
     done      = int(r.get(done_key) or 0)
     min_req   = max(1, int(len(B2B_BOOKMAKERS) * B2B_BKS_REQUIRED_FRAC))
 
-    if done < min_req and attempt < 20:
+    if done < min_req and attempt < 150:
         logger.info("[b2b:merge] %s waiting (%d/%d BKs), retry %d",
                     sport_slug, done, len(B2B_BOOKMAKERS), attempt + 1)
         raise self.retry(
