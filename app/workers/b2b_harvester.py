@@ -327,8 +327,8 @@ def fetch_bk_sport(bk:dict, sport_slug:str, mode:str="upcoming",
     slug=bk["slug"]
     sport_id=B2B_SPORT_IDS.get(sport_slug.lower())
     sids=[sport_id] if sport_id else None
-    url=(_live_url(bk,count=count,sports_ids=sids) if mode=="live"
-         else _line_url(bk,count=count,sports_ids=sids))
+    url=(_live_url(bk,count=count) if mode=="live"
+         else _line_url(bk,count=count))
     ref=_referer(bk)
     t0=time.perf_counter()
     raw=_curl(url, ref, cookie=_get_cookie(slug))

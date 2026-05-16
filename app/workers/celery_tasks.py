@@ -348,12 +348,3 @@ def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
 
     except Exception as exc:
         _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
-    from app.workers.tasks_ops import compute_ev_arb
-    try:
-        bk_id = _get_or_create_bookmaker(bk_name)
-        for m in matches:
-            mid = _upsert_unified_match(_to_upsert_shape(m), bk_id, bk_name)
-            if mid:
-                compute_ev_arb.apply_async(args=[mid], queue="ev_arb", countdown=1)
-    except Exception as exc:
-        _log.error("[upsert_and_chain] %s: %s", bk_name, exc)

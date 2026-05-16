@@ -129,6 +129,21 @@ def make_celery(flask_app=None):
                     return self.run(*args, **kwargs)
 
         celery.Task = ContextTask
+    else:
+        class LazyContextTask(celery.Task):
+            abstract = True
+            _flask_app = None
+
+            def __call__(self, *args, **kwargs):
+                if self.__class__._flask_app is None:
+                    import os
+                    os.environ["ENABLE_HARVESTER"] = "0"
+                    from app import create_app
+                    self.__class__._flask_app = create_app()
+                with self.__class__._flask_app.app_context():
+                    return self.run(*args, **kwargs)
+        
+        celery.Task = LazyContextTask
 
     return celery
 
