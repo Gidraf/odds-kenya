@@ -13,7 +13,7 @@ import time
 # REST Endpoint (Basic tier)
 # -----------------------------------------------------------------------------
 @bp_upcoming.route("/upcoming/matches", methods=["GET"])
-@tier_required(["basic","pro"])
+@tier_required(["free"])
 def upcoming_matches():
     """
     List upcoming matches (cached). Basic tier can poll this.
@@ -30,7 +30,7 @@ def upcoming_matches():
 # SSE Streaming Endpoint (Pro tier)
 # -----------------------------------------------------------------------------
 @bp_upcoming.route("/upcoming/stream", methods=["GET"])
-@tier_required(["pro","basic"])
+@tier_required(["fre"])
 def upcoming_stream():
     """
     SSE stream of upcoming match batch updates.

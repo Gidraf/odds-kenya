@@ -207,7 +207,7 @@ def _get_user_tier(user) -> str:
         getattr(user, "subscription_tier", None) or
         getattr(user, "tier", None)              or
         getattr(user, "plan", None)              or
-        "basic"
+        "free"
     )
 
 def _tier_rank(user) -> int:
@@ -266,19 +266,46 @@ def _read_key(r, patterns, sport):
                 best = matches
         except: continue
     return best
+
+def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
+    """
+    Drop-in replacement for _get_unified in odds_stream.py.
     
-def _get_unified(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
+    Upcoming: unchanged (pure Redis harvest keys).
+    Live:     harvest keys + window service enrichment (score, phase, delay).
+    """
+    import json, time
+    from app.workers.bandwidth_optimizer import redis_get_decompressed
+ 
     r = _r()
     unified_key = f"odds:unified:{mode}:{sport}"
+ 
     if not force_refresh:
-        raw = r.get(unified_key)
-        if raw:
-            try:
+        # For live, shorter cache (5s) since we want near-real-time
+        ttl = 5 if mode == "live" else _CACHE_TTL
+        try:
+            raw = r.get(unified_key)
+            if raw:
                 data = json.loads(raw)
                 age  = time.time() - float(data.get("updated_at", 0))
-                if age < _CACHE_TTL: return data.get("matches", [])
-            except: pass
-    merged = _merge_bks(r, sport, _BK_KEY_FORMATS_LIVE if mode == "live" else _BK_KEY_FORMATS)
+                if age < ttl:
+                    matches = data.get("matches", [])
+                    # Still enrich live matches even from cache (score changes every ~30s)
+                    if mode == "live":
+                        matches = _enrich_with_window_state(matches, r)
+                    return matches
+        except Exception:
+            pass
+ 
+    bk_formats = _BK_KEY_FORMATS_LIVE if mode == "live" else _BK_KEY_FORMATS
+    merged = _merge_bks(r, sport, bk_formats)
+ 
+    # For live mode: also pull from window service live set
+    # (catches matches that window service knows are live but BK snapshots haven't updated)
+    if mode == "live":
+        merged = _enrich_with_window_state(merged, r)
+        _inject_window_only_live(merged, r, sport)
+ 
     if merged:
         try:
             r.setex(unified_key, 3600, json.dumps({
@@ -286,9 +313,10 @@ def _get_unified(mode: str, sport: str, force_refresh: bool = False) -> list[dic
                 "match_count": len(merged), "updated_at": time.time(),
                 "matches": merged,
             }, default=str))
-        except: pass
+        except Exception:
+            pass
+ 
     return merged
-
 
 def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[dict]:
     result: list[dict] = []
@@ -503,7 +531,127 @@ def _filter_tier(matches: list[dict], tier: str) -> list[dict]:
         out.append(mc)
     return out
 
+def _enrich_with_window_state(matches: list[dict], r) -> list[dict]:
+    """
+    For live matches, overlay real-time state from MatchWindowService.
+    This is a non-blocking read — if window keys don't exist, original data passes through.
+    
+    Adds/updates per match:
+      - score_home, score_away, match_time (from kinetic:match:{jk}:score)
+      - phase, live_since (from kinetic:match:{jk}:state)
+      - has_delay, delay_minutes (from kinetic:match:{jk}:delay)
+      - bk_consensus (from kinetic:match:{jk}:bk_live)
+      - markets delta enrichment (from kinetic:match:{jk}:markets — latest per BK)
+    """
+    if not matches:
+        return matches
+ 
+    pipe = r.pipeline()
+    for m in matches:
+        jk = str(m.get("join_key") or m.get("betradar_id") or "")
+        if not jk:
+            continue
+        pipe.hgetall(f"kinetic:match:{jk}:score")
+        pipe.hgetall(f"kinetic:match:{jk}:state")
+        pipe.hgetall(f"kinetic:match:{jk}:delay")
+        pipe.hgetall(f"kinetic:match:{jk}:bk_live")
+ 
+    try:
+        results = pipe.execute()
+    except Exception:
+        return matches
+ 
+    enriched = []
+    for i, m in enumerate(matches):
+        jk = str(m.get("join_key") or m.get("betradar_id") or "")
+        if not jk:
+            enriched.append(m)
+            continue
+ 
+        base = i * 4
+        score  = results[base]     if base     < len(results) else {}
+        state  = results[base + 1] if base + 1 < len(results) else {}
+        delay  = results[base + 2] if base + 2 < len(results) else {}
+        bk_lv  = results[base + 3] if base + 3 < len(results) else {}
+ 
+        mc = {**m}
+ 
+        if score:
+            if score.get("home") is not None:
+                mc["score_home"] = score["home"]
+            if score.get("away") is not None:
+                mc["score_away"] = score["away"]
+            if score.get("time"):
+                mc["match_time"] = score["time"]
+ 
+        if state.get("phase"):
+            mc["phase"]      = state["phase"]
+            mc["live_since"] = state.get("live_since", "")
+            mc["is_live"]    = state["phase"] == "live"
+ 
+        if delay:
+            mc["has_delay"]      = True
+            mc["delay_minutes"]  = round(float(delay.get("delay_s", 0)) / 60, 1)
+ 
+        if bk_lv:
+            mc["bk_consensus"] = {bk: (v == "1") for bk, v in bk_lv.items()}
+ 
+        enriched.append(mc)
+ 
+    return enriched
 
+
+
+def _inject_window_only_live(existing: list[dict], r, sport: str) -> None:
+    """
+    Check if MatchWindowService has live matches that aren't in BK snapshots yet.
+    Adds them to `existing` in place. This handles the transition gap where
+    the window service declares a match live before the next harvest cycle.
+    """
+    try:
+        live_jks = r.smembers("kinetic:window:live") or set()
+        existing_jks = {
+            str(m.get("join_key") or m.get("betradar_id") or "")
+            for m in existing
+        }
+ 
+        for jk in live_jks:
+            if jk in existing_jks:
+                continue
+            meta  = r.hgetall(f"kinetic:match:{jk}:meta") or {}
+            if meta.get("sport", "") != sport:
+                continue
+            score = r.hgetall(f"kinetic:match:{jk}:score") or {}
+            state = r.hgetall(f"kinetic:match:{jk}:state") or {}
+ 
+            existing.append({
+                "match_id":        jk,
+                "join_key":        jk,
+                "parent_match_id": jk,
+                "betradar_id":     jk,
+                "home_team":       meta.get("home_team", ""),
+                "away_team":       meta.get("away_team", ""),
+                "competition":     meta.get("competition", ""),
+                "sport":           sport,
+                "start_time":      meta.get("start_time", ""),
+                "status":          "live",
+                "is_live":         True,
+                "phase":           "live",
+                "score_home":      score.get("home"),
+                "score_away":      score.get("away"),
+                "match_time":      score.get("time"),
+                "live_since":      state.get("live_since", ""),
+                "has_arb":         False,
+                "best_arb_pct":    0,
+                "arb_opportunities": [],
+                "market_slugs":    [],
+                "bookmakers":      {},
+                "bk_count":        0,
+                "best":            {},
+                "source":          "window_service",
+            })
+    except Exception:
+        pass
 # =============================================================================
 # SSE
 # =============================================================================
@@ -525,7 +673,7 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
         except RuntimeError as exc:
             yield _sse("error", {"error": str(exc), "code": 503}); return
 
-        matches = _filter_tier(_get_unified(mode, sport), tier)
+        matches = _filter_tier(_get_unified_patched(mode, sport), tier)
 
         yield _sse("batch", {
             "matches": [_slim(m) for m in matches],
@@ -563,7 +711,7 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool):
                         elif "ev:"          in ch: yield _sse("ev_update",   payload)
                         elif "live_updates" in ch: yield _sse("live_update", payload)
                         else:
-                            fresh = _filter_tier(_get_unified(mode, sport, force_refresh=True), tier)
+                            fresh = _filter_tier(_get_unified_patched(mode, sport, force_refresh=True), tier)
                             yield _sse("batch", {"matches": fresh, "source": "live",
                                                   "sport": sport, "mode": mode, "count": len(fresh)})
                     except Exception as exc:
@@ -652,23 +800,23 @@ def stream_odds(mode: str, sport: str):
 
 
 @bp_stream.route("/odds/snapshot/<mode>/<sport>", methods=["GET"])
-@require_tier("basic")
+@require_tier("free")
 def snapshot_odds(mode: str, sport: str):
     from app.api import _signed_response
     tier    = getattr(g, "jwt_tier", None) or _get_user_tier(g.user)
-    matches = _filter_tier(_get_unified(mode, sport), tier)
+    matches = _filter_tier(_get_unified_patched(mode, sport), tier)
     return _signed_response({"matches": matches, "sport": sport, "mode": mode, "count": len(matches)})
 
 
 @bp_stream.route("/odds/page/<mode>/<sport>", methods=["GET"])
-@require_tier("basic")
+@require_tier("free")
 def paged_odds(mode: str, sport: str):
     from app.api import _signed_response
-    tier     = getattr(g.user, "tier", "basic") or "basic"
+    tier     = getattr(g.user, "tier", "free") or "free"
     page     = max(1,   request.args.get("page",      1,   type=int))
     per_page = min(200, request.args.get("per_page", 100,  type=int))
     sort_by  = request.args.get("sort", "start_time")
-    all_m    = _filter_tier(_get_unified(mode, sport), tier)
+    all_m    = _filter_tier(_get_unified_patched(mode, sport), tier)
     all_m.sort(key=lambda m: -(m.get("best_arb_pct") or 0) if sort_by == "arb"
                else (m.get("start_time") or ""))
     total = len(all_m); offset = (page - 1) * per_page
@@ -688,7 +836,7 @@ def monitor_competitions():
     from app.api import _signed_response
     sport   = request.args.get("sport", "soccer")
     mode    = request.args.get("mode",  "upcoming")
-    matches = _get_unified(mode, sport)
+    matches = _get_unified_patched(mode, sport)
     comps   = sorted({str(m.get("competition_name") or m.get("competition") or "").strip()
                       for m in matches if (m.get("competition_name") or m.get("competition"))} - {""})
     return _signed_response({"competitions": comps, "sport": sport, "mode": mode})
@@ -744,7 +892,7 @@ def warm_cache():
     from app.api import _signed_response
     t0 = time.time(); results = {}
     for sport in ALL_SPORTS:
-        try:    results[sport] = len(_get_unified("upcoming", sport, force_refresh=True))
+        try:    results[sport] = len(_get_unified_patched("upcoming", sport, force_refresh=True))
         except Exception as e: results[sport] = f"error: {e}"
     return _signed_response({"warmed": results, "elapsed_s": round(time.time() - t0, 2)})
 

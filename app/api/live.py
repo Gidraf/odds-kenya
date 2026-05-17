@@ -294,7 +294,7 @@ def sports_list():
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_live.route("/live/matches", methods=["GET"])
-# @tier_required("basic")  # DISABLED — uncomment when pricing is live
+# @tier_required("free")  # DISABLED — uncomment when pricing is live
 def live_matches_list():
     """
     Paginated live matches.
@@ -331,7 +331,7 @@ def live_matches_list():
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_live.route("/upcoming/matches", methods=["GET"])
-# @tier_required("basic")  # DISABLED — uncomment when pricing is live
+# @tier_required("free")  # DISABLED — uncomment when pricing is live
 def upcoming_matches_list():
     """
     Paginated upcoming matches.

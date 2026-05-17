@@ -431,9 +431,11 @@ def on_worker_ready(sender, **kwargs):
     try:
         from app.workers.od_harvester import init_live_poller
         from app.workers.sp_live_harvester import start_harvester_thread as start_sp_live
+        from app.workers.window_leader import ensure_window_leader
         redis_client = _get_redis()
         init_live_poller(redis_client, interval=2.0)
         start_sp_live()
+        ensure_window_leader()
         log.info("[startup] Live pollers started (OD, SP).")
     except Exception as exc:
         log.warning("[startup] Live poller start failed: %s", exc)

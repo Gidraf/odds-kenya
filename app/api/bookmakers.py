@@ -5,7 +5,7 @@ from app.models.bookmakers_model import Bookmaker
 from app.models.odds import BookmakerMatchOdds
 
 @bp_bookmakers.route("/bookmakers", methods=["GET"])
-@tier_required("basic")
+@tier_required("free")
 def list_bookmakers():
     """List all active bookmakers."""
     from app.workers.celery_tasks import cache_get
@@ -15,7 +15,7 @@ def list_bookmakers():
     })
 
 @bp_bookmakers.route("/bookmakers/<slug>/matches", methods=["GET"])
-@tier_required("basic")
+@tier_required("fre")
 def bookmaker_matches(slug):
     """Get matches with odds from a specific bookmaker."""
     from app.workers.celery_tasks import cache_get

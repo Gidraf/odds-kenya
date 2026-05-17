@@ -681,6 +681,22 @@ class LiveMatchBridge:
         # Notify lifecycle manager
         self._lc.on_live_event(ev)
 
+    def _wire_1_live_bridge_publish(ev):
+        """
+        Add this at the bottom of LiveMatchBridge._publish_unified() in match_lifecycle.py
+        
+        ev is a LiveEvent instance.
+        """
+        try:
+            from app.workers.match_window_service import get_window_service
+            svc = get_window_service()
+            if ev.join_key:
+                # Tell window service this BK sees the match as live
+                svc.on_bk_live_signal(ev.source, ev.join_key, ev.sport)
+        except Exception as exc:
+            log.error("Failed to notify window service: %s", exc)
+            pass 
+
     # ── SP normaliser ──────────────────────────────────────────────────────────
 
     def _handle_sp(self, channel: str, data: dict) -> None:
@@ -962,6 +978,76 @@ class MatchLifecycleManager:
         if changed:
             self._persist(saved)
 
+    def _wire_2_lifecycle_transition(saved, new_state):
+        """
+        Add at end of MatchLifecycleManager._transition() in match_lifecycle.py
+        
+        saved is a SavedMatch, new_state is a MatchState string.
+        """
+        try:
+            from app.workers.match_window_service import get_window_service
+            svc = get_window_service()
+            r   = svc.r
+    
+            if new_state == "live":
+                r.sadd("kinetic:window:live", saved.join_key)
+                r.hmset(f"kinetic:match:{saved.join_key}:state", {
+                    "phase":      "live",
+                    "live_since": saved.updated_at,
+                    "live_reason": "lifecycle_manager",
+                })
+            elif new_state == "finished":
+                r.srem("kinetic:window:live", saved.join_key)
+                r.hmset(f"kinetic:match:{saved.join_key}:state", {
+                    "phase":        "finished",
+                    "finished_at":  saved.updated_at,
+                })
+        except Exception as exc:
+            log.error("Failed to update match state: %s", exc)
+
+    def _wire_3_score_update(saved, ev):
+        """
+        Add inside MatchLifecycleManager.on_live_event() after score update block.
+        
+        saved is SavedMatch, ev is LiveEvent.
+        """
+        try:
+            from app.workers.match_window_service import _redis
+            r = _redis()
+            if ev.score_home is not None:
+                r.hmset(f"kinetic:match:{saved.join_key}:score", {
+                    "home": str(ev.score_home),
+                    "away": str(ev.score_away or ""),
+                    "time": str(ev.match_time or ""),
+                })
+                r.expire(f"kinetic:match:{saved.join_key}:score", 172800)
+        except Exception as exc:
+            log.error("Failed to update match score: %s", exc)
+
+    def _wire_4_start_both(app):
+        """
+        Replace the existing start_lifecycle_manager call in your app factory with this.
+        Add to create_app() after db.init_app(app).
+        """
+        with app.app_context():
+            # Existing lifecycle manager (user watchers + notifications)
+            try:
+                from app.workers.match_lifecycle import start_lifecycle_manager
+                start_lifecycle_manager()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Lifecycle manager start failed: %s", exc)
+    
+            # New window service (3h clock + live trackers)
+            # Only start in web process (not Celery workers — they use task-based DB writes)
+            import os
+            if os.environ.get("ENABLE_WINDOW_SERVICE", "1") == "1":
+                try:
+                    from app.workers.match_window_service import start_window_service
+                    start_window_service()
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Window service start failed: %s", exc)
     # ── Background monitor ────────────────────────────────────────────────────
 
     def start(self) -> None:

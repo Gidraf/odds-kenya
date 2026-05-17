@@ -3,7 +3,6 @@ import threading
 from flask import Flask
 from dotenv import load_dotenv
 from app.extensions import db, init_celery, jwt, socketio, migrate, cors
-# from app.views.onboarding.playwright_onboarding import bp_fetcher, init_fetcher_manager
 
 load_dotenv()
 
@@ -25,7 +24,7 @@ def create_app() -> Flask:
     flask_app.config["SECRET_KEY"]              = os.environ.get("SECRET_KEY")
     flask_app.config["JWT_SECRET_KEY"]          = os.environ.get("JWT_SECRET_KEY")
     flask_app.config["SQLALCHEMY_ECHO"]         = False
-    flask_app.config["broker_url"]       = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/1"))
+    flask_app.config["broker_url"]              = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/1"))
     flask_app.config["CELERY_BROKER_URL"]       = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/1"))
     flask_app.config["CELERY_RESULT_BACKEND"]   = os.environ.get("CELERY_RESULT_URL",  os.environ.get("REDIS_URL", "redis://localhost:6379/2"))
     flask_app.config["OPENAI_API_KEY"]          = os.environ.get("OPENAI_API_KEY")
@@ -67,55 +66,69 @@ def create_app() -> Flask:
     )
 
     from app.workers.celery_app import make_celery
-    make_celery(flask_app)
+    celery = make_celery(flask_app)
 
-    # flask_app.celery = init_celery(flask_app)
+    # ── Register new lifecycle Celery tasks ───────────────────────────────────
+    # BUG FIX 1: register_lifecycle_tasks was never called, so
+    # tasks.ops.update_match_state / save_match_result / flush_live_markets
+    # / notify.lifecycle_event would all fail with "task not found".
+    try:
+        from app.api.live_results_api import register_lifecycle_tasks
+        register_lifecycle_tasks(celery)
+    except Exception as _e:
+        print(f"[init] lifecycle tasks registration skipped: {_e}")
 
     # ── Blueprints ────────────────────────────────────────────────────────────
     from app.views.auth                              import authorization
     from app.views.research                          import bp_research
     from app.views.odds_feed                         import bp_odds as odds_bp
-    # from app.views.onboarding.playwright_onboarding  import bp_fetcher
-    from app.views.bookmarkers                        import bookmarker
-    from app.views.bookmakers_crud                    import bp_search
-    from app.views.mapping                            import bp as mapping_bp
-    from app.views.onboarding                         import bp_onboarding
-    from app.views.vendors                            import bp_vendor
-    from app.views.sbo                                import bp_sbo
-    from app.views.admin                              import admin_bp
-    from app.views.customer_auth                      import bp_customer
-    from app.views.subscriptions                      import bp_customer_subscriptions
-    from app.views.webhook                            import bp_interceptor
-    # from app.views.odds_feed.sportpesa_view           import bp_sp
-    # from app.views.odds_feed.sp_live_view             import bp_sp_live
-    from app.views.odds_feed.odds_view                import bp_odds as bp_unified_odds
-    # from app.views.odds_feed.betika_view              import bp_betika
-    # from app.views.odds_feed.odibets_view             import bp as bp_od
-    from app.views.odds_feed.combined_module import bp_combined 
-    from app.views.odds_feed.odds_data_view import bp_data
-    from app.views.monitor import bp_monitor
-    from app.views.monitor.harvest_control import bp_harvest_ctrl
-    from app.views.customer import bp_odds_customer
-    # from app.views.odds_feed.analytics_view import bp_analytics
-    # from app.views.odds_feed.match_refresh import bp_match_refresh
-    from app.views.odds_feed.live_sse_routes import bp_live_sse
-    from app.views.monitor.analytics_view import bp_analytics_dash
-    from app.views.customer.sportradar_tracker import bp_tracker
-    from app.views.customer.deep_analytics import bp_deep_analytics
-    from app.views.customer.gemini_comentary import bp_commentary
-    from app.views.customer.ai_story import bp_story
-    from app.views.customer.analytic_debug import bp_raw_stream
-    from app.views.customer.bk_streams import bp_bk_streams
-    from app.api import bp_public, bp_matches, bp_live, bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers
-    from app.views.odds.admin import bp_admin as debug_admin
-    from app.api.notifications import bp_notify
-    from app.api.odds_stream import bp_stream, bp_monitor as bp_monitor_new, _register_lifecycle
-    from app.workers.match_lifecycle import bp_lifecycle, start_lifecycle_manager
-    from app.api.live_results_api import bp_results, bp_live as customer_live
+    from app.views.bookmarkers                       import bookmarker
+    from app.views.bookmakers_crud                   import bp_search
+    from app.views.mapping                           import bp as mapping_bp
+    from app.views.onboarding                        import bp_onboarding
+    from app.views.vendors                           import bp_vendor
+    from app.views.sbo                               import bp_sbo
+    from app.views.admin                             import admin_bp
+    from app.views.customer_auth                     import bp_customer
+    from app.views.subscriptions                     import bp_customer_subscriptions
+    from app.views.webhook                           import bp_interceptor
+    from app.views.odds_feed.odds_view               import bp_odds as bp_unified_odds
+    from app.views.odds_feed.combined_module         import bp_combined
+    from app.views.odds_feed.odds_data_view          import bp_data
+    from app.views.monitor                           import bp_monitor
+    from app.views.monitor.harvest_control           import bp_harvest_ctrl
+    from app.views.customer                          import bp_odds_customer
+    from app.views.odds_feed.live_sse_routes         import bp_live_sse
+    from app.views.monitor.analytics_view            import bp_analytics_dash
+    from app.views.customer.sportradar_tracker       import bp_tracker
+    from app.views.customer.deep_analytics           import bp_deep_analytics
+    from app.views.customer.gemini_comentary         import bp_commentary
+    from app.views.customer.ai_story                 import bp_story
+    from app.views.customer.analytic_debug           import bp_raw_stream
+    from app.views.customer.bk_streams               import bp_bk_streams
 
+    # BUG FIX 2: bp_live was imported twice — second import silently overwrote
+    # the first, meaning app.api's bp_live was never registered. Then the
+    # same (live_results_api) bp_live was registered twice causing Flask to
+    # raise "AssertionError: The name 'live_api' is already registered."
+    #
+    # Fix: import live_results_api blueprints under distinct aliases.
+    from app.api import (
+        bp_public, bp_matches,
+        bp_live,            # app.api's existing live blueprint — keep original name
+        bp_analytics, bp_arbitrage, bp_competitions, bp_bookmakers,
+    )
+    from app.api.odds_stream    import bp_stream, bp_monitor as bp_monitor_new, _register_lifecycle
+    from app.api.notifications  import bp_notify
+    from app.views.odds.admin   import bp_admin as debug_admin
+    from app.workers.match_lifecycle import bp_lifecycle
 
-    
-    
+    # New blueprints from live_results_api — aliased to avoid name collision
+    from app.api.live_results_api import (
+        bp_results,
+        bp_live as bp_live_window,   # Blueprint("live_api", url_prefix="/api/live")
+    )
+
     flask_app.register_blueprint(bp_stream)
     flask_app.register_blueprint(bp_monitor_new)
     flask_app.register_blueprint(bp_sbo)
@@ -128,38 +141,53 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_story)
     flask_app.register_blueprint(bp_raw_stream)
     flask_app.register_blueprint(bp_interceptor)
-
-    flask_app.register_blueprint(bp_monitor) 
-    flask_app.register_blueprint(bp_harvest_ctrl)  
-    # flask_app.register_blueprint(bp_analytics)
-    # flask_app.register_blueprint(bp_match_refresh)  
-    flask_app.register_blueprint(bp_live_sse)  
-    flask_app.register_blueprint(bp_analytics_dash) 
-    flask_app.register_blueprint(bp_tracker)   
-    flask_app.register_blueprint(bp_deep_analytics)   
+    flask_app.register_blueprint(bp_monitor)
+    flask_app.register_blueprint(bp_harvest_ctrl)
+    flask_app.register_blueprint(bp_live_sse)
+    flask_app.register_blueprint(bp_analytics_dash)
+    flask_app.register_blueprint(bp_tracker)
+    flask_app.register_blueprint(bp_deep_analytics)
     flask_app.register_blueprint(bp_commentary)
     flask_app.register_blueprint(bp_bk_streams)
     flask_app.register_blueprint(bp_public)
     flask_app.register_blueprint(bp_matches)
-    flask_app.register_blueprint(bp_live)
+    flask_app.register_blueprint(bp_live)          # app.api existing live routes
     flask_app.register_blueprint(bp_analytics)
     flask_app.register_blueprint(bp_arbitrage)
     flask_app.register_blueprint(bp_competitions)
     flask_app.register_blueprint(bp_bookmakers)
     flask_app.register_blueprint(debug_admin)
     flask_app.register_blueprint(bp_notify)
-    flask_app.register_blueprint(bp_results)
-    flask_app.register_blueprint(customer_live)
-    flask_app.register_blueprint(bp_lifecycle)   # /api/matches/* routes
-    _register_lifecycle(flask_app) 
-    start_lifecycle_manager()       
-    # GET /api/od/...
+    flask_app.register_blueprint(bp_results)       # GET /api/results/<sport>
+    flask_app.register_blueprint(bp_live_window)   # GET /api/live/*, SSE /api/live/stream/*
+    flask_app.register_blueprint(bp_lifecycle)     # /api/matches/* watch routes
+
+    # BUG FIX 3: _register_lifecycle already calls start_lifecycle_manager()
+    # internally (inside a with app.app_context() block). Calling it again
+    # immediately after starts TWO MatchLifecycleManager threads, meaning
+    # every state-change fires notifications twice and every DB write happens
+    # twice. Remove the bare start_lifecycle_manager() call.
+    _register_lifecycle(flask_app)
+    # start_lifecycle_manager()  ← REMOVED: already called inside _register_lifecycle
+
+    # ── Window service leader election ────────────────────────────────────────
+    # BUG FIX 4: the previous "only start in web process" approach failed
+    # because gunicorn prefork spawns multiple worker processes, each calling
+    # create_app(). The leader election ensures exactly ONE process runs the
+    # window service regardless of worker count or process type.
+    try:
+        from app.workers.window_leader import ensure_window_leader
+        ensure_window_leader()
+    except Exception as _e:
+        print(f"[init] Window leader skipped: {_e}")
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
         from app.models.bookmakers_model import (
             Bookmaker, BookmakerEndpoint,
-            BookmakerEntityValue, BookmakerPayment, BookmakerEntityMap, BookmakerMatchLink, HarvestJob, Countries, BookmakerCountry, MarketFailure, BkTier, BkStatus, PaymentMethod
+            BookmakerEntityValue, BookmakerPayment, BookmakerEntityMap,
+            BookmakerMatchLink, HarvestJob, Countries, BookmakerCountry,
+            MarketFailure, BkTier, BkStatus, PaymentMethod,
         )
         from app.models.research_model import (
             ResearchSession, ResearchFinding, ResearchEndpoint,
@@ -184,33 +212,26 @@ def create_app() -> Flask:
         from app.models.bank_roll             import BankrollAccount, BankrollTarget
         from app.models.customer              import Customer
         from app.models.email_tokens          import EmailToken
-        from app.models.match               import MatchEvent, MatchEventType, MatchLineup, PlayerPosition, MatchPeriod 
-        from app.models.live_snapshot_model import LiveRawSnapshot
-        from app.models.tracking_model import UserActivityLog
-        from app.models.bookmake_competition_data import BookmakerCompetitionName, BookmakerCountryName, BookmakerTeamName
-        from app.models.match_analytics import MatchAnalytics
-        from app.models.match_ev_arb import MatchEvArb
+        from app.models.match                 import (
+            MatchEvent, MatchEventType, MatchLineup, PlayerPosition, MatchPeriod,
+        )
+        from app.models.live_snapshot_model   import LiveRawSnapshot
+        from app.models.tracking_model        import UserActivityLog
+        from app.models.bookmake_competition_data import (
+            BookmakerCompetitionName, BookmakerCountryName, BookmakerTeamName,
+        )
+        from app.models.match_analytics       import MatchAnalytics
+        from app.models.match_ev_arb          import MatchEvArb
 
     import app.sockets  # noqa: registers /admin namespace handlers
 
-    # ── Background threads ────────────────────────────────────────────────────
-    # These must ONLY run in the web process (gunicorn / flask run).
-    # Celery workers call create_app() too — if we start threads there we get:
-    #   • Multiple WS connections to Sportpesa (one per worker replica)
-    #   • Duplicate Redis pub/sub messages → duplicate odds flashes on the frontend
-    #   • SP may rate-limit or ban the IP
-    #
-    # ENABLE_HARVESTER=1   →  set automatically by docker-compose on the `wss` service
-    # ENABLE_HARVESTER=0   →  default for celery-worker / celery-beat / celery-flower
-    #
-    # In local dev without Docker just run:
-    #   ENABLE_HARVESTER=1 flask run   (or set it in your .env)
+    # ── Background threads (harvester) ────────────────────────────────────────
+    # ENABLE_HARVESTER=1 → set on the `wss` Docker service only.
+    # ENABLE_HARVESTER=0 → default for celery-worker / celery-beat / celery-flower.
     if os.environ.get("ENABLE_HARVESTER", "0") == "1":
         from app.workers.sp_live_harvester import start_harvester_thread
         # start_harvester_thread()
-        # init_fetcher_manager()
 
-        # OdiBets live poller (REST polling, 2 s interval)
         try:
             import redis as _redis_lib
             _rd = _redis_lib.from_url(
@@ -222,24 +243,11 @@ def create_app() -> Flask:
         except Exception as _e:
             print(f"[init] OdiBets live poller skipped: {_e}")
 
-        # Betika live poller (REST polling, 1.5 s interval)
         try:
             from app.workers.bt_harvester import init_live_poller as bt_init
             # bt_init(_rd, interval=1.5)
         except Exception as _e:
             print(f"[init] Betika live poller skipped: {_e}")
-
-    
-
-    # Celery worker + beat — inline threads when NOT running as dedicated
-    # Docker services (controlled by CELERY_INLINE env var).
-    #
-    # In Docker:   CELERY_INLINE=0  (celery-harvest + celery-beat services run separately)
-    # In dev/local: CELERY_INLINE=1  (everything in one python process, no extra terminals)
-    #
-    # Start order: worker first (processes tasks), then beat (schedules them).
-    # if os.environ.get("CELERY_INLINE", "0") == "1":
-    #     _start_inline_celery(flask_app)
 
     return flask_app
 
@@ -249,16 +257,6 @@ def create_app() -> Flask:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _start_inline_celery(flask_app: Flask) -> None:
-    """
-    Start a Celery worker and beat scheduler as daemon threads inside the
-    Flask process.  Identical pattern to start_harvester_thread().
-
-    Useful for local development — no extra terminal needed.
-    NOT recommended for production (use dedicated Docker services instead).
-
-    Worker runs with concurrency=2 so it doesn't saturate the machine.
-    Beat runs the standard schedule from celery_app.beat_schedule.
-    """
     import celery.bin.worker as celery_worker
     import celery.bin.beat   as celery_beat
 
@@ -268,11 +266,11 @@ def _start_inline_celery(flask_app: Flask) -> None:
         print("[celery:inline] Starting worker (concurrency=2, queue=harvest)…")
         try:
             worker = celery_app.Worker(
-                queues       = ["harvest"],
-                concurrency  = 2,
-                loglevel     = "WARNING",
-                logfile      = None,
-                pool         = "threads",   # threads pool — safe inside Flask process
+                queues            = ["harvest"],
+                concurrency       = 2,
+                loglevel          = "WARNING",
+                logfile           = None,
+                pool              = "threads",
                 without_heartbeat = False,
                 without_gossip    = True,
                 without_mingle    = True,
@@ -283,23 +281,18 @@ def _start_inline_celery(flask_app: Flask) -> None:
 
     def _run_beat():
         import time
-        # Give the worker a moment to connect before beat starts sending tasks
         time.sleep(3)
         print("[celery:inline] Starting beat scheduler…")
         try:
             beat = celery_app.Beat(
-                loglevel  = "WARNING",
-                logfile   = None,
-                schedule  = "/tmp/celerybeat-schedule-inline",
+                loglevel = "WARNING",
+                logfile  = None,
+                schedule = "/tmp/celerybeat-schedule-inline",
             )
             beat.run()
         except Exception as exc:
             print(f"[celery:inline] Beat stopped: {exc}")
 
-    worker_thread = threading.Thread(target=_run_worker, name="celery-inline-worker", daemon=True)
-    beat_thread   = threading.Thread(target=_run_beat,   name="celery-inline-beat",   daemon=True)
-
-    worker_thread.start()
-    beat_thread.start()
-
+    threading.Thread(target=_run_worker, name="celery-inline-worker", daemon=True).start()
+    threading.Thread(target=_run_beat,   name="celery-inline-beat",   daemon=True).start()
     print("[celery:inline] Worker and beat threads started.")

@@ -274,7 +274,7 @@ def notification_stream():
         return Response(stream_with_context(_deny()), mimetype="text/event-stream",
                         status=200, headers={"Cache-Control": "no-cache"})
 
-    tier_rank = _TIER_RANK.get(getattr(user, "tier", "basic") or "basic", 1)
+    tier_rank = _TIER_RANK.get(getattr(user, "tier", "free") or "free", 1)
     is_admin  = tier_rank >= _TIER_RANK["admin"]
     is_premium = tier_rank >= _TIER_RANK["premium"]
 
