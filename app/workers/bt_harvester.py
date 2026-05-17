@@ -17,6 +17,9 @@ import httpx
 from app.workers.mappers.betika import get_market_slug
 from app.workers.mappers.shared import normalize_outcome
 
+from app.workers.bandwidth_optimizer import make_httpx_client as _make_client
+_BT_CLIENT = _make_client(max_connections=30, max_keepalive=15)
+
 logger = logging.getLogger(__name__)
 
 # FORCE PRINT TO CONSOLE (stderr) FOR ALL DEBUG STEPS
@@ -93,24 +96,17 @@ HEADERS: dict[str, str] = {
     "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
 }
 
+
 def _get(url: str, params: dict | None = None, timeout: float = 8.0) -> dict | None:
     _debug(f"REQUEST: GET {url} params={params}")
     for attempt in range(3):
         try:
-            import os
-            _PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
-
-            r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout,
-              proxies={"all://": _PROXY})
-            _debug(f"RESPONSE: status={r.status_code}, content-length={len(r.content)}")
+            r = _BT_CLIENT.get(url, params=params, headers=HEADERS, timeout=timeout)
+            _debug(f"RESPONSE: status={r.status_code}")
             if not r.is_success:
-                _debug(f"HTTP {r.status_code} -> {url}")
                 if r.status_code >= 500:
                     return None
                 continue
-            # Log first 500 chars of response
-            resp_text = r.text[:500] + ("..." if len(r.text) > 500 else "")
-            _debug(f"RESPONSE BODY (first 500): {resp_text}")
             return r.json()
         except httpx.RequestError as exc:
             _debug(f"Request error: {exc}")

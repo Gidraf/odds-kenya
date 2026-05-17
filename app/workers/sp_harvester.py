@@ -18,16 +18,19 @@ import os
 from app.workers.sp_mapper import normalize_sp_market
 from app.workers.canonical_mapper import normalize_outcome
 from app.workers.tasks_analytics import scrape_sportpesa_match_analytics
+from app.workers.bandwidth_optimizer import (
+    compressed_session, sp_get_with_etag,
+    should_fetch_full_markets, slim_match,
+)
 
 # =============================================================================
 # CONSTANTS & HTTP SESSION
 # =============================================================================
 _PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
 
-SP_SESSION = requests.Session()
+SP_SESSION = compressed_session()
 SP_SESSION.proxies = {"http": _PROXY, "https": _PROXY}
-_retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-SP_SESSION.mount('https://', HTTPAdapter(max_retries=_retries, pool_connections=10, pool_maxsize=10))
+
 
 _BASE = "https://www.ke.sportpesa.com"
 
@@ -101,28 +104,11 @@ _ESOCCER_IDS = {"126"}
 # HTTP
 # =============================================================================
 
-def _get(
-    path:    str,
-    params:  dict | None = None,
-    timeout: int         = 20,
-) -> tuple[Any, dict]:
+def _get(path, params=None, timeout=20):
     url = f"{_BASE}{path}"
-    try:
-        r = SP_SESSION.get(url, headers=_HEADERS, params=params,
-                           timeout=timeout, allow_redirects=True)
-        if r.status_code == 304:
-            return None, {}
-        if not r.ok:
-            print(f"[sp] HTTP {r.status_code} → {url}")
-            return None, dict(r.headers)
-        return r.json(), dict(r.headers)
-    except requests.exceptions.JSONDecodeError as e:
-        print(f"[sp] JSON decode {url}: {e}")
-        return None, {}
-    except Exception as exc:
-        print(f"[sp] request error {url}: {exc}")
-        return None, {}
-
+    # sp_get_with_etag handles 304, ETag caching and compression stats
+    body, headers = sp_get_with_etag(SP_SESSION, url, _HEADERS, params, timeout)
+    return body, headers
 
 def _parse_content_range(header: str | None) -> int | None:
     if not header:
@@ -529,14 +515,18 @@ def fetch_upcoming_stream(
         if not parsed:
             continue
 
-        if fetch_full_markets and parsed["sp_game_id"]:
+        near_term = should_fetch_full_markets(parsed.get("start_time"))
+        if fetch_full_markets and parsed["sp_game_id"] and near_term:
             raw_mkts = _fetch_markets(parsed["sp_game_id"], market_ids, debug=debug_ou)
             if not raw_mkts:
                 raw_mkts = parsed["_inline_mkts"]
                 inline_count += 1
             time.sleep(sleep_between)
         else:
+            # Distant match: use free inline odds, skip the extra API call
             raw_mkts = parsed["_inline_mkts"]
+            if fetch_full_markets and not near_term:
+                inline_count += 1   # counts as fallback for reporting
 
         markets = _parse_markets(
             raw_mkts,

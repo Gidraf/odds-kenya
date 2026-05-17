@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-
+from app.workers.bandwidth_optimizer import redis_set_compressed, slim_match_list
 from celery.utils.log import get_task_logger
 
 from app.workers.celery_tasks import celery, cache_set, _now_iso, _publish

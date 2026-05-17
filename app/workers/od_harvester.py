@@ -515,15 +515,25 @@ HEADERS: dict[str, str] = {
 }
 
 _POOL_LIMITS = httpx.Limits(max_connections=150, max_keepalive_connections=60, keepalive_expiry=30.0)
+
+from app.workers.bandwidth_optimizer import make_httpx_client as _make_od_client
+ 
 _shared_client: httpx.Client | None = None
 _client_lock = threading.Lock()
-
+ 
 def _get_client() -> httpx.Client:
     global _shared_client
     if _shared_client is None:
         with _client_lock:
             if _shared_client is None:
-                _shared_client = httpx.Client(headers=HEADERS, timeout=20.0, limits=_POOL_LIMITS)
+                # HTTP/2 + brotli compression, same proxy, tuned pool
+                _shared_client = _make_od_client(
+                    max_connections=60,
+                    max_keepalive=30,
+                    keepalive_expiry=30.0,
+                )
+                # Merge in OD-specific headers (auth, referer etc.)
+                _shared_client.headers.update(HEADERS)
     return _shared_client
 
 _REQUEST_SEMAPHORE = threading.Semaphore(60)

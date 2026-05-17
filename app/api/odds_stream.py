@@ -251,20 +251,22 @@ def _r():
 # DATA LAYER
 # =============================================================================
 
-def _read_key(r, patterns: list[str], sport: str) -> list[dict] | None:
-    best: list[dict] | None = None
+def _read_key(r, patterns, sport):
+    from app.workers.bandwidth_optimizer import redis_get_decompressed
+    best = None
     for pat in patterns:
+        key = pat.format(sport=sport)
         try:
-            raw = r.get(pat.format(sport=sport))
-            if not raw: continue
-            data    = json.loads(raw)
+            # Tries gz:key first, falls back to plain key
+            data = redis_get_decompressed(r, key)
+            if not data:
+                continue
             matches = data.get("matches", []) if isinstance(data, dict) else data
             if matches and (best is None or len(matches) > len(best)):
                 best = matches
         except: continue
     return best
-
-
+    
 def _get_unified(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
     r = _r()
     unified_key = f"odds:unified:{mode}:{sport}"
