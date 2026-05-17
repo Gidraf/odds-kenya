@@ -659,72 +659,94 @@ def _inject_window_only_live(existing: list[dict], r, sport: str) -> None:
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
-
-def _make_generator(mode: str, sport: str, user, live_tier: bool):
-    # Read tier from g.jwt_tier (set by _auth_user from JWT claim)
-    try:
-        from flask import g as _g
-        tier = getattr(_g, "jwt_tier", None) or _get_user_tier(user)
-    except RuntimeError:
-        tier = _get_user_tier(user)
-
+def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "free"):
+    # tier is now passed in — no longer read from Flask g here.
+    # This makes the function testable and safe for anonymous callers.
+ 
     def generate():
-        try: r = _r()
+        try:
+            r = _r()
         except RuntimeError as exc:
-            yield _sse("error", {"error": str(exc), "code": 503}); return
-
+            yield _sse("error", {"error": str(exc), "code": 503})
+            return
+ 
         matches = _filter_tier(_get_unified_patched(mode, sport), tier)
-
+ 
         yield _sse("batch", {
             "matches": [_slim(m) for m in matches],
-            "source": "slim", "sport": sport, "mode": mode,
-            "count": len(matches), "tier": tier,
+            "source":  "slim",
+            "sport":   sport,
+            "mode":    mode,
+            "count":   len(matches),
+            "tier":    tier,
         })
         yield _sse("batch", {
-            "matches": matches, "source": "full", "sport": sport, "mode": mode,
-            "count": len(matches), "tier": tier,
+            "matches": matches,
+            "source":  "full",
+            "sport":   sport,
+            "mode":    mode,
+            "count":   len(matches),
+            "tier":    tier,
         })
         yield _sse("connected", {
-            "status": "connected", "sport": sport, "mode": mode,
-            "tier": tier, "live_push": live_tier, "count": len(matches),
+            "status":    "connected",
+            "sport":     sport,
+            "mode":      mode,
+            "tier":      tier,
+            "live_push": live_tier,
+            "count":     len(matches),
         })
-
+ 
         if not live_tier:
-            yield ": keepalive\n\n"; return
-
+            yield ": keepalive\n\n"
+            return
+ 
         pubsub   = r.pubsub(ignore_subscribe_messages=True)
-        channels = [f"odds:all:{mode}:{sport}:updates",
-                    f"arb:updates:{sport}", f"ev:updates:{sport}"]
-        if mode == "live": channels.append(f"bus:live_updates:{sport}")
+        channels = [
+            f"odds:all:{mode}:{sport}:updates",
+            f"arb:updates:{sport}",
+            f"ev:updates:{sport}",
+        ]
+        if mode == "live":
+            channels.append(f"bus:live_updates:{sport}")
         pubsub.subscribe(*channels)
         last_ka = time.time()
-
+ 
         try:
             while True:
                 msg = pubsub.get_message(timeout=1.0)
                 if msg and msg.get("type") == "message":
                     try:
                         payload = json.loads(msg["data"])
-                        ch = (msg.get("channel") or b"")
-                        if isinstance(ch, bytes): ch = ch.decode()
+                        ch = msg.get("channel") or b""
+                        if isinstance(ch, bytes):
+                            ch = ch.decode()
                         if   "arb:"         in ch: yield _sse("arb_update",  payload)
                         elif "ev:"          in ch: yield _sse("ev_update",   payload)
                         elif "live_updates" in ch: yield _sse("live_update", payload)
                         else:
-                            fresh = _filter_tier(_get_unified_patched(mode, sport, force_refresh=True), tier)
-                            yield _sse("batch", {"matches": fresh, "source": "live",
-                                                  "sport": sport, "mode": mode, "count": len(fresh)})
+                            fresh = _filter_tier(
+                                _get_unified_patched(mode, sport, force_refresh=True), tier
+                            )
+                            yield _sse("batch", {
+                                "matches": fresh, "source": "live",
+                                "sport":   sport, "mode":   mode,
+                                "count":   len(fresh),
+                            })
                     except Exception as exc:
                         log.debug("[stream] pubsub error: %s", exc)
-
+ 
                 if time.time() - last_ka > _KEEPALIVE:
-                    yield ": keepalive\n\n"; last_ka = time.time()
+                    yield ": keepalive\n\n"
+                    last_ka = time.time()
         finally:
-            try: pubsub.unsubscribe(*channels); pubsub.close()
-            except: pass
-
+            try:
+                pubsub.unsubscribe(*channels)
+                pubsub.close()
+            except Exception:
+                pass
+ 
     return generate
-
 
 # =============================================================================
 # PUBLISH HELPERS
@@ -778,55 +800,77 @@ def publish_arb_update(sport: str, join_key: str, match_id: str,
 @bp_stream.route("/odds/stream/<mode>/<sport>", methods=["GET"])
 def stream_odds(mode: str, sport: str):
     from app.api import _err
+ 
     if mode not in ("upcoming", "live"):
         return _err("mode must be 'upcoming' or 'live'", 400)
-    user = _auth_user()
-    if not user:
-        def _deny():
-            yield _sse("error", {"error": "Unauthorized", "code": 401})
-        return Response(stream_with_context(_deny()), mimetype="text/event-stream",
-                        status=200, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-    live_tier = _tier_rank(user) >= _TIER_RANK["pro"]
+ 
+    # ── Auth — optional. Anonymous users get local BKs only. ─────────────────
+    user = _auth_user()   # returns None for anonymous — that's fine now
+ 
+    if user:
+        # Logged-in: use JWT claim tier (most authoritative) or DB tier
+        tier = getattr(g, "jwt_tier", None) or _get_user_tier(user)
+    else:
+        # Anonymous: free tier — _filter_tier will restrict to sp/bt/od
+        tier = "free"
+ 
+    # Only pro+ users get the live pubsub push loop
+    live_tier = _TIER_RANK.get(tier, 0) >= _TIER_RANK["pro"]
+ 
     return Response(
-        stream_with_context(_make_generator(mode, sport, user, live_tier)()),
+        stream_with_context(
+            _make_generator(mode, sport, user, live_tier, tier)()
+        ),
         mimetype="text/event-stream",
         headers={
-            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
+            "Cache-Control":                "no-cache",
+            "X-Accel-Buffering":            "no",
+            "Connection":                   "keep-alive",
+            "Access-Control-Allow-Origin":  "*",
             "Access-Control-Allow-Headers": "Authorization,Content-Type",
         },
     )
 
-
 @bp_stream.route("/odds/snapshot/<mode>/<sport>", methods=["GET"])
-@require_tier("free")
+@require_tier("free")               # ← was "basic"
 def snapshot_odds(mode: str, sport: str):
     from app.api import _signed_response
     tier    = getattr(g, "jwt_tier", None) or _get_user_tier(g.user)
     matches = _filter_tier(_get_unified_patched(mode, sport), tier)
-    return _signed_response({"matches": matches, "sport": sport, "mode": mode, "count": len(matches)})
-
+    return _signed_response({
+        "matches": matches,
+        "sport":   sport,
+        "mode":    mode,
+        "count":   len(matches),
+    })
 
 @bp_stream.route("/odds/page/<mode>/<sport>", methods=["GET"])
-@require_tier("free")
+@require_tier("free")               # ← was "basic"
 def paged_odds(mode: str, sport: str):
     from app.api import _signed_response
-    tier     = getattr(g.user, "tier", "free") or "free"
+    tier     = getattr(g, "jwt_tier", None) or _get_user_tier(g.user)
     page     = max(1,   request.args.get("page",      1,   type=int))
     per_page = min(200, request.args.get("per_page", 100,  type=int))
     sort_by  = request.args.get("sort", "start_time")
     all_m    = _filter_tier(_get_unified_patched(mode, sport), tier)
-    all_m.sort(key=lambda m: -(m.get("best_arb_pct") or 0) if sort_by == "arb"
-               else (m.get("start_time") or ""))
-    total = len(all_m); offset = (page - 1) * per_page
+    all_m.sort(
+        key=lambda m: -(m.get("best_arb_pct") or 0)
+        if sort_by == "arb"
+        else (m.get("start_time") or "")
+    )
+    total  = len(all_m)
+    offset = (page - 1) * per_page
     return _signed_response({
-        "matches": all_m[offset: offset + per_page], "total": total,
-        "page": page, "per_page": per_page, "pages": -(-total // per_page),
-        "has_more": (offset + per_page) < total, "sport": sport, "mode": mode,
+        "matches":  all_m[offset: offset + per_page],
+        "total":    total,
+        "page":     page,
+        "per_page": per_page,
+        "pages":    -(-total // per_page),
+        "has_more": (offset + per_page) < total,
+        "sport":    sport,
+        "mode":     mode,
     })
-
-
+ 
 # =============================================================================
 # MONITOR
 # =============================================================================
