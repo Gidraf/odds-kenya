@@ -908,7 +908,7 @@ def stream_upcoming(sport_slug: str):
     return Response(stream_with_context(_gen()), headers=_SSE_HEADERS)
 
 
-@bp_odds_customer.route("/odds/stream/live/<sport_slug>")
+@bp_odds_customer.route("/odds/_customer/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
     comp_f    = (request.args.get("comp", "") or "").strip()
     team_f    = (request.args.get("team", "") or "").strip()
@@ -983,7 +983,7 @@ def get_upcoming(sport_slug: str):
     return _signed_response(_build_envelope(matches, sport_slug, "upcoming", tier, page, per_page, truncated, int((time.perf_counter() - t0) * 1000), total=total, pages=pages), encrypt_for=user)
 
 
-@bp_odds_customer.route("/odds/live/<sport_slug>")
+@bp_odds_customer.route("/odds/_customer/_live/<sport_slug>")
 def get_live(sport_slug: str):
     t0       = time.perf_counter()
     user     = _current_user_from_header()

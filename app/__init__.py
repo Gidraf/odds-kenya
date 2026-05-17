@@ -111,6 +111,8 @@ def create_app() -> Flask:
     from app.api.notifications import bp_notify
     from app.api.odds_stream import bp_stream, bp_monitor as bp_monitor_new, _register_lifecycle
     from app.workers.match_lifecycle import bp_lifecycle, start_lifecycle_manager
+    from app.api.live_results_api import bp_results, bp_live as customer_live
+
 
     
     
@@ -146,9 +148,11 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_bookmakers)
     flask_app.register_blueprint(debug_admin)
     flask_app.register_blueprint(bp_notify)
+    flask_app.register_blueprint(bp_results)
+    flask_app.register_blueprint(customer_live)
     flask_app.register_blueprint(bp_lifecycle)   # /api/matches/* routes
     _register_lifecycle(flask_app) 
-    start_lifecycle_manager       
+    start_lifecycle_manager()       
     # GET /api/od/...
 
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────

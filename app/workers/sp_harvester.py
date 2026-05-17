@@ -28,8 +28,13 @@ from app.workers.bandwidth_optimizer import (
 # =============================================================================
 _PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
 
-SP_SESSION = compressed_session()
-SP_SESSION.proxies = {"http": _PROXY, "https": _PROXY}
+try:
+    from app.api.live_results_api import _sp_session_safe
+    SP_SESSION = _sp_session_safe()
+except Exception:
+    import requests
+    SP_SESSION = requests.Session()
+    SP_SESSION.proxies = {"http": _PROXY, "https": _PROXY}
 
 
 _BASE = "https://www.ke.sportpesa.com"

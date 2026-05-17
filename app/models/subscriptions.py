@@ -50,10 +50,10 @@ class Subscription(db.Model):
  
     @classmethod
     def start_trial(cls, user_id: int, tier: str) -> "Subscription":
-        """Create a 3-day trial subscription."""
+        """Create a 90-day trial subscription."""
         config  = TIER_PRICES.get(tier, {})
         now     = datetime.now(timezone.utc)
-        trial_d = config.get("trial_days", 3)
+        trial_d = config.get("trial_days", 90)
  
         sub = cls(
             user_id      = user_id,

@@ -485,7 +485,7 @@ def stream_upcoming(sport_slug: str):
 # GET /api/sp/stream/live/<sport>  — SSE streaming (live matches, one by one)
 # =============================================================================
 
-@bp_sp.route("/stream/live/<sport_slug>")
+@bp_sp.route("/sportpesa/stream/live/<sport_slug>")
 def stream_live(sport_slug: str):
     """
     Stream live matches one at a time, identical in shape to stream/upcoming.
