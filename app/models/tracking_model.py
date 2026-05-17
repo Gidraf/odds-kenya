@@ -19,9 +19,13 @@ class UserActivityLog(db.Model):
     
     # What did they do it on? (e.g., 'soccer', 'sr:match:12345')
     resource = db.Column(db.String(100), index=True, nullable=False)
+    occurred_at = db.Column(db.DateTime, nullable=False)
     
     # Extra context (e.g., {"profit_pct": 2.5, "bookmakers": ["sp", "bt"]})
     meta_data = db.Column(db.JSON, nullable=True)
+    user_agent = db.Column(db.String(5100), index=True, nullable=False)
+    properties = db.Column(db.JSON, nullable=True)
+    url = db.Column(db.String(5100), index=True, nullable=False)
     
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
