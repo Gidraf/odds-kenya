@@ -25,7 +25,11 @@ class UserActivityLog(db.Model):
     meta_data = db.Column(db.JSON, nullable=True)
     user_agent = db.Column(db.String(5100), index=True, nullable=False)
     properties = db.Column(db.JSON, nullable=True)
-    url = db.Column(db.String(5100), index=True, nullable=False)
+    utm_source = db.Column(db.String(100), index=True, nullable=True)   
+    utm_medium = db.Column(db.String(100), index=True, nullable=True)
+    utm_campaign = db.Column(db.String(100), index=True, nullable=True)
+    utm_content = db.Column(db.String(100), index=True, nullable=True)
+    utm_term = db.Column(db.String(100), index=True, nullable=True)
     
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
