@@ -34,7 +34,7 @@ def get_upcoming(sport_slug: str):
     matches, truncated = _apply_tier_limits(matches, user)
     return _signed_response(_build_envelope(matches, sport_slug, "upcoming", tier, page, per_page, truncated, int((time.perf_counter() - t0) * 1000), total=total, pages=pages), encrypt_for=user)
 
-@bp_odds_customer.route("/odds/live/<sport_slug>")
+@bp_odds_customer.route("/odds/_customer/live/<sport_slug>")
 def get_live(sport_slug: str):
     from app.utils.customer_jwt_helpers import _current_user_from_header, _signed_response
     from app.utils.decorators_ import log_event
