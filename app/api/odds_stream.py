@@ -882,7 +882,7 @@ def paged_odds(mode: str, sport: str):
     from app.api import _signed_response
     tier     = _resolve_tier_anonymous()
     page     = max(1,   request.args.get("page",      1,   type=int))
-    per_page = min(200, request.args.get("per_page", 100,  type=int))
+    per_page = min(200, request.args.get("per_page", 10,  type=int))
     sort_by  = request.args.get("sort", "start_time")
  
     all_m = _filter_tier(_get_unified_patched(mode, sport), tier)
