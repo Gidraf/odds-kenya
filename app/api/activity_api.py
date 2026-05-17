@@ -1,20 +1,22 @@
 """
 app/api/activity_api.py
 ========================
-Anonymous activity tracking — no user data stored or returned.
+Anonymous activity tracking.
 
-Writes session_id (random, client-generated), event name, properties,
-url, ip (hashed), and timestamp only. No user_id, no auth required.
-
-Register in create_app():
-    from app.api.activity_api import bp_activity
-    flask_app.register_blueprint(bp_activity)
+Fixes vs previous version
+──────────────────────────
+• /debug endpoint tells you exactly what's wrong (table name, columns, write test)
+• /log surfaces errors in dev (FLASK_ENV != production) instead of silent 200
+• properties stored as JSON string — works with both text and jsonb columns
+• Summary queries detect column type at runtime and use the right accessor
+• Table name read from __tablename__ so it never drifts from the model
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
@@ -23,9 +25,10 @@ log = logging.getLogger("kinetic.activity")
 
 bp_activity = Blueprint("activity", __name__, url_prefix="/api/activity")
 
+IS_DEV = os.environ.get("FLASK_ENV", "production") != "production"
+
 
 def _hash_ip(ip: str) -> str:
-    """One-way hash the IP so we can see patterns but not the actual address."""
     if not ip:
         return ""
     return hashlib.sha256(ip.encode()).hexdigest()[:16]
@@ -39,80 +42,147 @@ def _redis():
         return None
 
 
+def _get_model():
+    """Return (Model class, table_name). Raises on import error."""
+    from app.models.tracking_model import UserActivityLog
+    return UserActivityLog, UserActivityLog.__tablename__
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# LOG  — receive batched events from frontend
+# DEBUG  — hit this first to find the problem
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bp_activity.route("/debug", methods=["GET"])
+def activity_debug():
+    """
+    GET /api/activity/debug
+    Shows: table name, columns, column types, row count, last 3 rows, write test.
+    Remove or auth-gate in production.
+    """
+    info: dict = {}
+
+    # Model
+    try:
+        Model, table_name = _get_model()
+        info["table_name"]    = table_name
+        info["model_columns"] = [c.name for c in Model.__table__.columns]
+    except Exception as e:
+        return jsonify({"model_error": str(e)}), 500
+
+    # Row count
+    try:
+        from app.extensions import db
+        info["row_count"] = db.session.execute(
+            db.text(f"SELECT COUNT(*) FROM {table_name}")
+        ).scalar()
+    except Exception as e:
+        info["count_error"] = str(e)
+
+    # Column types from information_schema
+    try:
+        from app.extensions import db
+        cols = db.session.execute(db.text("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = :t
+            ORDER BY ordinal_position
+        """), {"t": table_name}).fetchall()
+        info["column_types"] = {r[0]: {"type": r[1], "nullable": r[2]} for r in cols}
+    except Exception as e:
+        info["column_types_error"] = str(e)
+
+    # Last 3 rows
+    try:
+        from app.extensions import db
+        rows = db.session.execute(db.text(f"""
+            SELECT event_name, session_id, occurred_at, properties
+            FROM {table_name}
+            ORDER BY occurred_at DESC LIMIT 3
+        """)).fetchall()
+        info["last_rows"] = [
+            {"event": r[0], "session": r[1],
+             "at": str(r[2]), "props": r[3]}
+            for r in rows
+        ]
+    except Exception as e:
+        info["rows_error"] = str(e)
+
+    # Write test
+    try:
+        from app.extensions import db
+        test = Model(
+            user_id     = None,
+            session_id  = "debug_test",
+            event_name  = "debug_ping",
+            url         = "/debug",
+            properties  = json.dumps({"test": True}),
+            ip_address  = "debug",
+            user_agent  = "debug",
+            occurred_at = datetime.now(timezone.utc),
+        )
+        db.session.add(test)
+        db.session.commit()
+        info["write_test"] = "OK — row written successfully"
+    except Exception as e:
+        info["write_test"] = f"FAILED: {e}"
+        try:
+            from app.extensions import db
+            db.session.rollback()
+        except Exception:
+            pass
+
+    return jsonify(info)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOG
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_activity.route("/log", methods=["POST"])
 def log_activity():
-    """
-    Receive a batch of anonymous activity events.
-
-    Body:
-        {
-          "events": [
-            {
-              "event":      "match_click",
-              "properties": {"join_key": "...", "sport": "soccer"},
-              "ts":         1716000000000,
-              "url":        "/odds",
-              "session_id": "anon_abc123"
-            }
-          ]
-        }
-
-    No auth required. No user_id stored.
-    IP is SHA-256 hashed before storage.
-    """
     body   = request.get_json(silent=True) or {}
     events = body.get("events", [])
 
     if not events or not isinstance(events, list):
-        return jsonify({"ok": True, "written": 0})
+        return jsonify({"ok": True, "written": 0, "reason": "empty"})
 
-    # Hash IP once per request
     raw_ip  = (
         request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        or request.remote_addr
-        or ""
+        or request.remote_addr or ""
     )
     ip_hash = _hash_ip(raw_ip)
     ua      = request.headers.get("User-Agent", "")[:256]
 
     written = 0
+    error   = None
+
     try:
-        from app.models.tracking_model import UserActivityLog
+        Model, _ = _get_model()
         from app.extensions import db
 
         rows = []
-        for ev in events[:50]:       # hard cap — prevent abuse
+        for ev in events[:50]:
             if not isinstance(ev, dict):
                 continue
 
-            event_name = str(ev.get("event") or "unknown")[:64]
-            props      = dict(ev.get("properties") or {})
-            session_id = str(ev.get("session_id") or "")[:128]
-
-            # Scrub any accidental PII from properties before storing
-            for key in ("user_id", "email", "phone", "name", "ip"):
-                props.pop(key, None)
+            props = dict(ev.get("properties") or {})
+            for pii in ("user_id", "email", "phone", "name", "ip"):
+                props.pop(pii, None)
 
             try:
-                occurred_at = datetime.fromtimestamp(
-                    int(ev.get("ts", 0)) / 1000, tz=timezone.utc
-                )
+                ts = datetime.fromtimestamp(int(ev.get("ts", 0)) / 1000, tz=timezone.utc)
             except Exception:
-                occurred_at = datetime.now(timezone.utc)
+                ts = datetime.now(timezone.utc)
 
-            rows.append(UserActivityLog(
-                user_id     = None,       # always null — fully anonymous
-                session_id  = session_id,
-                event_name  = event_name,
+            rows.append(Model(
+                user_id     = None,
+                session_id  = str(ev.get("session_id") or "")[:128],
+                event_name  = str(ev.get("event") or "unknown")[:64],
                 url         = str(ev.get("url") or "")[:512],
                 properties  = json.dumps(props, default=str)[:4096],
-                ip_address  = ip_hash,    # hashed, never raw
+                ip_address  = ip_hash,
                 user_agent  = ua,
-                occurred_at = occurred_at,
+                occurred_at = ts,
             ))
 
         db.session.bulk_save_objects(rows)
@@ -120,31 +190,36 @@ def log_activity():
         written = len(rows)
 
     except Exception as e:
-        log.debug("Activity log error: %s", e)
+        error = str(e)
+        log.error("Activity log write failed: %s", e)
+        try:
+            from app.extensions import db
+            db.session.rollback()
+        except Exception:
+            pass
 
-    # Always 200 — tracking must never break the app
+    if error and IS_DEV:
+        return jsonify({"ok": False, "written": 0, "error": error}), 500
+
     return jsonify({"ok": True, "written": written})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SUMMARY  — aggregate stats only, no individual records exposed
+# SUMMARY
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_activity.route("/summary", methods=["GET"])
 def activity_summary():
-    """
-    Aggregate stats — counts, top sports, top matches, hourly sparkline.
-    No session IDs, no IPs, no user identifiers returned.
-
-    Query params:
-      hours=24    window size (default 24, max 168)
-      force=true  bypass the 60s Redis cache
-    """
     hours     = min(max(1, int(request.args.get("hours", 24))), 168)
     force     = request.args.get("force", "false").lower() == "true"
     cache_key = f"kinetic:activity:summary:{hours}h"
 
-    # ── Redis cache ────────────────────────────────────────────────────────────
+    try:
+        _, table_name = _get_model()
+    except Exception as e:
+        return jsonify({"error": f"Model import failed: {e}"}), 500
+
+    # Cache
     r = _redis()
     if r and not force:
         try:
@@ -156,122 +231,91 @@ def activity_summary():
         except Exception:
             pass
 
-    # ── DB queries (all aggregate — no individual rows returned) ───────────────
     try:
         from app.extensions import db
         since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-        # 1. Totals
-        totals = db.session.execute(db.text("""
-            SELECT
-                COUNT(*)                   AS total_events,
-                COUNT(DISTINCT session_id) AS total_sessions
-            FROM user_activity_logs
-            WHERE occurred_at >= :since
+        # Detect column type so queries work on both text and jsonb
+        col_type = db.session.execute(db.text("""
+            SELECT data_type FROM information_schema.columns
+            WHERE table_name = :t AND column_name = 'properties' LIMIT 1
+        """), {"t": table_name}).scalar() or "text"
+
+        is_jsonb = "json" in (col_type or "").lower()
+
+        def prop(key: str) -> str:
+            return f"properties->>'{key}'" if is_jsonb \
+                else f"(properties::jsonb)->>'{key}'"
+
+        totals = db.session.execute(db.text(f"""
+            SELECT COUNT(*), COUNT(DISTINCT session_id)
+            FROM {table_name} WHERE occurred_at >= :since
         """), {"since": since}).fetchone()
 
-        # 2. Active right now (last 15 min)
-        active_now = db.session.execute(db.text("""
-            SELECT COUNT(DISTINCT session_id)
-            FROM user_activity_logs
+        active_now = db.session.execute(db.text(f"""
+            SELECT COUNT(DISTINCT session_id) FROM {table_name}
             WHERE occurred_at >= NOW() - INTERVAL '15 minutes'
         """)).scalar() or 0
 
-        # 3. Top events by count
-        top_events = db.session.execute(db.text("""
-            SELECT
-                event_name,
-                COUNT(*)                   AS cnt,
-                COUNT(DISTINCT session_id) AS unique_sessions
-            FROM user_activity_logs
-            WHERE occurred_at >= :since
-            GROUP BY event_name
-            ORDER BY cnt DESC
-            LIMIT 30
+        top_events = db.session.execute(db.text(f"""
+            SELECT event_name, COUNT(*), COUNT(DISTINCT session_id)
+            FROM {table_name} WHERE occurred_at >= :since
+            GROUP BY event_name ORDER BY 2 DESC LIMIT 30
         """), {"since": since}).fetchall()
 
-        # 4. Top sports people switched to
-        top_sports = db.session.execute(db.text("""
-            SELECT
-                properties->>'to' AS sport,
-                COUNT(*)          AS cnt
-            FROM user_activity_logs
-            WHERE event_name = 'sport_switch'
-              AND occurred_at >= :since
-              AND properties->>'to' IS NOT NULL
-            GROUP BY sport
-            ORDER BY cnt DESC
-            LIMIT 10
+        top_sports = db.session.execute(db.text(f"""
+            SELECT {prop('to')}, COUNT(*) FROM {table_name}
+            WHERE event_name = 'sport_switch' AND occurred_at >= :since
+              AND {prop('to')} IS NOT NULL
+            GROUP BY 1 ORDER BY 2 DESC LIMIT 10
         """), {"since": since}).fetchall()
 
-        # 5. Top matches clicked (team names only — no join_key)
-        top_matches = db.session.execute(db.text("""
-            SELECT
-                properties->>'home_team' AS home_team,
-                properties->>'away_team' AS away_team,
-                properties->>'sport'     AS sport,
-                COUNT(*)                 AS clicks
-            FROM user_activity_logs
-            WHERE event_name = 'match_click'
-              AND occurred_at >= :since
-              AND properties->>'home_team' IS NOT NULL
-            GROUP BY home_team, away_team, sport
-            ORDER BY clicks DESC
-            LIMIT 10
+        top_matches = db.session.execute(db.text(f"""
+            SELECT {prop('home_team')}, {prop('away_team')},
+                   {prop('sport')}, COUNT(*)
+            FROM {table_name}
+            WHERE event_name = 'match_click' AND occurred_at >= :since
+              AND {prop('home_team')} IS NOT NULL
+            GROUP BY 1,2,3 ORDER BY 4 DESC LIMIT 10
         """), {"since": since}).fetchall()
 
-        # 6. Hourly sparkline — always last 24h regardless of window
-        sparkline = db.session.execute(db.text("""
-            SELECT
-                date_trunc('hour', occurred_at) AS hour,
-                COUNT(*)                        AS cnt
-            FROM user_activity_logs
+        sparkline = db.session.execute(db.text(f"""
+            SELECT date_trunc('hour', occurred_at), COUNT(*)
+            FROM {table_name}
             WHERE occurred_at >= NOW() - INTERVAL '24 hours'
-            GROUP BY hour
-            ORDER BY hour ASC
+            GROUP BY 1 ORDER BY 1 ASC
         """)).fetchall()
 
         result = {
-            "period":       f"{hours}h",
-            "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "cached":       False,
+            "period":         f"{hours}h",
+            "generated_at":   datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "cached":         False,
+            "table":          table_name,
+            "properties_type": col_type,
             "summary": {
                 "total_events":   int(totals[0]) if totals else 0,
                 "total_sessions": int(totals[1]) if totals else 0,
                 "active_now":     int(active_now),
             },
             "top_events": [
-                {
-                    "event":           r[0],
-                    "count":           int(r[1]),
-                    "unique_sessions": int(r[2]),
-                }
+                {"event": r[0], "count": int(r[1]), "unique_sessions": int(r[2])}
                 for r in top_events
             ],
             "top_sports": [
                 {"sport": r[0], "count": int(r[1])}
-                for r in top_sports
-                if r[0]
+                for r in top_sports if r[0]
             ],
             "top_matches": [
-                {
-                    "match":  f"{r[0]} v {r[1]}",
-                    "sport":  r[2] or "",
-                    "clicks": int(r[3]),
-                }
-                for r in top_matches
-                if r[0] and r[1]
+                {"match": f"{r[0]} v {r[1]}", "sport": r[2] or "", "clicks": int(r[3])}
+                for r in top_matches if r[0] and r[1]
             ],
             "hourly_sparkline": [
-                {
-                    "hour":  r[0].strftime("%Y-%m-%dT%H:00Z") if r[0] else "",
-                    "count": int(r[1]),
-                }
+                {"hour": r[0].strftime("%Y-%m-%dT%H:00Z") if r[0] else "",
+                 "count": int(r[1])}
                 for r in sparkline
             ],
         }
 
-        # Cache 60s
         if r:
             try:
                 r.setex(cache_key, 60, json.dumps(result))
@@ -282,4 +326,4 @@ def activity_summary():
 
     except Exception as e:
         log.error("activity_summary error: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "table": table_name}), 500
