@@ -13,6 +13,8 @@ class UserActivityLog(db.Model):
     
     # What did they do? (e.g., 'view_live', 'click_arb', 'open_calculator')
     event_type = db.Column(db.String(50), index=True, nullable=False)
+
+    event_name = db.Column(db.String(50), index=True, nullable=False)
     
     # What did they do it on? (e.g., 'soccer', 'sr:match:12345')
     resource = db.Column(db.String(100), index=True, nullable=False)
