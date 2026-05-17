@@ -148,7 +148,7 @@ def activity_summary():
                 COUNT(DISTINCT COALESCE(user_id::text, session_id))        AS unique_users,
                 COUNT(DISTINCT CASE WHEN user_id IS NOT NULL
                                THEN user_id::text END)                     AS logged_in_users
-            FROM user_activity_log
+            FROM user_activity_logs
             WHERE occurred_at >= :since
             GROUP BY event_name
             ORDER BY cnt DESC
@@ -158,7 +158,7 @@ def activity_summary():
         # 2. Active sessions right now (last 15 min)
         active_sessions = db.session.execute(db.text("""
             SELECT COUNT(DISTINCT COALESCE(user_id::text, session_id))
-            FROM user_activity_log
+            FROM user_activity_logs
             WHERE occurred_at >= NOW() - INTERVAL '15 minutes'
         """)).scalar() or 0
  
@@ -167,7 +167,7 @@ def activity_summary():
             SELECT
                 properties->>'to'  AS sport,
                 COUNT(*)           AS cnt
-            FROM user_activity_log
+            FROM user_activity_logs
             WHERE event_name = 'sport_switch'
               AND occurred_at >= :since
               AND properties->>'to' IS NOT NULL
@@ -183,7 +183,7 @@ def activity_summary():
                 properties->>'home_team' AS home_team,
                 properties->>'away_team' AS away_team,
                 COUNT(*)                 AS cnt
-            FROM user_activity_log
+            FROM user_activity_logs
             WHERE event_name = 'match_click'
               AND occurred_at >= :since
               AND properties->>'join_key' IS NOT NULL
@@ -197,7 +197,7 @@ def activity_summary():
             SELECT
                 date_trunc('hour', occurred_at) AS hour,
                 COUNT(*)                        AS cnt
-            FROM user_activity_log
+            FROM user_activity_logs
             WHERE occurred_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hour
             ORDER BY hour ASC
@@ -210,7 +210,7 @@ def activity_summary():
                 COUNT(DISTINCT COALESCE(user_id::text, session_id))        AS total_sessions,
                 COUNT(DISTINCT CASE WHEN user_id IS NOT NULL
                                THEN user_id::text END)                     AS total_logged_in
-            FROM user_activity_log
+            FROM user_activity_logs
             WHERE occurred_at >= :since
         """), {"since": since}).fetchone()
  
