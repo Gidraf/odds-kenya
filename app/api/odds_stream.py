@@ -831,46 +831,81 @@ def stream_odds(mode: str, sport: str):
         },
     )
 
+
+ 
+def _resolve_tier_anonymous() -> str:
+    """
+    Resolve tier for the current request.
+    - Logged-in user: use JWT claim or DB tier
+    - Anonymous:      "free" (local BKs only, enforced by _filter_tier)
+    Never raises, never returns None.
+    """
+    try:
+        user = _auth_user()          # sets g.jwt_tier as a side-effect
+        if user:
+            return getattr(g, "jwt_tier", None) or _get_user_tier(user)
+    except Exception:
+        pass
+    return "free"
+
 @bp_stream.route("/odds/snapshot/<mode>/<sport>", methods=["GET"])
-@require_tier("free")               # ← was "basic"
 def snapshot_odds(mode: str, sport: str):
+    """
+    Returns the full merged match list for a sport/mode.
+    Anonymous: local BKs only (sp, bt, od).
+    Authenticated basic+: local BKs only.
+    Authenticated pro+: all 10 BKs.
+    """
     from app.api import _signed_response
-    tier    = getattr(g, "jwt_tier", None) or _get_user_tier(g.user)
+    tier    = _resolve_tier_anonymous()
     matches = _filter_tier(_get_unified_patched(mode, sport), tier)
     return _signed_response({
         "matches": matches,
         "sport":   sport,
         "mode":    mode,
         "count":   len(matches),
+        "tier":    tier,
     })
 
 @bp_stream.route("/odds/page/<mode>/<sport>", methods=["GET"])
-@require_tier("free")               # ← was "basic"
 def paged_odds(mode: str, sport: str):
+    """
+    Paginated match list.
+    Anonymous: local BKs only, same data as snapshot but paged.
+    Authenticated: tier determines BK access.
+ 
+    Query params:
+      page=1        (1-based)
+      per_page=100  (max 200)
+      sort=start_time | arb
+    """
     from app.api import _signed_response
-    tier     = getattr(g, "jwt_tier", None) or _get_user_tier(g.user)
+    tier     = _resolve_tier_anonymous()
     page     = max(1,   request.args.get("page",      1,   type=int))
     per_page = min(200, request.args.get("per_page", 100,  type=int))
     sort_by  = request.args.get("sort", "start_time")
-    all_m    = _filter_tier(_get_unified_patched(mode, sport), tier)
-    all_m.sort(
-        key=lambda m: -(m.get("best_arb_pct") or 0)
-        if sort_by == "arb"
-        else (m.get("start_time") or "")
-    )
+ 
+    all_m = _filter_tier(_get_unified_patched(mode, sport), tier)
+ 
+    if sort_by == "arb":
+        all_m.sort(key=lambda m: -(m.get("best_arb_pct") or 0))
+    else:
+        all_m.sort(key=lambda m: m.get("start_time") or "")
+ 
     total  = len(all_m)
     offset = (page - 1) * per_page
+ 
     return _signed_response({
         "matches":  all_m[offset: offset + per_page],
         "total":    total,
         "page":     page,
         "per_page": per_page,
-        "pages":    -(-total // per_page),
+        "pages":    -(-total // per_page),   # ceiling division
         "has_more": (offset + per_page) < total,
         "sport":    sport,
         "mode":     mode,
+        "tier":     tier,
     })
- 
 # =============================================================================
 # MONITOR
 # =============================================================================
