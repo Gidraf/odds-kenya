@@ -217,11 +217,10 @@ def sp_harvest_all_paged() -> dict:
     bind=True, max_retries=2, default_retry_delay=15,
     soft_time_limit=3600, time_limit=9000, acks_late=True,
 )
+
 def bt_harvest_page(self, sport_slug: str, page: int,
                     page_size: int = HARVEST_PAGE_SIZE) -> dict:
-    from app.workers.bt_harvester import (
-        fetch_upcoming_matches, slug_to_bt_sport_id,
-    )
+    # Remove the two unused imports that were here
     t0 = time.perf_counter()
     try:
         from app.workers.bt_harvester import fetch_upcoming_stream
@@ -242,6 +241,7 @@ def bt_harvest_page(self, sport_slug: str, page: int,
     latency = int((time.perf_counter() - t0) * 1000)
     return {"sport": sport_slug, "page": page, "count": len(matches),
             "latency_ms": latency, "pages_done": done}
+
 
 @celery.task(
     name="tasks.bt.merge_pages",
