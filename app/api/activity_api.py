@@ -23,8 +23,12 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+import time
 
-from flask import Blueprint, jsonify, request
+from flask import (
+    Blueprint, jsonify, request, Response,
+    stream_with_context, render_template_string
+)
 
 log = logging.getLogger("kinetic.activity")
 
@@ -50,6 +54,124 @@ def _redis():
 def _get_model():
     from app.models.tracking_model import UserActivityLog
     return UserActivityLog, UserActivityLog.__tablename__
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SSR DASHBOARD TEMPLATE (SSR HTML + HTMX)
+# ══════════════════════════════════════════════════════════════════════════════
+DASHBOARD_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Activity Dashboard</title>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <script src="https://unpkg.com/htmx.org/dist/ext/sse.js"></script>
+  <style>
+    body { font-family: system-ui; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+    .sparkline { display: flex; gap: 2px; height: 60px; align-items: flex-end; }
+    .bar { width: 4px; background: #4f46e5; border-radius: 2px 2px 0 0; }
+    pre { background: #f3f4f6; padding: 1rem; border-radius: 4px; overflow-x: auto; }
+    button { margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Activity Dashboard</h1>
+  
+  <!-- SSR initial summary (pre-filled by server) -->
+  <div class="card" id="summary-container">
+    <h2>Summary (last {{ period_hours }}h) 
+      <button hx-get="/api/activity/summary?hours={{ period_hours }}" 
+              hx-target="#summary-container" hx-swap="outerHTML">
+        Refresh
+      </button>
+    </h2>
+    <p>Total events: <strong>{{ total_events }}</strong> | Total sessions: <strong>{{ total_sessions }}</strong></p>
+    
+    <h3>Hourly sparkline</h3>
+    <div class="sparkline">
+      {% for point in sparkline %}
+      <div class="bar" style="height: {{ point.count * 2 }}px;" title="{{ point.hour }}: {{ point.count }}"></div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Debug info – HTMX loads on page load -->
+  <div class="card"
+       hx-get="/api/activity/debug"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <p>Loading debug data…</p>
+  </div>
+
+  <!-- Live SSE stream from /api/activity/stream -->
+  <div class="card" hx-ext="sse" sse-connect="/api/activity/stream">
+    <h2>Live updates (SSE)</h2>
+    <div sse-swap="message" hx-swap="innerHTML">
+      Waiting for data…
+    </div>
+  </div>
+
+  <!-- Quick actions (using HTMX) -->
+  <div class="card">
+    <h2>Other actions</h2>
+    <button hx-delete="/api/activity/clear" hx-confirm="Delete ALL logs?">
+      Clear all logs
+    </button>
+    <button hx-get="/api/activity/stream" hx-target="#stream-test" hx-swap="innerHTML">
+      Test stream (raw)
+    </button>
+    <pre id="stream-test"></pre>
+  </div>
+</body>
+</html>
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DASHBOARD ROUTE (SSR HTML that consumes the existing JSON endpoints)
+# ══════════════════════════════════════════════════════════════════════════════
+@bp_activity.route("/dashboard", methods=["GET"])
+def activity_dashboard():
+    """
+    SSR HTML page that renders initial activity data using HTMX.
+    The server provides the initial summary; HTMX fetches fresh updates
+    from the existing JSON endpoints.
+    """
+    hours = min(max(1, int(request.args.get("hours", 24))), 168)
+    summary_data = {}
+    try:
+        _, table_name = _get_model()
+        from app.extensions import db
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+        totals = db.session.execute(db.text(f"""
+            SELECT COUNT(*), COUNT(DISTINCT session_id)
+            FROM {table_name} WHERE occurred_at >= :since
+        """), {"since": since}).fetchone()
+
+        sparkline = db.session.execute(db.text(f"""
+            SELECT date_trunc('hour', occurred_at), COUNT(*)
+            FROM {table_name}
+            WHERE occurred_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY 1 ORDER BY 1 ASC
+        """)).fetchall()
+
+        summary_data = {
+            "total_events": int(totals[0]) if totals else 0,
+            "total_sessions": int(totals[1]) if totals else 0,
+            "sparkline": [
+                {"hour": r[0].strftime("%Y-%m-%dT%H:00Z"), "count": int(r[1])}
+                for r in sparkline
+            ],
+            "period_hours": hours,
+        }
+    except Exception as e:
+        log.error("Dashboard initial load error: %s", e)
+        summary_data = {"error": str(e), "period_hours": hours, "total_events": 0, "total_sessions": 0, "sparkline": []}
+
+    return render_template_string(DASHBOARD_TEMPLATE, **summary_data)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -245,7 +367,7 @@ def log_activity():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SUMMARY
+# SUMMARY (JSON – consumed by the dashboard via HTMX)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bp_activity.route("/summary", methods=["GET"])
@@ -390,7 +512,65 @@ def activity_summary():
                 pass
 
         return jsonify(result)
-
     except Exception as e:
         log.error("activity_summary error: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STREAM (SSE)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bp_activity.route("/stream", methods=["GET"])
+def activity_stream():
+    """SSE endpoint for real-time analytics updates."""
+    def generate():
+        while True:
+            try:
+                r = _redis()
+                if r:
+                    cached = r.get("kinetic:activity:summary:24h")
+                    if cached:
+                        data_str = cached.decode('utf-8') if isinstance(cached, bytes) else cached
+                        yield f"data: {data_str}\n\n"
+                    else:
+                        yield ": ping\n\n"
+                else:
+                    yield ": ping\n\n"
+            except Exception as e:
+                log.error(f"SSE error: {e}")
+            time.sleep(5)
+            
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DELETE / CLEAR
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bp_activity.route("/clear", methods=["DELETE"])
+def activity_clear():
+    """Clears all activity logs. Admin only in production."""
+    try:
+        from app.extensions import db
+        _, table_name = _get_model()
+        deleted = db.session.execute(db.text(f"DELETE FROM {table_name}")).rowcount
+        db.session.commit()
+        return jsonify({"ok": True, "deleted": deleted})
+    except Exception as e:
+        log.error("Failed to clear activity logs: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@bp_activity.route("/<int:record_id>", methods=["DELETE"])
+def activity_delete(record_id):
+    """Deletes a specific activity log."""
+    try:
+        from app.extensions import db
+        _, table_name = _get_model()
+        deleted = db.session.execute(db.text(f"DELETE FROM {table_name} WHERE id = :id"), {"id": record_id}).rowcount
+        db.session.commit()
+        return jsonify({"ok": True, "deleted": deleted})
+    except Exception as e:
+        log.error("Failed to delete activity log %s: %s", record_id, e)
+        return jsonify({"ok": False, "error": str(e)}), 500
