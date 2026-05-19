@@ -1,27 +1,29 @@
 """
-app/workers/tasks_harvest_pages.py
-====================================
-Master harvest orchestrator — all 10 bookmakers, paged + parallel.
+app/workers/tasks_harvest_pages.py  (PATCHED)
+===============================================
+Changes vs original:
+  1. Added _persist_snapshot() helper — replaces cache_set(..., ttl=3600)
+     in all three merge functions (sp_merge_pages, bt_merge_pages, od_merge_pages).
+     Uses smart_set (86400 TTL + hash-based change detection) + snapshot_to_db.
 
-Bookmakers:
-  SP (SportPesa)   — betradar-aligned, 8 sports
-  BT (Betika)      — native pagination, 10 sports
-  OD (OdiBets)     — date-chunk based, 14 sports
-  B2B × 7          — parallel per-BK, 15 sports each
-    1xBet, 22Bet, Betwinner, Melbet, Megapari, Helabet, Paripesa
+  2. All other logic is IDENTICAL to the original. The harvester pagination,
+     page accumulation, merge logic, _upsert_and_chain calls, beat schedule,
+     and alignment tasks are completely unchanged.
 
-Beat schedule (from setup_periodic_tasks):
-  harvest_all_paged → every 5 min
-    └─ SP, BT, OD, B2B all fire in parallel
-
-All harvesters write to Redis independently.
-The redis_bus rebuilds the unified snapshot after each BK snapshot.
+  3. Compatible with:
+     • tasks_upcoming._write_bk_keys() — still uses cache_set(3600) and that's
+       fine; the prune task (tasks_ops._beat_prune) will refresh those TTLs.
+     • persist_hook.persist_from_serialized() — called via _upsert_and_chain,
+       unchanged.
+     • odds_stream._get_unified_patched() — reads the keys we write here.
 """
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
+
 from app.workers.bandwidth_optimizer import redis_set_compressed, slim_match_list
 from celery.utils.log import get_task_logger
 
@@ -32,16 +34,12 @@ from app.workers.redis_bus import (
 
 logger = get_task_logger(__name__)
 
-# ─── Config ───────────────────────────────────────────────────────────────────
-
 HARVEST_PAGE_SIZE = 100
 HARVEST_N_PAGES   = 10
 MERGE_COUNTDOWN   = 55
 OD_DAYS_AHEAD     = 30
 
 WS_CHANNEL = "odds:updates"
-
-# ─── Sport lists ──────────────────────────────────────────────────────────────
 
 _ALL_SPORTS: list[str] = [
     "soccer", "basketball", "tennis", "cricket", "rugby",
@@ -62,8 +60,49 @@ _OD_SPORTS  = ["soccer", "basketball", "tennis", "ice-hockey",
                "american-football", "esoccer"]
 
 
+# ── Shared Redis client for persistent_cache writes ───────────────────────────
+
+def _get_cache_redis():
+    import redis as _redis_mod
+    url  = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    base = url.rsplit("/", 1)[0] if url.count("/") >= 3 else url
+    return _redis_mod.Redis.from_url(f"{base}/2", decode_responses=False, socket_timeout=5)
+
+
+# ── NEW: persistent snapshot helper ──────────────────────────────────────────
+
+def _persist_snapshot(bk: str, sport: str, payload: dict) -> None:
+    """
+    Drop-in replacement for:
+        cache_set(f"{bk}:upcoming:{sport}", payload, ttl=3600)
+
+    Does two things:
+    1. Writes to Redis with 86400 TTL and only if content changed
+       (smart_set). This keeps the key alive far longer than cache_set's 3600.
+    2. Backs up the payload to odds_snapshot in Postgres so cold-start
+       hydration is instant.
+
+    The {bk}:upcoming:{sport} key is what odds_stream._get_unified_patched()
+    falls back to when the unified key is cold. Keeping it alive at 86400
+    means the fallback always has data.
+    """
+    try:
+        from app.workers.persistent_cache import smart_set, snapshot_to_db, TTL_BK_SNAP
+        key = f"{bk}:upcoming:{sport}"
+        r   = _get_cache_redis()
+        smart_set(r, key, payload, ttl=TTL_BK_SNAP)
+        # Also write the odds:bk:mode:sport key that _BK_KEY_FORMATS in odds_stream checks
+        smart_set(r, f"odds:{bk}:upcoming:{sport}", payload, ttl=TTL_BK_SNAP)
+        # Snapshot to DB (async-safe — only writes if content changed)
+        snapshot_to_db(key, payload)
+    except Exception as exc:
+        logger.warning("[persist_snapshot] %s/%s: %s — falling back to cache_set", bk, sport, exc)
+        # Graceful fallback to original behaviour
+        cache_set(f"{bk}:upcoming:{sport}", payload, ttl=3600)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# SPORTPESA  — page-based harvest
+# SPORTPESA
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery.task(
@@ -116,7 +155,7 @@ def sp_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
                    attempt: int = 0) -> dict:
     from app.workers.tasks_upcoming import _persist_bk_matches, _upsert_and_chain
 
-    done        = pages_done_count("sp", "upcoming", sport_slug)
+    done         = pages_done_count("sp", "upcoming", sport_slug)
     min_required = max(1, int(expected_pages * 0.6))
 
     if done < min_required and attempt < 150:
@@ -135,14 +174,14 @@ def sp_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
     br_count    = sum(1 for m in all_matches if m.get("betradar_id"))
     avg_markets = _avg_markets(all_matches)
 
-    # ── Publish snapshot (also triggers unified rebuild) ─────────────────────
     publish_snapshot("sp", "upcoming", sport_slug, all_matches, meta={
         "source":      "sportpesa",
         "br_count":    br_count,
         "avg_markets": avg_markets,
     })
 
-    cache_set(f"sp:upcoming:{sport_slug}", {
+    # PATCHED: was cache_set(..., ttl=3600)
+    _persist_snapshot("sp", sport_slug, {
         "source":       "sportpesa",
         "sport":        sport_slug,
         "mode":         "upcoming",
@@ -152,7 +191,7 @@ def sp_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
         "matches":      all_matches,
         "avg_markets":  avg_markets,
         "br_count":     br_count,
-    }, ttl=3600)
+    })
 
     _upsert_and_chain(all_matches, "SportPesa")
     _persist_bk_matches(all_matches, "sp", sport_slug)
@@ -209,7 +248,7 @@ def sp_harvest_all_paged() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BETIKA  — page-based harvest
+# BETIKA
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery.task(
@@ -217,27 +256,22 @@ def sp_harvest_all_paged() -> dict:
     bind=True, max_retries=2, default_retry_delay=15,
     soft_time_limit=3600, time_limit=9000, acks_late=True,
 )
-
 def bt_harvest_page(self, sport_slug: str, page: int,
                     page_size: int = HARVEST_PAGE_SIZE) -> dict:
-    # Remove the two unused imports that were here
     t0 = time.perf_counter()
     try:
         from app.workers.bt_harvester import fetch_upcoming_stream
-        offset = (page - 1) * page_size
+        offset  = (page - 1) * page_size
         matches = []
         for match in fetch_upcoming_stream(
-            sport_slug=sport_slug,
-            days=OD_DAYS_AHEAD,
-            max_matches=page_size,
-            offset=offset,
-            fetch_full_markets=False,
+            sport_slug=sport_slug, days=OD_DAYS_AHEAD,
+            max_matches=page_size, offset=offset, fetch_full_markets=False,
         ):
             matches.append(match)
     except Exception as exc:
         raise self.retry(exc=exc, countdown=10)
 
-    done = publish_page("bt", "upcoming", sport_slug, page, matches, HARVEST_N_PAGES)
+    done    = publish_page("bt", "upcoming", sport_slug, page, matches, HARVEST_N_PAGES)
     latency = int((time.perf_counter() - t0) * 1000)
     return {"sport": sport_slug, "page": page, "count": len(matches),
             "latency_ms": latency, "pages_done": done}
@@ -267,13 +301,20 @@ def bt_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
     if not all_matches:
         return {"ok": False, "reason": "empty", "sport": sport_slug}
 
+    avg_markets = _avg_markets(all_matches)
     publish_snapshot("bt", "upcoming", sport_slug, all_matches,
-                     meta={"source": "betika", "avg_markets": _avg_markets(all_matches)})
-    cache_set(f"bt:upcoming:{sport_slug}", {
-        "source": "betika", "sport": sport_slug, "mode": "upcoming",
-        "match_count": len(all_matches), "harvested_at": _now_iso(),
-        "matches": all_matches,
-    }, ttl=3600)
+                     meta={"source": "betika", "avg_markets": avg_markets})
+
+    # PATCHED: was cache_set(..., ttl=3600)
+    _persist_snapshot("bt", sport_slug, {
+        "source":       "betika",
+        "sport":        sport_slug,
+        "mode":         "upcoming",
+        "match_count":  len(all_matches),
+        "harvested_at": _now_iso(),
+        "matches":      all_matches,
+        "avg_markets":  avg_markets,
+    })
 
     _upsert_and_chain(all_matches, "Betika")
     _persist_bk_matches(all_matches, "bt", sport_slug)
@@ -310,7 +351,7 @@ def bt_harvest_all_paged() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ODIBETS  — date-chunk harvest
+# ODIBETS
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery.task(
@@ -338,10 +379,10 @@ def od_harvest_date_chunk(self, sport_slug: str, dates: list[str], chunk_idx: in
         except Exception as exc:
             logger.warning("[od:chunk] %s day=%s: %s", sport_slug, day, exc)
 
-    done = publish_page("od", "upcoming", sport_slug, chunk_idx, matches, HARVEST_N_PAGES)
+    done    = publish_page("od", "upcoming", sport_slug, chunk_idx, matches, HARVEST_N_PAGES)
     latency = int((time.perf_counter() - t0) * 1000)
-    return {"sport": sport_slug, "chunk": chunk_idx, "count": len(matches),
-            "latency_ms": latency}
+    return {"sport": sport_slug, "chunk": chunk_idx, "count": len(matches), "latency_ms": latency}
+
 
 @celery.task(
     name="tasks.od.merge_pages",
@@ -370,11 +411,17 @@ def od_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
     avg_markets = _avg_markets(all_matches)
     publish_snapshot("od", "upcoming", sport_slug, all_matches,
                      meta={"source": "odibets", "avg_markets": avg_markets})
-    cache_set(f"od:upcoming:{sport_slug}", {
-        "source": "odibets", "sport": sport_slug, "mode": "upcoming",
-        "match_count": len(all_matches), "harvested_at": _now_iso(),
-        "matches": all_matches, "avg_markets": avg_markets,
-    }, ttl=3600)
+
+    # PATCHED: was cache_set(..., ttl=3600)
+    _persist_snapshot("od", sport_slug, {
+        "source":       "odibets",
+        "sport":        sport_slug,
+        "mode":         "upcoming",
+        "match_count":  len(all_matches),
+        "harvested_at": _now_iso(),
+        "matches":      all_matches,
+        "avg_markets":  avg_markets,
+    })
 
     _upsert_and_chain(all_matches, "OdiBets")
     _persist_bk_matches(all_matches, "od", sport_slug)
@@ -419,15 +466,11 @@ def od_harvest_all_paged() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MASTER ORCHESTRATOR — all 10 bookmakers
+# MASTER ORCHESTRATOR (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery.task(name="tasks.harvest.all_paged", soft_time_limit=3600, time_limit=9000)
 def harvest_all_paged() -> dict:
-    """
-    Master beat task: fire SP + BT + OD + B2B (×7) for all sports.
-    Staggered start times to avoid thundering herd.
-    """
     from app.workers.tasks_harvest_b2b import b2b_harvest_all_paged
 
     sp_harvest_all_paged.apply_async(queue="harvest", countdown=0)
@@ -439,7 +482,7 @@ def harvest_all_paged() -> dict:
     return {"ok": True, "bks": ["sp", "bt", "od", "b2b×7"], "sports": _ALL_SPORTS}
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers (unchanged) ───────────────────────────────────────────────────────
 
 def _avg_markets(matches: list[dict]) -> int:
     if not matches:

@@ -33,9 +33,9 @@ x-celery-common: &celery-common
     MINIO_SECURE: "false"
     HTTP_PROXY: "socks5h://100.70.180.34:1080"
     HTTPS_PROXY: "socks5h://100.70.180.34:1080"
-    ALL_PROXY: "socks5h://gidraf:Winners1127@100.70.180.34:1080"
-    PROXY_USER: gidraf
-    PROXY_PASS: Winners1127
+    ALL_PROXY: "socks5h://100.70.180.34:1080"
+    #PROXY_USER: gidraf
+    #PROXY_PASS: Winners1127
     PROXY_HOST: 100.70.180.34
     PROXY_PORT: 1080
     PROXY_SCHEME: socks5h
