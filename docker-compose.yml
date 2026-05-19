@@ -31,9 +31,9 @@ x-celery-common: &celery-common
     MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
     MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
     MINIO_SECURE: "false"
-    ALL_PROXY: "socks5h://gidraf:Winners1127@100.70.180.34:1080"
-    HTTP_PROXY: "socks5h://gidraf:Winners1127@100.70.180.34:1080"
-    HTTPS_PROXY: "socks5h://gidraf:Winners1127@100.70.180.34:1080"
+    ALL_PROXY: "socks5h://100.70.180.34:1080"
+    HTTP_PROXY: "socks5h://100.70.180.34:1080"
+    HTTPS_PROXY: "socks5h://100.70.180.34:1080"
 
     ENABLE_HARVESTER: "0"
     TZ: Africa/Nairobi
