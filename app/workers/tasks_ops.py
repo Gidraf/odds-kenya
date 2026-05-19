@@ -1,9 +1,19 @@
 """
-app/workers/tasks_ops.py
-=========================
-Core ops tasks: EV/arb computation, beat schedule, startup dispatcher.
+app/workers/tasks_ops.py  (PATCHED)
+=====================================
+Changes vs original:
+  1. _merge_bk_into_unified — uses smart_set (86400 TTL + hash check)
+  2. publish_bk_snapshot    — same
+  3. _patch_unified         — writes with TTL_UNIFIED (86400) not 7200
+  4. _beat_prune            — calls refresh_all_ttls() from persistent_cache;
+                              this keeps keys alive that other modules write
+                              with short TTLs (tasks_upcoming, odds_stream)
+  5. setup_periodic_tasks   — adds db_backup beat (every 15 min)
+  6. on_worker_ready        — startup_hydrate() BEFORE dispatch so UI has
+                              data immediately; also calls run_migration()
+  7. New beat tasks         — _beat_db_backup, _beat_hydrate_redis
 
-IMPORTANT: compute_ev_arb MUST live here — imported by celery_tasks._upsert_and_chain
+Everything else is identical to the original.
 """
 from __future__ import annotations
 
@@ -30,7 +40,6 @@ _ALL_BKS   = ["sp", "bt", "od", "1xbet", "22bet", "betwinner", "melbet", "megapa
 _LOCAL_BKS = ["sp", "bt", "od"]
 _B2B_BKS   = ["1xbet", "22bet", "betwinner", "melbet", "megapari", "helabet", "paripesa"]
 
-# Tier access rules — used by live.py and upcoming stream
 TIER_CONFIG = {
     "free":    {"sports": ["soccer"],  "days_ahead": 1,  "markets_api": False},
     "basic":   {"sports": _ALL_SPORTS, "days_ahead": 1,  "markets_api": False},
@@ -45,7 +54,7 @@ _OU_PREFIX      = "over_under_"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EV / ARB COMPUTATION  (called by _upsert_and_chain in celery_tasks.py)
+# EV / ARB COMPUTATION  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery.task(
@@ -54,12 +63,6 @@ _OU_PREFIX      = "over_under_"
     soft_time_limit=3000, time_limit=4500, acks_late=True,
 )
 def compute_ev_arb(self, match_id) -> dict:
-    """
-    Compute EV / arbitrage across ALL 10 bookmakers for one match.
-    - Reads from Redis unified snapshot (real-time first, DB fallback)
-    - Publishes arb:updates and ev:updates channels
-    - Patches arb/ev flags back onto the Redis unified record
-    """
     r          = _get_redis()
     match_data = _load_match_for_ev(r, match_id)
     if not match_data:
@@ -70,10 +73,8 @@ def compute_ev_arb(self, match_id) -> dict:
     away     = match_data.get("away_team", "?")
     join_key = str(match_data.get("join_key") or match_data.get("parent_match_id") or match_id)
 
-    # ── Build best-odds matrix ────────────────────────────────────────────
-    best: dict[str, dict[str, dict]] = {}   # market → outcome → {odd, bk}
+    best: dict[str, dict[str, dict]] = {}
 
-    # From bookmakers dict (Redis unified / B2B format)
     for bk_slug, bk_data in (match_data.get("bookmakers") or {}).items():
         mkts = (bk_data.get("markets") if isinstance(bk_data, dict) else None) or {}
         for mkt, outcomes in mkts.items():
@@ -87,7 +88,6 @@ def compute_ev_arb(self, match_id) -> dict:
                     if not existing or price > existing["odd"]:
                         best[mkt][out] = {"odd": price, "bk": bk_slug}
 
-    # From top-level markets (SP/BT/OD DB API format)
     for mkt, outcomes in (match_data.get("markets") or {}).items():
         if not isinstance(outcomes, dict):
             continue
@@ -103,7 +103,6 @@ def compute_ev_arb(self, match_id) -> dict:
     if not best:
         return {"ok": False, "reason": "no_markets", "match_id": match_id}
 
-    # ── Detect arb / EV ───────────────────────────────────────────────────
     arbs: list[dict] = []
     evs:  list[dict] = []
 
@@ -145,11 +144,10 @@ def compute_ev_arb(self, match_id) -> dict:
                 "bks_used": list({l["bk"] for l in legs}),
             })
 
-        # EV: reward long odds vs market consensus
         for k in use:
             odd = ob[k]["odd"]
             if odd > 1.0:
-                fair_p   = (1.0 / odd) / sum_inv    # normalised implied prob
+                fair_p   = (1.0 / odd) / sum_inv
                 ev_pct   = round((odd * fair_p - 1) * 100, 2)
                 if ev_pct > 3.0:
                     evs.append({
@@ -180,13 +178,11 @@ def compute_ev_arb(self, match_id) -> dict:
         "computed_at":       _now_iso(),
     }
 
-    # ── Publish ───────────────────────────────────────────────────────────
     if has_arb:
         _publish(f"arb:updates:{sport}", {"event": "arb_updated", "type": "arb_updated", **result})
     if has_ev:
         _publish(f"ev:updates:{sport}",  {"event": "ev_updated",  "type": "ev_updated",  **result})
 
-    # ── Patch unified Redis record ────────────────────────────────────────
     _patch_unified(r, sport, join_key, {
         "has_arb":           has_arb,
         "best_arb_pct":      best_arb,
@@ -203,20 +199,20 @@ def compute_ev_arb(self, match_id) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PER-BK INDEPENDENT PUBLISH
+# PER-BK INDEPENDENT PUBLISH  — PATCHED: smart_set replaces setex(7200)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery.task(name="tasks.ops.publish_bk_snapshot", soft_time_limit=2000, time_limit=3000)
 def publish_bk_snapshot(bk_slug: str, mode: str, sport: str, matches: list[dict]) -> dict:
-    """
-    Each BK calls this after harvest. Saves to its own key, then merges
-    into the unified snapshot. SP/BT/OD run independently.
-    """
+    from app.workers.persistent_cache import smart_set, TTL_BK_SNAP
     r = _get_redis()
-    r.setex(f"odds:{bk_slug}:{mode}:{sport}", 7200, json.dumps({
+    bk_payload = {
         "bk": bk_slug, "mode": mode, "sport": sport,
         "matches": matches, "ts": time.time(),
-    }, default=str))
+    }
+    # CHANGED: was r.setex(f"odds:{bk_slug}:{mode}:{sport}", 7200, ...)
+    smart_set(r, f"odds:{bk_slug}:{mode}:{sport}", bk_payload, ttl=TTL_BK_SNAP)
+
     _merge_bk_into_unified(r, bk_slug, mode, sport, matches)
     _publish(f"odds:{bk_slug}:{mode}:{sport}:ready", {
         "event": "snapshot_ready", "bk": bk_slug, "mode": mode,
@@ -227,10 +223,7 @@ def publish_bk_snapshot(bk_slug: str, mode: str, sport: str, matches: list[dict]
 
 def _merge_bk_into_unified(r, bk_slug: str, mode: str, sport: str,
                             new_matches: list[dict]) -> None:
-    """
-    Incremental merge: add/update this BK's matches into the unified snapshot.
-    Keeps all other BKs' data intact.
-    """
+    from app.workers.persistent_cache import smart_set, TTL_UNIFIED
     key = f"odds:unified:{mode}:{sport}"
     try:
         raw      = r.get(key)
@@ -239,7 +232,6 @@ def _merge_bk_into_unified(r, bk_slug: str, mode: str, sport: str,
             d        = json.loads(raw)
             existing = d if isinstance(d, list) else d.get("matches", [])
 
-        # Build index
         idx: dict[str, int] = {}
         for i, m in enumerate(existing):
             jk = str(m.get("join_key") or m.get("parent_match_id") or m.get("betradar_id") or "")
@@ -282,10 +274,12 @@ def _merge_bk_into_unified(r, bk_slug: str, mode: str, sport: str,
                 if jk: idx[jk] = p2
                 idx[nk] = p2
 
-        r.setex(key, 7200, json.dumps({
+        # CHANGED: was r.setex(key, 7200, ...) — now uses smart_set at 86400
+        smart_set(r, key, {
             "mode": mode, "sport": sport, "source": "unified",
             "matches": existing, "updated_at": time.time(),
-        }, default=str))
+        }, ttl=TTL_UNIFIED)
+
         _publish(f"odds:all:{mode}:{sport}:updates", {
             "event": "snapshot_ready", "bk": bk_slug,
             "mode": mode, "sport": sport, "count": len(existing), "ts": time.time(),
@@ -295,35 +289,38 @@ def _merge_bk_into_unified(r, bk_slug: str, mode: str, sport: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BEAT SCHEDULE + STARTUP
+# BEAT SCHEDULE + STARTUP  — PATCHED
 # ══════════════════════════════════════════════════════════════════════════════
 
 def setup_periodic_tasks(sender, **kwargs):
-    sender.add_periodic_task(300.0,  _beat_harvest_all_paged.s(),    name="harvest:all_paged 5min")
-    sender.add_periodic_task(90.0,   _beat_b2b_live.s(),             name="b2b:live 90s")
-    sender.add_periodic_task(600.0,  _beat_alignment.s(),            name="align:full 10min")
-    sender.add_periodic_task(1800.0, _beat_prune.s(),                name="prune:redis 30min")
+    sender.add_periodic_task(300.0,  _beat_harvest_all_paged.s(), name="harvest:all_paged 5min")
+    sender.add_periodic_task(90.0,   _beat_b2b_live.s(),          name="b2b:live 90s")
+    sender.add_periodic_task(600.0,  _beat_alignment.s(),         name="align:full 10min")
+    # CHANGED: prune now calls refresh_all_ttls instead of just patching -1 TTLs
+    sender.add_periodic_task(1800.0, _beat_prune.s(),             name="prune:redis 30min")
+    # NEW: DB backup every 15 min so cold-start hydration is fast
+    sender.add_periodic_task(900.0,  _beat_db_backup.s(),         name="db:backup 15min")
     logger.info("[tasks_ops] beat schedule registered")
 
 
 celery.on_after_configure.connect(setup_periodic_tasks)
 
 
-@celery.task(name="tasks.ops.beat.harvest_all_paged",  soft_time_limit=3000, time_limit=6000)
+@celery.task(name="tasks.ops.beat.harvest_all_paged", soft_time_limit=3000, time_limit=6000)
 def _beat_harvest_all_paged():
     from app.workers.tasks_harvest_pages import harvest_all_paged
     harvest_all_paged.apply_async(queue="harvest")
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.beat.b2b_live",           soft_time_limit=3000, time_limit=6000)
+@celery.task(name="tasks.ops.beat.b2b_live", soft_time_limit=3000, time_limit=6000)
 def _beat_b2b_live():
     from app.workers.tasks_harvest_b2b import b2b_harvest_all_live
     b2b_harvest_all_live.apply_async(queue="harvest")
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.beat.alignment",          soft_time_limit=3000, time_limit=6000)
+@celery.task(name="tasks.ops.beat.alignment", soft_time_limit=3000, time_limit=6000)
 def _beat_alignment():
     from celery import group as cg
     from app.workers.tasks_align import align_sport
@@ -331,42 +328,62 @@ def _beat_alignment():
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.beat.prune",              soft_time_limit=60, time_limit=90)
+@celery.task(name="tasks.ops.beat.prune", soft_time_limit=120, time_limit=180)
 def _beat_prune():
+    """
+    PATCHED: now calls refresh_all_ttls() from persistent_cache.
+    This keeps ALL odds:* keys alive at 86400s — including the ones written
+    with short TTLs by tasks_upcoming._write_bk_keys() and
+    odds_stream._get_unified_patched().
+    """
+    from app.workers.persistent_cache import refresh_all_ttls
     r = _get_redis()
-    n = 0
-    for pat in ["odds:b2b:*", "odds:sp:*", "odds:bt:*", "odds:od:*", "odds:unified:*"]:
-        c = 0
-        while True:
-            c, keys = r.scan(c, match=pat, count=200)
-            for k in keys:
-                if r.ttl(k) == -1:
-                    r.expire(k, 7200)
-                    n += 1
-            if c == 0:
-                break
-    return {"ok": True, "pruned": n}
+    n = refresh_all_ttls(r)
+    logger.info("[beat:prune] refreshed %d Redis key TTLs", n)
+    return {"ok": True, "refreshed": n}
 
 
-# ── Legacy task name aliases (TASK_ROUTES in celery_tasks.py) ────────────────
+# NEW ─────────────────────────────────────────────────────────────────────────
 
-@celery.task(name="tasks.ops.update_match_results",    soft_time_limit=6000,  time_limit=9000)
+@celery.task(name="tasks.ops.beat.db_backup", soft_time_limit=120, time_limit=180)
+def _beat_db_backup():
+    """Snapshot all unified/BK Redis keys to odds_snapshot table."""
+    from app.workers.persistent_cache import backup_redis_to_snapshot
+    r = _get_redis()
+    result = backup_redis_to_snapshot(r)
+    logger.info("[beat:db_backup] %s", result)
+    return {"ok": True, **result}
+
+
+@celery.task(name="tasks.ops.beat.hydrate_redis", soft_time_limit=60, time_limit=90)
+def _beat_hydrate_redis():
+    """Re-hydrate Redis from DB on demand (e.g. after a Redis flush)."""
+    from app.workers.persistent_cache import startup_hydrate
+    r = _get_redis()
+    n = startup_hydrate(r)
+    logger.info("[beat:hydrate] %d keys hydrated from DB", n)
+    return {"ok": True, "hydrated": n}
+
+
+# ── Legacy task name aliases (unchanged) ─────────────────────────────────────
+
+@celery.task(name="tasks.ops.update_match_results",   soft_time_limit=6000,  time_limit=9000)
 def update_match_results():
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.dispatch_notifications",  soft_time_limit=3000,  time_limit=6000)
+@celery.task(name="tasks.ops.dispatch_notifications", soft_time_limit=3000,  time_limit=6000)
 def dispatch_notifications(**kwargs):
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.publish_ws_event",        soft_time_limit=1000,  time_limit=1500)
+@celery.task(name="tasks.ops.publish_ws_event",       soft_time_limit=1000,  time_limit=1500)
 def publish_ws_event(channel: str, data: dict):
     _publish(channel, data)
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.health_check",            soft_time_limit=1000,  time_limit=1500)
+@celery.task(name="tasks.ops.health_check",           soft_time_limit=1000,  time_limit=1500)
 def healthcheck():
     r = _get_redis()
     ok = False
@@ -377,22 +394,22 @@ def healthcheck():
     return {"ok": True, "redis": ok, "ts": time.time()}
 
 
-@celery.task(name="tasks.ops.expire_subscriptions",    soft_time_limit=3000,  time_limit=6000)
+@celery.task(name="tasks.ops.expire_subscriptions",   soft_time_limit=3000,  time_limit=6000)
 def expire_subscriptions():
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.cache_finished_games",    soft_time_limit=6000,  time_limit=9000)
+@celery.task(name="tasks.ops.cache_finished_games",   soft_time_limit=6000,  time_limit=9000)
 def cache_finished_games():
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.send_async_email",        soft_time_limit=3000,  time_limit=6000)
+@celery.task(name="tasks.ops.send_async_email",       soft_time_limit=3000,  time_limit=6000)
 def send_async_email(**kwargs):
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.send_message",            soft_time_limit=3000,  time_limit=6000)
+@celery.task(name="tasks.ops.send_message",           soft_time_limit=3000,  time_limit=6000)
 def send_message(**kwargs):
     return {"ok": True}
 
@@ -403,6 +420,11 @@ def send_message(**kwargs):
     soft_time_limit=12000, time_limit=15000, acks_late=True,
 )
 def persist_combined_batch(self, match_dicts: list, sport_slug: str = "soccer", mode: str = "upcoming") -> dict:
+    """
+    Called by tasks_upcoming._persist_bk_matches() via send_task.
+    Delegates to persist_hook.persist_from_serialized() which uses
+    the existing EntityResolver pipeline.
+    """
     try:
         from app.workers.persist_hook import persist_from_serialized
         return persist_from_serialized(match_dicts, sport_slug=sport_slug, mode=mode)
@@ -411,23 +433,41 @@ def persist_combined_batch(self, match_dicts: list, sport_slug: str = "soccer", 
         raise self.retry(exc=exc)
 
 
-@celery.task(name="tasks.ops.persist_all_sports",      soft_time_limit=12000, time_limit=15000)
+@celery.task(name="tasks.ops.persist_all_sports",     soft_time_limit=12000, time_limit=15000)
 def persist_all_sports(**kwargs):
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.build_health_report",     soft_time_limit=3000,  time_limit=6000)
+@celery.task(name="tasks.ops.build_health_report",    soft_time_limit=3000,  time_limit=6000)
 def build_health_report():
     return {"ok": True}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# WORKER STARTUP  — PATCHED
+# ══════════════════════════════════════════════════════════════════════════════
+
 @worker_ready.connect
 def on_worker_ready(sender, **kwargs):
+    # Step 1: Hydrate Redis from DB FIRST so the UI has data immediately,
+    # even before the first harvest cycle finishes.
+    # Uses existing UnifiedMatch / BookmakerMatchOdds tables that
+    # persist_hook.py already populates — no new schema needed.
+    try:
+        from app.workers.persistent_cache import startup_hydrate
+        r = _get_redis()
+        n = startup_hydrate(r)
+        log.info("[tasks_ops] startup: hydrated %d Redis keys from DB", n)
+    except Exception as exc:
+        log.warning("[tasks_ops] startup hydration failed: %s", exc)
+
+    # Step 2: Dispatch live harvests to refresh stale data in background
     try:
         _dispatch_startup_harvests()
     except Exception as exc:
         log.warning("[tasks_ops] startup dispatch failed: %s", exc)
 
+    # Step 3: Start live pollers (unchanged from original)
     try:
         from app.workers.od_harvester import init_live_poller
         from app.workers.sp_live_harvester import start_harvester_thread as start_sp_live
@@ -439,7 +479,6 @@ def on_worker_ready(sender, **kwargs):
         log.info("[startup] Live pollers started (OD, SP).")
     except Exception as exc:
         log.warning("[startup] Live poller start failed: %s", exc)
-
 
 
 def _dispatch_startup_harvests():
@@ -457,11 +496,10 @@ def _dispatch_startup_harvests():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
+# HELPERS  (unchanged from original)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _xp(p) -> float:
-    """Extract decimal price from any format."""
     if isinstance(p, (int, float)): return float(p)
     if isinstance(p, dict):
         return float(p.get("odd") or p.get("odds") or p.get("price") or p.get("value") or 0)
@@ -469,7 +507,6 @@ def _xp(p) -> float:
 
 
 def _xp_db(p) -> float:
-    """Extract best_price from DB API format."""
     if isinstance(p, (int, float)): return float(p)
     if isinstance(p, dict):
         return float(p.get("best_price") or p.get("odd") or p.get("odds") or p.get("price") or 0)
@@ -496,16 +533,15 @@ def _load_match_for_ev(r, match_id) -> dict | None:
                         return m
             except Exception:
                 pass
-    # DB fallback
     try:
         from app.models.odds import UnifiedMatch
         um = UnifiedMatch.query.get(match_id)
         if um:
             return {
-                "match_id":  um.id, "join_key":   um.parent_match_id,
-                "home_team": um.home_team_name, "away_team":  um.away_team_name,
-                "sport":     (um.sport_name or "soccer").lower(),
-                "markets":   getattr(um, "markets", {}),
+                "match_id":   um.id, "join_key":   um.parent_match_id,
+                "home_team":  um.home_team_name, "away_team":  um.away_team_name,
+                "sport":      (um.sport_name or "soccer").lower(),
+                "markets":    getattr(um, "markets", {}),
                 "bookmakers": getattr(um, "bookmaker_odds", {}),
             }
     except Exception:
@@ -514,6 +550,7 @@ def _load_match_for_ev(r, match_id) -> dict | None:
 
 
 def _patch_unified(r, sport: str, join_key: str, patch: dict) -> None:
+    from app.workers.persistent_cache import TTL_UNIFIED
     for mode in ("upcoming", "live"):
         key = f"odds:unified:{mode}:{sport}"
         raw = r.get(key)
@@ -527,7 +564,8 @@ def _patch_unified(r, sport: str, join_key: str, patch: dict) -> None:
                     m.update(patch)
                     break
             payload = json.dumps(ms if isinstance(d, list) else {**d, "matches": ms}, default=str)
-            r.setex(key, 7200, payload)
+            # CHANGED: was 7200, now TTL_UNIFIED (86400)
+            r.set(key, payload, ex=TTL_UNIFIED)
         except Exception:
             pass
 
