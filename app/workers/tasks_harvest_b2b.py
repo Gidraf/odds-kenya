@@ -105,7 +105,9 @@ def b2b_harvest_bk_sport(
 }, default=str))
     pipe.incr(done_key)
     pipe.expire(done_key, 600)
-    _, done_count, _ = pipe.execute()
+  # FIXED — handles any number of pipeline results
+    results = pipe.execute()
+    done_count = results[1]  # done_count is always the second result
 
     r.publish(upd_ch, json.dumps({
         "event":   "bk_snapshot_ready",
