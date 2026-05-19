@@ -51,7 +51,7 @@ _OU_PREFIX      = "over_under_"
 @celery.task(
     name="tasks.ops.compute_ev_arb",
     bind=True, max_retries=2, default_retry_delay=5,
-    soft_time_limit=30, time_limit=45, acks_late=True,
+    soft_time_limit=3000, time_limit=4500, acks_late=True,
 )
 def compute_ev_arb(self, match_id) -> dict:
     """
@@ -206,7 +206,7 @@ def compute_ev_arb(self, match_id) -> dict:
 # PER-BK INDEPENDENT PUBLISH
 # ══════════════════════════════════════════════════════════════════════════════
 
-@celery.task(name="tasks.ops.publish_bk_snapshot", soft_time_limit=20, time_limit=30)
+@celery.task(name="tasks.ops.publish_bk_snapshot", soft_time_limit=2000, time_limit=3000)
 def publish_bk_snapshot(bk_slug: str, mode: str, sport: str, matches: list[dict]) -> dict:
     """
     Each BK calls this after harvest. Saves to its own key, then merges
@@ -309,21 +309,21 @@ def setup_periodic_tasks(sender, **kwargs):
 celery.on_after_configure.connect(setup_periodic_tasks)
 
 
-@celery.task(name="tasks.ops.beat.harvest_all_paged",  soft_time_limit=30, time_limit=60)
+@celery.task(name="tasks.ops.beat.harvest_all_paged",  soft_time_limit=3000, time_limit=6000)
 def _beat_harvest_all_paged():
     from app.workers.tasks_harvest_pages import harvest_all_paged
     harvest_all_paged.apply_async(queue="harvest")
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.beat.b2b_live",           soft_time_limit=30, time_limit=60)
+@celery.task(name="tasks.ops.beat.b2b_live",           soft_time_limit=3000, time_limit=6000)
 def _beat_b2b_live():
     from app.workers.tasks_harvest_b2b import b2b_harvest_all_live
     b2b_harvest_all_live.apply_async(queue="harvest")
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.beat.alignment",          soft_time_limit=30, time_limit=60)
+@celery.task(name="tasks.ops.beat.alignment",          soft_time_limit=3000, time_limit=6000)
 def _beat_alignment():
     from celery import group as cg
     from app.workers.tasks_align import align_sport
@@ -350,23 +350,23 @@ def _beat_prune():
 
 # ── Legacy task name aliases (TASK_ROUTES in celery_tasks.py) ────────────────
 
-@celery.task(name="tasks.ops.update_match_results",    soft_time_limit=60,  time_limit=90)
+@celery.task(name="tasks.ops.update_match_results",    soft_time_limit=6000,  time_limit=9000)
 def update_match_results():
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.dispatch_notifications",  soft_time_limit=30,  time_limit=60)
+@celery.task(name="tasks.ops.dispatch_notifications",  soft_time_limit=3000,  time_limit=6000)
 def dispatch_notifications(**kwargs):
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.publish_ws_event",        soft_time_limit=10,  time_limit=15)
+@celery.task(name="tasks.ops.publish_ws_event",        soft_time_limit=1000,  time_limit=1500)
 def publish_ws_event(channel: str, data: dict):
     _publish(channel, data)
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.health_check",            soft_time_limit=10,  time_limit=15)
+@celery.task(name="tasks.ops.health_check",            soft_time_limit=1000,  time_limit=1500)
 def healthcheck():
     r = _get_redis()
     ok = False
@@ -377,22 +377,22 @@ def healthcheck():
     return {"ok": True, "redis": ok, "ts": time.time()}
 
 
-@celery.task(name="tasks.ops.expire_subscriptions",    soft_time_limit=30,  time_limit=60)
+@celery.task(name="tasks.ops.expire_subscriptions",    soft_time_limit=3000,  time_limit=6000)
 def expire_subscriptions():
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.cache_finished_games",    soft_time_limit=60,  time_limit=90)
+@celery.task(name="tasks.ops.cache_finished_games",    soft_time_limit=6000,  time_limit=9000)
 def cache_finished_games():
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.send_async_email",        soft_time_limit=30,  time_limit=60)
+@celery.task(name="tasks.ops.send_async_email",        soft_time_limit=3000,  time_limit=6000)
 def send_async_email(**kwargs):
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.send_message",            soft_time_limit=30,  time_limit=60)
+@celery.task(name="tasks.ops.send_message",            soft_time_limit=3000,  time_limit=6000)
 def send_message(**kwargs):
     return {"ok": True}
 
@@ -400,7 +400,7 @@ def send_message(**kwargs):
 @celery.task(
     name="tasks.ops.persist_combined_batch",
     bind=True, max_retries=3, default_retry_delay=10,
-    soft_time_limit=120, time_limit=150, acks_late=True,
+    soft_time_limit=12000, time_limit=15000, acks_late=True,
 )
 def persist_combined_batch(self, match_dicts: list, sport_slug: str = "soccer", mode: str = "upcoming") -> dict:
     try:
@@ -411,12 +411,12 @@ def persist_combined_batch(self, match_dicts: list, sport_slug: str = "soccer", 
         raise self.retry(exc=exc)
 
 
-@celery.task(name="tasks.ops.persist_all_sports",      soft_time_limit=120, time_limit=150)
+@celery.task(name="tasks.ops.persist_all_sports",      soft_time_limit=12000, time_limit=15000)
 def persist_all_sports(**kwargs):
     return {"ok": True}
 
 
-@celery.task(name="tasks.ops.build_health_report",     soft_time_limit=30,  time_limit=60)
+@celery.task(name="tasks.ops.build_health_report",     soft_time_limit=3000,  time_limit=6000)
 def build_health_report():
     return {"ok": True}
 

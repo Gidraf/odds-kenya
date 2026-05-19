@@ -343,7 +343,7 @@ def sp_harvest_sport(self, sport_slug: str, max_matches: int = SP_MAX_MATCHES) -
 
 @celery.task(
     name="tasks.sp.harvest_all_upcoming",
-    soft_time_limit=55, time_limit=60,
+    soft_time_limit=5500, time_limit=6000,
 )
 def sp_harvest_all_upcoming() -> dict:
     """Beat task — dispatch sp_harvest_sport for every SP sport in parallel."""
@@ -436,7 +436,7 @@ def bt_od_harvest_sport(self, sport_slug: str) -> dict:
 
 @celery.task(
     name="tasks.bt_od.harvest_all_upcoming",
-    soft_time_limit=55, time_limit=60,
+    soft_time_limit=5500, time_limit=6000,
 )
 def bt_od_harvest_all_upcoming() -> dict:
     """Beat task — dispatch bt_od_harvest_sport for every BT+OD sport."""
@@ -622,7 +622,7 @@ def b2b_harvest_sport(self, sport_slug: str) -> dict:
 
 @celery.task(
     name="tasks.b2b.harvest_all_upcoming",
-    soft_time_limit=55, time_limit=60,
+    soft_time_limit=5500, time_limit=6000,
 )
 def b2b_harvest_all_upcoming() -> dict:
     sigs = [b2b_harvest_sport.s(s) for s in _B2B_SPORTS]
@@ -670,7 +670,7 @@ def od_harvest_sport(self, sport_slug: str) -> dict:
 
 @celery.task(
     name="tasks.bt.harvest_all_upcoming",
-    soft_time_limit=55, time_limit=60,
+    soft_time_limit=5500, time_limit=6000,
 )
 def bt_harvest_all_upcoming() -> dict:
     sigs = [bt_harvest_sport.s(s) for s in _BT_SPORTS]
@@ -680,7 +680,7 @@ def bt_harvest_all_upcoming() -> dict:
 
 @celery.task(
     name="tasks.od.harvest_all_upcoming",
-    soft_time_limit=55, time_limit=60,
+    soft_time_limit=5500, time_limit=6000,
 )
 def od_harvest_all_upcoming() -> dict:
     sigs = [od_harvest_sport.s(s) for s in _OD_SPORTS]

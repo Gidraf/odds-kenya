@@ -30,8 +30,8 @@ def make_celery(flask_app=None):
         task_track_started                 = True,
         task_acks_late                     = True,
         worker_prefetch_multiplier         = 1,
-        task_soft_time_limit               = 300,
-        task_time_limit                    = 360,
+        task_soft_time_limit               = 3600,
+        task_time_limit                    = 6000,
         result_expires                     = 3600,
         broker_connection_retry_on_startup = True,
         broker_heartbeat                   = 10,
@@ -104,11 +104,6 @@ def make_celery(flask_app=None):
                 "task":     "tasks.sp.harvest_all_upcoming",
                 "schedule": 300,
                 "options":  {"queue": "harvest"},
-            },
-            "bt-od-harvest-5min": {
-                "task":     "tasks.bt_od.harvest_all_paged",
-                "schedule": 300,
-                "options":  {"queue": "harvest", "countdown": 60},
             },
             "b2b-harvest-10min": {
                 "task":     "tasks.b2b.harvest_all_upcoming",

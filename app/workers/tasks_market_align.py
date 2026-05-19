@@ -267,8 +267,8 @@ def _align_single_match(um, bmo_rows: list, bk_map: dict) -> dict:
     bind=True,
     max_retries=3,          
     default_retry_delay=10, 
-    soft_time_limit=600,   
-    time_limit=660,
+    soft_time_limit=6000,   
+    time_limit=6600,
     acks_late=True,
 )
 def align_sport_markets(self, sport_slug: str, batch_size: int = 100) -> dict:
@@ -429,8 +429,8 @@ def align_all_sports() -> dict:
     bind=True,
     max_retries=3,
     default_retry_delay=5,
-    soft_time_limit=30,
-    time_limit=40,
+    soft_time_limit=3000,
+    time_limit=4000,
     acks_late=True,
 )
 def align_single_match_task(self, match_id: int) -> dict:

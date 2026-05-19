@@ -225,7 +225,7 @@ def _load_sports() -> list[str]:
     max_retries=2,
     default_retry_delay=3000,
     soft_time_limit=6000,
-    time_limit=90,
+    time_limit=9000,
     acks_late=True,
 )
 def harvest_bookmaker_sport(self, bookmaker: dict, sport: str, mode: str = "live") -> dict:
@@ -303,8 +303,8 @@ def harvest_bookmaker_sport(self, bookmaker: dict, sport: str, mode: str = "live
 
 @celery.task(
     name="app.workers.celery_tasks.harvest_all_upcoming",
-    soft_time_limit=240,
-    time_limit=300,
+    soft_time_limit=2400,
+    time_limit=3600,
 )
 def harvest_all_upcoming() -> dict:
     """Fan out upcoming harvest — fires every 5 minutes via beat."""

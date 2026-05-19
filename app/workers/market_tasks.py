@@ -73,8 +73,8 @@ def _session_alive(session_id: str) -> bool:
     name="market_tasks.enrich_upcoming_match",
     max_retries=2,
     default_retry_delay=3,
-    soft_time_limit=28,
-    time_limit=35,
+    soft_time_limit=2800,
+    time_limit=3500,
     acks_late=True,
 )
 def enrich_upcoming_match(
@@ -153,8 +153,8 @@ LIVE_MAX_ITERATIONS   = 40   # 40 × 30 s = 20 minutes max per session
     bind=True,
     name="market_tasks.refresh_live_bk_markets",
     max_retries=0,       # don't retry on failure — just re-schedule on next tick
-    soft_time_limit=55,
-    time_limit=65,
+    soft_time_limit=5500,
+    time_limit=600,
     acks_late=True,
 )
 def refresh_live_bk_markets(

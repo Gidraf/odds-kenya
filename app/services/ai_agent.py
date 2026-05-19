@@ -329,8 +329,8 @@ def health_check():
 
 @celery.task(
     name="app.workers.celery_tasks.probe_bookmaker_now",
-    soft_time_limit=30,
-    time_limit=45,
+    soft_time_limit=3600,
+    time_limit=4500,
 )
 def probe_bookmaker_now(bookmaker: dict, sport: str, mode: str = "upcoming") -> dict:
     """

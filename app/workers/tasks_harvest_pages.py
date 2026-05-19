@@ -388,7 +388,7 @@ def od_merge_pages(self, sport_slug: str, expected_pages: int = HARVEST_N_PAGES,
 @celery.task(
     name="tasks.od.harvest_sport_paged",
     bind=True, max_retries=1, default_retry_delay=60,
-    soft_time_limit=3600, time_limit=90, acks_late=True,
+    soft_time_limit=3600, time_limit=9000, acks_late=True,
 )
 def od_harvest_sport_paged(self, sport_slug: str,
                             days_ahead: int = OD_DAYS_AHEAD,
@@ -410,7 +410,7 @@ def od_harvest_sport_paged(self, sport_slug: str,
     return {"sport": sport_slug, "chunks_dispatched": len(chunks)}
 
 
-@celery.task(name="tasks.od.harvest_all_paged", soft_time_limit=3600, time_limit=600)
+@celery.task(name="tasks.od.harvest_all_paged", soft_time_limit=3600, time_limit=6000)
 def od_harvest_all_paged() -> dict:
     from celery import group as cgroup
     sigs = [od_harvest_sport_paged.s(s) for s in _OD_SPORTS]

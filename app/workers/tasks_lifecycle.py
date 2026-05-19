@@ -127,7 +127,7 @@ def save_match_result(self, join_key: str, result: dict):
     name="tasks.lifecycle.flush_live_markets",
     bind=True, max_retries=2, default_retry_delay=3,
     acks_late=True,
-    soft_time_limit=30, time_limit=60,
+    soft_time_limit=3600, time_limit=6000,
 )
 def flush_live_markets(self, join_key: str, writes: list[dict]):
     """
@@ -283,7 +283,7 @@ def notify_lifecycle_event(self, event_type: str, join_key: str, payload: dict):
 
 @celery.task(
     name="tasks.lifecycle.window_scan",
-    soft_time_limit=60, time_limit=90,
+    soft_time_limit=6000, time_limit=9000,
 )
 def window_scan_beat():
     """
