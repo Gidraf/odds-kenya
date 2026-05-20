@@ -461,8 +461,13 @@ def on_worker_ready(sender, **kwargs):
     # persist_hook.py already populates — no new schema needed.
     try:
         from app.workers.persistent_cache import startup_hydrate
+        from app import create_app as _create_app
+        import os
+        os.environ.setdefault("ENABLE_HARVESTER", "0")
+        _app = _create_app()
         r = _get_redis()
-        n = startup_hydrate(r)
+        with _app.app_context():
+            n = startup_hydrate(r)
         log.info("[tasks_ops] startup: hydrated %d Redis keys from DB", n)
     except Exception as exc:
         log.warning("[tasks_ops] startup hydration failed: %s", exc)
