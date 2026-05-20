@@ -220,9 +220,9 @@ def refresh_match(join_key: str):
       sport=soccer        (required — needed to pick correct API endpoints)
       bks=sp,bt,od        (optional — which bookmakers to query, default all three)
     """
-    user = _auth_user()
-    if not user:
-        return jsonify({"error": "Authentication required"}), 401
+    # user = _auth_user()
+    # if not user:
+    #     return jsonify({"error": "Authentication required"}), 401
 
     sport_slug = request.args.get("sport", "soccer").lower()
     bks_param  = request.args.get("bks", "sp,bt,od")
