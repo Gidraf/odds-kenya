@@ -27,6 +27,34 @@ def _debug(msg: str):
     print(f"[BT DEBUG] {msg}", file=sys.stderr)
     logger.debug(msg)
 
+CANONICAL_SPORT_IDS: dict[str, int] = {
+    "soccer":            14,
+    "tennis":            28,
+    "ice-hockey":        29,
+    "basketball":        30,
+    "baseball":          31,
+    "handball":          33,
+    "snooker":           34,
+    "volleyball":        35,
+    "mma":               36,
+    "cricket":           37,
+    "waterpolo":         38,
+    "boxing":            39,
+    "futsal":            40,
+    "rugby":             41,
+    "aussie-rules":      43,
+    "darts":             44,
+    "table-tennis":      45,
+    "floorball":         84,
+    "squash":            85,
+    "esoccer":           105,
+    "esport-king-glory": 97,
+    "esport-cs":         132,
+    "esport-dota":       133,
+    "esport-lol":        134,
+    "esport-cod":        137,
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CORRECT SPORT ID MAPPING (from Betika live sports endpoint)
