@@ -107,6 +107,7 @@ def create_app() -> Flask:
     from app.views.customer.analytic_debug           import bp_raw_stream
     from app.views.customer.bk_streams               import bp_bk_streams
     from app.api.activity_api                       import bp_activity
+    from app.api.match_refresh_api import bp_refresh
 
     # BUG FIX 2: bp_live was imported twice — second import silently overwrote
     # the first, meaning app.api's bp_live was never registered. Then the
@@ -163,6 +164,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_live_window)   # GET /api/live/*, SSE /api/live/stream/*
     flask_app.register_blueprint(bp_lifecycle)     # /api/matches/* watch routes
     flask_app.register_blueprint(bp_activity)
+    flask_app.register_blueprint(bp_refresh)
 
     # BUG FIX 3: _register_lifecycle already calls start_lifecycle_manager()
     # internally (inside a with app.app_context() block). Calling it again
