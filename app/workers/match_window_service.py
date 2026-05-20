@@ -494,7 +494,8 @@ class MatchWindowService:
       - Writes all state changes to DB
     """
 
-    def __init__(self):
+    def __init__(self, app: Any = None):
+        self.app       = app
         self.r         = _redis()
         self.router    = NotificationRouter(self.r)
         self._live_trackers: dict[str, LiveMatchTracker] = {}
@@ -551,49 +552,70 @@ class MatchWindowService:
         now     = _now()
         horizon = now + timedelta(hours=WINDOW_HOURS)
 
-        try:
-            from app.models.odds import UnifiedMatch
-            from app.extensions import db
+        app = self.app
+        if app is None:
+            try:
+                from flask import current_app
+                if current_app:
+                    app = current_app._get_current_object()
+            except Exception:
+                pass
+        if app is None:
+            try:
+                from app import create_app
+                app = create_app()
+                self.app = app
+            except Exception as e:
+                log.error("Failed to create app for context: %s", e)
 
-            matches = db.session.execute(
-                db.select(UnifiedMatch).where(
-                    UnifiedMatch.start_time.between(
-                        now - timedelta(minutes=10),  # include just-started
-                        horizon,
-                    ),
-                    UnifiedMatch.status.notin_(["finished", "cancelled"]),
-                )
-            ).scalars().all()
-
-        except Exception as e:
-            log.error("DB scan failed: %s", e)
+        if app is None:
+            log.error("No flask app available for DB scan.")
             return
 
-        pipe = self.r.pipeline()
-        window_key = "kinetic:window:active"
+        with app.app_context():
+            try:
+                from app.models.odds import UnifiedMatch
+                from app.extensions import db
 
-        for m in matches:
-            jk = str(m.parent_match_id or m.id)
-            ts = m.start_time.replace(tzinfo=tz.utc).timestamp() if m.start_time else _now_ts()
-            pipe.zadd(window_key, {jk: ts})
+                matches = db.session.execute(
+                    db.select(UnifiedMatch).where(
+                        UnifiedMatch.start_time.between(
+                            now - timedelta(minutes=10),  # include just-started
+                            horizon,
+                        ),
+                        UnifiedMatch.status.notin_(["finished", "cancelled"]),
+                    )
+                ).scalars().all()
 
-            # Cache match metadata for trackers
-            meta_key = f"kinetic:match:{jk}:meta"
-            if not self.r.exists(meta_key):
-                pipe.hmset(meta_key, {
-                    "join_key":    jk,
-                    "home_team":   m.home_team_name or "",
-                    "away_team":   m.away_team_name or "",
-                    "sport":       m.sport_name or "soccer",
-                    "competition": m.competition_name or "",
-                    "start_time":  m.start_time.isoformat() if m.start_time else "",
-                    "status":      m.status or "pending",
-                    "db_id":       str(m.id),
-                })
-                pipe.expire(meta_key, MATCH_TTL)
+            except Exception as e:
+                log.error("DB scan failed: %s", e)
+                return
 
-        pipe.expire(window_key, MATCH_TTL)
-        pipe.execute()
+            pipe = self.r.pipeline()
+            window_key = "kinetic:window:active"
+
+            for m in matches:
+                jk = str(m.parent_match_id or m.id)
+                ts = m.start_time.replace(tzinfo=tz.utc).timestamp() if m.start_time else _now_ts()
+                pipe.zadd(window_key, {jk: ts})
+
+                # Cache match metadata for trackers
+                meta_key = f"kinetic:match:{jk}:meta"
+                if not self.r.exists(meta_key):
+                    pipe.hmset(meta_key, {
+                        "join_key":    jk,
+                        "home_team":   m.home_team_name or "",
+                        "away_team":   m.away_team_name or "",
+                        "sport":       m.sport_name or "soccer",
+                        "competition": m.competition_name or "",
+                        "start_time":  m.start_time.isoformat() if m.start_time else "",
+                        "status":      m.status or "pending",
+                        "db_id":       str(m.id),
+                    })
+                    pipe.expire(meta_key, MATCH_TTL)
+
+            pipe.expire(window_key, MATCH_TTL)
+            pipe.execute()
 
         # Check for matches that should have gone live
         self._check_kickoff_times()
@@ -829,14 +851,16 @@ class MatchWindowService:
 _service: MatchWindowService | None = None
 
 
-def get_window_service() -> MatchWindowService:
+def get_window_service(app: Any = None) -> MatchWindowService:
     global _service
     if _service is None:
-        _service = MatchWindowService()
+        _service = MatchWindowService(app=app)
+    elif app is not None:
+        _service.app = app
     return _service
 
 
-def start_window_service() -> MatchWindowService:
-    svc = get_window_service()
+def start_window_service(app: Any = None) -> MatchWindowService:
+    svc = get_window_service(app=app)
     svc.start()
     return svc

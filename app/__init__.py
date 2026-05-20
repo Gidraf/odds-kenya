@@ -181,7 +181,7 @@ def create_app() -> Flask:
     # window service regardless of worker count or process type.
     try:
         from app.workers.window_leader import ensure_window_leader
-        ensure_window_leader()
+        ensure_window_leader(flask_app)
     except Exception as _e:
         print(f"[init] Window leader skipped: {_e}")
 

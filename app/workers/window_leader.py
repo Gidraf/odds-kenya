@@ -32,6 +32,7 @@ import os
 import socket
 import threading
 import time
+from typing import Any
 
 log = logging.getLogger("kinetic.window_leader")
 
@@ -59,7 +60,8 @@ class WindowLeader:
     All others wait and take over if the leader disappears.
     """
 
-    def __init__(self):
+    def __init__(self, app: Any = None):
+        self.app       = app
         self._id       = _identity()
         self._r        = _redis()
         self._is_leader = False
@@ -93,7 +95,7 @@ class WindowLeader:
         """Start the actual window service."""
         try:
             from app.workers.match_window_service import start_window_service
-            self._service = start_window_service()
+            self._service = start_window_service(self.app)
             log.info("[leader] MatchWindowService started (pid=%s)", os.getpid())
         except Exception as e:
             log.error("[leader] Failed to start window service: %s", e)
@@ -144,7 +146,7 @@ _leader: WindowLeader | None = None
 _lock   = threading.Lock()
 
 
-def ensure_window_leader() -> None:
+def ensure_window_leader(app: Any = None) -> None:
     """
     Call this from every process (web worker, Celery worker, etc).
     Only ONE process will actually run the window service.
@@ -152,23 +154,27 @@ def ensure_window_leader() -> None:
 
     Example usage in create_app():
         from app.workers.window_leader import ensure_window_leader
-        ensure_window_leader()
+        ensure_window_leader(flask_app)
 
     Example usage in Celery worker init signal:
         from celery.signals import worker_ready
         @worker_ready.connect
         def on_worker_ready(**kwargs):
-            ensure_window_leader()
+            ensure_window_leader(flask_app)
     """
     global _leader
     if _leader is not None:
+        if app is not None:
+            _leader.app = app
         return  # already started in this process
 
     with _lock:
         if _leader is not None:
+            if app is not None:
+                _leader.app = app
             return
         try:
-            _leader = WindowLeader()
+            _leader = WindowLeader(app=app)
             _leader.start()
         except Exception as e:
             log.error("Failed to start WindowLeader: %s", e)

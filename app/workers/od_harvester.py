@@ -817,6 +817,99 @@ def fetch_full_markets_for_match(
     return all_markets
 
 
+def fetch_event_detail(
+    event_id:    str | int,
+    od_sport_id: Any = "soccer",
+) -> tuple[dict[str, dict[str, float]], dict]:
+    """
+    Fetch full markets for one OD event using its Sportradar/betradar ID.
+    Smart Batching: fetches missing sub_types in chunks of 20 to get full
+    market coverage without flooding the server with individual requests.
+    """
+    sport_slug = od_sport_id if isinstance(od_sport_id, str) else "soccer"
+    
+    params: dict[str, Any] = {
+        "resource":    "sportevent",
+        "id":          str(event_id),
+        "category_id": "",
+        "sub_type_id": "",
+        "builder":     0,
+        "sportsbook":  "sportsbook",
+        "ua":          HEADERS["user-agent"],
+    }
+    data = _get(SBOOK_V1, params=params)
+    if not data or not isinstance(data, dict):
+        return {}, {}
+
+    inner = _inner(data) or data
+    info = inner.get("info") or {}
+    if not isinstance(info, dict):
+        info = {}
+
+    meta: dict = {
+        "parent_match_id": str(info.get("parent_match_id") or ""),
+        "home_team":       str(info.get("home_team")       or ""),
+        "away_team":       str(info.get("away_team")       or ""),
+        "competition":     str(info.get("competition_name") or info.get("competition") or ""),
+        "category":        str(info.get("category_name")   or info.get("country_name") or ""),
+        "start_time":      str(info.get("start_time")      or ""),
+        "current_score":   str(info.get("result")          or ""),
+        "match_time":      str(info.get("periodic_time")   or ""),
+        "event_status":    str(info.get("status_desc")     or ""),
+        "bet_status":      str(info.get("b_status")        or ""),
+        "sport_id":        str(info.get("sport_id")        or ""),
+        "s_binomen":       str(info.get("s_binomen")       or ""),
+        "game_id":         str(info.get("game_id")         or ""),
+    }
+
+    sport = _resolve_sport(info.get("s_binomen") or info.get("sport_id"), sport_slug)
+
+    markets_raw: list[dict] = list(inner.get("markets") or [])
+    markets_list = inner.get("markets_list") or []
+
+    # Smart Batching: fetch missing sub_types in one chunked request
+    if isinstance(markets_list, list):
+        fetched_sub_types = {
+            str(m.get("sub_type_id")) for m in markets_raw if m.get("sub_type_id")
+        }
+        missing = [
+            str(ml.get("sub_type_id"))
+            for ml in markets_list
+            if ml.get("sub_type_id") and str(ml.get("sub_type_id")) not in fetched_sub_types
+        ]
+        if missing:
+            logger.debug(
+                "OD fetch_event_detail: batch fetching %d missing tabs for %s",
+                len(missing), event_id,
+            )
+            for i in range(0, len(missing), 20):
+                chunk = missing[i:i + 20]
+                sub_params = {**params, "sub_type_id": ",".join(chunk)}
+                try:
+                    sub_data = _get(SBOOK_V1, sub_params)
+                    if sub_data and isinstance(sub_data, dict):
+                        sub_inner = _inner(sub_data) or sub_data
+                        sub_markets = sub_inner.get("markets") or []
+                        if isinstance(sub_markets, list):
+                            markets_raw.extend(sub_markets)
+                except Exception as exc:
+                    logger.warning("OD detail batch fetch failed: %s", exc)
+
+    if not markets_raw:
+        logger.debug("OD fetch_event_detail: no markets for id=%s", event_id)
+        return {}, meta
+
+    home_team = meta.get("home_team", "")
+    away_team = meta.get("away_team", "")
+    markets   = _parse_markets(markets_raw, sport, home_team, away_team)
+
+    logger.debug(
+        "OD fetch_event_detail: id=%s → %d raw → %d slugs",
+        event_id, len(markets_raw), len(markets),
+    )
+    return markets, meta
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MATCH NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1134,6 +1227,7 @@ __all__ = [
     "fetch_upcoming_matches", "fetch_live_matches",
     "fetch_upcoming_stream", "fetch_live_stream",
     "fetch_full_markets_for_match", "fetch_upcoming", "fetch_live",
+    "fetch_event_detail",
     "OdiBetsHarvesterPlugin", "OD_SPORT_IDS",
     "slug_to_od_sport_id", "configure_concurrency",
 ]

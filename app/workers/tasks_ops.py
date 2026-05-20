@@ -486,7 +486,7 @@ def on_worker_ready(sender, **kwargs):
         redis_client = _get_redis()
         init_live_poller(redis_client, interval=2.0)
         start_sp_live()
-        ensure_window_leader()
+        ensure_window_leader(_app)
         log.info("[startup] Live pollers started (OD, SP).")
     except Exception as exc:
         log.warning("[startup] Live poller start failed: %s", exc)
