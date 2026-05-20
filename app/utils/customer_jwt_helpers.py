@@ -14,7 +14,7 @@ from app.utils.security import _SIGNING_SECRET, _get_private_key, _get_public_ke
 def _issue_token(user_id: int, token_type: str = "access", extra: dict | None = None) -> str:
     import jwt as _jwt
     now     = datetime.now(timezone.utc)
-    expires = now + (timedelta(hours=24) if token_type == "access" else timedelta(days=30))
+    expires = now + (timedelta(days=7) if token_type == "access" else timedelta(days=30))
     payload = {
         "sub":  str(user_id),
         "type": token_type,
