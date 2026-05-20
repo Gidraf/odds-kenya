@@ -357,12 +357,18 @@ def _beat_db_backup():
 
 @celery.task(name="tasks.ops.beat.hydrate_redis", soft_time_limit=60, time_limit=90)
 def _beat_hydrate_redis():
-    """Re-hydrate Redis from DB on demand (e.g. after a Redis flush)."""
-    from app.workers.persistent_cache import startup_hydrate
-    r = _get_redis()
-    n = startup_hydrate(r)
-    logger.info("[beat:hydrate] %d keys hydrated from DB", n)
-    return {"ok": True, "hydrated": n}
+    try:
+        from app.workers.persistent_cache import startup_hydrate
+        from app import create_app as _create_app
+        import os
+        os.environ.setdefault("ENABLE_HARVESTER", "0")
+        _app = _create_app()
+        r = _get_redis()
+        with _app.app_context():
+            n = startup_hydrate(r)
+        log.info("[tasks_ops] startup: hydrated %d Redis keys from DB", n)
+    except Exception as exc:
+        log.warning("[tasks_ops] startup hydration failed: %s", exc)
 
 
 # ── Legacy task name aliases (unchanged) ─────────────────────────────────────
