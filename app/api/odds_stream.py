@@ -562,23 +562,23 @@ def _detect_arb(best: dict) -> tuple[bool, float, list]:
 
 
 def _slim(m: dict) -> dict:
-    best = m.get("best", {})
+    best = m.get("best", {}) or {}
     return {
-        "match_id":          m["match_id"],
-        "join_key":          m["join_key"],
-        "parent_match_id":   m.get("parent_match_id", m["join_key"]),
-        "home_team":         m["home_team"],
-        "away_team":         m["away_team"],
-        "competition":       m["competition"],
-        "start_time":        m["start_time"],
-        "is_live":           m["is_live"],
-        "has_arb":           m["has_arb"],
-        "best_arb_pct":      m["best_arb_pct"],
-        "bk_count":          m["bk_count"],
+        "match_id":          m.get("match_id"),
+        "join_key":          m.get("join_key"),
+        "parent_match_id":   m.get("parent_match_id") or m.get("join_key"),
+        "home_team":         m.get("home_team"),
+        "away_team":         m.get("away_team"),
+        "competition":       m.get("competition"),
+        "start_time":        m.get("start_time"),
+        "is_live":           m.get("is_live", False),
+        "has_arb":           m.get("has_arb", False),
+        "best_arb_pct":      m.get("best_arb_pct", 0.0),
+        "bk_count":          m.get("bk_count", 0),
         "market_slugs":      m.get("market_slugs", []),
         "bookmakers": {
-            k: {"bookmaker": v["bookmaker"], "slug": v["slug"], "markets": {}}
-            for k, v in (m.get("bookmakers") or {}).items()
+            k: {"bookmaker": v.get("bookmaker", k.upper()), "slug": v.get("slug", k), "markets": {}}
+            for k, v in (m.get("bookmakers") or {}).items() if isinstance(v, dict)
         },
         "best": {
             "1x2":          best.get("1x2", {}),
