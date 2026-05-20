@@ -46,11 +46,13 @@ ALL_SPORTS = [
     "darts", "american-football", "esoccer",
 ]
 
+
+# In odds_stream.py — update _BK_KEY_FORMATS to also check the non-b2b prefixed keys
 _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
     ("sp",        ["odds:sp:upcoming:{sport}",        "sp:upcoming:{sport}"]),
     ("bt",        ["odds:bt:upcoming:{sport}",        "bt:upcoming:{sport}"]),
     ("od",        ["odds:od:upcoming:{sport}",        "od:upcoming:{sport}"]),
-    ("b2b",       ["odds:b2b:upcoming:{sport}",       "b2b:upcoming:{sport}"]),
+    # B2B: try both the b2b-prefixed AND the direct key (your harvesters write both)
     ("1xbet",     ["odds:1xbet:upcoming:{sport}",     "odds:b2b:1xbet:upcoming:{sport}",     "1xbet:upcoming:{sport}"]),
     ("22bet",     ["odds:22bet:upcoming:{sport}",     "odds:b2b:22bet:upcoming:{sport}",     "22bet:upcoming:{sport}"]),
     ("betwinner", ["odds:betwinner:upcoming:{sport}", "odds:b2b:betwinner:upcoming:{sport}", "betwinner:upcoming:{sport}"]),
@@ -247,17 +249,71 @@ def _r():
 def _read_key(r, patterns, sport):
     from app.workers.bandwidth_optimizer import redis_get_decompressed
     best = None
+
     for pat in patterns:
         key = pat.format(sport=sport)
         try:
+            # ── Try the plain key first (dict with "matches") ─────────────
             data = redis_get_decompressed(r, key)
-            if not data:
+            if data:
+                matches = data.get("matches", []) if isinstance(data, dict) else data
+                if matches and (best is None or len(matches) > len(best)):
+                    best = matches
                 continue
-            matches = data.get("matches", []) if isinstance(data, dict) else data
-            if matches and (best is None or len(matches) > len(best)):
-                best = matches
-        except: continue
+
+            # ── Plain key empty — scan for paginated keys ─────────────────
+            # Pattern: odds:sp:upcoming:soccer:page:*
+            page_pattern = f"{key}:page:*"
+            page_keys    = r.keys(page_pattern)
+            if not page_keys:
+                continue
+
+            # Sort pages numerically so page:1 comes before page:10
+            def _page_num(k):
+                k_str = k.decode() if isinstance(k, bytes) else k
+                try: return int(k_str.rsplit(":", 1)[-1])
+                except: return 0
+
+            page_keys.sort(key=_page_num)
+
+            merged: list = []
+            for pk in page_keys:
+                pk_str = pk.decode() if isinstance(pk, bytes) else pk
+                try:
+                    raw = r.get(pk)
+                    if not raw:
+                        # It's a Redis LIST not a string
+                        items = r.lrange(pk, 0, -1)
+                        for item in items:
+                            try:
+                                obj = __import__("json").loads(item)
+                                if isinstance(obj, list):
+                                    merged.extend(obj)
+                                elif isinstance(obj, dict):
+                                    merged.append(obj)
+                            except: pass
+                        continue
+
+                    page_data = __import__("json").loads(raw)
+                    if isinstance(page_data, list):
+                        merged.extend(page_data)
+                    elif isinstance(page_data, dict):
+                        items = page_data.get("matches", page_data.get("data", []))
+                        if isinstance(items, list):
+                            merged.extend(items)
+                except Exception as exc:
+                    __import__("logging").getLogger(__name__).debug(
+                        "_read_key page %s: %s", pk_str, exc
+                    )
+
+            if merged and (best is None or len(merged) > len(best)):
+                best = merged
+
+        except Exception:
+            continue
+
     return best
+
 
 
 def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
