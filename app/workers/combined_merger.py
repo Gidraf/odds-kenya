@@ -375,33 +375,13 @@ def compute_arb(
     best: dict[str, dict[str, OutcomeBest]],
     min_profit_pct: float = 0.05,
 ) -> list[ArbResult]:
-    """Detect arbitrage: arb_sum < 1.0 across the best odds for each outcome."""
-    results: list[ArbResult] = []
-    for slug, outcomes in best.items():
-        if len(outcomes) < 2:
-            continue
-        arb_sum = sum(1.0 / b.best_odd for b in outcomes.values())
-        if arb_sum >= 1.0:
-            continue
-        profit_pct = (1.0 / arb_sum - 1.0) * 100
-        if profit_pct < min_profit_pct:
-            continue
-        legs = [
-            ArbLeg(
-                outcome=out,
-                bk=b.best_bk,
-                odd=b.best_odd,
-                stake_pct=round((1.0 / b.best_odd / arb_sum) * 100, 3),
-            )
-            for out, b in outcomes.items()
-        ]
-        results.append(ArbResult(
-            market_slug=slug,
-            profit_pct=round(profit_pct, 4),
-            arb_sum=round(arb_sum, 6),
-            legs=legs,
-        ))
-    return sorted(results, key=lambda a: -a.profit_pct)
+    """
+    Correct arb detection using arb_engine.
+    3-way markets use all 3 legs. 2-way markets use both legs.
+    Guaranteed no-loss stake allocation.
+    """
+    from app.workers.arb_engine import compute_arb_combined
+    return compute_arb_combined(best, min_profit_pct)
 
 
 def compute_ev(

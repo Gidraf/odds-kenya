@@ -438,55 +438,14 @@ def _build_best(bookmakers: dict) -> dict:
 
 def _detect_arb(best: dict) -> tuple[bool, float, list]:
     """
-    Find ALL arb opportunities. Skips combos where legs have the same
-    normalised outcome (prevents Yes+yes false-arb from stale cache data).
+    Correct arb detection:
+    - 3-way markets (1X2): ALL three legs must be covered simultaneously
+    - 2-way markets (Over/Under, BTTS): both legs
+    - No false arbs from pairing legs of the same market
+    - Guaranteed profit regardless of outcome
     """
-    arbs: list[dict] = []
-    seen: set[tuple] = set()
-
-    for mkt, ob in best.items():
-        keys = list(ob.keys())
-        if len(keys) < 2: continue
-
-        combos: list[tuple[str, ...]] = []
-        if mkt in _THREE_WAY_MARKETS and len(keys) >= 3:
-            trio = tuple(keys[:3])
-            combos.append(trio)
-            combos.extend(combinations(trio, 2))
-        else:
-            combos.extend(combinations(keys[:4], 2))
-
-        for use in combos:
-            # Guard: all outcomes must be distinct after normalisation
-            norm_set = {_norm_outcome(k, mkt) for k in use}
-            if len(norm_set) < len(use): continue
-
-            bks = {ob[k]["bk"] for k in use if ob[k].get("bk")}
-            if len(bks) < 2: continue
-
-            odds = [ob[k]["odd"] for k in use]
-            if any(o <= 1.0 for o in odds): continue
-
-            inv = sum(1.0 / o for o in odds)
-            if not (0 < inv < 1.0): continue
-
-            pct = round((1.0 / inv - 1.0) * 100, 3)
-            ck  = (mkt,) + tuple(sorted(use))
-            if ck in seen: continue
-            seen.add(ck)
-
-            arbs.append({
-                "market":     mkt,
-                "combo":      " + ".join(use),
-                "profit_pct": pct,
-                "legs": [{"outcome": k, "odd": ob[k]["odd"], "bk": ob[k]["bk"],
-                           "stake_pct": round((1.0 / ob[k]["odd"]) / inv, 4)} for k in use],
-                "n_bks": len(bks),
-            })
-
-    if not arbs: return False, 0.0, []
-    arbs.sort(key=lambda a: -a["profit_pct"])
-    return True, arbs[0]["profit_pct"], arbs
+    from app.workers.arb_engine import detect_arb_for_stream
+    return detect_arb_for_stream(best)
 
 
 def _slim(m: dict) -> dict:
