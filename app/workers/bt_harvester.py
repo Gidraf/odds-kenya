@@ -31,39 +31,52 @@ def _debug(msg: str):
 # ══════════════════════════════════════════════════════════════════════════════
 # CORRECT SPORT ID MAPPING (from Betika live sports endpoint)
 # ══════════════════════════════════════════════════════════════════════════════
-
-CANONICAL_SPORT_IDS: dict[str, int] = {
+BT_SPORT_ID = {
     "soccer":            14,
+    "football":          14,
     "tennis":            28,
     "ice-hockey":        29,
     "basketball":        30,
-    "baseball":          31,
-    "handball":          33,
-    "snooker":           34,
-    "volleyball":        35,
+    "volleyball":        31,
+    "cricket":           32,
+    "rugby":             33,
+    "handball":          34,
+    "table-tennis":      35,
     "mma":               36,
-    "cricket":           37,
-    "waterpolo":         38,
-    "boxing":            39,
-    "futsal":            40,
-    "rugby":             41,
-    "aussie-rules":      43,
-    "darts":             44,
-    "table-tennis":      45,
-    "floorball":         84,
-    "squash":            85,
-    "esoccer":           105,
-    "esport-king-glory": 97,
-    "esport-cs":         132,
-    "esport-dota":       133,
-    "esport-lol":        134,
-    "esport-cod":        137,
+    "boxing":            37,
+    "darts":             38,
+    "american-football": 39,
+    "esoccer":           40,
+    "baseball":          41,
 }
-
-BT_SPORT_ID_TO_SLUG: dict[int, str] = {v: k for k, v in CANONICAL_SPORT_IDS.items()}
-
+ 
+BT_SPORT_ID_TO_SLUG = {v: k for k, v in BT_SPORT_ID.items()}
+# Ensures the primary slug wins for any duplicate IDs
+BT_SPORT_ID_TO_SLUG.update({
+    14: "soccer",
+    28: "tennis",
+    29: "ice-hockey",
+    30: "basketball",
+    31: "volleyball",
+    32: "cricket",
+    33: "rugby",
+    34: "handball",
+    35: "table-tennis",
+    36: "mma",
+    37: "boxing",
+    38: "darts",
+    39: "american-football",
+    40: "esoccer",
+    41: "baseball",
+})
+ 
+ 
 def slug_to_bt_sport_id(slug: str) -> int:
-    return CANONICAL_SPORT_IDS.get(slug, 14)
+    return BT_SPORT_ID.get(slug.lower(), 14)   # default soccer
+ 
+ 
+def bt_sport_to_slug(sport_id: int) -> str:
+    return BT_SPORT_ID_TO_SLUG.get(sport_id, "soccer")
 
 def bt_sport_to_slug(sport_id: int) -> str:
     return BT_SPORT_ID_TO_SLUG.get(sport_id, "soccer")

@@ -2,6 +2,9 @@
 app/workers/sp_harvester.py
 ============================
 Sportpesa Kenya harvester – FULL MARKETS for ALL sports (markets=all).
+
+FIXED: removed hardcoded socks5h://[100.68.207.107] fallback.
+       Proxy is now always read from ALL_PROXY env var.
 """
 
 from __future__ import annotations
@@ -26,15 +29,17 @@ from app.workers.bandwidth_optimizer import (
 # =============================================================================
 # CONSTANTS & HTTP SESSION
 # =============================================================================
-_PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
+
+# FIXED: no hardcoded IP — always read from environment
+_PROXY = os.environ.get("ALL_PROXY") or os.environ.get("HTTP_PROXY") or ""
 
 try:
     from app.api.live_results_api import _sp_session_safe
     SP_SESSION = _sp_session_safe()
 except Exception:
-    import requests
     SP_SESSION = requests.Session()
-    SP_SESSION.proxies = {"http": _PROXY, "https": _PROXY}
+    if _PROXY:
+        SP_SESSION.proxies = {"http": _PROXY, "https": _PROXY}
 
 
 _BASE = "https://www.ke.sportpesa.com"
@@ -83,23 +88,22 @@ SP_SPORT_ID: dict[str, str] = {
 }
 
 # ── Sport ID → market IDs for /api/games/markets ─────────────────────────────
-# Set to "all" for every sport to fetch all available markets.
 _SPORT_MARKET_IDS: dict[str, str] = {
-    "1":   "all",      # Soccer
-    "126": "all",      # eFootball
-    "2":   "all",      # Basketball
-    "5":   "all",      # Tennis
-    "4":   "all",      # Ice Hockey
-    "23":  "all",      # Volleyball
-    "6":   "all",      # Handball
-    "16":  "all",      # Table Tennis
-    "12":  "all",      # Rugby
-    "21":  "all",      # Cricket
-    "10":  "all",      # Boxing
-    "117": "all",      # MMA
-    "49":  "all",      # Darts
-    "15":  "all",      # American Football
-    "3":   "all",      # Baseball
+    "1":   "all",
+    "126": "all",
+    "2":   "all",
+    "5":   "all",
+    "4":   "all",
+    "23":  "all",
+    "6":   "all",
+    "16":  "all",
+    "12":  "all",
+    "21":  "all",
+    "10":  "all",
+    "117": "all",
+    "49":  "all",
+    "15":  "all",
+    "3":   "all",
 }
 _DEFAULT_MARKET_IDS = "all"
 _ESOCCER_IDS = {"126"}
@@ -111,7 +115,6 @@ _ESOCCER_IDS = {"126"}
 
 def _get(path, params=None, timeout=20):
     url = f"{_BASE}{path}"
-    # sp_get_with_etag handles 304, ETag caching and compression stats
     body, headers = sp_get_with_etag(SP_SESSION, url, _HEADERS, params, timeout)
     return body, headers
 
@@ -224,9 +227,7 @@ def _fetch_markets(
         if attempt > 0:
             time.sleep(backoff[min(attempt, len(backoff) - 1)])
 
-        params = {
-            "games": gid,
-        }
+        params = {"games": gid}
         if market_ids.lower() == "all":
             params["markets"] = "all"
         else:
@@ -240,7 +241,6 @@ def _fetch_markets(
             time.sleep(2.0)
 
         result = _extract_market_list(raw, gid)
-
         if not result:
             print(f"[sp:mkts] empty game={gid} attempt={attempt}")
             continue
@@ -320,21 +320,21 @@ def _parse_match_item(item: dict) -> dict | None:
         inline = list(inline.values())
 
     return {
-        "betradar_id": betradar_id,
-        "sp_game_id": sp_game_id,
-        "home_team": home,
-        "away_team": away,
-        "start_time": _parse_timestamp(item),
-        "competition": competition,
-        "sport": sport_name,
-        "sp_sport_id": sp_sport_id,
-        "_inline_mkts": inline,
+        "betradar_id":   betradar_id,
+        "sp_game_id":    sp_game_id,
+        "home_team":     home,
+        "away_team":     away,
+        "start_time":    _parse_timestamp(item),
+        "competition":   competition,
+        "sport":         sport_name,
+        "sp_sport_id":   sp_sport_id,
+        "_inline_mkts":  inline,
         "_markets_count": item.get("marketsCount", 0),
     }
 
 def _parse_markets(
     raw_list: list[dict],
-    game_id: str = "",
+    game_id:  str = "",
     sport_id: int = 1,
 ) -> dict[str, dict[str, float]]:
     markets: dict[str, dict[str, float]] = {}
@@ -398,23 +398,23 @@ def _parse_markets(
     return result
 
 def _build_match(
-    parsed: dict,
-    markets: dict,
+    parsed:     dict,
+    markets:    dict,
     sport_slug: str,
-    status: str = "upcoming",
+    status:     str = "upcoming",
 ) -> dict:
     return {
-        "betradar_id": parsed["betradar_id"],
-        "sp_game_id": parsed["sp_game_id"],
-        "home_team": parsed["home_team"],
-        "away_team": parsed["away_team"],
-        "start_time": parsed["start_time"],
-        "competition": parsed["competition"],
-        "sport": parsed["sport"] or sport_slug,
-        "sp_sport_id": parsed.get("sp_sport_id", 1),
-        "source": "sportpesa",
-        "status": status,
-        "markets": markets,
+        "betradar_id":  parsed["betradar_id"],
+        "sp_game_id":   parsed["sp_game_id"],
+        "home_team":    parsed["home_team"],
+        "away_team":    parsed["away_team"],
+        "start_time":   parsed["start_time"],
+        "competition":  parsed["competition"],
+        "sport":        parsed["sport"] or sport_slug,
+        "sp_sport_id":  parsed.get("sp_sport_id", 1),
+        "source":       "sportpesa",
+        "status":       status,
+        "markets":      markets,
         "market_count": len(markets),
         "harvested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -425,18 +425,18 @@ def _build_match(
 # =============================================================================
 
 def _collect_raw_items(
-    sport_id: str,
-    days: int,
-    page_size: int,
-    max_items: int | None,
+    sport_id:   str,
+    days:       int,
+    page_size:  int,
+    max_items:  int | None,
     is_esoccer: bool = False,
 ) -> list[dict]:
     raw_items: list[dict] = []
-    seen_ids: set[str] = set()
+    seen_ids:  set[str]   = set()
     now_eat = datetime.now(timezone.utc) + timedelta(hours=3)
 
     for day_off in range(days):
-        day = now_eat + timedelta(days=day_off)
+        day  = now_eat + timedelta(days=day_off)
         ts_s = int(day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
         ts_e = ts_s + 86400
         offset = 0
@@ -469,33 +469,28 @@ def _get_config(sport_slug: str) -> tuple[str, str, bool, int, int]:
     if not sport_id:
         print(f"[sp] unknown sport: {sport_slug!r}")
         return "", "", False, 7, 1500
-    is_esoccer = sport_id in _ESOCCER_IDS
-    market_ids = _SPORT_MARKET_IDS.get(sport_id, _DEFAULT_MARKET_IDS)
-    market_ids = market_ids.replace("\n", "").replace(" ", "")
+    is_esoccer  = sport_id in _ESOCCER_IDS
+    market_ids  = _SPORT_MARKET_IDS.get(sport_id, _DEFAULT_MARKET_IDS)
+    market_ids  = market_ids.replace("\n", "").replace(" ", "")
     days_default = 7
-    max_default = 1500
+    max_default  = 1500
     return sport_id, market_ids, is_esoccer, days_default, max_default
 
 
 # =============================================================================
-# PUBLIC API — STREAMING GENERATORS (with offset)
+# PUBLIC API — STREAMING GENERATORS
 # =============================================================================
 
 def fetch_upcoming_stream(
     sport_slug:         str,
-    days:               int | None   = None,
-    max_matches:        int | None   = None,
-    offset:             int          = 0,
-    fetch_full_markets: bool         = True,
-    sleep_between:      float        = 0.3,
-    debug_ou:           bool         = False,
+    days:               int | None = None,
+    max_matches:        int | None = None,
+    offset:             int        = 0,
+    fetch_full_markets: bool       = True,
+    sleep_between:      float      = 0.3,
+    debug_ou:           bool       = False,
     **_,
 ) -> Generator[dict, None, None]:
-    """
-    Yield one normalised match dict at a time as markets are fetched.
-    fetch_full_markets=True (default) is required to see O/U, handicap, etc.
-    offset: skip first N matches (useful for parallel processing)
-    """
     sport_id, market_ids, is_esoccer, days_default, max_default = _get_config(sport_slug)
     if not sport_id:
         return
@@ -503,9 +498,8 @@ def fetch_upcoming_stream(
     days  = days        or days_default
     max_m = max_matches or max_default
 
-    # Fetch enough raw items to cover offset + max_m
     fetch_limit = (max_m + offset) if max_m is not None else None
-    raw_items = _collect_raw_items(sport_id, days, 30, fetch_limit, is_esoccer=is_esoccer)
+    raw_items   = _collect_raw_items(sport_id, days, 30, fetch_limit, is_esoccer=is_esoccer)
     print(f"[sp:{sport_slug}] {len(raw_items)} raw items (sportId={sport_id})")
 
     inline_count = 0
@@ -528,12 +522,11 @@ def fetch_upcoming_stream(
                 inline_count += 1
             time.sleep(sleep_between)
         else:
-            # Distant match: use free inline odds, skip the extra API call
             raw_mkts = parsed["_inline_mkts"]
             if fetch_full_markets and not near_term:
-                inline_count += 1   # counts as fallback for reporting
+                inline_count += 1
 
-        markets = _parse_markets(
+        markets    = _parse_markets(
             raw_mkts,
             game_id  = parsed["sp_game_id"] if debug_ou else "",
             sport_id = parsed.get("sp_sport_id") or int(sport_id),
@@ -561,14 +554,14 @@ def _is_near_term(start_time_str: str, days: int = 3) -> bool:
     if not start_time_str:
         return False
     try:
-        if start_time_str.endswith('Z'):
-            st = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+        if start_time_str.endswith("Z"):
+            st = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
             st = st.astimezone(timezone(timedelta(hours=3)))
         else:
             st = datetime.fromisoformat(start_time_str)
             if st.tzinfo is None:
                 st = st.replace(tzinfo=timezone(timedelta(hours=3)))
-        now = datetime.now(timezone(timedelta(hours=3)))
+        now   = datetime.now(timezone(timedelta(hours=3)))
         delta = st - now
         return timedelta(0) <= delta <= timedelta(days=days)
     except Exception:
@@ -617,7 +610,7 @@ def fetch_live_stream(
 
 
 # =============================================================================
-# PUBLIC API — BLOCKING (with offset)
+# PUBLIC API — BLOCKING
 # =============================================================================
 
 def fetch_upcoming(
@@ -631,13 +624,9 @@ def fetch_upcoming(
     **_,
 ) -> list[dict]:
     results = list(fetch_upcoming_stream(
-        sport_slug,
-        days               = days,
-        max_matches        = max_matches,
-        offset             = offset,
-        fetch_full_markets = fetch_full_markets,
-        sleep_between      = sleep_between,
-        debug_ou           = debug_ou,
+        sport_slug, days=days, max_matches=max_matches,
+        offset=offset, fetch_full_markets=fetch_full_markets,
+        sleep_between=sleep_between, debug_ou=debug_ou,
     ))
     print(f"[sp] {sport_slug}: {len(results)} normalised")
     return results
@@ -651,10 +640,8 @@ def fetch_live(
     **_,
 ) -> list[dict]:
     results = list(fetch_live_stream(
-        sport_slug,
-        fetch_full_markets = fetch_full_markets,
-        sleep_between      = sleep_between,
-        debug_ou           = debug_ou,
+        sport_slug, fetch_full_markets=fetch_full_markets,
+        sleep_between=sleep_between, debug_ou=debug_ou,
     ))
     print(f"[sp:live] {sport_slug}: {len(results)} live")
     return results
@@ -665,9 +652,5 @@ __all__ = [
     "fetch_live_stream",
     "fetch_upcoming",
     "fetch_live",
-    "fetch_match_markets",
-    "_fetch_markets_for_debug",
-    "_parse_markets_for_debug",
-    "fetch_sport_ids",
     "SP_SPORT_ID",
 ]
