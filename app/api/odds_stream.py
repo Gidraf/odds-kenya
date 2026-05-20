@@ -3,15 +3,18 @@ app/api/odds_stream.py
 ======================
 Unified SSE stream + REST endpoints for ALL 10 bookmakers.
 
-AUTH: Disabled — all endpoints are open, all tiers treated as "pro".
-      Re-enable auth by swapping _resolve_tier_open() back to _resolve_tier_anonymous().
+AUTH: Disabled — all endpoints open, all tiers treated as pro.
 
-Fixes applied:
-  1. _build_best()       — normalises outcome keys (Yes/yes, Over/OV, home/1)
-  2. _detect_arb()       — uses arb_engine (correct 2-way/3-way logic)
-  3. _normalise_markets() — applied to all BK data on ingest
-  4. sport_unavailable   — SSE event when sport has no data or is B2B-only
-  5. Token spam          — log.debug instead of log.warning for expired tokens
+Key fixes in this version:
+  1. _read_key() — reads paginated Redis LIST keys (odds:sp:upcoming:soccer:page:N)
+     AND plain string/dict keys (odds:1xbet:upcoming:soccer)
+  2. All sports wired: soccer, basketball, tennis, ice-hockey, volleyball,
+     cricket, rugby, table-tennis, darts, handball, mma, boxing,
+     american-football, baseball, esoccer
+  3. All bookmakers wired: SP, BT, OD, 1xBet, 22Bet, Betwinner,
+     Melbet, Megapari, Helabet, Paripesa
+  4. Token errors → debug level (no log spam)
+  5. sport_unavailable SSE event when sport has no data
 """
 from __future__ import annotations
 
@@ -46,20 +49,60 @@ ALL_SPORTS = [
     "darts", "american-football", "esoccer",
 ]
 
-
-# In odds_stream.py — update _BK_KEY_FORMATS to also check the non-b2b prefixed keys
+# ── BK key patterns ────────────────────────────────────────────────────────────
+# Each entry: (bk_slug, [list of Redis key patterns to try in order])
+# The reader handles both:
+#   • Plain string keys:  odds:sp:upcoming:soccer        (dict with "matches" list)
+#   • Paginated LIST keys: odds:sp:upcoming:soccer:page:1 (Redis LIST of JSON matches)
+#   • Paginated LIST keys: odds:sp:upcoming:soccer:page:2 etc.
 _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
-    ("sp",        ["odds:sp:upcoming:{sport}",        "sp:upcoming:{sport}"]),
-    ("bt",        ["odds:bt:upcoming:{sport}",        "bt:upcoming:{sport}"]),
-    ("od",        ["odds:od:upcoming:{sport}",        "od:upcoming:{sport}"]),
-    # B2B: try both the b2b-prefixed AND the direct key (your harvesters write both)
-    ("1xbet",     ["odds:1xbet:upcoming:{sport}",     "odds:b2b:1xbet:upcoming:{sport}",     "1xbet:upcoming:{sport}"]),
-    ("22bet",     ["odds:22bet:upcoming:{sport}",     "odds:b2b:22bet:upcoming:{sport}",     "22bet:upcoming:{sport}"]),
-    ("betwinner", ["odds:betwinner:upcoming:{sport}", "odds:b2b:betwinner:upcoming:{sport}", "betwinner:upcoming:{sport}"]),
-    ("melbet",    ["odds:melbet:upcoming:{sport}",    "odds:b2b:melbet:upcoming:{sport}",    "melbet:upcoming:{sport}"]),
-    ("megapari",  ["odds:megapari:upcoming:{sport}",  "odds:b2b:megapari:upcoming:{sport}",  "megapari:upcoming:{sport}"]),
-    ("helabet",   ["odds:helabet:upcoming:{sport}",   "odds:b2b:helabet:upcoming:{sport}",   "helabet:upcoming:{sport}"]),
-    ("paripesa",  ["odds:paripesa:upcoming:{sport}",  "odds:b2b:paripesa:upcoming:{sport}",  "paripesa:upcoming:{sport}"]),
+    ("sp", [
+        "odds:sp:upcoming:{sport}",
+        "sp:upcoming:{sport}",
+    ]),
+    ("bt", [
+        "odds:bt:upcoming:{sport}",
+        "bt:upcoming:{sport}",
+    ]),
+    ("od", [
+        "odds:od:upcoming:{sport}",
+        "od:upcoming:{sport}",
+    ]),
+    ("1xbet", [
+        "odds:1xbet:upcoming:{sport}",
+        "odds:b2b:1xbet:upcoming:{sport}",
+        "1xbet:upcoming:{sport}",
+    ]),
+    ("22bet", [
+        "odds:22bet:upcoming:{sport}",
+        "odds:b2b:22bet:upcoming:{sport}",
+        "22bet:upcoming:{sport}",
+    ]),
+    ("betwinner", [
+        "odds:betwinner:upcoming:{sport}",
+        "odds:b2b:betwinner:upcoming:{sport}",
+        "betwinner:upcoming:{sport}",
+    ]),
+    ("melbet", [
+        "odds:melbet:upcoming:{sport}",
+        "odds:b2b:melbet:upcoming:{sport}",
+        "melbet:upcoming:{sport}",
+    ]),
+    ("megapari", [
+        "odds:megapari:upcoming:{sport}",
+        "odds:b2b:megapari:upcoming:{sport}",
+        "megapari:upcoming:{sport}",
+    ]),
+    ("helabet", [
+        "odds:helabet:upcoming:{sport}",
+        "odds:b2b:helabet:upcoming:{sport}",
+        "helabet:upcoming:{sport}",
+    ]),
+    ("paripesa", [
+        "odds:paripesa:upcoming:{sport}",
+        "odds:b2b:paripesa:upcoming:{sport}",
+        "paripesa:upcoming:{sport}",
+    ]),
 ]
 
 _BK_KEY_FORMATS_LIVE: list[tuple[str, list[str]]] = [
@@ -68,13 +111,12 @@ _BK_KEY_FORMATS_LIVE: list[tuple[str, list[str]]] = [
     ("od", ["odds:od:live:{sport}", "od:live:{sport}"]),
 ]
 
-# ─── Outcome normalisation ────────────────────────────────────────────────────
+# ── Outcome normalisation ──────────────────────────────────────────────────────
 
 _NON_PLAYER = frozenset({
     "no_goal", "no_goalscorer", "none", "own_goal",
     "home_win", "away_win", "home_or_draw", "draw_or_away", "home_or_away",
-    "first_half", "second_half", "full_time", "both_teams",
-    "only_1", "only_2",
+    "first_half", "second_half", "full_time", "both_teams", "only_1", "only_2",
 })
 _DC_MAP = {
     "1x": "1X", "x2": "X2",
@@ -117,8 +159,7 @@ def _norm_outcome(key: str, market: str = "") -> str:
 
 
 def _get_price(p) -> float:
-    if isinstance(p, (int, float)):
-        return float(p)
+    if isinstance(p, (int, float)): return float(p)
     if isinstance(p, dict):
         for fld in ("price", "odd", "odds", "best_price", "value"):
             if p.get(fld):
@@ -129,13 +170,10 @@ def _get_price(p) -> float:
 
 
 def _normalise_markets(markets: dict) -> dict:
-    if not markets or not isinstance(markets, dict):
-        return markets or {}
+    if not markets or not isinstance(markets, dict): return markets or {}
     result = {}
     for mkt, outcomes in markets.items():
-        if not isinstance(outcomes, dict):
-            result[mkt] = outcomes
-            continue
+        if not isinstance(outcomes, dict): result[mkt] = outcomes; continue
         norm: dict = {}
         for raw_k, val in outcomes.items():
             can_k = _norm_outcome(str(raw_k), mkt)
@@ -149,81 +187,58 @@ def _normalise_markets(markets: dict) -> dict:
 
 
 # =============================================================================
-# AUTH — DISABLED (everything open/pro)
+# AUTH — DISABLED (open access)
 # =============================================================================
 
 def _auth_user():
-    """
-    Attempt to identify user from JWT/API key.
-    Returns None silently if token is missing or expired — callers treat None as anonymous.
-    Token errors are debug-level only to avoid log spam on SSE reconnects.
-    """
     from app.utils.customer_jwt_helpers import _decode_token
     from app.models.customer import Customer
-
     auth  = request.headers.get("Authorization", "")
     token = auth[7:] if auth.startswith("Bearer ") else None
     if not token:
         token = request.args.get("token", "").strip() or None
-
     if token:
         try:
-            payload  = _decode_token(token)
-            user     = Customer.query.get(int(payload["sub"]))
-            if not user:
-                return None
+            payload = _decode_token(token)
+            user    = Customer.query.get(int(payload["sub"]))
+            if not user: return None
             jwt_tier = str(payload.get("tier") or "").strip()
             db_tier  = _get_user_tier(user)
             g.jwt_tier = jwt_tier if jwt_tier in _TIER_RANK else db_tier
             return user
         except Exception as exc:
-            # Expired / invalid tokens are expected on SSE reconnects — debug only
-            log.debug("Token decode (treating as open access): %s", exc)
+            log.debug("Token decode (open access): %s", exc)
             return None
-
     api_key = request.headers.get("X-Api-Key", "").strip()
     if api_key:
         try:
             from app.models.api_key import ApiKey
             from app.models.customer import Customer as C
             ak   = ApiKey.query.filter_by(key=api_key, is_active=True).first()
-            if not ak:
-                return None
+            if not ak: return None
             user = C.query.get(ak.user_id)
-            if not (user and user.is_active):
-                return None
+            if not (user and user.is_active): return None
             g.jwt_tier = _get_user_tier(user)
             return user
         except: pass
-
     return None
 
 
 def _get_user_tier(user) -> str:
-    if not user: return "pro"   # open access default
+    if not user: return "pro"
     return (
         getattr(user, "subscription_tier", None) or
-        getattr(user, "tier", None)              or
-        getattr(user, "plan", None)              or
+        getattr(user, "tier", None) or
+        getattr(user, "plan", None) or
         "pro"
     )
 
 
 def _tier_rank(user) -> int:
-    # AUTH DISABLED: everyone gets pro rank
-    return _TIER_RANK["pro"]
-
-
-def _resolve_tier_open() -> str:
-    """
-    AUTH DISABLED: always return 'pro' so all BKs are visible to everyone.
-    To re-enable auth, swap callers back to _resolve_tier_anonymous().
-    """
-    return "pro"
+    return _TIER_RANK["pro"]  # open access
 
 
 def require_tier(min_tier: str):
-    """Decorator stub — auth disabled, all requests pass through."""
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -243,84 +258,148 @@ def _r():
 
 
 # =============================================================================
-# DATA LAYER
+# DATA LAYER — KEY READER (handles paginated LIST keys + plain string keys)
 # =============================================================================
 
-def _read_key(r, patterns, sport):
-    from app.workers.bandwidth_optimizer import redis_get_decompressed
-    best = None
+def _page_num(key) -> int:
+    """Extract page number from a key like odds:sp:upcoming:soccer:page:3 → 3"""
+    k = key.decode() if isinstance(key, bytes) else key
+    try:
+        return int(k.rsplit(":", 1)[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _read_list_key(r, key: str) -> list:
+    """
+    Read a Redis LIST key where each element is a JSON-encoded match or list of matches.
+    Returns flat list of match dicts.
+    """
+    matches = []
+    try:
+        items = r.lrange(key, 0, -1)
+        for raw in items:
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, list):
+                    matches.extend(obj)
+                elif isinstance(obj, dict):
+                    # Single match stored as dict
+                    if obj.get("home_team") or obj.get("match_id"):
+                        matches.append(obj)
+            except Exception:
+                pass
+    except Exception as exc:
+        log.debug("_read_list_key %s: %s", key, exc)
+    return matches
+
+
+def _read_string_key(r, key: str) -> list:
+    """
+    Read a Redis STRING key containing either:
+    - A JSON list of matches
+    - A JSON dict with a "matches" or "data" field
+    Returns flat list of match dicts.
+    """
+    try:
+        raw = r.get(key)
+        if not raw:
+            return []
+        obj = json.loads(raw)
+        if isinstance(obj, list):
+            return [m for m in obj if isinstance(m, dict)]
+        if isinstance(obj, dict):
+            # Try compressed format from bandwidth_optimizer
+            matches = obj.get("matches") or obj.get("data") or []
+            if isinstance(matches, list):
+                # Filter out empty/metadata-only dicts
+                return [m for m in matches if isinstance(m, dict) and
+                        (m.get("home_team") or m.get("match_id") or m.get("home_team_name"))]
+        return []
+    except Exception as exc:
+        log.debug("_read_string_key %s: %s", key, exc)
+        return []
+
+
+def _read_key(r, patterns: list[str], sport: str) -> list | None:
+    """
+    For each pattern, try:
+      1. Compressed string key (bandwidth_optimizer gz: prefix)
+      2. Plain string key (dict or list)
+      3. Paginated LIST keys (key:page:1, key:page:2, ...)
+
+    Returns the largest non-empty match list found, or None.
+    """
+    best: list | None = None
 
     for pat in patterns:
-        key = pat.format(sport=sport)
+        base_key = pat.format(sport=sport)
+        matches: list = []
+
+        # ── Try compressed/plain string key first ─────────────────────────
         try:
-            # ── Try the plain key first (dict with "matches") ─────────────
-            data = redis_get_decompressed(r, key)
+            from app.workers.bandwidth_optimizer import redis_get_decompressed
+            data = redis_get_decompressed(r, base_key)
             if data:
-                matches = data.get("matches", []) if isinstance(data, dict) else data
-                if matches and (best is None or len(matches) > len(best)):
-                    best = matches
-                continue
-
-            # ── Plain key empty — scan for paginated keys ─────────────────
-            # Pattern: odds:sp:upcoming:soccer:page:*
-            page_pattern = f"{key}:page:*"
-            page_keys    = r.keys(page_pattern)
-            if not page_keys:
-                continue
-
-            # Sort pages numerically so page:1 comes before page:10
-            def _page_num(k):
-                k_str = k.decode() if isinstance(k, bytes) else k
-                try: return int(k_str.rsplit(":", 1)[-1])
-                except: return 0
-
-            page_keys.sort(key=_page_num)
-
-            merged: list = []
-            for pk in page_keys:
-                pk_str = pk.decode() if isinstance(pk, bytes) else pk
-                try:
-                    raw = r.get(pk)
-                    if not raw:
-                        # It's a Redis LIST not a string
-                        items = r.lrange(pk, 0, -1)
-                        for item in items:
-                            try:
-                                obj = __import__("json").loads(item)
-                                if isinstance(obj, list):
-                                    merged.extend(obj)
-                                elif isinstance(obj, dict):
-                                    merged.append(obj)
-                            except: pass
-                        continue
-
-                    page_data = __import__("json").loads(raw)
-                    if isinstance(page_data, list):
-                        merged.extend(page_data)
-                    elif isinstance(page_data, dict):
-                        items = page_data.get("matches", page_data.get("data", []))
-                        if isinstance(items, list):
-                            merged.extend(items)
-                except Exception as exc:
-                    __import__("logging").getLogger(__name__).debug(
-                        "_read_key page %s: %s", pk_str, exc
-                    )
-
-            if merged and (best is None or len(merged) > len(best)):
-                best = merged
-
+                if isinstance(data, list):
+                    matches = [m for m in data if isinstance(m, dict)]
+                elif isinstance(data, dict):
+                    raw_m = data.get("matches") or data.get("data") or []
+                    matches = [m for m in raw_m if isinstance(m, dict) and
+                               (m.get("home_team") or m.get("match_id"))]
         except Exception:
-            continue
+            pass
+
+        # If compressed/plain key gave nothing, try raw string
+        if not matches:
+            matches = _read_string_key(r, base_key)
+
+        # If still nothing, try the key as a LIST
+        if not matches:
+            key_type = b""
+            try:
+                key_type = r.type(base_key) or b""
+            except Exception:
+                pass
+            if key_type in (b"list", "list"):
+                matches = _read_list_key(r, base_key)
+
+        # ── Try paginated page keys: base_key:page:1, :page:2 … ──────────
+        if not matches:
+            try:
+                page_keys = r.keys(f"{base_key}:page:*")
+            except Exception:
+                page_keys = []
+
+            if page_keys:
+                # Sort numerically so page:1 < page:2 < page:10
+                page_keys_sorted = sorted(page_keys, key=_page_num)
+                paged: list = []
+                for pk in page_keys_sorted:
+                    pk_str = pk.decode() if isinstance(pk, bytes) else pk
+                    try:
+                        pk_type = r.type(pk) or b""
+                    except Exception:
+                        pk_type = b""
+
+                    if pk_type in (b"list", "list"):
+                        paged.extend(_read_list_key(r, pk_str))
+                    else:
+                        paged.extend(_read_string_key(r, pk_str))
+
+                matches = paged
+
+        # Keep the largest result
+        if matches and (best is None or len(matches) > len(best)):
+            best = matches
 
     return best
 
 
-
 def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
-    import json, time
-    from app.workers.bandwidth_optimizer import redis_get_decompressed
-
-    r = _r()
+    r           = _r()
     unified_key = f"odds:unified:{mode}:{sport}"
 
     if not force_refresh:
@@ -348,9 +427,11 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
     if merged:
         try:
             r.setex(unified_key, 3600, json.dumps({
-                "mode": mode, "sport": sport,
-                "match_count": len(merged), "updated_at": time.time(),
-                "matches": merged,
+                "mode":        mode,
+                "sport":       sport,
+                "match_count": len(merged),
+                "updated_at":  time.time(),
+                "matches":     merged,
             }, default=str))
         except Exception:
             pass
@@ -372,20 +453,28 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
     def nk(m: dict) -> str:
         h = (m.get("home_team") or m.get("home_team_name") or "").lower().strip()
         a = (m.get("away_team") or m.get("away_team_name") or "").lower().strip()
-        def first_word(t: str) -> str:
+        def fw(t: str) -> str:
             t = t.replace(".", "").replace("-", " ").replace("_", " ")
-            parts = t.split()
-            return parts[0][:10] if parts else t[:10]
-        hc = first_word(h); ac = first_word(a)
+            p = t.split()
+            return p[0][:10] if p else t[:10]
+        hc = fw(h); ac = fw(a)
         return f"{hc}|{ac}" if hc and ac else ""
 
     for bk_slug, patterns in bk_formats:
         matches = _read_key(r, patterns, sport)
-        if not matches: continue
+        if not matches:
+            log.debug("[merge_bks] %s/%s: no data", bk_slug, sport)
+            continue
+
+        log.debug("[merge_bks] %s/%s: %d matches", bk_slug, sport, len(matches))
+
         for m in matches:
+            if not isinstance(m, dict):
+                continue
             key_jk = jk(m); key_nk = nk(m)
             pos = by_jk.get(key_jk) if key_jk else None
-            if pos is None and key_nk: pos = by_name.get(key_nk)
+            if pos is None and key_nk:
+                pos = by_name.get(key_nk)
 
             bk_bd = m.get("bookmakers", {}).get(bk_slug, {})
             mkts  = _normalise_markets(bk_bd.get("markets") or m.get("markets") or {})
@@ -447,6 +536,7 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
         m["arb_opportunities"] = arbs
         m["market_slugs"]      = list(m["best"].keys())
 
+    log.info("[merge_bks] sport=%s merged=%d matches", sport, len(result))
     return result
 
 
@@ -500,67 +590,46 @@ def _slim(m: dict) -> dict:
 
 
 def _filter_tier(matches: list[dict], tier: str) -> list[dict]:
-    """
-    AUTH DISABLED: tier is always 'pro', so this returns all matches unfiltered.
-    When auth is re-enabled, this will restrict free/basic users to local BKs only.
-    """
-    # All matches returned as-is — no BK filtering
+    # AUTH DISABLED — return all matches regardless of tier
     return matches
 
 
-def _sport_meta(sport: str, all_matches: list[dict]) -> dict | None:
-    """
-    If no matches after filtering, return a helpful payload explaining why.
-    Returns None if matches exist (no message needed).
-    """
-    if all_matches:
-        return None  # data exists and wasn't filtered — genuinely empty
-
+def _sport_unavailable_payload(sport: str) -> dict | None:
+    """Return a helpful payload when a sport has no data, or None if data exists."""
     try:
         from app.workers.bk_sport_config import (
             SP_SPORTS, BT_SPORTS, OD_SPORTS, B2B_SPORTS, bks_for_sport
         )
-        local_sports  = set(SP_SPORTS) | set(BT_SPORTS) | set(OD_SPORTS)
-        covering_bks  = bks_for_sport(sport)
-        is_b2b_only   = sport not in local_sports and sport in set(B2B_SPORTS)
-        not_covered   = sport not in set(B2B_SPORTS)
+        covering = bks_for_sport(sport)
+        local    = set(SP_SPORTS) | set(BT_SPORTS) | set(OD_SPORTS)
+        b2b_set  = set(B2B_SPORTS)
 
-        if not_covered:
+        if sport not in b2b_set and sport not in local:
             return {
-                "sport":            sport,
-                "reason":           "not_covered",
-                "message":          f"'{sport}' is not covered by any bookmaker.",
-                "covering_bks":     [],
-                "upgrade_required": False,
+                "sport": sport, "reason": "not_covered",
+                "message": f"'{sport}' is not covered by any bookmaker.",
+                "covering_bks": [], "upgrade_required": False,
             }
-        if is_b2b_only:
+        if sport not in local and sport in b2b_set:
             return {
-                "sport":        sport,
-                "reason":       "b2b_only",
-                "message":      f"{sport.title()} odds come from international bookmakers only (1xBet, 22Bet, etc). Data may still be harvesting.",
-                "available_on": ["1xbet", "22bet", "betwinner", "melbet", "megapari", "helabet", "paripesa"],
-                "covering_bks": covering_bks,
-                "upgrade_required": False,
+                "sport": sport, "reason": "b2b_only_no_data",
+                "message": f"{sport.title()} data comes from international BKs. Harvesters may still be running.",
+                "covering_bks": covering, "upgrade_required": False,
             }
         return {
-            "sport":            sport,
-            "reason":           "no_data",
-            "message":          f"No {sport} matches found yet. Harvesters may still be running.",
-            "covering_bks":     covering_bks,
-            "upgrade_required": False,
+            "sport": sport, "reason": "no_data",
+            "message": f"No {sport} matches in Redis yet. Harvesters are running — try again in a few minutes.",
+            "covering_bks": covering, "upgrade_required": False,
         }
     except ImportError:
         return {
-            "sport":   sport,
-            "reason":  "no_data",
+            "sport": sport, "reason": "no_data",
             "message": f"No {sport} matches available yet.",
         }
 
 
 def _enrich_with_window_state(matches: list[dict], r) -> list[dict]:
-    if not matches:
-        return matches
-
+    if not matches: return matches
     pipe = r.pipeline()
     for m in matches:
         jk = str(m.get("join_key") or m.get("betradar_id") or "")
@@ -569,25 +638,19 @@ def _enrich_with_window_state(matches: list[dict], r) -> list[dict]:
         pipe.hgetall(f"kinetic:match:{jk}:state")
         pipe.hgetall(f"kinetic:match:{jk}:delay")
         pipe.hgetall(f"kinetic:match:{jk}:bk_live")
-
     try:
         results = pipe.execute()
     except Exception:
         return matches
-
     enriched = []
     for i, m in enumerate(matches):
         jk = str(m.get("join_key") or m.get("betradar_id") or "")
-        if not jk:
-            enriched.append(m)
-            continue
-
+        if not jk: enriched.append(m); continue
         base  = i * 4
         score = results[base]     if base     < len(results) else {}
         state = results[base + 1] if base + 1 < len(results) else {}
         delay = results[base + 2] if base + 2 < len(results) else {}
         bk_lv = results[base + 3] if base + 3 < len(results) else {}
-
         mc = {**m}
         if score:
             if score.get("home") is not None: mc["score_home"] = score["home"]
@@ -603,17 +666,13 @@ def _enrich_with_window_state(matches: list[dict], r) -> list[dict]:
         if bk_lv:
             mc["bk_consensus"] = {bk: (v == "1") for bk, v in bk_lv.items()}
         enriched.append(mc)
-
     return enriched
 
 
 def _inject_window_only_live(existing: list[dict], r, sport: str) -> None:
     try:
         live_jks     = r.smembers("kinetic:window:live") or set()
-        existing_jks = {
-            str(m.get("join_key") or m.get("betradar_id") or "")
-            for m in existing
-        }
+        existing_jks = {str(m.get("join_key") or m.get("betradar_id") or "") for m in existing}
         for jk in live_jks:
             if jk in existing_jks: continue
             meta  = r.hgetall(f"kinetic:match:{jk}:meta") or {}
@@ -621,22 +680,16 @@ def _inject_window_only_live(existing: list[dict], r, sport: str) -> None:
             score = r.hgetall(f"kinetic:match:{jk}:score") or {}
             state = r.hgetall(f"kinetic:match:{jk}:state") or {}
             existing.append({
-                "match_id":          jk, "join_key": jk,
-                "parent_match_id":   jk, "betradar_id": jk,
-                "home_team":         meta.get("home_team", ""),
-                "away_team":         meta.get("away_team", ""),
-                "competition":       meta.get("competition", ""),
-                "sport":             sport,
-                "start_time":        meta.get("start_time", ""),
-                "status":            "live", "is_live": True, "phase": "live",
-                "score_home":        score.get("home"),
-                "score_away":        score.get("away"),
-                "match_time":        score.get("time"),
-                "live_since":        state.get("live_since", ""),
-                "has_arb":           False, "best_arb_pct": 0,
-                "arb_opportunities": [], "market_slugs": [],
-                "bookmakers":        {}, "bk_count": 0, "best": {},
-                "source":            "window_service",
+                "match_id": jk, "join_key": jk, "parent_match_id": jk, "betradar_id": jk,
+                "home_team": meta.get("home_team", ""), "away_team": meta.get("away_team", ""),
+                "competition": meta.get("competition", ""), "sport": sport,
+                "start_time": meta.get("start_time", ""), "status": "live",
+                "is_live": True, "phase": "live",
+                "score_home": score.get("home"), "score_away": score.get("away"),
+                "match_time": score.get("time"), "live_since": state.get("live_since", ""),
+                "has_arb": False, "best_arb_pct": 0, "arb_opportunities": [],
+                "market_slugs": [], "bookmakers": {}, "bk_count": 0, "best": {},
+                "source": "window_service",
             })
     except Exception:
         pass
@@ -659,50 +712,34 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "p
             yield _sse("error", {"error": str(exc), "code": 503})
             return
 
-        # AUTH DISABLED: no tier filtering — return everything
         all_matches = _get_unified_patched(mode, sport)
         matches     = _filter_tier(all_matches, tier)
 
-        # ── Inform client when sport has no data ──────────────────────────────
-        if len(matches) == 0:
-            meta = _sport_meta(sport, all_matches)
-            if meta:
-                yield _sse("sport_unavailable", meta)
+        # Inform client when sport has no data
+        if not matches:
+            payload = _sport_unavailable_payload(sport)
+            if payload:
+                yield _sse("sport_unavailable", payload)
 
-        # ── Slim batch (fast initial render) ──────────────────────────────────
         yield _sse("batch", {
             "matches": [_slim(m) for m in matches],
-            "source":  "slim",
-            "sport":   sport,
-            "mode":    mode,
-            "count":   len(matches),
-            "tier":    tier,
+            "source":  "slim", "sport": sport,
+            "mode":    mode,   "count": len(matches), "tier": tier,
         })
-
-        # ── Full batch (all markets) ──────────────────────────────────────────
         yield _sse("batch", {
             "matches": matches,
-            "source":  "full",
-            "sport":   sport,
-            "mode":    mode,
-            "count":   len(matches),
-            "tier":    tier,
+            "source":  "full", "sport": sport,
+            "mode":    mode,   "count": len(matches), "tier": tier,
         })
-
         yield _sse("connected", {
-            "status":    "connected",
-            "sport":     sport,
-            "mode":      mode,
-            "tier":      tier,
-            "live_push": live_tier,
-            "count":     len(matches),
+            "status": "connected", "sport": sport, "mode": mode,
+            "tier": tier, "live_push": live_tier, "count": len(matches),
         })
 
         if not live_tier:
             yield ": keepalive\n\n"
             return
 
-        # ── Pub/sub loop for pro+ users ───────────────────────────────────────
         pubsub   = r.pubsub(ignore_subscribe_messages=True)
         channels = [
             f"odds:all:{mode}:{sport}:updates",
@@ -731,21 +768,16 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "p
                             )
                             yield _sse("batch", {
                                 "matches": fresh, "source": "live",
-                                "sport":   sport, "mode":   mode,
-                                "count":   len(fresh),
+                                "sport": sport, "mode": mode, "count": len(fresh),
                             })
                     except Exception as exc:
                         log.debug("[stream] pubsub error: %s", exc)
-
                 if time.time() - last_ka > _KEEPALIVE:
                     yield ": keepalive\n\n"
                     last_ka = time.time()
         finally:
-            try:
-                pubsub.unsubscribe(*channels)
-                pubsub.close()
-            except Exception:
-                pass
+            try: pubsub.unsubscribe(*channels); pubsub.close()
+            except Exception: pass
 
     return generate
 
@@ -766,9 +798,8 @@ def publish_harvest_done(bk_slug: str, sport: str, count: int):
 
 
 def publish_live_update(sport: str, match_id: str, join_key: str,
-                        score_home=None, score_away=None,
-                        match_time=None, is_live=None,
-                        bookmakers: dict | None = None):
+                        score_home=None, score_away=None, match_time=None,
+                        is_live=None, bookmakers: dict | None = None):
     try:
         r = _r()
         p: dict = {"match_id": match_id, "join_key": join_key}
@@ -804,13 +835,9 @@ def stream_odds(mode: str, sport: str):
     from app.api import _err
     if mode not in ("upcoming", "live"):
         return _err("mode must be 'upcoming' or 'live'", 400)
-
-    # AUTH DISABLED — all requests get pro tier + live push
-    tier      = "pro"
-    live_tier = True
-
+    # AUTH DISABLED
     return Response(
-        stream_with_context(_make_generator(mode, sport, None, live_tier, tier)()),
+        stream_with_context(_make_generator(mode, sport, None, True, "pro")()),
         mimetype="text/event-stream",
         headers={
             "Cache-Control":                "no-cache",
@@ -825,45 +852,30 @@ def stream_odds(mode: str, sport: str):
 @bp_stream.route("/odds/snapshot/<mode>/<sport>", methods=["GET"])
 def snapshot_odds(mode: str, sport: str):
     from app.api import _signed_response
-    # AUTH DISABLED
     matches = _get_unified_patched(mode, sport)
-    return _signed_response({
-        "matches": matches,
-        "sport":   sport,
-        "mode":    mode,
-        "count":   len(matches),
-        "tier":    "pro",
-    })
+    return _signed_response({"matches": matches, "sport": sport, "mode": mode,
+                              "count": len(matches), "tier": "pro"})
 
 
 @bp_stream.route("/odds/page/<mode>/<sport>", methods=["GET"])
 def paged_odds(mode: str, sport: str):
     from app.api import _signed_response
-    # AUTH DISABLED
     page     = max(1,   request.args.get("page",     1,  type=int))
     per_page = min(200, request.args.get("per_page", 10, type=int))
     sort_by  = request.args.get("sort", "start_time")
-
-    all_m = _get_unified_patched(mode, sport)
-
+    all_m    = _get_unified_patched(mode, sport)
     if sort_by == "arb":
         all_m.sort(key=lambda m: -(m.get("best_arb_pct") or 0))
     else:
         all_m.sort(key=lambda m: m.get("start_time") or "")
-
     total  = len(all_m)
     offset = (page - 1) * per_page
-
     return _signed_response({
         "matches":  all_m[offset: offset + per_page],
-        "total":    total,
-        "page":     page,
-        "per_page": per_page,
+        "total":    total, "page": page, "per_page": per_page,
         "pages":    -(-total // per_page),
         "has_more": (offset + per_page) < total,
-        "sport":    sport,
-        "mode":     mode,
-        "tier":     "pro",
+        "sport":    sport, "mode": mode, "tier": "pro",
     })
 
 
@@ -879,8 +891,7 @@ def monitor_competitions():
     matches = _get_unified_patched(mode, sport)
     comps   = sorted({
         str(m.get("competition_name") or m.get("competition") or "").strip()
-        for m in matches
-        if (m.get("competition_name") or m.get("competition"))
+        for m in matches if (m.get("competition_name") or m.get("competition"))
     } - {""})
     return _signed_response({"competitions": comps, "sport": sport, "mode": mode})
 
@@ -914,16 +925,33 @@ def monitor_redis_keys():
     missing: list[str]      = []
     for _, patterns in _BK_KEY_FORMATS:
         for pat in patterns:
-            key = pat.format(sport=sport)
+            base = pat.format(sport=sport)
+            # Check plain key
             try:
-                raw = r.get(key)
+                raw = r.get(base)
                 if raw:
                     data = json.loads(raw)
-                    found[key] = len(data.get("matches", data) if isinstance(data, dict) else data)
+                    found[base] = len(data.get("matches", data) if isinstance(data, dict) else data)
                 else:
-                    missing.append(key)
+                    # Check paginated keys
+                    pkeys = r.keys(f"{base}:page:*")
+                    if pkeys:
+                        total = 0
+                        for pk in pkeys:
+                            pk_str = pk.decode() if isinstance(pk, bytes) else pk
+                            t = r.type(pk)
+                            if t == b"list":
+                                total += r.llen(pk)
+                            else:
+                                v = r.get(pk)
+                                if v:
+                                    d = json.loads(v)
+                                    total += len(d) if isinstance(d, list) else len(d.get("matches", []))
+                        found[f"{base}:page:* ({len(pkeys)} pages)"] = total
+                    else:
+                        missing.append(base)
             except Exception as exc:
-                missing.append(f"{key} (err: {exc})")
+                missing.append(f"{base} (err: {exc})")
     for k in [f"odds:unified:upcoming:{sport}", f"odds:unified:live:{sport}"]:
         try:
             raw = r.get(k)
@@ -934,6 +962,22 @@ def monitor_redis_keys():
         "sport": sport, "found": found, "missing": missing,
         "summary": f"{len(found)} keys, {sum(found.values())} matches",
     })
+
+
+@bp_monitor.route("/bk-data", methods=["GET"])
+def monitor_bk_data():
+    """Show exactly how many matches each BK has per sport in Redis."""
+    from app.api import _signed_response
+    sport = request.args.get("sport", "soccer")
+    r     = _r()
+    result = {}
+    for bk_slug, patterns in _BK_KEY_FORMATS:
+        matches = _read_key(r, patterns, sport)
+        result[bk_slug] = {
+            "count":   len(matches) if matches else 0,
+            "has_data": bool(matches),
+        }
+    return _signed_response({"sport": sport, "bookmakers": result})
 
 
 @bp_monitor.route("/warm-cache", methods=["GET", "POST"])
@@ -962,7 +1006,6 @@ def _register_lifecycle(app) -> None:
 @bp_stream.route("/odds/watch", methods=["POST"])
 def watch_match_inline():
     from app.api import _err, _signed_response
-    # AUTH DISABLED — use a stub user or skip watch entirely
     try:
         from app.workers.match_lifecycle import WatchPrefs, get_lifecycle_manager
     except ImportError:
