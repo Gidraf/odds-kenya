@@ -337,11 +337,11 @@ def _merge_bk_into_unified(r, bk_slug: str, mode: str, sport: str,
                 existing.append(nr)
                 if jk: idx[jk] = p2
                 idx[nk] = p2
-
-        _smart_set(r, key, {
-            "mode": mode, "sport": sport, "source": "unified",
-            "matches": existing, "updated_at": time.time(),
-        }, ttl=TTL_UNIFIED)
+        if existing:
+            _smart_set(r, key, {
+                "mode": mode, "sport": sport, "source": "unified",
+                "matches": existing, "updated_at": time.time(),
+            }, ttl=TTL_UNIFIED)
 
         _publish(f"odds:all:{mode}:{sport}:updates", {
             "event": "snapshot_ready", "bk": bk_slug,
@@ -370,13 +370,17 @@ celery.on_after_configure.connect(setup_periodic_tasks)
 @celery.task(name="tasks.ops.beat.harvest_all_paged", soft_time_limit=3000, time_limit=6000)
 def _beat_harvest_all_paged():
     try:
-        from app.workers.tasks_harvest_pages import harvest_all_paged
-        harvest_all_paged.apply_async(queue="harvest")
+        from app.workers.tasks_harvest_pages import (
+            sp_harvest_all_paged, bt_harvest_all_paged, od_harvest_all_paged,
+        )
+        sp_harvest_all_paged.apply_async(queue="harvest")
+        bt_harvest_all_paged.apply_async(queue="harvest", countdown=10)
+        od_harvest_all_paged.apply_async(queue="harvest", countdown=20)
     except ImportError as exc:
         log.warning("[beat:harvest] import failed: %s", exc)
     return {"ok": True}
 
-
+    
 @celery.task(name="tasks.ops.beat.b2b_live", soft_time_limit=3000, time_limit=6000)
 def _beat_b2b_live():
     try:

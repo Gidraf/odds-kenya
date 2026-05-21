@@ -373,23 +373,24 @@ def _read_key(r, patterns: list[str], sport: str) -> list | None:
             except Exception:
                 page_keys = []
 
-            if page_keys:
-                # Sort numerically so page:1 < page:2 < page:10
-                page_keys_sorted = sorted(page_keys, key=_page_num)
-                paged: list = []
-                for pk in page_keys_sorted:
-                    pk_str = pk.decode() if isinstance(pk, bytes) else pk
-                    try:
-                        pk_type = r.type(pk) or b""
-                    except Exception:
-                        pk_type = b""
-
-                    if pk_type in (b"list", "list"):
-                        paged.extend(_read_list_key(r, pk_str))
-                    else:
-                        paged.extend(_read_string_key(r, pk_str))
-
-                matches = paged
+            # In _read_key, replace the page_keys loop:
+        if page_keys:
+            page_keys_sorted = sorted(page_keys, key=_page_num)
+            paged: list = []
+            for pk in page_keys_sorted:
+                # Always decode to string for consistency
+                pk_str = pk.decode("utf-8") if isinstance(pk, bytes) else pk
+                try:
+                    pk_type = r.type(pk_str)  # ← use string, not bytes
+                    if isinstance(pk_type, bytes):
+                        pk_type = pk_type.decode("utf-8")
+                except Exception:
+                    pk_type = ""
+                if pk_type == "list":
+                    paged.extend(_read_list_key(r, pk_str))
+                else:
+                    paged.extend(_read_string_key(r, pk_str))
+            matches = paged
 
         # Keep the largest result
         if matches and (best is None or len(matches) > len(best)):
@@ -413,7 +414,8 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
                     matches = data.get("matches", [])
                     if mode == "live":
                         matches = _enrich_with_window_state(matches, r)
-                    return matches
+                    if matches:
+                        return matches
         except Exception:
             pass
 
