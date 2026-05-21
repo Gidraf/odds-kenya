@@ -1,70 +1,46 @@
 """
-app/api/live_results_api.py
-============================
-Results API, live match endpoints, and Celery lifecycle tasks.
+app/api/live_results_api.py  (v2 — no MatchLifecycleManager)
+==============================================================
+Reads live data directly from:
+  1. LiveFeedBridge (SP WebSocket primary, BT/OD fallback)
+  2. SP WebSocket Redis channels
+  3. Harvesters' Redis keys
 
-AUTH: Disabled — all endpoints are open (no login required).
-      To re-enable, restore the `if not user: return 401` guards.
+Only persists to DB when a match finishes.
+No lifecycle state machine, no SofaScore, no notification threads.
 
 Endpoints
 ─────────
-  GET /api/results/{sport}              — finished matches (last N days)
-  GET /api/live/matches/{sport}         — currently live matches from Redis window
-  GET /api/live/match/{join_key}        — single match full live state
-  SSE /api/live/stream/{sport}          — real-time live feed
-  SSE /api/live/match/{join_key}/stream — per-match countdown + live stream
-  GET /api/live/window                  — window service debug
+  GET /api/results/<sport>              — finished matches from DB
+  GET /api/live/matches/<sport>         — live matches from LiveFeedBridge
+  GET /api/live/match/<join_key>        — single match state
+  SSE /api/live/stream/<sport>          — real-time via Redis pub/sub
+  SSE /api/live/match/<join_key>/stream — per-match score stream
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
-log = logging.getLogger("kinetic.results_api")
+log = logging.getLogger("kinetic.live_api")
 
-bp_results = Blueprint("results",            __name__, url_prefix="/api")
-bp_live    = Blueprint("customer_live_api",  __name__, url_prefix="/api/live")
+bp_results = Blueprint("results",           __name__, url_prefix="/api")
+bp_live    = Blueprint("customer_live_api", __name__, url_prefix="/api/live")
 
 _KEEPALIVE = 20
-_TIER_RANK = {"free": 0, "basic": 1, "pro": 2, "premium": 3, "admin": 4}
 
 
-# ─── Auth — open access, try to identify user but never block ─────────────────
-
-def _auth_user():
-    """
-    Attempt to identify user. Returns None silently if unavailable.
-    AUTH DISABLED: callers do not gate on the return value.
-    """
-    from app.utils.customer_jwt_helpers import _decode_token
-    from app.models.customer import Customer
-    auth  = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else request.args.get("token", "")
-    if not token:
-        return None
-    try:
-        payload = _decode_token(token)
-        return Customer.query.get(int(payload["sub"]))
-    except Exception as exc:
-        log.debug("Token decode (open access, no gate): %s", exc)
-        return None
-
-
-def _tier(user) -> str:
-    if not user: return "pro"   # open access
-    return (
-        getattr(user, "subscription_tier", None) or
-        getattr(user, "tier", None) or "pro"
-    )
-
+# ─── Redis ────────────────────────────────────────────────────────────────────
 
 def _r():
-    from app.workers.match_window_service import _redis
-    return _redis()
+    import redis as _redis
+    url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    return _redis.Redis.from_url(url, decode_responses=True, socket_timeout=5)
 
 
 def _sse(event: str, data: dict) -> str:
@@ -75,20 +51,32 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ─── Auth — open access ───────────────────────────────────────────────────────
+
+def _auth_user():
+    try:
+        from app.utils.customer_jwt_helpers import _decode_token
+        from app.models.customer import Customer
+        auth  = request.headers.get("Authorization", "")
+        token = auth[7:] if auth.startswith("Bearer ") else request.args.get("token", "")
+        if token:
+            payload = _decode_token(token)
+            return Customer.query.get(int(payload["sub"]))
+    except Exception as exc:
+        log.debug("Auth (open): %s", exc)
+    return None
+
+
 # =============================================================================
-# RESULTS API
+# RESULTS — finished matches from DB
 # =============================================================================
 
 @bp_results.route("/results/<sport>", methods=["GET"])
 def get_results(sport: str):
     """
     GET /api/results/<sport>
-    Query params:
-      date=YYYY-MM-DD  (default today UTC)
-      days=1           (how many days back, max 30)
-      page=1
-      per_page=50      (max 200)
-    AUTH: open — no login required.
+    Reads from DB — finished matches only.
+    Open access, no auth required.
     """
     date_str  = request.args.get("date", datetime.now(timezone.utc).date().isoformat())
     days_back = min(int(request.args.get("days", 1)), 30)
@@ -99,7 +87,6 @@ def get_results(sport: str):
         from app.models.odds import UnifiedMatch
         from app.extensions import db
 
-        # Map sport slug to sport_name stored in DB
         try:
             from app.utils.entity_resolver import SPORT_SLUG_MAP
             sport_name = SPORT_SLUG_MAP.get(sport, sport.title())
@@ -124,22 +111,21 @@ def get_results(sport: str):
 
         results = []
         for m in page_res:
-            score_h = getattr(m, "final_score_home", None)
-            score_a = getattr(m, "final_score_away", None)
+            sh = getattr(m, "final_score_home", None)
+            sa = getattr(m, "final_score_away", None)
             results.append({
-                "join_key":      str(m.parent_match_id or m.id),
-                "match_id":      str(m.id),
-                "home_team":     m.home_team_name  or "",
-                "away_team":     m.away_team_name  or "",
-                "competition":   m.competition_name or "",
-                "sport":         sport,
-                "start_time":    m.start_time.isoformat() if m.start_time else "",
-                "status":        m.status or "finished",
-                "score_home":    score_h,
-                "score_away":    score_a,
-                "winner":        _calc_winner(score_h, score_a),
-                "result_source": getattr(m, "result_source", "lifecycle"),
-                "finished_at":   str(getattr(m, "finished_at", "") or ""),
+                "join_key":    str(m.parent_match_id or m.id),
+                "match_id":    str(m.id),
+                "home_team":   m.home_team_name  or "",
+                "away_team":   m.away_team_name  or "",
+                "competition": m.competition_name or "",
+                "sport":       sport,
+                "start_time":  m.start_time.isoformat() if m.start_time else "",
+                "status":      m.status or "finished",
+                "score_home":  sh,
+                "score_away":  sa,
+                "winner":      _calc_winner(sh, sa),
+                "finished_at": str(getattr(m, "finished_at", "") or ""),
             })
 
         return jsonify({
@@ -155,7 +141,7 @@ def get_results(sport: str):
         })
 
     except Exception as exc:
-        log.error("Results API error for %s: %s", sport, exc)
+        log.error("Results API error %s: %s", sport, exc)
         return jsonify({"ok": False, "error": str(exc), "results": [], "total": 0}), 500
 
 
@@ -168,168 +154,155 @@ def _calc_winner(home, away) -> str | None:
 
 
 # =============================================================================
-# LIVE MATCH API
+# LIVE MATCHES — from LiveFeedBridge (SP primary, BT/OD fallback)
 # =============================================================================
 
 @bp_live.route("/matches/<sport>", methods=["GET"])
 def live_matches(sport: str):
     """
     GET /api/live/matches/<sport>
-    Returns currently live matches from the Redis window service.
-    AUTH: open.
+    Returns live matches from LiveFeedBridge.
+    Primary source: SP WebSocket. Fallback: BT/OD Redis keys.
+    Open access.
     """
     try:
-        r        = _r()
-        live_jks = list(r.smembers("kinetic:window:live") or [])
-        matches  = []
+        from app.workers.live_feed_bridge import get_live_bridge
+        bridge  = get_live_bridge()
+        matches = bridge.get_live_matches(sport=sport)
 
-        for jk in live_jks:
-            meta = r.hgetall(f"kinetic:match:{jk}:meta") or {}
-            # Filter by sport — empty string means "all sports"
-            if sport and meta.get("sport", "") not in (sport, ""):
-                continue
-            state = r.hgetall(f"kinetic:match:{jk}:state") or {}
-            score = r.hgetall(f"kinetic:match:{jk}:score") or {}
-            delay = r.hgetall(f"kinetic:match:{jk}:delay") or {}
-            matches.append({
-                "join_key":      jk,
-                "home_team":     meta.get("home_team", ""),
-                "away_team":     meta.get("away_team", ""),
-                "competition":   meta.get("competition", ""),
-                "sport":         meta.get("sport", sport),
-                "start_time":    meta.get("start_time", ""),
-                "status":        "live",
-                "phase":         state.get("phase", "live"),
-                "live_since":    state.get("live_since", ""),
-                "score_home":    score.get("home"),
-                "score_away":    score.get("away"),
-                "match_time":    score.get("time"),
-                "has_delay":     bool(delay),
-                "delay_minutes": round(float(delay.get("delay_s", 0)) / 60, 1) if delay else 0,
-            })
-
-        return jsonify({"ok": True, "live": matches, "count": len(matches), "sport": sport})
+        return jsonify({
+            "ok":     True,
+            "live":   matches,
+            "count":  len(matches),
+            "sport":  sport,
+            "source": "sp_websocket_primary",
+            "ts":     _now_iso(),
+        })
 
     except Exception as exc:
         log.error("live_matches error %s: %s", sport, exc)
-        return jsonify({"ok": False, "live": [], "count": 0, "sport": sport, "error": str(exc)})
+        # Fallback: read from Redis window SET (set by bridge)
+        try:
+            r        = _r()
+            live_jks = list(r.smembers("kinetic:window:live") or [])
+            matches  = []
+            for jk in live_jks:
+                score = r.hgetall(f"kinetic:match:{jk}:score") or {}
+                matches.append({
+                    "join_key":   jk,
+                    "score_home": score.get("home"),
+                    "score_away": score.get("away"),
+                    "match_time": score.get("time"),
+                    "sport":      sport,
+                    "is_live":    True,
+                })
+            return jsonify({"ok": True, "live": matches, "count": len(matches),
+                            "sport": sport, "source": "redis_fallback"})
+        except Exception:
+            return jsonify({"ok": False, "live": [], "count": 0,
+                            "sport": sport, "error": str(exc)})
 
 
 @bp_live.route("/match/<join_key>", methods=["GET"])
 def live_match_detail(join_key: str):
     """
     GET /api/live/match/<join_key>
-    Returns full live state for a single match.
-    AUTH: open.
+    Returns latest known state for a match.
+    Reads from LiveFeedBridge memory → Redis score hash → SP WebSocket key.
+    Open access.
     """
+    # 1. Try LiveFeedBridge in-memory state
+    try:
+        from app.workers.live_feed_bridge import get_live_bridge
+        state = get_live_bridge().get_match_state(join_key)
+        if state:
+            return jsonify({
+                "ok":          True,
+                "join_key":    join_key,
+                "home_team":   state.get("home_team", ""),
+                "away_team":   state.get("away_team", ""),
+                "sport":       state.get("sport", ""),
+                "score_home":  state.get("score_home"),
+                "score_away":  state.get("score_away"),
+                "match_time":  state.get("match_time"),
+                "is_live":     not state.get("is_finished", False),
+                "is_finished": state.get("is_finished", False),
+                "phase":       "finished" if state.get("is_finished") else "live",
+                "source":      "bridge",
+                "ts":          _now_iso(),
+            })
+    except Exception as exc:
+        log.debug("Bridge state error %s: %s", join_key, exc)
+
+    # 2. Try Redis score hash (written by bridge)
     try:
         r     = _r()
-        meta  = r.hgetall(f"kinetic:match:{join_key}:meta") or {}
-        state = r.hgetall(f"kinetic:match:{join_key}:state") or {}
         score = r.hgetall(f"kinetic:match:{join_key}:score") or {}
-        delay = r.hgetall(f"kinetic:match:{join_key}:delay") or {}
-
-        # Pull DB markets (best effort)
-        db_markets: dict = {}
-        try:
-            from app.models.odds import UnifiedMatch
-            from app.extensions import db as _db
-            um = _db.session.execute(
-                _db.select(UnifiedMatch).where(UnifiedMatch.parent_match_id == join_key)
-            ).scalar_one_or_none()
-            if um:
-                prices = getattr(um, "bookmaker_prices", None) or {}
-                if isinstance(prices, str):
-                    import json as _json
-                    prices = _json.loads(prices)
-                db_markets = prices if isinstance(prices, dict) else {}
-        except Exception as exc:
-            log.debug("DB market fetch error for %s: %s", join_key, exc)
-
-        # Pull Redis live markets
-        redis_markets: dict = {}
-        try:
-            from app.workers.match_window_service import MatchMarketState
-            redis_markets = MatchMarketState(r, join_key).best_odds()
-        except Exception:
-            pass
-
-        merged_markets = {**db_markets, **redis_markets}
-        arb = _detect_arb_fast(merged_markets)
-
-        return jsonify({
-            "ok":            True,
-            "join_key":      join_key,
-            "home_team":     meta.get("home_team", ""),
-            "away_team":     meta.get("away_team", ""),
-            "competition":   meta.get("competition", ""),
-            "sport":         meta.get("sport", ""),
-            "start_time":    meta.get("start_time", ""),
-            "phase":         state.get("phase", "countdown"),
-            "live_since":    state.get("live_since", ""),
-            "score_home":    score.get("home"),
-            "score_away":    score.get("away"),
-            "match_time":    score.get("time"),
-            "has_delay":     bool(delay),
-            "delay_minutes": round(float(delay.get("delay_s", 0)) / 60, 1) if delay else 0,
-            "markets":       merged_markets,
-            "has_arb":       arb is not None,
-            "best_arb":      arb,
-            "ts":            _now_iso(),
-        })
-
+        if score:
+            is_live = r.sismember("kinetic:window:live", join_key)
+            return jsonify({
+                "ok":         True,
+                "join_key":   join_key,
+                "score_home": score.get("home"),
+                "score_away": score.get("away"),
+                "match_time": score.get("time"),
+                "is_live":    bool(is_live),
+                "phase":      "live" if is_live else "countdown",
+                "source":     "redis_hash",
+                "ts":         _now_iso(),
+            })
     except Exception as exc:
-        log.error("live_match_detail error %s: %s", join_key, exc)
-        return jsonify({
-            "ok": False, "join_key": join_key,
-            "phase": "countdown", "error": str(exc),
-        })
+        log.debug("Redis score hash error %s: %s", join_key, exc)
+
+    # 3. Match not found — probably not live yet
+    return jsonify({
+        "ok":       True,
+        "join_key": join_key,
+        "phase":    "countdown",
+        "is_live":  False,
+        "source":   "not_found",
+        "ts":       _now_iso(),
+    })
 
 
 # =============================================================================
-# SSE STREAMS
+# SSE STREAMS — subscribe to bus:live_updates:{sport}
 # =============================================================================
 
 @bp_live.route("/stream/<sport>", methods=["GET"])
 def live_stream(sport: str):
     """
     SSE GET /api/live/stream/<sport>
-    Real-time live match updates via Redis pub/sub.
-    AUTH: open.
+    Subscribes to bus:live_updates:{sport} — published by LiveFeedBridge.
+    Open access.
     """
     def generate():
         try:
             r      = _r()
             pubsub = r.pubsub(ignore_subscribe_messages=True)
-            pubsub.subscribe(f"ws:sport:{sport}:live", f"ws:sport:{sport}:results")
+            pubsub.subscribe(f"bus:live_updates:{sport}")
             last_ka = time.time()
 
-            # Initial snapshot of live matches
-            live_jks = list(r.smembers("kinetic:window:live") or [])
-            initial  = []
-            for jk in live_jks:
-                meta = r.hgetall(f"kinetic:match:{jk}:meta") or {}
-                if meta.get("sport", "") not in (sport, ""):
-                    continue
-                score = r.hgetall(f"kinetic:match:{jk}:score") or {}
-                initial.append({
-                    "join_key":   jk,
-                    "home_team":  meta.get("home_team", ""),
-                    "away_team":  meta.get("away_team", ""),
-                    "score_home": score.get("home"),
-                    "score_away": score.get("away"),
-                    "match_time": score.get("time"),
-                    "phase":      "live",
-                })
-            yield _sse("snapshot", {"matches": initial, "sport": sport, "count": len(initial)})
+            # Initial snapshot from bridge
+            try:
+                from app.workers.live_feed_bridge import get_live_bridge
+                live_now = get_live_bridge().get_live_matches(sport)
+            except Exception:
+                live_now = []
+
+            yield _sse("snapshot", {
+                "matches": live_now,
+                "sport":   sport,
+                "count":   len(live_now),
+                "source":  "sp_websocket",
+            })
 
             while True:
                 msg = pubsub.get_message(timeout=1.0)
                 if msg and msg.get("type") == "message":
                     try:
                         data = json.loads(msg["data"])
-                        ch   = str(msg.get("channel") or "")
-                        evt  = "result" if "results" in ch else "live_update"
+                        evt  = "result" if data.get("is_finished") else "live_update"
                         yield _sse(evt, data)
                     except Exception:
                         pass
@@ -358,34 +331,32 @@ def live_stream(sport: str):
 def match_stream(join_key: str):
     """
     SSE GET /api/live/match/<join_key>/stream
-    Per-match countdown + live tick stream.
-    AUTH: open.
+    Subscribes to live:match:{join_key}:all (SP WebSocket channel).
+    Open access.
     """
     def generate():
         try:
             r      = _r()
             pubsub = r.pubsub(ignore_subscribe_messages=True)
-            pubsub.subscribe(
-                f"ws:match:{join_key}:countdown",
-                f"ws:match:{join_key}:live",
-                f"ws:match:{join_key}:state",
-                f"ws:match:{join_key}:result",
-            )
+            # SP WebSocket publishes here directly
+            pubsub.subscribe(f"live:match:{join_key}:all")
             last_ka = time.time()
 
-            meta  = r.hgetall(f"kinetic:match:{join_key}:meta") or {}
-            state = r.hgetall(f"kinetic:match:{join_key}:state") or {}
-            score = r.hgetall(f"kinetic:match:{join_key}:score") or {}
+            # Initial state
+            try:
+                from app.workers.live_feed_bridge import get_live_bridge
+                state = get_live_bridge().get_match_state(join_key) or {}
+            except Exception:
+                state = {}
 
             yield _sse("connected", {
                 "join_key":   join_key,
-                "home_team":  meta.get("home_team", ""),
-                "away_team":  meta.get("away_team", ""),
-                "start_time": meta.get("start_time", ""),
-                "phase":      state.get("phase", "countdown"),
-                "score_home": score.get("home"),
-                "score_away": score.get("away"),
-                "match_time": score.get("time"),
+                "score_home": state.get("score_home"),
+                "score_away": state.get("score_away"),
+                "match_time": state.get("match_time"),
+                "phase":      "finished" if state.get("is_finished") else "live",
+                "home_team":  state.get("home_team", ""),
+                "away_team":  state.get("away_team", ""),
             })
 
             while True:
@@ -393,11 +364,19 @@ def match_stream(join_key: str):
                 if msg and msg.get("type") == "message":
                     try:
                         data = json.loads(msg["data"])
-                        ch   = str(msg.get("channel") or "")
-                        if   "countdown" in ch: yield _sse("countdown",   data)
-                        elif "live"      in ch: yield _sse("live_tick",    data)
-                        elif "state"     in ch: yield _sse("state_change", data)
-                        elif "result"    in ch: yield _sse("result",       data)
+                        is_finished = data.get("is_finished") or str(
+                            data.get("status") or data.get("event_status") or ""
+                        ).lower() in ("ft", "finished", "ended")
+                        evt = "result" if is_finished else "live_tick"
+                        yield _sse(evt, {
+                            "join_key":    join_key,
+                            "score_home":  data.get("score_home"),
+                            "score_away":  data.get("score_away"),
+                            "match_time":  data.get("match_time") or data.get("matchTime"),
+                            "is_finished": is_finished,
+                            "bookmakers":  data.get("bookmakers", {}),
+                            "ts":          time.time(),
+                        })
                     except Exception:
                         pass
                 if time.time() - last_ka > _KEEPALIVE:
@@ -422,151 +401,86 @@ def match_stream(join_key: str):
 
 
 # =============================================================================
-# MONITOR
+# DEBUG / MONITOR
 # =============================================================================
 
 @bp_live.route("/window", methods=["GET"])
 def window_status():
-    """GET /api/live/window — Redis window service debug."""
+    """GET /api/live/window — live match debug."""
     try:
-        r        = _r()
-        live_jks = list(r.smembers("kinetic:window:live") or [])
-        window   = r.zrange("kinetic:window:active", 0, -1, withscores=True)
-        finished = list(r.smembers("kinetic:window:finished") or [])
+        from app.workers.live_feed_bridge import get_live_bridge
+        bridge  = get_live_bridge()
+        all_live = bridge.get_live_matches()
         return jsonify({
-            "ok":             True,
-            "window_count":   len(window),
-            "live_count":     len(live_jks),
-            "finished_today": len(finished),
-            "live_matches":   live_jks[:20],
-            "window_matches": [
-                {
-                    "jk":       jk,
-                    "start_ts": ts,
-                    "phase":    r.hget(f"kinetic:match:{jk}:state", "phase") or "countdown",
-                }
-                for jk, ts in window[:20]
-            ],
+            "ok":         True,
+            "live_count": len(all_live),
+            "matches":    all_live[:20],
+            "source":     "live_feed_bridge",
         })
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        # Fallback: Redis SET
+        try:
+            r        = _r()
+            live_jks = list(r.smembers("kinetic:window:live") or [])
+            return jsonify({"ok": True, "live_count": len(live_jks),
+                            "join_keys": live_jks[:20], "source": "redis_set"})
+        except Exception:
+            return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 # =============================================================================
-# CELERY TASKS
+# CELERY TASKS (minimal — just result saving)
 # =============================================================================
 
 def register_lifecycle_tasks(celery):
-    """Register Celery tasks for match lifecycle events."""
-
-    @celery.task(name="tasks.ops.update_match_state",
-                 bind=True, max_retries=3, default_retry_delay=5)
-    def update_match_state(self, join_key: str, new_state: str, meta: dict):
-        try:
-            from app.models.odds import UnifiedMatch
-            from app.extensions import db
-            um = db.session.execute(
-                db.select(UnifiedMatch).where(UnifiedMatch.parent_match_id == join_key)
-            ).scalar_one_or_none()
-            if um:
-                um.status = new_state
-                if new_state == "live":
-                    um.live_since = datetime.fromisoformat(
-                        meta.get("live_since", _now_iso()).replace("Z", "+00:00")
-                    )
-                db.session.commit()
-        except Exception as exc:
-            raise self.retry(exc=exc)
+    """
+    Minimal Celery tasks. Only saves results.
+    No state machine, no notification dispatch.
+    """
 
     @celery.task(name="tasks.ops.save_match_result",
                  bind=True, max_retries=3, default_retry_delay=10)
     def save_match_result(self, join_key: str, result: dict):
+        """Save a finished match result to DB."""
         try:
             from app.models.odds import UnifiedMatch
             from app.extensions import db
             um = db.session.execute(
-                db.select(UnifiedMatch).where(UnifiedMatch.parent_match_id == join_key)
+                db.select(UnifiedMatch).where(
+                    UnifiedMatch.parent_match_id == join_key
+                )
             ).scalar_one_or_none()
             if um:
                 um.status           = "finished"
                 um.final_score_home = result.get("score_home")
                 um.final_score_away = result.get("score_away")
-                um.result_source    = result.get("source", "lifecycle")
+                um.result_source    = result.get("source", "sp_live")
                 um.finished_at      = datetime.now(timezone.utc)
+                db.session.commit()
+                log.info("Result saved via Celery: %s %s–%s",
+                         join_key, result.get("score_home"), result.get("score_away"))
+        except Exception as exc:
+            raise self.retry(exc=exc)
+
+    @celery.task(name="tasks.ops.update_match_state",
+                 bind=True, max_retries=2, default_retry_delay=5)
+    def update_match_state(self, join_key: str, new_state: str, meta: dict):
+        """Minimal state update — just sets status in DB."""
+        try:
+            from app.models.odds import UnifiedMatch
+            from app.extensions import db
+            um = db.session.execute(
+                db.select(UnifiedMatch).where(
+                    UnifiedMatch.parent_match_id == join_key
+                )
+            ).scalar_one_or_none()
+            if um:
+                um.status = new_state
                 db.session.commit()
         except Exception as exc:
             raise self.retry(exc=exc)
 
-    @celery.task(name="tasks.ops.flush_live_markets",
-                 bind=True, max_retries=2, default_retry_delay=3, acks_late=True)
-    def flush_live_markets(self, join_key: str, writes: list[dict]):
-        if not writes:
-            return
-        try:
-            from app.models.odds import UnifiedMatch, BookmakerMatchOdds
-            from app.models.bookmakers_model import Bookmaker
-            from app.extensions import db
-            um = db.session.execute(
-                db.select(UnifiedMatch).where(UnifiedMatch.parent_match_id == join_key)
-            ).scalar_one_or_none()
-            if not um:
-                return
-            by_bk: dict[str, list] = {}
-            for w in writes:
-                by_bk.setdefault(w["bk"], []).append(w)
-            for bk_slug, bk_writes in by_bk.items():
-                bm = Bookmaker.query.filter_by(slug=bk_slug).first()
-                if not bm:
-                    continue
-                bmo = BookmakerMatchOdds.query.filter_by(
-                    match_id=um.id, bookmaker_id=bm.id
-                ).first()
-                if not bmo:
-                    bmo = BookmakerMatchOdds(match_id=um.id, bookmaker_id=bm.id)
-                    db.session.add(bmo)
-                    db.session.flush()
-                for w in bk_writes:
-                    try:
-                        bmo.upsert_selection(
-                            market=w["slug"], specifier=None,
-                            selection=w["outcome"], price=float(w["odd"]),
-                        )
-                    except Exception:
-                        pass
-            db.session.commit()
-        except Exception as exc:
-            raise self.retry(exc=exc)
-
-    @celery.task(name="tasks.notify.lifecycle_event",
-                 bind=True, max_retries=2, default_retry_delay=5)
-    def lifecycle_event(self, event_type: str, join_key: str, payload: dict):
-        try:
-            from app.workers.match_lifecycle import get_lifecycle_manager
-            mgr   = get_lifecycle_manager()
-            saved = mgr.get_watch(join_key)
-            if not saved:
-                return
-            from app.workers.match_lifecycle import Notification, NotificationDispatcher
-            dispatcher = NotificationDispatcher()
-            event_to_notif = {
-                "state_change":  ("State Changed", payload.get("new_state", "").upper()),
-                "result":        ("Match Finished", _result_body(payload)),
-                "kickoff_delay": ("Kickoff Delayed",
-                                  f"Delayed by {payload.get('delay_minutes', 0):.0f} min"),
-            }
-            title, body = event_to_notif.get(event_type, (event_type, str(payload)))
-            for watcher in saved.watchers:
-                if event_type not in watcher.notify_on:
-                    continue
-                notif = Notification(
-                    match=saved, watcher=watcher,
-                    event_type=event_type, title=title, body=body, data=payload,
-                )
-                dispatcher.dispatch(notif)
-        except Exception as exc:
-            raise self.retry(exc=exc)
-
-    return update_match_state, save_match_result, flush_live_markets, lifecycle_event
+    return save_match_result, update_match_state
 
 
 # =============================================================================
@@ -574,69 +488,19 @@ def register_lifecycle_tasks(celery):
 # =============================================================================
 
 def _sp_session_safe():
-    """
-    Returns a requests.Session with proxy from env.
-    Never hardcodes an IP — reads ALL_PROXY from environment only.
-    """
-    import os
-    import requests
+    import os, requests
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
-
-    proxy = os.environ.get("ALL_PROXY") or os.environ.get("HTTP_PROXY") or ""
-
+    proxy   = os.environ.get("ALL_PROXY") or os.environ.get("HTTP_PROXY") or ""
     session = requests.Session()
     if proxy:
         session.proxies = {"http": proxy, "https": proxy}
-
     retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=20)
     session.mount("https://", adapter)
-    session.mount("http://",  adapter)
-    session.headers.update({
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection":      "keep-alive",
-    })
-
+    session.mount("http://", adapter)
     try:
         from app.workers.bandwidth_optimizer import compressed_session
         return compressed_session(proxy=proxy)
     except ImportError:
         return session
-
-
-# =============================================================================
-# HELPERS
-# =============================================================================
-
-def _detect_arb_fast(markets: dict) -> dict | None:
-    """Quick 2-leg arb scan for the live match detail endpoint."""
-    from itertools import combinations
-    best_arb = None
-    for slug, outcomes in markets.items():
-        try:
-            outs = {
-                k: float(v["odd"]) if isinstance(v, dict) else float(v)
-                for k, v in outcomes.items()
-                if isinstance(v, (int, float, dict))
-            }
-        except Exception:
-            continue
-        keys = [k for k, v in outs.items() if v > 1]
-        for combo in combinations(keys[:4], 2):
-            odds = [outs[k] for k in combo]
-            inv  = sum(1 / o for o in odds)
-            if inv < 1.0:
-                pct = round((1 / inv - 1) * 100, 3)
-                if not best_arb or pct > best_arb["profit_pct"]:
-                    best_arb = {
-                        "market":     slug,
-                        "profit_pct": pct,
-                        "legs":       [{"outcome": k, "odd": outs[k]} for k in combo],
-                    }
-    return best_arb
-
-
-def _result_body(payload: dict) -> str:
-    r = payload.get("result") or {}
-    return f"Final: {r.get('score_home', '?')}–{r.get('score_away', '?')}"

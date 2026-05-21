@@ -1,3 +1,4 @@
+from app.workers.live_feed_bridge import start_live_bridge
 import os
 import threading
 from flask import Flask
@@ -123,7 +124,7 @@ def create_app() -> Flask:
     from app.api.odds_stream    import bp_stream, bp_monitor as bp_monitor_new, _register_lifecycle
     from app.api.notifications  import bp_notify
     from app.views.odds.admin   import bp_admin as debug_admin
-    from app.workers.match_lifecycle import bp_lifecycle
+    # from app.workers.match_lifecycle import bp_lifecycle
 
     # New blueprints from live_results_api — aliased to avoid name collision
     from app.api.live_results_api import (
@@ -162,7 +163,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_notify)
     flask_app.register_blueprint(bp_results)       # GET /api/results/<sport>
     flask_app.register_blueprint(bp_live_window)   # GET /api/live/*, SSE /api/live/stream/*
-    flask_app.register_blueprint(bp_lifecycle)     # /api/matches/* watch routes
+    # flask_app.register_blueprint(bp_lifecycle)     # /api/matches/* watch routes
     flask_app.register_blueprint(bp_activity)
     flask_app.register_blueprint(bp_refresh)
 
@@ -171,7 +172,8 @@ def create_app() -> Flask:
     # immediately after starts TWO MatchLifecycleManager threads, meaning
     # every state-change fires notifications twice and every DB write happens
     # twice. Remove the bare start_lifecycle_manager() call.
-    _register_lifecycle(flask_app)
+    # _register_lifecycle(flask_app)
+    start_live_bridge()
     # start_lifecycle_manager()  ← REMOVED: already called inside _register_lifecycle
 
     # ── Window service leader election ────────────────────────────────────────
