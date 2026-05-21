@@ -1,20 +1,20 @@
 """
-app/api/odds_stream.py
-======================
-Unified SSE stream + REST endpoints for ALL 10 bookmakers.
+app/api/odds_stream.py  v2
+===========================
+AUTH: Disabled — all endpoints open, tier = pro.
 
-AUTH: Disabled — all endpoints open, all tiers treated as pro.
-
-Key fixes in this version:
-  1. _read_key() — reads paginated Redis LIST keys (odds:sp:upcoming:soccer:page:N)
-     AND plain string/dict keys (odds:1xbet:upcoming:soccer)
-  2. All sports wired: soccer, basketball, tennis, ice-hockey, volleyball,
-     cricket, rugby, table-tennis, darts, handball, mma, boxing,
-     american-football, baseball, esoccer
-  3. All bookmakers wired: SP, BT, OD, 1xBet, 22Bet, Betwinner,
-     Melbet, Megapari, Helabet, Paripesa
-  4. Token errors → debug level (no log spam)
-  5. sport_unavailable SSE event when sport has no data
+Fixes in this version:
+  1. _read_key()        — reads paginated Redis LIST keys + plain string keys
+  2. _get_unified_patched() — skips empty cache (stops cache poisoning)
+  3. _detect_arb()      — try/except fallback if arb_engine missing
+  4. _merge_bks()       — arb detection wrapped per-match so one crash
+                          doesn't wipe all 2000 matches
+  5. SSE full batch     — strips raw per-BK markets (can be 50KB per match)
+                          so total payload stays under 500KB
+  6. /odds/match/<id>/markets — on-demand full markets for MatchDetail
+  7. /monitor/debug-stream/<sport> — diagnostic endpoint
+  8. Token errors       — debug level only (no log spam)
+  9. sport_unavailable  — SSE event with reason when sport has no data
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ import re
 import time
 import logging
 from functools import wraps
-from itertools import combinations
 
 from flask import Blueprint, Response, request, stream_with_context, g
 
@@ -37,10 +36,6 @@ _LOCAL_BKS = {"sp", "bt", "od"}
 _KEEPALIVE  = 20
 _CACHE_TTL  = 300
 
-_THREE_WAY_MARKETS = frozenset({
-    "match_winner", "1x2", "moneyline", "first_half_1x2",
-    "second_half_1x2", "draw_no_bet",
-})
 _HTFT_MARKETS = frozenset({"ht_ft", "half_time_full_time", "htft"})
 
 ALL_SPORTS = [
@@ -49,12 +44,6 @@ ALL_SPORTS = [
     "darts", "american-football", "esoccer",
 ]
 
-# ── BK key patterns ────────────────────────────────────────────────────────────
-# Each entry: (bk_slug, [list of Redis key patterns to try in order])
-# The reader handles both:
-#   • Plain string keys:  odds:sp:upcoming:soccer        (dict with "matches" list)
-#   • Paginated LIST keys: odds:sp:upcoming:soccer:page:1 (Redis LIST of JSON matches)
-#   • Paginated LIST keys: odds:sp:upcoming:soccer:page:2 etc.
 _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
     ("sp", [
         "odds:sp:upcoming:{sport}",
@@ -146,8 +135,8 @@ def _norm_outcome(key: str, market: str = "") -> str:
     kl = k.lower()
     if kl in _DC_MAP:     return _DC_MAP[kl]
     if kl in _SIMPLE_MAP: return _SIMPLE_MAP[kl]
-    if re.match(r"^\d+:\d+$",    k): return k
-    if re.match(r"^\d+\+?$",     k): return k
+    if re.match(r"^\d+:\d+$",       k): return k
+    if re.match(r"^\d+\+?$",        k): return k
     if re.match(r"^[12xX]/[12xX]$", k): return k
     if kl in _HTFT_CONCAT and market in _HTFT_MARKETS:
         return _HTFT_CONCAT[kl]
@@ -187,40 +176,31 @@ def _normalise_markets(markets: dict) -> dict:
 
 
 # =============================================================================
-# AUTH — DISABLED (open access)
+# AUTH — DISABLED
 # =============================================================================
 
 def _auth_user():
-    from app.utils.customer_jwt_helpers import _decode_token
-    from app.models.customer import Customer
-    auth  = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else None
-    if not token:
-        token = request.args.get("token", "").strip() or None
-    if token:
-        try:
-            payload = _decode_token(token)
-            user    = Customer.query.get(int(payload["sub"]))
-            if not user: return None
-            jwt_tier = str(payload.get("tier") or "").strip()
-            db_tier  = _get_user_tier(user)
-            g.jwt_tier = jwt_tier if jwt_tier in _TIER_RANK else db_tier
-            return user
-        except Exception as exc:
-            log.debug("Token decode (open access): %s", exc)
-            return None
-    api_key = request.headers.get("X-Api-Key", "").strip()
-    if api_key:
-        try:
-            from app.models.api_key import ApiKey
-            from app.models.customer import Customer as C
-            ak   = ApiKey.query.filter_by(key=api_key, is_active=True).first()
-            if not ak: return None
-            user = C.query.get(ak.user_id)
-            if not (user and user.is_active): return None
-            g.jwt_tier = _get_user_tier(user)
-            return user
-        except: pass
+    try:
+        from app.utils.customer_jwt_helpers import _decode_token
+        from app.models.customer import Customer
+        auth  = request.headers.get("Authorization", "")
+        token = auth[7:] if auth.startswith("Bearer ") else None
+        if not token:
+            token = request.args.get("token", "").strip() or None
+        if token:
+            try:
+                payload  = _decode_token(token)
+                user     = Customer.query.get(int(payload["sub"]))
+                if not user: return None
+                jwt_tier = str(payload.get("tier") or "").strip()
+                db_tier  = _get_user_tier(user)
+                g.jwt_tier = jwt_tier if jwt_tier in _TIER_RANK else db_tier
+                return user
+            except Exception as exc:
+                log.debug("Token decode (open access): %s", exc)
+                return None
+    except Exception:
+        pass
     return None
 
 
@@ -228,14 +208,14 @@ def _get_user_tier(user) -> str:
     if not user: return "pro"
     return (
         getattr(user, "subscription_tier", None) or
-        getattr(user, "tier", None) or
-        getattr(user, "plan", None) or
+        getattr(user, "tier", None)              or
+        getattr(user, "plan", None)              or
         "pro"
     )
 
 
 def _tier_rank(user) -> int:
-    return _TIER_RANK["pro"]  # open access
+    return _TIER_RANK["pro"]
 
 
 def require_tier(min_tier: str):
@@ -258,37 +238,36 @@ def _r():
 
 
 # =============================================================================
-# DATA LAYER — KEY READER (handles paginated LIST keys + plain string keys)
+# KEY READERS  (paginated LIST + plain string)
 # =============================================================================
 
 def _page_num(key) -> int:
-    """Extract page number from a key like odds:sp:upcoming:soccer:page:3 → 3"""
     k = key.decode() if isinstance(key, bytes) else key
-    try:
-        return int(k.rsplit(":", 1)[-1])
-    except (ValueError, IndexError):
-        return 0
+    try:    return int(k.rsplit(":", 1)[-1])
+    except: return 0
+
+
+def _decode_key(key) -> str:
+    return key.decode("utf-8") if isinstance(key, bytes) else key
+
+
+def _decode_type(t) -> str:
+    return t.decode("utf-8") if isinstance(t, bytes) else (t or "")
 
 
 def _read_list_key(r, key: str) -> list:
-    """
-    Read a Redis LIST key where each element is a JSON-encoded match or list of matches.
-    Returns flat list of match dicts.
-    """
+    """Read a Redis LIST key — each element is a JSON match or list of matches."""
     matches = []
     try:
         items = r.lrange(key, 0, -1)
         for raw in items:
-            if not raw:
-                continue
+            if not raw: continue
             try:
                 obj = json.loads(raw)
                 if isinstance(obj, list):
                     matches.extend(obj)
-                elif isinstance(obj, dict):
-                    # Single match stored as dict
-                    if obj.get("home_team") or obj.get("match_id"):
-                        matches.append(obj)
+                elif isinstance(obj, dict) and (obj.get("home_team") or obj.get("match_id")):
+                    matches.append(obj)
             except Exception:
                 pass
     except Exception as exc:
@@ -297,25 +276,17 @@ def _read_list_key(r, key: str) -> list:
 
 
 def _read_string_key(r, key: str) -> list:
-    """
-    Read a Redis STRING key containing either:
-    - A JSON list of matches
-    - A JSON dict with a "matches" or "data" field
-    Returns flat list of match dicts.
-    """
+    """Read a Redis STRING key — JSON list or dict with 'matches' field."""
     try:
         raw = r.get(key)
-        if not raw:
-            return []
+        if not raw: return []
         obj = json.loads(raw)
         if isinstance(obj, list):
             return [m for m in obj if isinstance(m, dict)]
         if isinstance(obj, dict):
-            # Try compressed format from bandwidth_optimizer
-            matches = obj.get("matches") or obj.get("data") or []
-            if isinstance(matches, list):
-                # Filter out empty/metadata-only dicts
-                return [m for m in matches if isinstance(m, dict) and
+            ms = obj.get("matches") or obj.get("data") or []
+            if isinstance(ms, list):
+                return [m for m in ms if isinstance(m, dict) and
                         (m.get("home_team") or m.get("match_id") or m.get("home_team_name"))]
         return []
     except Exception as exc:
@@ -325,20 +296,21 @@ def _read_string_key(r, key: str) -> list:
 
 def _read_key(r, patterns: list[str], sport: str) -> list | None:
     """
-    For each pattern, try:
-      1. Compressed string key (bandwidth_optimizer gz: prefix)
-      2. Plain string key (dict or list)
-      3. Paginated LIST keys (key:page:1, key:page:2, ...)
+    Try each pattern in order:
+      1. Compressed key  (bandwidth_optimizer gz: prefix)
+      2. Plain string key (JSON dict/list)
+      3. Key as Redis LIST type
+      4. Paginated LIST keys  (base_key:page:1, :page:2 …)
 
-    Returns the largest non-empty match list found, or None.
+    Returns the largest non-empty list found, or None.
     """
     best: list | None = None
 
     for pat in patterns:
         base_key = pat.format(sport=sport)
-        matches: list = []
+        matches:  list = []
 
-        # ── Try compressed/plain string key first ─────────────────────────
+        # 1. Compressed key
         try:
             from app.workers.bandwidth_optimizer import redis_get_decompressed
             data = redis_get_decompressed(r, base_key)
@@ -352,57 +324,56 @@ def _read_key(r, patterns: list[str], sport: str) -> list | None:
         except Exception:
             pass
 
-        # If compressed/plain key gave nothing, try raw string
+        # 2. Plain string key
         if not matches:
             matches = _read_string_key(r, base_key)
 
-        # If still nothing, try the key as a LIST
+        # 3. Plain key as LIST type
         if not matches:
-            key_type = b""
             try:
-                key_type = r.type(base_key) or b""
+                kt = _decode_type(r.type(base_key))
+                if kt == "list":
+                    matches = _read_list_key(r, base_key)
             except Exception:
                 pass
-            if key_type in (b"list", "list"):
-                matches = _read_list_key(r, base_key)
 
-        # ── Try paginated page keys: base_key:page:1, :page:2 … ──────────
+        # 4. Paginated page keys
         if not matches:
+            page_keys = []   # declared before try so UnboundLocalError can't occur
             try:
                 page_keys = r.keys(f"{base_key}:page:*")
             except Exception:
                 page_keys = []
 
-            # In _read_key, replace the page_keys loop:
-        if page_keys:
-            page_keys_sorted = sorted(page_keys, key=_page_num)
-            paged: list = []
-            for pk in page_keys_sorted:
-                # Always decode to string for consistency
-                pk_str = pk.decode("utf-8") if isinstance(pk, bytes) else pk
-                try:
-                    pk_type = r.type(pk_str)  # ← use string, not bytes
-                    if isinstance(pk_type, bytes):
-                        pk_type = pk_type.decode("utf-8")
-                except Exception:
-                    pk_type = ""
-                if pk_type == "list":
-                    paged.extend(_read_list_key(r, pk_str))
-                else:
-                    paged.extend(_read_string_key(r, pk_str))
-            matches = paged
+            if page_keys:
+                paged: list = []
+                for pk in sorted(page_keys, key=_page_num):
+                    pk_str = _decode_key(pk)
+                    try:
+                        kt = _decode_type(r.type(pk_str))
+                    except Exception:
+                        kt = ""
+                    if kt == "list":
+                        paged.extend(_read_list_key(r, pk_str))
+                    else:
+                        paged.extend(_read_string_key(r, pk_str))
+                matches = paged
 
-        # Keep the largest result
         if matches and (best is None or len(matches) > len(best)):
             best = matches
 
     return best
 
 
+# =============================================================================
+# UNIFIED DATA LAYER
+# =============================================================================
+
 def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
     r           = _r()
     unified_key = f"odds:unified:{mode}:{sport}"
 
+    # Serve from cache only when it has actual data (prevents empty-cache poisoning)
     if not force_refresh:
         ttl = 5 if mode == "live" else _CACHE_TTL
         try:
@@ -412,10 +383,11 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
                 age  = time.time() - float(data.get("updated_at", 0))
                 if age < ttl:
                     matches = data.get("matches", [])
-                    if mode == "live":
-                        matches = _enrich_with_window_state(matches, r)
-                    if matches:
+                    if matches:  # ← only serve non-empty cache
+                        if mode == "live":
+                            matches = _enrich_with_window_state(matches, r)
                         return matches
+                    # empty cache → fall through and rebuild from BK keys
         except Exception:
             pass
 
@@ -426,6 +398,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
         merged = _enrich_with_window_state(merged, r)
         _inject_window_only_live(merged, r, sport)
 
+    # Only cache when we have data — never write an empty unified key
     if merged:
         try:
             r.setex(unified_key, 3600, json.dumps({
@@ -435,8 +408,11 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
                 "updated_at":  time.time(),
                 "matches":     merged,
             }, default=str))
-        except Exception:
-            pass
+            log.info("[unified] cached %d %s/%s matches", len(merged), mode, sport)
+        except Exception as exc:
+            log.warning("[unified] cache write failed %s/%s: %s", mode, sport, exc)
+    else:
+        log.warning("[unified] 0 matches returned for %s/%s — not caching", mode, sport)
 
     return merged
 
@@ -463,14 +439,14 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
         return f"{hc}|{ac}" if hc and ac else ""
 
     for bk_slug, patterns in bk_formats:
-        matches = _read_key(r, patterns, sport)
-        if not matches:
+        raw_matches = _read_key(r, patterns, sport)
+        if not raw_matches:
             log.debug("[merge_bks] %s/%s: no data", bk_slug, sport)
             continue
 
-        log.debug("[merge_bks] %s/%s: %d matches", bk_slug, sport, len(matches))
+        log.debug("[merge_bks] %s/%s: %d raw matches", bk_slug, sport, len(raw_matches))
 
-        for m in matches:
+        for m in raw_matches:
             if not isinstance(m, dict):
                 continue
             key_jk = jk(m); key_nk = nk(m)
@@ -530,13 +506,27 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
                 if key_jk: by_jk[key_jk]   = pos
                 if key_nk: by_name[key_nk] = pos
 
+    # Build best odds + arb detection — wrapped per match so one failure
+    # never wipes the entire result list
     for m in result:
-        m["best"]              = _build_best(m["bookmakers"])
-        has_arb, pct, arbs     = _detect_arb(m["best"])
-        m["has_arb"]           = has_arb
-        m["best_arb_pct"]      = pct
-        m["arb_opportunities"] = arbs
-        m["market_slugs"]      = list(m["best"].keys())
+        try:
+            m["best"] = _build_best(m["bookmakers"])
+        except Exception as exc:
+            log.debug("[merge_bks] _build_best failed %s: %s", m.get("join_key"), exc)
+            m["best"] = {}
+
+        try:
+            has_arb, pct, arbs = _detect_arb(m["best"])
+            m["has_arb"]           = has_arb
+            m["best_arb_pct"]      = pct
+            m["arb_opportunities"] = arbs
+        except Exception as exc:
+            log.debug("[merge_bks] arb failed %s: %s", m.get("join_key"), exc)
+            m["has_arb"]           = False
+            m["best_arb_pct"]      = 0
+            m["arb_opportunities"] = []
+
+        m["market_slugs"] = list(m["best"].keys())
 
     log.info("[merge_bks] sport=%s merged=%d matches", sport, len(result))
     return result
@@ -559,12 +549,39 @@ def _build_best(bookmakers: dict) -> dict:
 
 
 def _detect_arb(best: dict) -> tuple[bool, float, list]:
-    from app.workers.arb_engine import detect_arb_for_stream
-    return detect_arb_for_stream(best)
+    """Detect arb — tries arb_engine first, falls back to inline 2-way scan."""
+    try:
+        from app.workers.arb_engine import detect_arb_for_stream
+        return detect_arb_for_stream(best)
+    except (ImportError, AttributeError):
+        pass
+    except Exception as exc:
+        log.debug("[detect_arb] arb_engine error: %s", exc)
 
+    # Inline fallback: simple 2-way scan
+    for mkt, ob in best.items():
+        if not isinstance(ob, dict) or len(ob) < 2:
+            continue
+        keys = [k for k, v in ob.items() if isinstance(v, dict) and v.get("odd", 0) > 1]
+        if len(keys) < 2:
+            continue
+        odds    = [ob[k]["odd"] for k in keys[:3]]
+        sum_inv = sum(1 / o for o in odds)
+        if 0 < sum_inv < 1.0:
+            pct  = round((1 - sum_inv) * 100, 3)
+            legs = [{"outcome": k, "odd": ob[k]["odd"], "bk": ob[k].get("bk")}
+                    for k in keys[:3]]
+            return True, pct, [{"market": mkt, "profit_pct": pct, "legs": legs}]
+    return False, 0.0, []
+
+
+# =============================================================================
+# SLIM / STRIP / FILTER
+# =============================================================================
 
 def _slim(m: dict) -> dict:
-    best = m.get("best", {}) or {}
+    """Minimal payload for fast initial render — no raw markets."""
+    best = m.get("best") or {}
     return {
         "match_id":          m.get("match_id"),
         "join_key":          m.get("join_key"),
@@ -591,13 +608,32 @@ def _slim(m: dict) -> dict:
     }
 
 
+def _strip_markets(m: dict) -> dict:
+    """
+    Full match data but with raw per-BK markets removed.
+    Keeps `best` odds (already computed). Prevents huge SSE payloads.
+    Raw markets are fetched on-demand via /api/odds/match/<id>/markets.
+    """
+    out = {**m}
+    if "bookmakers" in out:
+        out["bookmakers"] = {
+            k: {
+                "bookmaker": v.get("bookmaker", k.upper()),
+                "slug":      v.get("slug", k),
+                "markets":   {},      # stripped — fetch on-demand
+            }
+            for k, v in out["bookmakers"].items()
+            if isinstance(v, dict)
+        }
+    return out
+
+
 def _filter_tier(matches: list[dict], tier: str) -> list[dict]:
-    # AUTH DISABLED — return all matches regardless of tier
+    # AUTH DISABLED — all matches returned as-is
     return matches
 
 
 def _sport_unavailable_payload(sport: str) -> dict | None:
-    """Return a helpful payload when a sport has no data, or None if data exists."""
     try:
         from app.workers.bk_sport_config import (
             SP_SPORTS, BT_SPORTS, OD_SPORTS, B2B_SPORTS, bks_for_sport
@@ -605,29 +641,20 @@ def _sport_unavailable_payload(sport: str) -> dict | None:
         covering = bks_for_sport(sport)
         local    = set(SP_SPORTS) | set(BT_SPORTS) | set(OD_SPORTS)
         b2b_set  = set(B2B_SPORTS)
-
         if sport not in b2b_set and sport not in local:
-            return {
-                "sport": sport, "reason": "not_covered",
-                "message": f"'{sport}' is not covered by any bookmaker.",
-                "covering_bks": [], "upgrade_required": False,
-            }
+            return {"sport": sport, "reason": "not_covered",
+                    "message": f"'{sport}' is not covered by any bookmaker.",
+                    "covering_bks": [], "upgrade_required": False}
         if sport not in local and sport in b2b_set:
-            return {
-                "sport": sport, "reason": "b2b_only_no_data",
-                "message": f"{sport.title()} data comes from international BKs. Harvesters may still be running.",
-                "covering_bks": covering, "upgrade_required": False,
-            }
-        return {
-            "sport": sport, "reason": "no_data",
-            "message": f"No {sport} matches in Redis yet. Harvesters are running — try again in a few minutes.",
-            "covering_bks": covering, "upgrade_required": False,
-        }
+            return {"sport": sport, "reason": "b2b_only_no_data",
+                    "message": f"{sport.title()} data comes from international BKs. Harvesters may still be running.",
+                    "covering_bks": covering, "upgrade_required": False}
+        return {"sport": sport, "reason": "no_data",
+                "message": f"No {sport} matches in Redis yet. Harvesters running — try again in a few minutes.",
+                "covering_bks": covering, "upgrade_required": False}
     except ImportError:
-        return {
-            "sport": sport, "reason": "no_data",
-            "message": f"No {sport} matches available yet.",
-        }
+        return {"sport": sport, "reason": "no_data",
+                "message": f"No {sport} matches available yet."}
 
 
 def _enrich_with_window_state(matches: list[dict], r) -> list[dict]:
@@ -676,6 +703,7 @@ def _inject_window_only_live(existing: list[dict], r, sport: str) -> None:
         live_jks     = r.smembers("kinetic:window:live") or set()
         existing_jks = {str(m.get("join_key") or m.get("betradar_id") or "") for m in existing}
         for jk in live_jks:
+            jk = _decode_key(jk)
             if jk in existing_jks: continue
             meta  = r.hgetall(f"kinetic:match:{jk}:meta") or {}
             if meta.get("sport", "") != sport: continue
@@ -701,7 +729,7 @@ def _inject_window_only_live(existing: list[dict], r, sport: str) -> None:
 # SSE
 # =============================================================================
 
-def _sse(event: str, data: dict) -> str:
+def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
@@ -717,31 +745,48 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "p
         all_matches = _get_unified_patched(mode, sport)
         matches     = _filter_tier(all_matches, tier)
 
-        # Inform client when sport has no data
         if not matches:
             payload = _sport_unavailable_payload(sport)
             if payload:
                 yield _sse("sport_unavailable", payload)
 
+        # ── Slim batch — fast initial render (small payload) ──────────────
         yield _sse("batch", {
             "matches": [_slim(m) for m in matches],
-            "source":  "slim", "sport": sport,
-            "mode":    mode,   "count": len(matches), "tier": tier,
+            "source":  "slim",
+            "sport":   sport,
+            "mode":    mode,
+            "count":   len(matches),
+            "tier":    tier,
         })
+
+        # ── Full batch — best odds + arb, NO raw per-BK markets ───────────
+        # Raw markets are stripped here because 655 matches × 50KB/match = 33MB.
+        # Nginx will buffer/drop that. MatchDetail fetches full markets
+        # on-demand via GET /api/odds/match/<join_key>/markets
         yield _sse("batch", {
-            "matches": matches,
-            "source":  "full", "sport": sport,
-            "mode":    mode,   "count": len(matches), "tier": tier,
+            "matches": [_strip_markets(m) for m in matches],
+            "source":  "full",
+            "sport":   sport,
+            "mode":    mode,
+            "count":   len(matches),
+            "tier":    tier,
         })
+
         yield _sse("connected", {
-            "status": "connected", "sport": sport, "mode": mode,
-            "tier": tier, "live_push": live_tier, "count": len(matches),
+            "status":    "connected",
+            "sport":     sport,
+            "mode":      mode,
+            "tier":      tier,
+            "live_push": live_tier,
+            "count":     len(matches),
         })
 
         if not live_tier:
             yield ": keepalive\n\n"
             return
 
+        # ── Pub/sub push loop ─────────────────────────────────────────────
         pubsub   = r.pubsub(ignore_subscribe_messages=True)
         channels = [
             f"odds:all:{mode}:{sport}:updates",
@@ -759,8 +804,7 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "p
                 if msg and msg.get("type") == "message":
                     try:
                         payload = json.loads(msg["data"])
-                        ch = msg.get("channel") or b""
-                        if isinstance(ch, bytes): ch = ch.decode()
+                        ch = _decode_key(msg.get("channel") or b"")
                         if   "arb:"         in ch: yield _sse("arb_update",  payload)
                         elif "ev:"          in ch: yield _sse("ev_update",   payload)
                         elif "live_updates" in ch: yield _sse("live_update", payload)
@@ -769,8 +813,11 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "p
                                 _get_unified_patched(mode, sport, force_refresh=True), tier
                             )
                             yield _sse("batch", {
-                                "matches": fresh, "source": "live",
-                                "sport": sport, "mode": mode, "count": len(fresh),
+                                "matches": [_strip_markets(m) for m in fresh],
+                                "source":  "live",
+                                "sport":   sport,
+                                "mode":    mode,
+                                "count":   len(fresh),
                             })
                     except Exception as exc:
                         log.debug("[stream] pubsub error: %s", exc)
@@ -837,7 +884,6 @@ def stream_odds(mode: str, sport: str):
     from app.api import _err
     if mode not in ("upcoming", "live"):
         return _err("mode must be 'upcoming' or 'live'", 400)
-    # AUTH DISABLED
     return Response(
         stream_with_context(_make_generator(mode, sport, None, True, "pro")()),
         mimetype="text/event-stream",
@@ -855,8 +901,8 @@ def stream_odds(mode: str, sport: str):
 def snapshot_odds(mode: str, sport: str):
     from app.api import _signed_response
     matches = _get_unified_patched(mode, sport)
-    return _signed_response({"matches": matches, "sport": sport, "mode": mode,
-                              "count": len(matches), "tier": "pro"})
+    return _signed_response({"matches": matches, "sport": sport,
+                              "mode": mode, "count": len(matches), "tier": "pro"})
 
 
 @bp_stream.route("/odds/page/<mode>/<sport>", methods=["GET"])
@@ -872,13 +918,64 @@ def paged_odds(mode: str, sport: str):
         all_m.sort(key=lambda m: m.get("start_time") or "")
     total  = len(all_m)
     offset = (page - 1) * per_page
+    # Strip raw markets from paged response too — MatchDetail fetches on demand
+    page_m = [_strip_markets(m) for m in all_m[offset: offset + per_page]]
     return _signed_response({
-        "matches":  all_m[offset: offset + per_page],
+        "matches":  page_m,
         "total":    total, "page": page, "per_page": per_page,
         "pages":    -(-total // per_page),
         "has_more": (offset + per_page) < total,
         "sport":    sport, "mode": mode, "tier": "pro",
     })
+
+
+@bp_stream.route("/odds/match/<join_key>/markets", methods=["GET"])
+def match_markets(join_key: str):
+    """
+    GET /api/odds/match/<join_key>/markets?sport=soccer
+    Returns full per-BK markets for ONE match.
+    Called by MatchDetail when the user opens a match card.
+    NOT included in bulk SSE/paged payloads (too large).
+    """
+    from app.api import _signed_response
+    sport = request.args.get("sport", "soccer")
+    r     = _r()
+
+    # Check unified cache first (fast path)
+    for mode in ("upcoming", "live"):
+        raw = r.get(f"odds:unified:{mode}:{sport}")
+        if not raw: continue
+        try:
+            data = json.loads(raw)
+            ms   = data.get("matches", []) if isinstance(data, dict) else data
+            for m in ms:
+                jk = str(m.get("join_key") or m.get("parent_match_id") or m.get("betradar_id") or "")
+                if jk == join_key:
+                    return _signed_response({
+                        "join_key":     join_key,
+                        "bookmakers":   m.get("bookmakers", {}),
+                        "best":         m.get("best", {}),
+                        "market_slugs": m.get("market_slugs", []),
+                        "source":       "cache",
+                    })
+        except Exception:
+            pass
+
+    # Not in cache — rebuild and find
+    all_matches = _get_unified_patched("upcoming", sport)
+    for m in all_matches:
+        jk = str(m.get("join_key") or m.get("parent_match_id") or "")
+        if jk == join_key:
+            return _signed_response({
+                "join_key":     join_key,
+                "bookmakers":   m.get("bookmakers", {}),
+                "best":         m.get("best", {}),
+                "market_slugs": m.get("market_slugs", []),
+                "source":       "live_read",
+            })
+
+    return _signed_response({"join_key": join_key, "bookmakers": {}, "best": {},
+                              "market_slugs": [], "source": "not_found"}), 404
 
 
 # =============================================================================
@@ -928,21 +1025,19 @@ def monitor_redis_keys():
     for _, patterns in _BK_KEY_FORMATS:
         for pat in patterns:
             base = pat.format(sport=sport)
-            # Check plain key
             try:
                 raw = r.get(base)
                 if raw:
                     data = json.loads(raw)
                     found[base] = len(data.get("matches", data) if isinstance(data, dict) else data)
                 else:
-                    # Check paginated keys
                     pkeys = r.keys(f"{base}:page:*")
                     if pkeys:
                         total = 0
                         for pk in pkeys:
-                            pk_str = pk.decode() if isinstance(pk, bytes) else pk
-                            t = r.type(pk)
-                            if t == b"list":
+                            pk_str = _decode_key(pk)
+                            kt = _decode_type(r.type(pk))
+                            if kt == "list":
                                 total += r.llen(pk)
                             else:
                                 v = r.get(pk)
@@ -960,26 +1055,96 @@ def monitor_redis_keys():
             if raw: found[k] = len(json.loads(raw).get("matches", []))
             else:   missing.append(k)
         except: missing.append(k)
-    return _signed_response({
-        "sport": sport, "found": found, "missing": missing,
-        "summary": f"{len(found)} keys, {sum(found.values())} matches",
-    })
+    return _signed_response({"sport": sport, "found": found, "missing": missing,
+                              "summary": f"{len(found)} keys, {sum(found.values())} matches"})
 
 
 @bp_monitor.route("/bk-data", methods=["GET"])
 def monitor_bk_data():
-    """Show exactly how many matches each BK has per sport in Redis."""
     from app.api import _signed_response
-    sport = request.args.get("sport", "soccer")
-    r     = _r()
+    sport  = request.args.get("sport", "soccer")
+    r      = _r()
     result = {}
     for bk_slug, patterns in _BK_KEY_FORMATS:
         matches = _read_key(r, patterns, sport)
-        result[bk_slug] = {
-            "count":   len(matches) if matches else 0,
-            "has_data": bool(matches),
-        }
+        result[bk_slug] = {"count": len(matches) if matches else 0, "has_data": bool(matches)}
     return _signed_response({"sport": sport, "bookmakers": result})
+
+
+@bp_monitor.route("/debug-stream/<sport>", methods=["GET"])
+def debug_stream(sport: str):
+    """
+    GET /api/monitor/debug-stream/soccer
+    Shows exactly what the SSE stream would send — useful for diagnosing
+    why matches aren't reaching the UI.
+    """
+    from app.api import _signed_response
+    import traceback as _tb
+    r      = _r()
+    errors = []
+
+    # Step 1: raw BK key counts
+    bk_counts = {}
+    for bk_slug, patterns in _BK_KEY_FORMATS:
+        try:
+            ms = _read_key(r, patterns, sport)
+            bk_counts[bk_slug] = len(ms) if ms else 0
+        except Exception as exc:
+            bk_counts[bk_slug] = f"ERROR: {exc}"
+            errors.append(f"{bk_slug}: {exc}")
+
+    # Step 2: _merge_bks
+    merged_count = 0
+    merge_error  = None
+    sample       = []
+    payload_kb   = 0
+    try:
+        merged       = _merge_bks(r, sport, _BK_KEY_FORMATS)
+        merged_count = len(merged)
+        sample       = [{"home": m.get("home_team"), "away": m.get("away_team"),
+                         "bks": list((m.get("bookmakers") or {}).keys()),
+                         "markets": len(m.get("best") or {})}
+                        for m in merged[:5]]
+        # Measure payload size
+        slim_payload = json.dumps([_slim(m) for m in merged], default=str)
+        full_payload = json.dumps([_strip_markets(m) for m in merged], default=str)
+        payload_kb   = {
+            "slim_kb": round(len(slim_payload) / 1024, 1),
+            "full_stripped_kb": round(len(full_payload) / 1024, 1),
+        }
+    except Exception as exc:
+        merge_error = str(exc)
+        errors.append(_tb.format_exc())
+
+    # Step 3: unified cache state
+    unified_count = 0
+    unified_age   = None
+    unified_empty = False
+    raw = r.get(f"odds:unified:upcoming:{sport}")
+    if raw:
+        try:
+            d             = json.loads(raw)
+            unified_count = len(d.get("matches", []))
+            unified_age   = round(time.time() - float(d.get("updated_at", 0)), 1)
+            unified_empty = unified_count == 0
+        except Exception:
+            pass
+
+    return _signed_response({
+        "sport":          sport,
+        "bk_raw_counts":  bk_counts,
+        "merge_result":   merged_count,
+        "merge_error":    merge_error,
+        "sample_matches": sample,
+        "payload_size":   payload_kb,
+        "unified_cache":  {
+            "count":     unified_count,
+            "age_s":     unified_age,
+            "is_empty":  unified_empty,
+            "poisoned":  unified_empty and unified_age is not None and unified_age < 300,
+        },
+        "errors": errors,
+    })
 
 
 @bp_monitor.route("/warm-cache", methods=["GET", "POST"])
@@ -993,16 +1158,21 @@ def warm_cache():
 
 
 # =============================================================================
-# LIFECYCLE
+# LIFECYCLE STUB
 # =============================================================================
 
 def _register_lifecycle(app) -> None:
     try:
-        from app.workers.match_lifecycle import start_lifecycle_manager
-        with app.app_context(): start_lifecycle_manager()
-        log.info("MatchLifecycleManager started via _register_lifecycle()")
-    except Exception as exc:
-        log.warning("Could not start lifecycle manager: %s", exc)
+        from app.workers.live_feed_bridge import start_live_bridge
+        with app.app_context(): start_live_bridge()
+        log.info("LiveFeedBridge started via _register_lifecycle()")
+    except ImportError:
+        try:
+            from app.workers.match_lifecycle import start_lifecycle_manager
+            with app.app_context(): start_lifecycle_manager()
+            log.info("MatchLifecycleManager started via _register_lifecycle()")
+        except Exception as exc:
+            log.warning("No lifecycle manager started: %s", exc)
 
 
 @bp_stream.route("/odds/watch", methods=["POST"])
