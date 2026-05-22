@@ -207,7 +207,6 @@ def make_celery(flask_app=None):
         @worker_ready.connect(weak=False)
         def on_worker_ready(**kwargs):
             try:
-                from app.workers.window_leader import ensure_window_leader
                 app = flask_app
                 if app is None:
                     app = LazyContextTask._flask_app
@@ -216,7 +215,6 @@ def make_celery(flask_app=None):
                     from app import create_app
                     app = create_app()
                     LazyContextTask._flask_app = app
-                ensure_window_leader(app)
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning(

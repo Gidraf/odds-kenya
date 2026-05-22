@@ -369,48 +369,40 @@ def _read_key(r, patterns: list[str], sport: str) -> list | None:
 # UNIFIED DATA LAYER
 # =============================================================================
 
-# How long to serve stale unified cache when BK keys have expired.
-# Harvesters run every 5 min → stale data is at most this old.
-# This prevents the UI going blank between harvester cycles.
-_STALE_FALLBACK_TTL = 3600  # serve stale cache for up to 1 hour
+_UNIFIED_CACHE_TTL   = 86400   # 24h — survives overnight without harvesters
+_STALE_FALLBACK_TTL  = 86400   # also 24h — always serve stale if BK keys expire
+_LIVE_CACHE_TTL      = 30      # live mode: re-read every 30s (scores change)
 
 
 def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
     r           = _r()
     unified_key = f"odds:unified:{mode}:{sport}"
 
-    # Read cached data upfront — used both for fresh serve and stale fallback
+    # Read cached data upfront — used for both fresh serve and stale fallback
     cached_matches: list = []
     cached_age: float    = 9999.0
     try:
         raw = r.get(unified_key)
         if raw:
-            data         = json.loads(raw)
-            cached_age   = time.time() - float(data.get("updated_at", 0))
+            data           = json.loads(raw)
+            cached_age     = time.time() - float(data.get("updated_at", 0))
             cached_matches = data.get("matches", [])
     except Exception:
         pass
 
-    # ── Serve fresh cache (non-empty, within TTL) ─────────────────────────────
+    # ── Serve from cache if fresh and non-empty ───────────────────────────────
     if not force_refresh and cached_matches:
-        ttl = 5 if mode == "live" else _CACHE_TTL
+        ttl = _LIVE_CACHE_TTL if mode == "live" else _CACHE_TTL
         if cached_age < ttl:
-            if mode == "live":
-                cached_matches = _enrich_with_window_state(cached_matches, r)
             return cached_matches
 
     # ── Try to rebuild from BK Redis keys ─────────────────────────────────────
     bk_formats = _BK_KEY_FORMATS_LIVE if mode == "live" else _BK_KEY_FORMATS
-    merged     = _merge_bks(r, sport, bk_formats)
-
-    if mode == "live":
-        merged = _enrich_with_window_state(merged, r)
-        _inject_window_only_live(merged, r, sport)
+    merged     = _merge_bks(r, sport, bk_formats, is_live_mode=(mode == "live"))
 
     if merged:
-        # Got fresh data — cache it and return
         try:
-            r.setex(unified_key, 3600, json.dumps({
+            r.setex(unified_key, _UNIFIED_CACHE_TTL, json.dumps({
                 "mode":        mode,
                 "sport":       sport,
                 "match_count": len(merged),
@@ -422,23 +414,21 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
             log.warning("[unified] cache write failed %s/%s: %s", mode, sport, exc)
         return merged
 
-    # ── BK keys expired/empty — serve stale unified cache as fallback ─────────
-    # This happens between harvester runs (every 5 min). The stale cache
-    # still has real match data — much better than returning [] to the UI.
+    # ── BK keys expired — serve stale unified cache ───────────────────────────
     if cached_matches and cached_age < _STALE_FALLBACK_TTL:
         log.warning(
             "[unified] BK keys empty for %s/%s — serving stale cache "
-            "(age=%.0fs, %d matches). Harvesters will repopulate shortly.",
+            "(age=%.0fs, %d matches)",
             mode, sport, cached_age, len(cached_matches)
         )
         return cached_matches
 
-    # Nothing at all — genuinely empty
     log.warning("[unified] 0 matches and no stale cache for %s/%s", mode, sport)
     return []
 
 
-def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[dict]:
+def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
+               is_live_mode: bool = False) -> list[dict]:
     result:  list[dict] = []
     by_jk:   dict[str, int] = {}
     by_name: dict[str, int] = {}
@@ -493,6 +483,11 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
                 ex["bk_count"] = len(ex["bookmakers"])
                 if not ex.get("competition") and m.get("competition"):
                     ex["competition"] = m["competition"]
+                # In live mode, trust the live harvester's score/time fields
+                if is_live_mode:
+                    for fld in ("score_home", "score_away", "match_time"):
+                        if m.get(fld) is not None:
+                            ex[fld] = m[fld]
             else:
                 bks_seed: dict = {
                     bk_slug: {"bookmaker": bk_slug.upper(), "slug": bk_slug, "markets": mkts}
@@ -502,6 +497,13 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
                     xm = _normalise_markets(xbd.get("markets") or {})
                     if xm:
                         bks_seed[xbk] = {"bookmaker": xbk.upper(), "slug": xbk, "markets": xm}
+
+                # ── is_live fix ────────────────────────────────────────────────
+                # Upcoming harvesters sometimes mark in-progress matches as
+                # is_live=True. Only trust this flag when we're actually reading
+                # from the live harvest keys (is_live_mode=True).
+                # For upcoming mode, always False — the live tab handles live.
+                is_live_val = bool(m.get("is_live", False)) if is_live_mode else False
 
                 entry: dict = {
                     "match_id":          m.get("match_id") or key_jk,
@@ -514,7 +516,10 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[d
                     "sport":             m.get("sport") or sport,
                     "start_time":        m.get("start_time") or "",
                     "status":            m.get("status") or "PRE_MATCH",
-                    "is_live":           m.get("is_live", False),
+                    "is_live":           is_live_val,
+                    "score_home":        m.get("score_home") if is_live_mode else None,
+                    "score_away":        m.get("score_away") if is_live_mode else None,
+                    "match_time":        m.get("match_time") if is_live_mode else None,
                     "has_arb":           False,
                     "has_ev":            False,
                     "best_arb_pct":      0,
@@ -678,72 +683,9 @@ def _sport_unavailable_payload(sport: str) -> dict | None:
                 "message": f"No {sport} matches available yet."}
 
 
-def _enrich_with_window_state(matches: list[dict], r) -> list[dict]:
-    if not matches: return matches
-    pipe = r.pipeline()
-    for m in matches:
-        jk = str(m.get("join_key") or m.get("betradar_id") or "")
-        if not jk: continue
-        pipe.hgetall(f"kinetic:match:{jk}:score")
-        pipe.hgetall(f"kinetic:match:{jk}:state")
-        pipe.hgetall(f"kinetic:match:{jk}:delay")
-        pipe.hgetall(f"kinetic:match:{jk}:bk_live")
-    try:
-        results = pipe.execute()
-    except Exception:
-        return matches
-    enriched = []
-    for i, m in enumerate(matches):
-        jk = str(m.get("join_key") or m.get("betradar_id") or "")
-        if not jk: enriched.append(m); continue
-        base  = i * 4
-        score = results[base]     if base     < len(results) else {}
-        state = results[base + 1] if base + 1 < len(results) else {}
-        delay = results[base + 2] if base + 2 < len(results) else {}
-        bk_lv = results[base + 3] if base + 3 < len(results) else {}
-        mc = {**m}
-        if score:
-            if score.get("home") is not None: mc["score_home"] = score["home"]
-            if score.get("away") is not None: mc["score_away"] = score["away"]
-            if score.get("time"):             mc["match_time"] = score["time"]
-        if state.get("phase"):
-            mc["phase"]      = state["phase"]
-            mc["live_since"] = state.get("live_since", "")
-            mc["is_live"]    = state["phase"] == "live"
-        if delay:
-            mc["has_delay"]     = True
-            mc["delay_minutes"] = round(float(delay.get("delay_s", 0)) / 60, 1)
-        if bk_lv:
-            mc["bk_consensus"] = {bk: (v == "1") for bk, v in bk_lv.items()}
-        enriched.append(mc)
-    return enriched
-
-
-def _inject_window_only_live(existing: list[dict], r, sport: str) -> None:
-    try:
-        live_jks     = r.smembers("kinetic:window:live") or set()
-        existing_jks = {str(m.get("join_key") or m.get("betradar_id") or "") for m in existing}
-        for jk in live_jks:
-            jk = _decode_key(jk)
-            if jk in existing_jks: continue
-            meta  = r.hgetall(f"kinetic:match:{jk}:meta") or {}
-            if meta.get("sport", "") != sport: continue
-            score = r.hgetall(f"kinetic:match:{jk}:score") or {}
-            state = r.hgetall(f"kinetic:match:{jk}:state") or {}
-            existing.append({
-                "match_id": jk, "join_key": jk, "parent_match_id": jk, "betradar_id": jk,
-                "home_team": meta.get("home_team", ""), "away_team": meta.get("away_team", ""),
-                "competition": meta.get("competition", ""), "sport": sport,
-                "start_time": meta.get("start_time", ""), "status": "live",
-                "is_live": True, "phase": "live",
-                "score_home": score.get("home"), "score_away": score.get("away"),
-                "match_time": score.get("time"), "live_since": state.get("live_since", ""),
-                "has_arb": False, "best_arb_pct": 0, "arb_opportunities": [],
-                "market_slugs": [], "bookmakers": {}, "bk_count": 0, "best": {},
-                "source": "window_service",
-            })
-    except Exception:
-        pass
+# _enrich_with_window_state and _inject_window_only_live removed.
+# Window service is disabled — LiveFeedBridge handles live state via
+# SP WebSocket (writes to kinetic:match:{jk}:score directly).
 
 
 # =============================================================================

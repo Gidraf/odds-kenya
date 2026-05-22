@@ -176,17 +176,6 @@ def create_app() -> Flask:
     start_live_bridge()
     # start_lifecycle_manager()  ← REMOVED: already called inside _register_lifecycle
 
-    # ── Window service leader election ────────────────────────────────────────
-    # BUG FIX 4: the previous "only start in web process" approach failed
-    # because gunicorn prefork spawns multiple worker processes, each calling
-    # create_app(). The leader election ensures exactly ONE process runs the
-    # window service regardless of worker count or process type.
-    try:
-        from app.workers.window_leader import ensure_window_leader
-        ensure_window_leader(flask_app)
-    except Exception as _e:
-        print(f"[init] Window leader skipped: {_e}")
-
     # ── Model imports (Flask-Migrate needs all models visible at startup) ─────
     with flask_app.app_context():
         from app.models.bookmakers_model import (
