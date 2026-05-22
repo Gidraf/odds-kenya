@@ -369,28 +369,37 @@ def _read_key(r, patterns: list[str], sport: str) -> list | None:
 # UNIFIED DATA LAYER
 # =============================================================================
 
+# How long to serve stale unified cache when BK keys have expired.
+# Harvesters run every 5 min → stale data is at most this old.
+# This prevents the UI going blank between harvester cycles.
+_STALE_FALLBACK_TTL = 3600  # serve stale cache for up to 1 hour
+
+
 def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
     r           = _r()
     unified_key = f"odds:unified:{mode}:{sport}"
 
-    # Serve from cache only when it has actual data (prevents empty-cache poisoning)
-    if not force_refresh:
-        ttl = 5 if mode == "live" else _CACHE_TTL
-        try:
-            raw = r.get(unified_key)
-            if raw:
-                data = json.loads(raw)
-                age  = time.time() - float(data.get("updated_at", 0))
-                if age < ttl:
-                    matches = data.get("matches", [])
-                    if matches:  # ← only serve non-empty cache
-                        if mode == "live":
-                            matches = _enrich_with_window_state(matches, r)
-                        return matches
-                    # empty cache → fall through and rebuild from BK keys
-        except Exception:
-            pass
+    # Read cached data upfront — used both for fresh serve and stale fallback
+    cached_matches: list = []
+    cached_age: float    = 9999.0
+    try:
+        raw = r.get(unified_key)
+        if raw:
+            data         = json.loads(raw)
+            cached_age   = time.time() - float(data.get("updated_at", 0))
+            cached_matches = data.get("matches", [])
+    except Exception:
+        pass
 
+    # ── Serve fresh cache (non-empty, within TTL) ─────────────────────────────
+    if not force_refresh and cached_matches:
+        ttl = 5 if mode == "live" else _CACHE_TTL
+        if cached_age < ttl:
+            if mode == "live":
+                cached_matches = _enrich_with_window_state(cached_matches, r)
+            return cached_matches
+
+    # ── Try to rebuild from BK Redis keys ─────────────────────────────────────
     bk_formats = _BK_KEY_FORMATS_LIVE if mode == "live" else _BK_KEY_FORMATS
     merged     = _merge_bks(r, sport, bk_formats)
 
@@ -398,8 +407,8 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
         merged = _enrich_with_window_state(merged, r)
         _inject_window_only_live(merged, r, sport)
 
-    # Only cache when we have data — never write an empty unified key
     if merged:
+        # Got fresh data — cache it and return
         try:
             r.setex(unified_key, 3600, json.dumps({
                 "mode":        mode,
@@ -411,10 +420,22 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
             log.info("[unified] cached %d %s/%s matches", len(merged), mode, sport)
         except Exception as exc:
             log.warning("[unified] cache write failed %s/%s: %s", mode, sport, exc)
-    else:
-        log.warning("[unified] 0 matches returned for %s/%s — not caching", mode, sport)
+        return merged
 
-    return merged
+    # ── BK keys expired/empty — serve stale unified cache as fallback ─────────
+    # This happens between harvester runs (every 5 min). The stale cache
+    # still has real match data — much better than returning [] to the UI.
+    if cached_matches and cached_age < _STALE_FALLBACK_TTL:
+        log.warning(
+            "[unified] BK keys empty for %s/%s — serving stale cache "
+            "(age=%.0fs, %d matches). Harvesters will repopulate shortly.",
+            mode, sport, cached_age, len(cached_matches)
+        )
+        return cached_matches
+
+    # Nothing at all — genuinely empty
+    log.warning("[unified] 0 matches and no stale cache for %s/%s", mode, sport)
+    return []
 
 
 def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]]) -> list[dict]:
