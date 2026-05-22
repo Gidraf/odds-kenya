@@ -7,12 +7,15 @@ Bugs fixed vs previous patched version:
   2. persistent_cache hard imports — all wrapped in try/except ImportError
                        with inline fallbacks so worker starts even without
                        that module
-  3. window_leader ImportError — silently skipped if module missing
+  3. persistent_cache hard imports — all wrapped in try/except ImportError
+                       with inline fallbacks so worker starts even without
+                       that module
   4. TTL constants inlined — no dependency on persistent_cache for TTL values
   5. on_worker_ready refactored into clear numbered steps with isolated
      try-blocks so one failure never blocks subsequent steps
-  6. LiveFeedBridge started here (replaces match_lifecycle); falls back to
-     MatchLifecycleManager if live_feed_bridge.py not yet deployed
+  6. LiveFeedBridge started here (replaces match_lifecycle)
+  7. Window service / window_leader DISABLED — caused DB enum errors every
+     30s and is fully replaced by LiveFeedBridge + SP WebSocket
 """
 from __future__ import annotations
 
@@ -337,11 +340,11 @@ def _merge_bk_into_unified(r, bk_slug: str, mode: str, sport: str,
                 existing.append(nr)
                 if jk: idx[jk] = p2
                 idx[nk] = p2
-        if existing:
-            _smart_set(r, key, {
-                "mode": mode, "sport": sport, "source": "unified",
-                "matches": existing, "updated_at": time.time(),
-            }, ttl=TTL_UNIFIED)
+
+        _smart_set(r, key, {
+            "mode": mode, "sport": sport, "source": "unified",
+            "matches": existing, "updated_at": time.time(),
+        }, ttl=TTL_UNIFIED)
 
         _publish(f"odds:all:{mode}:{sport}:updates", {
             "event": "snapshot_ready", "bk": bk_slug,
@@ -370,17 +373,13 @@ celery.on_after_configure.connect(setup_periodic_tasks)
 @celery.task(name="tasks.ops.beat.harvest_all_paged", soft_time_limit=3000, time_limit=6000)
 def _beat_harvest_all_paged():
     try:
-        from app.workers.tasks_harvest_pages import (
-            sp_harvest_all_paged, bt_harvest_all_paged, od_harvest_all_paged,
-        )
-        sp_harvest_all_paged.apply_async(queue="harvest")
-        bt_harvest_all_paged.apply_async(queue="harvest", countdown=10)
-        od_harvest_all_paged.apply_async(queue="harvest", countdown=20)
+        from app.workers.tasks_harvest_pages import harvest_all_paged
+        harvest_all_paged.apply_async(queue="harvest")
     except ImportError as exc:
         log.warning("[beat:harvest] import failed: %s", exc)
     return {"ok": True}
 
-    
+
 @celery.task(name="tasks.ops.beat.b2b_live", soft_time_limit=3000, time_limit=6000)
 def _beat_b2b_live():
     try:
@@ -508,16 +507,9 @@ def on_worker_ready(sender, **kwargs):
     except Exception as exc:
         log.warning("[startup] LiveFeedBridge failed: %s", exc)
 
-    # ── Step 7: Window leader election (optional module) ─────────────────────
-    try:
-        from app.workers.window_leader import ensure_window_leader
-        if _app is not None:
-            ensure_window_leader(_app)
-            log.info("[startup] window leader elected")
-    except ImportError:
-        pass  # window_leader.py not present — not required
-    except Exception as exc:
-        log.warning("[startup] window leader failed: %s", exc)
+    # Window service / window leader intentionally NOT started.
+    # Replaced by LiveFeedBridge which reads SP WebSocket directly.
+    # match_window_service.py and window_leader.py are unused.
 
 
 def _dispatch_startup_harvests() -> None:
