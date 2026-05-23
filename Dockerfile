@@ -44,7 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+RUN mkdir -p /app/logs /app/storage && chown -R appuser:appuser /app
 
 COPY --chown=appuser:appuser . .
 
