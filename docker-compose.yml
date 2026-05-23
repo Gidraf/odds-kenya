@@ -6,6 +6,8 @@ x-celery-common: &celery-common
   depends_on:
     redis6382:
       condition: service_healthy
+  volumes:
+    - storage_data:/app/storage
   environment: &celery-env
     FLASK_APP: run.py
     FLASK_ENV: production
@@ -42,6 +44,7 @@ x-celery-common: &celery-common
 
     ENABLE_HARVESTER: "0"
     TZ: Africa/Nairobi
+    STORAGE_DIR: "/app/storage"
 
   extra_hosts:
     - "host.docker.internal:host-gateway"
@@ -127,7 +130,7 @@ services:
     <<: *celery-common
     container_name: odds-kenya-celery-results-1
     command: >
-      celery -A app.workers.celery_app worker --queues=results,ev_arb,notify --concurrency=6 --prefetch-multiplier=2 --max-tasks-per-child=500 --loglevel=info --hostname=results@%h
+      celery -A app.workers.celery_app worker --queues=results,ev_arb,notify,video,default --concurrency=6 --prefetch-multiplier=2 --max-tasks-per-child=500 --loglevel=info --hostname=results@%h
 
   # ── Celery: Analytics ──────────────────────────────────────────────────────
   celery-analytics:
@@ -154,6 +157,7 @@ services:
 
 volumes:
   redis_data:
+  storage_data:
 
 networks:
   kinetic:

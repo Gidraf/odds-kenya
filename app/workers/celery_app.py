@@ -51,6 +51,7 @@ def make_celery(flask_app=None):
             "app.workers.tasks_harvest_b2b",
             "app.workers.tasks_align",
             "app.workers.tasks_lifecycle",   # ← NEW
+            "app.workers.video_tasks",       # ← NEW
         ],
 
         task_routes = {
@@ -96,6 +97,9 @@ def make_celery(flask_app=None):
             # ── Analytics ─────────────────────────────────────────────────────
             "tasks.sp.enrich_analytics":        {"queue": "analytics"},
             "tasks.sp.get_match_analytics":     {"queue": "analytics"},
+
+            # ── Video Transcoding ─────────────────────────────────────────────
+            "tasks.video.*":                    {"queue": "video"},
         },
 
         beat_schedule = {
@@ -154,6 +158,13 @@ def make_celery(flask_app=None):
                 "task":     "tasks.lifecycle.window_scan",
                 "schedule": 60,
                 "options":  {"queue": "default"},
+            },
+
+            # ── Video Cleanup (NEW) ───────────────────────────────────────────
+            "video-cleanup-hourly": {
+                "task":     "tasks.video.cleanup_old_videos",
+                "schedule": 3600,
+                "options":  {"queue": "video"},
             },
         },
     )
