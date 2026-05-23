@@ -20,118 +20,150 @@ log = logging.getLogger(__name__)
     max_retries=1,
     default_retry_delay=10,
     soft_time_limit=3600,
-    time_limit=6000
+    time_limit=6000,
 )
-def transcode_to_mp4(self, input_path: str, fps: int) -> dict:
+def transcode_to_mp4(self, input_path: str, fps: int, duration: float = 0.0) -> dict:
     """
-    Transcode a WebM or other video format into an optimized MP4 (H.264/AAC) file.
-    Reports progress back to Celery (0 to 100).
+    Transcode a WebM (or other) clip into an optimized H.264/AAC MP4.
+    Reports progress to Celery (0..100).
+ 
+    `duration` is the known clip length in seconds, sent by the frontend.
+    This is ESSENTIAL: MediaRecorder WebM files frequently ship with NO
+    duration in the container header, so ffprobe returns nothing — without
+    this fallback the progress bar can never advance.
+ 
+    On failure this RAISES, so Celery marks the task FAILURE and the status
+    endpoint reports the error (returning a dict would look like SUCCESS).
     """
-    logger.info("Starting video transcode: %s (fps=%d)", input_path, fps)
-    
-    # job_id is the celery task id
-    job_id = self.request.id
-    if not job_id:
-        import uuid
-        job_id = uuid.uuid4().hex
-        
+    logger.info("Starting transcode: %s (fps=%d, client_duration=%.2fs)",
+                input_path, fps, duration)
+ 
+    job_id = self.request.id or uuid.uuid4().hex
+ 
     input_file = Path(input_path)
     if not input_file.exists():
-        err_msg = f"Input file {input_path} does not exist"
-        logger.error(err_msg)
-        return {"ok": False, "error": err_msg}
-        
-    output_file = config.OUTPUT_DIR / f"{job_id}.mp4"
-    
-    # Ensure parent directories exist
+        raise FileNotFoundError(f"Input file {input_path} does not exist")
+ 
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Get input video duration using ffprobe
-    duration = 0.0
+    output_file = config.OUTPUT_DIR / f"{job_id}.mp4"
+ 
+    # ── 1. Determine total duration for progress tracking ──────────────────
+    probed = 0.0
     try:
-        cmd_probe = [
-            config.FFPROBE_BIN,
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(input_file)
-        ]
-        result = subprocess.run(cmd_probe, capture_output=True, text=True, check=True)
-        duration_str = result.stdout.strip()
-        if duration_str:
-            duration = float(duration_str)
-            logger.info("Video duration: %.2fs", duration)
-    except Exception as exc:
-        logger.warning("Could not probe video duration: %s", exc)
-        
-    # 2. Run ffmpeg and track progress
-    # We want to transcode to H.264 MP4 with the config preset and crf
-    cmd_ffmpeg = [
+        result = subprocess.run(
+            [config.FFPROBE_BIN, "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(input_file)],
+            capture_output=True, text=True, check=True,
+        )
+        txt = (result.stdout or "").strip()
+        if txt and txt.lower() != "n/a":
+            probed = float(txt)
+    except Exception as exc:                                # noqa
+        logger.warning("ffprobe could not read duration: %s", exc)
+ 
+    # Prefer the probed value; fall back to the client-supplied duration.
+    total = probed if probed > 0 else float(duration or 0.0)
+    if total > 0:
+        logger.info("Progress duration = %.2fs (%s)",
+                    total, "probed" if probed > 0 else "client-supplied")
+    else:
+        logger.warning("No duration available — progress will jump 0 -> 100")
+ 
+    # ── 2. Build the ffmpeg command (tuned for SPEED) ──────────────────────
+    # 'veryfast' encodes several times quicker than 'medium' at a barely
+    # perceptible quality cost for short social clips. '-threads 0' lets
+    # x264 use every core. Override via the H264_PRESET env var if needed.
+    preset = os.environ.get("H264_PRESET", getattr(config, "H264_PRESET", "") or "veryfast")
+    crf = str(getattr(config, "H264_CRF", "23"))
+ 
+    cmd = [
         config.FFMPEG_BIN,
         "-y",
+        "-fflags", "+genpts",          # rebuild timestamps (MediaRecorder webm)
         "-i", str(input_file),
         "-r", str(fps),
         "-c:v", "libx264",
-        "-preset", config.H264_PRESET,
-        "-crf", config.H264_CRF,
+        "-preset", preset,
+        "-crf", crf,
+        "-threads", "0",               # use all available cores
         "-c:a", "aac",
-        "-b:a", config.AUDIO_BITRATE,
-        "-pix_fmt", "yuv420p",        # essential for general web compatibility
-        "-movflags", "+faststart",    # optimizes for streaming/progressive download
+        "-b:a", getattr(config, "AUDIO_BITRATE", "128k"),
+        "-pix_fmt", "yuv420p",         # universal web/mobile compatibility
+        "-movflags", "+faststart",     # moov atom up front -> instant playback
         "-progress", "pipe:1",
-        str(output_file)
+        str(output_file),
     ]
-    
-    logger.info("Executing ffmpeg: %s", " ".join(cmd_ffmpeg))
-    
-    # Update state to STARTED
+    logger.info("ffmpeg: %s", " ".join(cmd))
+ 
     self.update_state(state="STARTED", meta={"progress": 0})
-    
+ 
+    out_time_re = re.compile(r"(\d+):(\d+):(\d+)\.(\d+)")
     try:
         process = subprocess.Popen(
-            cmd_ffmpeg,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, bufsize=1,
         )
-        
-        out_time_re = re.compile(r"out_time=(\d+):(\d+):(\d+)\.(\d+)")
-        
-        while True:
-            line = process.stdout.readline()
-            if not line:
-                break
-                
+        for line in iter(process.stdout.readline, ""):
             line = line.strip()
-            # Look for out_time
-            if line.startswith("out_time="):
-                time_str = line.split("=", 1)[1]
-                match = out_time_re.match(f"out_time={time_str}" if "out_time=" not in time_str else time_str)
-                if not match:
-                    match = re.search(r"(\d+):(\d+):(\d+)\.(\d+)", time_str)
-                if match and duration > 0:
-                    hours, minutes, seconds, ms = map(float, match.groups())
-                    elapsed = hours * 3600 + minutes * 60 + seconds + ms / 1000000.0
-                    progress = min(99, int((elapsed / duration) * 100))
+            # -progress emits 'out_time=HH:MM:SS.ffffff' lines
+            if line.startswith("out_time=") and total > 0:
+                m = out_time_re.search(line)
+                if m:
+                    hh, mm, ss, frac = m.groups()
+                    elapsed = int(hh) * 3600 + int(mm) * 60 + int(ss) + float("0." + frac)
+                    progress = max(1, min(99, int((elapsed / total) * 100)))
                     self.update_state(state="PROGRESS", meta={"progress": progress})
-                    logger.debug("Transcoding progress: %d%% (elapsed=%.2fs)", progress, elapsed)
-                    
+            elif line == "progress=end":
+                self.update_state(state="PROGRESS", meta={"progress": 99})
         process.wait()
-        
+ 
         if process.returncode != 0:
-            err_msg = f"ffmpeg failed with return code {process.returncode}"
-            logger.error(err_msg)
-            return {"ok": False, "error": err_msg}
-            
+            raise RuntimeError(f"ffmpeg exited with code {process.returncode}")
+        if not output_file.exists() or output_file.stat().st_size == 0:
+            raise RuntimeError("ffmpeg produced no output file")
+ 
     except Exception as exc:
-        err_msg = f"Exception during transcoding: {exc}"
-        logger.error(err_msg)
-        return {"ok": False, "error": err_msg}
-        
-    logger.info("Transcoding finished successfully: %s", output_file)
-    self.update_state(state="SUCCESS", meta={"progress": 100})
-    return {"ok": True, "output_file": str(output_file)}
-
+        logger.error("Transcode failed: %s", exc)
+        # Re-raise so Celery records FAILURE and the status endpoint surfaces it.
+        raise
+ 
+    logger.info("Transcode finished: %s (%.1f KB)",
+                output_file, output_file.stat().st_size / 1024)
+    return {"ok": True, "output_file": str(output_file), "progress": 100}
+ 
+ 
+@celery.task(name="tasks.video.cleanup_old_videos")
+def cleanup_old_videos():
+    """Delete uploads and encoded MP4s older than RESULT_TTL_SECONDS (hourly)."""
+    logger.info("Running video storage cleanup...")
+    now = time.time()
+    ttl = config.RESULT_TTL_SECONDS
+    count_uploads = count_outputs = 0
+ 
+    if config.UPLOAD_DIR.exists():
+        for item in config.UPLOAD_DIR.iterdir():
+            if item.is_file() and (now - item.stat().st_mtime) > ttl:
+                try:
+                    item.unlink()
+                    count_uploads += 1
+                except Exception as e:
+                    logger.warning("Failed to delete upload %s: %s", item, e)
+ 
+    if config.OUTPUT_DIR.exists():
+        for item in config.OUTPUT_DIR.iterdir():
+            if item.is_file() and item.suffix.lower() == ".mp4" \
+                    and (now - item.stat().st_mtime) > ttl:
+                try:
+                    item.unlink()
+                    count_outputs += 1
+                except Exception as e:
+                    logger.warning("Failed to delete output %s: %s", item, e)
+ 
+    logger.info("Cleanup done. Removed %d uploads, %d outputs.",
+                count_uploads, count_outputs)
+    return {"ok": True, "removed_uploads": count_uploads, "removed_outputs": count_outputs}
+    
 
 @celery.task(name="tasks.video.cleanup_old_videos")
 def cleanup_old_videos():

@@ -1,9 +1,7 @@
 """
 video_routes.py — the HTTP API blueprint.
 
-Three endpoints, matching exactly what OddsVideoStudio.tsx calls:
-
-    POST /api/video/upload          multipart: field "video" (+ optional "fps")
+    POST /api/video/upload          multipart: "video" (+ optional "fps", "duration")
                                     -> { "job_id": "<celery-task-id>" }
 
     GET  /api/video/status/<job_id> -> { "state": ..., "progress": 0-100,
@@ -14,6 +12,11 @@ Three endpoints, matching exactly what OddsVideoStudio.tsx calls:
 
 The Celery task id is used directly as the job id, so no database is needed:
 the output file is always `<job_id>.mp4` in OUTPUT_DIR.
+
+NOTE on "duration": MediaRecorder WebM blobs frequently carry NO duration in
+their container header, so the server's ffprobe sees nothing and the encode
+progress bar would be stuck at 0%. The frontend already knows the exact clip
+length, so it sends it as a form field and the task uses it as a fallback.
 """
 
 import uuid
@@ -45,20 +48,29 @@ def upload():
     if ext not in config.ALLOWED_EXTENSIONS:
         return jsonify(error=f"unsupported file type: {ext}"), 415
 
-    # fps is optional; the frontend sends it as a string form field.
+    # fps — optional string form field.
     try:
         fps = int(float(request.form.get("fps", 30)))
         fps = max(10, min(60, fps))
     except (TypeError, ValueError):
         fps = 30
 
-    # Pre-generate the job id so the upload filename, the Celery task id, and
-    # the eventual <job_id>.mp4 output all share one identifier — no DB needed.
+    # duration — the known clip length in seconds (progress-bar fallback).
+    try:
+        duration = float(request.form.get("duration", 0) or 0)
+        duration = max(0.0, min(600.0, duration))
+    except (TypeError, ValueError):
+        duration = 0.0
+
+    # One id shared by the upload filename, the Celery task, and <job_id>.mp4.
     job_id = uuid.uuid4().hex
     saved_path = config.UPLOAD_DIR / f"{job_id}{ext}"
     file.save(saved_path)
 
-    transcode_to_mp4.apply_async(args=[str(saved_path), fps], task_id=job_id)
+    transcode_to_mp4.apply_async(
+        args=[str(saved_path), fps, duration],
+        task_id=job_id,
+    )
 
     return jsonify(job_id=job_id), 202
 
@@ -66,13 +78,13 @@ def upload():
 # ── GET /api/video/status/<job_id> ──────────────────────────────────────
 @video_bp.route("/status/<job_id>", methods=["GET"])
 def status(job_id):
-    """Report encode progress. Shapes the response for the frontend poll."""
+    """Report encode progress, shaped for the frontend poll."""
     res = AsyncResult(job_id, app=celery)
     state = res.state                       # PENDING/STARTED/PROGRESS/SUCCESS/FAILURE
     progress = 0
     error = None
 
-    if state == "PROGRESS" or state == "STARTED":
+    if state in ("PROGRESS", "STARTED"):
         info = res.info if isinstance(res.info, dict) else {}
         progress = int(info.get("progress", 0))
     elif state == "SUCCESS":
@@ -88,8 +100,7 @@ def status(job_id):
 @video_bp.route("/download/<job_id>", methods=["GET"])
 def download(job_id):
     """Stream the finished MP4 back to the browser."""
-    # secure_filename guards against path traversal in job_id.
-    safe_id = secure_filename(job_id)
+    safe_id = secure_filename(job_id)       # guards against path traversal
     mp4_path = config.OUTPUT_DIR / f"{safe_id}.mp4"
 
     if not mp4_path.exists():
