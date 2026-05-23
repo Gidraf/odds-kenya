@@ -25,6 +25,8 @@ def create_app() -> Flask:
     flask_app.config["SECRET_KEY"]              = os.environ.get("SECRET_KEY")
     flask_app.config["JWT_SECRET_KEY"]          = os.environ.get("JWT_SECRET_KEY")
     flask_app.config["SQLALCHEMY_ECHO"]         = False
+    from app.views.customer import config as customer_config
+    flask_app.config["MAX_CONTENT_LENGTH"]      = customer_config.MAX_CONTENT_LENGTH
     flask_app.config["broker_url"]              = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/1"))
     flask_app.config["CELERY_BROKER_URL"]       = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/1"))
     flask_app.config["CELERY_RESULT_BACKEND"]   = os.environ.get("CELERY_RESULT_URL",  os.environ.get("REDIS_URL", "redis://localhost:6379/2"))
