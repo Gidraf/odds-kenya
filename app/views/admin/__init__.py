@@ -78,6 +78,17 @@ def send_outreach_email():
         except Exception as e:
             return _err(f"Failed to generate Word report attachment: {str(e)}", 500)
             
+    # Process custom user-uploaded attachments from payload
+    custom_atts = data.get("custom_attachments") or data.get("attachments")
+    if custom_atts and isinstance(custom_atts, list):
+        for att in custom_atts:
+            if isinstance(att, dict) and att.get("filename") and att.get("content"):
+                attachments.append({
+                    "filename": str(att.get("filename")),
+                    "content": str(att.get("content")), # Base64 encoded payload
+                    "mimetype": str(att.get("mimetype") or "application/octet-stream")
+                })
+            
     from app.workers.celery_tasks import send_async_email
     send_async_email.apply_async(args=[
         subject,
