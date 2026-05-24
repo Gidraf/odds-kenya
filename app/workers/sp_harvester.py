@@ -286,6 +286,8 @@ def _parse_match_item(item: dict) -> dict | None:
     if not sp_game_id:
         return None
 
+    sms_id = str(item.get("smsId") or item.get("sms_id") or sp_game_id)
+
     betradar_id = str(
         item.get("betradarId") or item.get("betradar_id") or
         item.get("betRadarId") or ""
@@ -322,6 +324,7 @@ def _parse_match_item(item: dict) -> dict | None:
     return {
         "betradar_id":   betradar_id,
         "sp_game_id":    sp_game_id,
+        "sms_id":        sms_id,
         "home_team":     home,
         "away_team":     away,
         "start_time":    _parse_timestamp(item),
@@ -406,6 +409,7 @@ def _build_match(
     return {
         "betradar_id":  parsed["betradar_id"],
         "sp_game_id":   parsed["sp_game_id"],
+        "sms_id":       parsed.get("sms_id") or parsed["sp_game_id"],
         "home_team":    parsed["home_team"],
         "away_team":    parsed["away_team"],
         "start_time":   parsed["start_time"],

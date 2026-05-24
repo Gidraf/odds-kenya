@@ -168,11 +168,14 @@ def make_celery(flask_app=None):
             },
 
             # ── Word Report Pre-Generation ────────────────────────────────────
-            # Every 5 minutes: generate fresh Word reports for all sports and
-            # push to MinIO. Download endpoint serves the cached file instantly.
-            "word-reports-5min": {
+            # Every 10 minutes: check SP data, harvest if missing, then generate
+            # fresh Word reports for all sports and push to MinIO.
+            # Download endpoint serves the cached file instantly (< 200 ms).
+            # Interval = 10 min to avoid overlapping runs (task can take up to 10
+            # min when SP data is missing and a live harvest is triggered).
+            "word-reports-10min": {
                 "task":     "tasks.ops.pre_generate_word_reports",
-                "schedule": 300,
+                "schedule": 600,
                 "options":  {"queue": "default"},
             },
         },

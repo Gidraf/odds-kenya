@@ -468,11 +468,32 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
             bk_bd = m.get("bookmakers", {}).get(bk_slug, {})
             mkts  = _normalise_markets(bk_bd.get("markets") or m.get("markets") or {})
 
+            # Extract bookmaker-specific external match ID / Game ID (the "king" SMS ID)
+            ext_id = str(
+                m.get("sms_id") or m.get("sp_game_id") or m.get("sp_api_id") or
+                m.get("bt_parent_id") or m.get("bt_match_id") or m.get("bt_game_id") or
+                m.get("od_parent_id") or m.get("od_event_id") or m.get("od_match_id") or m.get("od_game_id") or
+                m.get("match_id") or m.get("game_id") or m.get("event_id") or ""
+            ).strip()
+
+            bk_ids_seed = {}
+            for k, v in (m.get("bk_ids") or {}).items():
+                if v and str(v).lower() != "none":
+                    bk_ids_seed[k] = str(v)
+            if ext_id and ext_id.lower() != "none":
+                bk_ids_seed[bk_slug] = ext_id
+
             if pos is not None:
                 ex = result[pos]
                 ex.setdefault("bookmakers", {})[bk_slug] = {
                     "bookmaker": bk_slug.upper(), "slug": bk_slug, "markets": mkts,
                 }
+                # Merge bk_ids dictionary
+                ex_ids = ex.setdefault("bk_ids", {})
+                for k, v in bk_ids_seed.items():
+                    if v and str(v).lower() != "none":
+                        ex_ids[k] = v
+
                 for xbk, xbd in (m.get("bookmakers") or {}).items():
                     if xbk == bk_slug: continue
                     xm = _normalise_markets(xbd.get("markets") or {})
@@ -527,6 +548,7 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
                     "market_slugs":      list(mkts.keys()),
                     "bookmakers":        bks_seed,
                     "bk_count":          len(bks_seed),
+                    "bk_ids":            {k: v for k, v in bk_ids_seed.items() if v and str(v).lower() != "none"},
                 }
                 pos = len(result); result.append(entry)
                 if key_jk: by_jk[key_jk]   = pos

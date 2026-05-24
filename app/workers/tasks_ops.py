@@ -773,61 +773,121 @@ _REPORT_SPORTS = [
 
 @celery.task(
     name="tasks.ops.pre_generate_word_reports",
-    soft_time_limit=270,
-    time_limit=300,
+    soft_time_limit=540,   # 9 minutes — gives each sport ~36s including SP fetch
+    time_limit=600,
     acks_late=True,
 )
 def pre_generate_word_reports() -> dict:
     """
     Pre-generate Word odds reports for all sports (both full & arb-only variants)
-    and upload them to MinIO with a 10-minute object expiry.
+    and upload them to MinIO so downloads are instant (< 200 ms).
 
-    Runs every 5 minutes via Celery Beat so that the download endpoint can serve
-    the pre-built file instantly (< 200 ms) instead of generating on-demand.
+    Runs every 5 minutes via Celery Beat.
+
+    KEY GUARANTEE: Before generating each report the task checks that SportPesa
+    data exists in Redis.  If the SP key is absent or empty it triggers a
+    synchronous SP harvest for that sport and waits (up to 90 s) before
+    building the document.  This ensures the cached file always has SP odds.
     """
-    from app.views.customer.routes_api import _generate_word_document, _save_minio_report, _get_minio_client
+    import json as _json
+    from app.views.customer.routes_api import (
+        _generate_word_document, _save_minio_report, _get_minio_client,
+    )
+    from app.workers.celery_tasks import _redis as _get_redis
 
     successes = 0
     failures  = 0
     skipped   = 0
+    sp_fetched = 0   # how many sports needed a live SP harvest
 
-    client, bucket = _get_minio_client()
+    _r = _get_redis()
+    _get_minio_client()   # warm MinIO connection / create bucket
+
+    def _sp_match_count(sport_slug: str) -> int:
+        """Return the number of SP matches in Redis for a sport. 0 = missing."""
+        for key in (f"odds:sp:upcoming:{sport_slug}", f"sp:upcoming:{sport_slug}"):
+            try:
+                raw = _r.get(key)
+                if not raw:
+                    continue
+                obj = _json.loads(raw)
+                if isinstance(obj, list):
+                    return len([m for m in obj if isinstance(m, dict)])
+                if isinstance(obj, dict):
+                    ms = obj.get("matches") or obj.get("data") or []
+                    if isinstance(ms, list):
+                        return len([m for m in ms if isinstance(m, dict)])
+            except Exception:
+                pass
+        return 0
+
+    def _ensure_sp_data(sport_slug: str) -> bool:
+        """
+        Ensure SP data is present in Redis.
+        If it's missing, trigger sp_harvest_sport synchronously and
+        wait up to 90 s for the key to appear.
+        Returns True if SP data is confirmed after the check/wait.
+        """
+        if _sp_match_count(sport_slug) > 0:
+            return True   # data already present — nothing to do
+
+        log.warning("[word_reports] SP data missing for %s — triggering harvest", sport_slug)
+        try:
+            from app.workers.tasks_upcoming import sp_harvest_sport
+            # apply() runs the task synchronously in the current process
+            sp_harvest_sport.apply(args=[sport_slug])
+        except Exception as exc:
+            log.warning("[word_reports] SP harvest for %s failed: %s", sport_slug, exc)
+
+        # Verify up to 90 s with 5 s polling
+        for _ in range(18):
+            time.sleep(5)
+            if _sp_match_count(sport_slug) > 0:
+                return True
+
+        log.warning("[word_reports] SP data still absent for %s after harvest", sport_slug)
+        return False
 
     for sport in _REPORT_SPORTS:
+        # ── 1. Ensure SP data exists before generating any variant ──────────
+        had_sp = _ensure_sp_data(sport)
+        if not had_sp:
+            log.warning("[word_reports] Skipping %s — no SP data even after fetch", sport)
+            skipped += 2   # both variants skipped
+            continue
+        else:
+            sp_fetched += 1
+
+        # ── 2. Generate full + arb-only variants and push to MinIO ───────────
         for arb_only in (False, True):
             try:
-                buf = _generate_word_document(sport, arb_only)
+                buf   = _generate_word_document(sport, arb_only)
                 saved = _save_minio_report(sport, arb_only, buf)
                 if saved:
-                    # Set a 10-minute TTL on the object so MinIO auto-deletes it
-                    # if the beat task misses a cycle.
+                    # Write a Redis readiness flag (10-min TTL = report freshness window)
                     try:
-                        from datetime import timedelta
-                        key = f"reports/{sport}{'_arb' if arb_only else '_full'}_latest.docx"
-                        # MinIO Python SDK v7+: use set_object_tags / lifecycle config
-                        # We use a simple Redis TTL flag as a secondary guard instead.
-                        from app.workers.celery_tasks import cache_set
-                        cache_set(
+                        _r.setex(
                             f"odds_report:ready:{sport}:{'arb' if arb_only else 'full'}",
-                            {"sport": sport, "arb_only": arb_only, "ts": time.time()},
-                            ttl=600,  # 10 minutes — matches report freshness window
+                            600,
+                            _json.dumps({"sport": sport, "arb_only": arb_only, "ts": time.time()}),
                         )
                     except Exception:
                         pass
                     successes += 1
-                    log.info("[word_reports] pre-generated %s arb=%s → MinIO", sport, arb_only)
+                    log.info("[word_reports] ✓ %s arb=%s → MinIO", sport, arb_only)
                 else:
                     skipped += 1
                     log.debug("[word_reports] MinIO unavailable, skipped %s arb=%s", sport, arb_only)
             except Exception as exc:
                 failures += 1
-                log.warning("[word_reports] failed %s arb=%s: %s", sport, arb_only, exc)
+                log.warning("[word_reports] ✗ %s arb=%s: %s", sport, arb_only, exc)
 
     return {
-        "ok":       True,
-        "sports":   len(_REPORT_SPORTS),
-        "variants": 2,
-        "success":  successes,
-        "failures": failures,
-        "skipped":  skipped,
+        "ok":        True,
+        "sports":    len(_REPORT_SPORTS),
+        "variants":  2,
+        "sp_fetched": sp_fetched,
+        "success":   successes,
+        "failures":  failures,
+        "skipped":   skipped,
     }

@@ -344,19 +344,6 @@ def _save_minio_report(sport: str, arb_only: bool, buf: io.BytesIO) -> bool:
         client, bucket = _get_minio_client()
         if not client:
             return False
-        key    = _minio_report_key(sport, arb_only)
-        buf.seek(0)
-        length = buf.getbuffer().nbytes
-        client.put_object(
-            bucket, key, buf, length,
-            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-        buf.seek(0)
-        return True
-    except Exception:
-        return False
-
-
 def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
@@ -366,41 +353,99 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     import io
     import time
     from datetime import datetime as _dt, timezone as _tz
+    import json as _json
     
-    # ─── STYLE CONSTANTS FOR REBRANDING & EASY FORMATTING ───
+    # ─── STYLE CONSTANTS FOR REBRANDING & PREMIUM DESIGN ───
     FONT_FAMILY = "Arial"
     
     # Brand Hex Colors for Table Shading / Cell Shading (HEX string without #)
     HEX_PRIMARY_BG = "0F172A"       # Deep slate for table header background
-    HEX_ARB_HEADER_BG = "EA580C"    # Arbitrage header background (Vibrant Orange)
-    HEX_ARB_CELL_BG = "FFF7ED"      # Light orange background for arbitrage table cells
     HEX_BEST_ODD_BG = "DCFCE7"      # Light green for best odd cell background (#dcfce7)
     HEX_ALT_ROW_BG = "F8FAFC"       # Light gray for alternating row background
-    HEX_MUTED_BG = "F1F5F9"         # Muted gray for standard header background
+    HEX_MUTED_BG = "F1F5F9"         # Muted gray background for standard matches card
+    HEX_ARB_CARD_BG = "F0FDF4"      # Vibrant soft green background for arbitrage card
+    HEX_ARB_BORDER = "BBF7D0"       # Border for arbitrage card
+    HEX_STD_BORDER = "E2E8F0"       # Border for standard card
     
     # Brand RGB Colors for Runs/Texts
     RGB_PRIMARY = RGBColor(0x0F, 0x17, 0x2A)      # Deep slate for titles
     RGB_TEXT = RGBColor(0x2D, 0x37, 0x48)         # Charcoal for regular text
     RGB_MUTED = RGBColor(0x64, 0x74, 0x8B)        # Slate for secondary / metadata
     RGB_GREEN = RGBColor(0x15, 0x80, 0x3D)        # Forest green for SMS IDs and best odds (#15803d)
+    RGB_RED = RGBColor(0xDC, 0x26, 0x26)          # Red for NO arbitrage
     RGB_ORANGE = RGBColor(0xEA, 0x58, 0x0C)       # Arbitrage orange
     RGB_WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+    RGB_SECONDARY = RGBColor(0x47, 0x55, 0x69)    # Slate secondary color
+    
+    # Bookmaker Specific RGB Colors for Legend and Stake Distribution
+    RGB_SP = RGBColor(0x25, 0x63, 0xEB)           # Blue for SportPesa
+    RGB_BT = RGBColor(0x16, 0xA3, 0x4A)           # Green for Betika
+    RGB_OD = RGBColor(0xD9, 0x77, 0x06)           # Gold/Yellow for OdiBets
     
     # Font Sizes
-    SIZE_TITLE = Pt(20)
+    SIZE_TITLE = Pt(18)
     SIZE_MATCH_HEADER = Pt(11.5)
-    SIZE_HEADER = Pt(9.5)
-    SIZE_TEXT = Pt(9.5)
-    SIZE_TINY = Pt(8.5)
+    SIZE_HEADER = Pt(9.0)
+    SIZE_TEXT = Pt(9.0)
+    SIZE_TINY = Pt(8.0)
 
     # ─── HELPERS FOR XML / CELL MANIPULATION ───
     def _set_cell_shading(cell, color_hex: str):
         shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{color_hex}"/>')
         cell._tc.get_or_add_tcPr().append(shading)
 
-    def _add_styled_paragraph(cell, text: str, bold: bool = False, italic: bool = False, color = None, size = None, align = None):
-        p = cell.paragraphs[0]
+    def _set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcMar = OxmlElement('w:tcMar')
+        for m, val in [('top', top), ('bottom', bottom), ('left', left), ('right', right)]:
+            node = OxmlElement(f'w:{m}')
+            node.set(qn('w:w'), str(val))
+            node.set(qn('w:type'), 'dxa')
+            tcMar.append(node)
+        tcPr.append(tcMar)
+
+    def _set_cell_borders(cell, color_hex: str = "CBD5E1", sz: str = "6"):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcBorders = OxmlElement('w:tcBorders')
+        for border_name in ['top', 'left', 'bottom', 'right']:
+            border = OxmlElement(f'w:{border_name}')
+            border.set(qn('w:val'), 'single')
+            border.set(qn('w:sz'), sz)
+            border.set(qn('w:space'), '0')
+            border.set(qn('w:color'), color_hex)
+            tcBorders.append(border)
+        tcPr.append(tcBorders)
+
+    def _set_cell_border_bottom(cell, color_hex: str = "E2E8F0", sz: str = "4"):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcBorders = tcPr.first_child_found_in("w:tcBorders")
+        if tcBorders is None:
+            tcBorders = OxmlElement('w:tcBorders')
+            tcPr.append(tcBorders)
+        bottom = OxmlElement('w:bottom')
+        bottom.set(qn('w:val'), 'single')
+        bottom.set(qn('w:sz'), sz)
+        bottom.set(qn('w:space'), '0')
+        bottom.set(qn('w:color'), color_hex)
+        tcBorders.append(bottom)
+
+    def _remove_table_borders(table):
+        tblPr = table._tbl.tblPr
+        tblBorders = OxmlElement('w:tblBorders')
+        for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+            border = OxmlElement(f'w:{border_name}')
+            border.set(qn('w:val'), 'none')
+            tblBorders.append(border)
+        tblPr.append(tblBorders)
+
+    def _add_styled_paragraph(cell, text: str, bold: bool = False, italic: bool = False, color = None, size = None, align = None, space_after = 0):
+        if len(cell.paragraphs) == 1 and not cell.paragraphs[0].text:
+            p = cell.paragraphs[0]
+        else:
+            p = cell.add_paragraph()
         p.alignment = align or WD_ALIGN_PARAGRAPH.LEFT
+        p.paragraph_format.space_after = Pt(space_after)
+        p.paragraph_format.line_spacing = 1.1
         run = p.add_run(text)
         run.bold = bold
         run.italic = italic
@@ -421,24 +466,49 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
         try: return float(val)
         except: return None
 
-    # ── 1. Fetch upcoming + live from high-speed Redis cache ────────────────
+    from app.workers.celery_tasks import _redis as _get_redis_for_sp
+    _r_sp = _get_redis_for_sp()
+
+    def _read_sp_raw(sport_slug: str) -> list:
+        for key in (f"odds:sp:upcoming:{sport_slug}", f"sp:upcoming:{sport_slug}"):
+            try:
+                raw = _r_sp.get(key)
+                if not raw:
+                    continue
+                obj = _json.loads(raw)
+                if isinstance(obj, list):
+                    return [m for m in obj if isinstance(m, dict)]
+                if isinstance(obj, dict):
+                    ms = obj.get("matches") or obj.get("data") or []
+                    if isinstance(ms, list):
+                        return [m for m in ms if isinstance(m, dict)]
+            except Exception:
+                pass
+        return []
+
+    sp_harvested = False
+    sp_raw_list = _read_sp_raw(sport)
+    if not sp_raw_list:
+        try:
+            from app.workers.tasks_upcoming import sp_harvest_sport
+            sp_harvest_sport.apply(args=[sport])
+            sp_raw_list = _read_sp_raw(sport)
+            sp_harvested = True
+        except Exception:
+            pass
+
     matches_raw = []
     _now_ts = time.time()
     try:
         from app.api.odds_stream import _get_unified_patched
-        raw_upcoming = _get_unified_patched("upcoming", sport)
-        raw_live     = _get_unified_patched("live",     sport)
-
-        # Build set of join-keys already seen in live so we don't double-count
+        raw_upcoming = _get_unified_patched("upcoming", sport, force_refresh=sp_harvested)
+        raw_live     = _get_unified_patched("live",     sport, force_refresh=sp_harvested)
         live_jks = set()
         for m in raw_live:
             if not isinstance(m, dict): continue
             jk = m.get("join_key") or m.get("parent_match_id")
             if jk: live_jks.add(jk)
-
         seen_jks = set()
-
-        # Add live matches first (they have scores / match-time)
         for m in raw_live:
             if not isinstance(m, dict): continue
             jk = m.get("join_key") or m.get("parent_match_id")
@@ -448,41 +518,77 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                 if m.get("arb_opportunities") and not m.get("arbitrage"):
                     m["arbitrage"] = m["arb_opportunities"]; m["has_arb"] = True
                 matches_raw.append(m)
-
-        # Add upcoming only if NOT already seen via live, and NOT already started
         for m in raw_upcoming:
             if not isinstance(m, dict): continue
             jk = m.get("join_key") or m.get("parent_match_id")
-            if jk in live_jks: continue          # skip — already in live list
+            if jk in live_jks: continue
             if jk and jk in seen_jks: continue
-            # Skip matches that have already kicked off (start_time in the past)
             st_raw = m.get("start_time") or ""
             if st_raw:
                 try:
                     st_dt = _dt.fromisoformat(st_raw.replace("Z", "+00:00"))
-                    if st_dt.tzinfo is None:
-                        st_dt = st_dt.replace(tzinfo=_tz.utc)
-                    if st_dt.timestamp() < _now_ts - 90:  # started >90s ago → live
-                        continue
-                except Exception:
-                    pass
+                    if st_dt.tzinfo is None: st_dt = st_dt.replace(tzinfo=_tz.utc)
+                    if st_dt.timestamp() < _now_ts - 90: continue
+                except Exception: pass
             if jk: seen_jks.add(jk)
             if m.get("arb_opportunities") and not m.get("arbitrage"):
                 m["arbitrage"] = m["arb_opportunities"]; m["has_arb"] = True
             matches_raw.append(m)
-    except Exception:
-        pass
+    except Exception: pass
 
-    # ── 2. DB fallback if Redis cache is empty ──────────────────────────────
+    try:
+        _sp_by_br: dict  = {}
+        _sp_by_name: dict = {}
+        for sp_m in sp_raw_list:
+            br = str(sp_m.get("betradar_id") or "").strip()
+            if br: _sp_by_br[br] = sp_m
+            h = (sp_m.get("home_team") or "").lower().strip()[:10]
+            a = (sp_m.get("away_team") or "").lower().strip()[:10]
+            if h and a: _sp_by_name[f"{h}|{a}"] = sp_m
+
+        def _find_sp_match(unified_m: dict):
+            br = str(unified_m.get("betradar_id") or unified_m.get("join_key", "").replace("br_", "") or "").strip()
+            if br and br in _sp_by_br: return _sp_by_br[br]
+            h = (unified_m.get("home_team") or "").lower().strip()[:10]
+            a = (unified_m.get("away_team") or "").lower().strip()[:10]
+            if h and a: return _sp_by_name.get(f"{h}|{a}")
+            return None
+
+        for m in matches_raw:
+            sp_m = _find_sp_match(m)
+            if sp_m is None: continue
+            if not m.get("sp_game_id") and sp_m.get("sp_game_id"): m["sp_game_id"] = sp_m["sp_game_id"]
+            if not m.get("sms_id") and sp_m.get("sms_id"): m["sms_id"] = sp_m["sms_id"]
+            sp_mkts = sp_m.get("markets") or {}
+            if sp_mkts:
+                if "bookmakers" not in m or not isinstance(m.get("bookmakers"), dict): m["bookmakers"] = {}
+                if "sp" not in m["bookmakers"]: m["bookmakers"]["sp"] = {"bookmaker": "SportPesa", "slug": "sp", "markets": {}}
+                existing_sp_mkts = m["bookmakers"]["sp"].get("markets") or {}
+                if len(existing_sp_mkts) < len(sp_mkts): m["bookmakers"]["sp"]["markets"] = sp_mkts
+            if sp_mkts and m.get("best") is not None:
+                try:
+                    from app.api.odds_stream import _normalise_markets, _get_price
+                    norm_sp = _normalise_markets(sp_mkts)
+                    for mkt, outcomes in norm_sp.items():
+                        if not isinstance(outcomes, dict): continue
+                        m["best"].setdefault(mkt, {})
+                        for out, p in outcomes.items():
+                            price = _get_price(p)
+                            if price > 1.0:
+                                existing = m["best"][mkt].get(out)
+                                if not existing or price > existing.get("odd", 0):
+                                    m["best"][mkt][out] = {"odd": price, "bk": "sp"}
+                except Exception: pass
+    except Exception: pass
+
     if not matches_raw:
         try:
+            from app.api.odds_stream import _load_db_matches
             db_upcoming, _, _ = _load_db_matches(sport, mode="upcoming", page=1, per_page=500)
             db_live,     _, _ = _load_db_matches(sport, mode="live",     page=1, per_page=100)
             matches_raw.extend(db_upcoming + db_live)
-        except Exception:
-            pass
+        except Exception: pass
 
-    # ── 3. Dynamically compute arbitrage for every match ───────────────────
     for m in matches_raw:
         if not m.get("has_arb") or not m.get("arbitrage"):
             best = m.get("best") or {}
@@ -495,25 +601,19 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                         if arb_sum < 1.0:
                             profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
                             legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]} for o, v in outcomes.items()]
-                            arb_markets.append({"market": mkt, "profit_pct": profit_pct,
-                                                "arb_sum": round(arb_sum, 6), "legs": legs})
-                    except Exception:
-                        pass
+                            arb_markets.append({"market": mkt, "profit_pct": profit_pct, "arb_sum": round(arb_sum, 6), "legs": legs})
+                    except Exception: pass
                 arb_markets.sort(key=lambda x: -x["profit_pct"])
             if arb_markets:
                 m["has_arb"] = True
                 m["arbitrage"] = arb_markets
                 m["best_arb_pct"] = arb_markets[0]["profit_pct"]
 
-    # ── 4. Filter & sort ───────────────────────────────────────────────────
     matches = matches_raw
-    if arb_only:
-        matches = [m for m in matches if m.get("has_arb") or m.get("arbitrage")]
+    if arb_only: matches = [m for m in matches if m.get("has_arb") or m.get("arbitrage")]
     matches.sort(key=lambda x: x.get("start_time") or "")
 
-    # 5. GENERATE WORD REPORT USING python-docx
     doc = Document()
-    
     sections = doc.sections
     for section in sections:
         section.top_margin = Inches(0.8)
@@ -527,30 +627,62 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     font.size = SIZE_TEXT
     font.color.rgb = RGB_TEXT
 
-    # Center Title
+    sport_emojis = {
+        "soccer": "⚽ SOCCER", "esoccer": "⚽ ESOCCER", "basketball": "🏀 BASKETBALL",
+        "tennis": "🎾 TENNIS", "ice-hockey": "🏒 ICE HOCKEY", "volleyball": "🏐 VOLLEYBALL",
+        "cricket": "🏏 CRICKET", "rugby": "🏉 RUGBY", "table-tennis": "🏓 TABLE TENNIS",
+        "handball": "🤾 HANDBALL", "baseball": "⚾ BASEBALL", "mma": "🥊 MMA",
+        "boxing": "🥊 BOXING", "darts": "🎯 DARTS", "american-football": "🏈 AMERICAN FOOTBALL"
+    }
+    sport_title = sport_emojis.get(sport.lower(), "🏆 " + sport.upper())
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_run = title.add_run(f"OddsKenya — {sport.title()} Odds Booklet")
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(2)
+    title_run = title.add_run(f"{sport_title} BETTING ANALYSIS")
     title_run.bold = True
-    title_run.font.size = SIZE_TITLE
+    title_run.font.size = Pt(18)
     title_run.font.color.rgb = RGB_PRIMARY
 
-    # Sub-header
     sub = doc.add_paragraph()
     sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sub_run = sub.add_run(
-        f"Generated on {time.strftime('%A, %B %d, %Y at %H:%M:%S EAT')} | "
-        f"Matches: {len(matches)} "
-        f"{' (Arbitrage Only)' if arb_only else ''}"
-    )
-    sub_run.font.size = SIZE_TINY
-    sub_run.font.italic = True
+    sub.paragraph_format.space_after = Pt(6)
+    sub_run = sub.add_run(f"🗓️ {time.strftime('%A, %b %d, %Y (EAT)')}  |  📋 {len(matches)} Matches{'  [Arbitrage Only]' if arb_only else ''}")
+    sub_run.font.size = Pt(9.5)
+    sub_run.font.bold = True
     sub_run.font.color.rgb = RGB_MUTED
 
-    doc.add_paragraph().paragraph_format.space_after = Pt(12)
+    p_legend = doc.add_paragraph()
+    p_legend.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_legend.paragraph_format.space_after = Pt(18)
+    r_lbl = p_legend.add_run("BOOKMAKERS:  ")
+    r_lbl.font.size = SIZE_TINY
+    r_lbl.font.bold = True
+    r_lbl.font.color.rgb = RGB_MUTED
+    r_sp_badge = p_legend.add_run(" SP ")
+    r_sp_badge.font.size = SIZE_TINY
+    r_sp_badge.font.bold = True
+    r_sp_badge.font.color.rgb = RGB_SP
+    r_sp_lbl = p_legend.add_run(" SportPesa  |  ")
+    r_sp_lbl.font.size = SIZE_TINY
+    r_sp_lbl.font.color.rgb = RGB_TEXT
+    r_bt_badge = p_legend.add_run(" BT ")
+    r_bt_badge.font.size = SIZE_TINY
+    r_bt_badge.font.bold = True
+    r_bt_badge.font.color.rgb = RGB_BT
+    r_bt_lbl = p_legend.add_run(" Betika  |  ")
+    r_bt_lbl.font.size = SIZE_TINY
+    r_bt_lbl.font.color.rgb = RGB_TEXT
+    r_od_badge = p_legend.add_run(" OD ")
+    r_od_badge.font.size = SIZE_TINY
+    r_od_badge.font.bold = True
+    r_od_badge.font.color.rgb = RGB_OD
+    r_od_lbl = p_legend.add_run(" OdiBets")
+    r_od_lbl.font.size = SIZE_TINY
+    r_od_lbl.font.color.rgb = RGB_TEXT
 
     p_div = doc.add_paragraph()
-    p_div.paragraph_format.space_after = Pt(20)
+    p_div.paragraph_format.space_after = Pt(14)
     p_div_run = p_div.add_run("―" * 58)
     p_div_run.font.color.rgb = RGBColor(0xe2, 0xe8, 0xf0)
 
@@ -560,9 +692,8 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
         r_none = p_none.add_run("No matches matching filters found.")
         r_none.italic = True
     else:
-        # DB lookup for BookmakerMatchLinks using parent_match_id / betradar_id
-        br_ids = [m.get("betradar_id") or m.get("parent_match_id") for m in matches if m.get("betradar_id") or m.get("parent_match_id")]
         link_dict = {}
+        br_ids = [m.get("betradar_id") or m.get("parent_match_id") for m in matches if m.get("betradar_id") or m.get("parent_match_id")]
         if br_ids:
             try:
                 from app.models.odds import UnifiedMatch
@@ -570,17 +701,39 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                 ums = UnifiedMatch.query.filter(UnifiedMatch.parent_match_id.in_(br_ids)).all()
                 um_id_to_br = {um.id: um.parent_match_id for um in ums}
                 um_ids = list(um_id_to_br.keys())
-                
                 if um_ids:
                     bml_list = BookmakerMatchLink.query.filter(BookmakerMatchLink.match_id.in_(um_ids)).all()
                     for bml in bml_list:
                         bk = Bookmaker.query.get(bml.bookmaker_id)
                         slug = bk.slug if bk else str(bml.bookmaker_id)
                         br_id = um_id_to_br.get(bml.match_id)
-                        if br_id:
-                            link_dict.setdefault(br_id, {})[slug] = bml.external_match_id
+                        if br_id: link_dict.setdefault(br_id, {})[slug] = bml.external_match_id
             except Exception as e:
-                log.warning("Error fetching match links for booklet: %s", e)
+                import logging; logging.warning("Error fetching match links for booklet: %s", e)
+
+        _MARKET_NAMES = {
+            "1x2": "Full-Time 1X2", "match_winner": "Match Winner", "moneyline": "Moneyline", "btts": "Both Teams to Score",
+            "double_chance": "Double Chance", "dnb": "Draw No Bet", "half_time": "Half-Time Result", "ht_ft": "Half-Time / Full-Time",
+            "correct_score": "Correct Score", "winner": "Winner", "total_goals": "Total Goals", "asian_handicap": "Asian Handicap",
+            "european_handicap": "European Handicap", "odd_even": "Odd / Even Goals", "first_goal": "First Goal",
+            "last_goal": "Last Goal", "anytime_scorer": "Anytime Goal-Scorer", "first_scorer": "First Goal-Scorer",
+            "clean_sheet_home": "Home Clean Sheet", "clean_sheet_away": "Away Clean Sheet", "win_to_nil_home": "Home Win to Nil",
+            "win_to_nil_away": "Away Win to Nil", "both_score_win": "BTTS & Win",
+        }
+
+        def _mkt_label(mkt: str) -> str:
+            if mkt in _MARKET_NAMES: return _MARKET_NAMES[mkt]
+            if mkt.startswith(("over_under_goals_", "over_under_")):
+                line = mkt.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")
+                return f"Over/Under {line} Goals"
+            if mkt.startswith("asian_handicap_"):
+                line = mkt.replace("asian_handicap_", "").replace("_", ".")
+                return f"AH {line}"
+            return mkt.replace("_", " ").title()
+
+        def _bk_display(slug: str) -> str:
+            bk_map = {"sp": "SportPesa", "bt": "Betika", "od": "OdiBets"}
+            return bk_map.get(slug.lower(), slug.upper())
 
         for idx, m in enumerate(matches):
             h_team = m.get("home_team", "Home Team")
@@ -588,266 +741,237 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
             comp = m.get("competition", "General")
             time_raw = m.get("start_time", "")
             try:
-                from datetime import datetime
-                dt = datetime.fromisoformat(time_raw.replace("Z", "+00:00"))
+                dt = _dt.fromisoformat(time_raw.replace("Z", "+00:00"))
                 time_str = dt.strftime("%A, %b %d at %H:%M EAT")
-            except Exception:
-                time_str = time_raw
+            except Exception: time_str = time_raw
 
-            # Match Header Paragraph
             p_match = doc.add_paragraph()
             p_match.paragraph_format.space_before = Pt(14)
             p_match.paragraph_format.space_after = Pt(2)
-            
+            p_match.paragraph_format.keep_with_next = True
             run_match = p_match.add_run(f"{idx+1}. {h_team} vs {a_team}")
             run_match.bold = True
             run_match.font.size = SIZE_MATCH_HEADER
             run_match.font.color.rgb = RGB_PRIMARY
 
-            # Meta information (competition, time)
             p_meta = doc.add_paragraph()
-            p_meta.paragraph_format.space_after = Pt(4)
-            r_meta = p_meta.add_run(f"🏆 {comp}  |  📅 {time_str}")
+            p_meta.paragraph_format.space_after = Pt(8)
+            p_meta.paragraph_format.keep_with_next = True
+            br_id   = m.get("betradar_id") or m.get("parent_match_id")
+            m_links = {}
+            sp_gid = m.get("sms_id") or m.get("sp_game_id")
+            if sp_gid: m_links["sp"] = str(sp_gid)
+            if br_id and br_id in link_dict:
+                for slug, ext_id in link_dict[br_id].items():
+                    if slug not in m_links and ext_id: m_links[slug] = ext_id
+            for slug in ("sp", "bt", "od"):
+                if slug not in m_links:
+                    val = (m.get("bk_ids") or {}).get(slug)
+                    if val: m_links[slug] = str(val)
+            ids_str = []
+            if "sp" in m_links: ids_str.append(f"SportPesa: #{m_links['sp']}")
+            if "bt" in m_links: ids_str.append(f"Betika: #{m_links['bt']}")
+            if "od" in m_links: ids_str.append(f"OdiBets: #{m_links['od']}")
+            ids_part = f"  |  📲 Game IDs: {', '.join(ids_str)}" if ids_str else ""
+            r_meta = p_meta.add_run(f"🏆 {comp}  |  📅 {time_str}{ids_part}")
             r_meta.font.size = SIZE_TINY
             r_meta.font.color.rgb = RGB_MUTED
 
-            # Resolve external Match/SMS/Game IDs
-            m_id = m.get("match_id")
-            br_id = m.get("betradar_id") or m.get("parent_match_id")
-            m_links = {}
-            if br_id and br_id in link_dict:
-                m_links.update(link_dict[br_id])
-            
-            # Local fallback search in case database link table is not yet matched
-            for slug in ("sp", "bt", "od"):
-                if slug not in m_links:
-                    val = m.get("bk_ids", {}).get(slug)
-                    if val:
-                        m_links[slug] = val
-                    else:
-                        bk_obj = m.get("bookmakers", {}).get(slug) if isinstance(m.get("bookmakers"), dict) else None
-                        if bk_obj and isinstance(bk_obj, dict):
-                            val2 = bk_obj.get("link", {}).get("external_match_id") if isinstance(bk_obj.get("link"), dict) else None
-                            if val2:
-                                m_links[slug] = val2
+            grid_table = doc.add_table(rows=1, cols=2)
+            _remove_table_borders(grid_table)
+            grid_row = grid_table.rows[0]
+            left_cell, right_cell = grid_row.cells[0], grid_row.cells[1]
+            left_cell.width = Inches(4.6)
+            right_cell.width = Inches(2.3)
+            _set_cell_margins(left_cell, top=0, bottom=0, left=0, right=80)
+            _set_cell_margins(right_cell, top=80, bottom=80, left=100, right=100)
 
-            # Render SMS IDs prominently
-            if m_links:
-                p_ids = doc.add_paragraph()
-                p_ids.paragraph_format.space_after = Pt(6)
-                ids_str = []
-                if "sp" in m_links: ids_str.append(f"SportPesa ID: #{m_links['sp']}")
-                if "bt" in m_links: ids_str.append(f"Betika ID: #{m_links['bt']}")
-                if "od" in m_links: ids_str.append(f"OdiBets ID: #{m_links['od']}")
-                r_ids = p_ids.add_run("📲 BOOKMAKER GAME IDs → " + " | ".join(ids_str))
-                r_ids.font.size = SIZE_TINY
-                r_ids.font.bold = True
-                r_ids.font.color.rgb = RGB_GREEN
-
-            # Arbitrage opportunities for this match
-            arbs = m.get("arbitrage") or []
-            arb_markets = set() # Keep track of markets with arbitrage to exclude from standard table
-            
-            if arbs:
-                p_arb_title = doc.add_paragraph()
-                p_arb_title.paragraph_format.space_before = Pt(6)
-                p_arb_title.paragraph_format.space_after = Pt(4)
-                r_arb_title = p_arb_title.add_run("⚡ ACTIVE ARBITRAGE OPPORTUNITIES (GUARANTEED PROFIT)")
-                r_arb_title.bold = True
-                r_arb_title.font.size = SIZE_TINY
-                r_arb_title.font.color.rgb = RGB_ORANGE
-
-                # ── TABLE 1: Arbitrage Opportunities Table ──
-                # Columns: Market | Selection | Best Odd | Bookmaker
-                arb_table = doc.add_table(rows=1, cols=4)
-                arb_table.style = 'Light Shading Accent 1'
-                
-                # Header formatting
-                hdr_cells = arb_table.rows[0].cells
-                hdr_cells[0].text = 'Arb Market'
-                hdr_cells[1].text = 'Selection'
-                hdr_cells[2].text = 'Best Odd'
-                hdr_cells[3].text = 'Bookmaker Source'
-                for cell in hdr_cells:
-                    cell.paragraphs[0].runs[0].font.bold = True
-                    cell.paragraphs[0].runs[0].font.size = SIZE_HEADER
-                    cell.paragraphs[0].runs[0].font.color.rgb = RGB_WHITE
-                    _set_cell_shading(cell, HEX_ARB_HEADER_BG)
-
-                for arb in arbs:
-                    mkt = arb.get("market", "")
-                    arb_markets.add(mkt)
-                    profit = float(arb.get("profit_pct", 0))
-                    mkt_label = _mkt_label(mkt) + f" (+{profit:.2f}%)"
-                    
-                    for leg in arb.get("legs", []):
-                        row_cells = arb_table.add_row().cells
-                        _set_cell_shading(row_cells[0], HEX_ARB_CELL_BG)
-                        _set_cell_shading(row_cells[1], HEX_ARB_CELL_BG)
-                        _set_cell_shading(row_cells[2], HEX_ARB_CELL_BG)
-                        _set_cell_shading(row_cells[3], HEX_ARB_CELL_BG)
-                        
-                        _add_styled_paragraph(row_cells[0], mkt_label, bold=True, color=RGB_PRIMARY, size=SIZE_TEXT)
-                        _add_styled_paragraph(row_cells[1], str(leg.get("outcome", "")).upper(), bold=True, color=RGB_TEXT, size=SIZE_TEXT)
-                        
-                        # Color arbitrage odd in orange
-                        odd_val = float(leg.get("odd") or 0)
-                        _add_styled_paragraph(row_cells[2], f"{odd_val:.2f}", bold=True, color=RGB_ORANGE, size=SIZE_TEXT)
-                        _add_styled_paragraph(row_cells[3], _bk_display(str(leg.get("bk", ""))), bold=True, color=RGB_PRIMARY, size=SIZE_TEXT)
-
-                p_spacer = doc.add_paragraph()
-                p_spacer.paragraph_format.space_after = Pt(6)
-
-            # ── TABLE 2: Standard Side-by-Side Odds Comparison Table ──
-            # Columns: Market | Selection | SportPesa | Betika | OdiBets
             best_odds = m.get("best_odds") or m.get("best") or {}
-
-            # Market pretty-print helper
-            _MARKET_NAMES = {
-                "1x2":               "Full-Time 1X2",
-                "match_winner":       "Match Winner",
-                "moneyline":          "Moneyline",
-                "btts":               "Both Teams to Score",
-                "double_chance":      "Double Chance",
-                "dnb":                "Draw No Bet",
-                "half_time":          "Half-Time Result",
-                "ht_ft":              "Half-Time / Full-Time",
-                "correct_score":      "Correct Score",
-                "winner":             "Winner",
-                "total_goals":        "Total Goals",
-                "asian_handicap":     "Asian Handicap",
-                "european_handicap":  "European Handicap",
-                "odd_even":           "Odd / Even Goals",
-                "first_goal":         "First Goal",
-                "last_goal":          "Last Goal",
-                "anytime_scorer":     "Anytime Goal-Scorer",
-                "first_scorer":       "First Goal-Scorer",
-                "clean_sheet_home":   "Home Clean Sheet",
-                "clean_sheet_away":   "Away Clean Sheet",
-                "win_to_nil_home":    "Home Win to Nil",
-                "win_to_nil_away":    "Away Win to Nil",
-                "both_score_win":     "BTTS & Win",
-            }
-
-            def _mkt_label(mkt: str) -> str:
-                if mkt in _MARKET_NAMES:
-                    return _MARKET_NAMES[mkt]
-                if mkt.startswith(("over_under_goals_", "over_under_")):
-                    line = mkt.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")
-                    return f"Over/Under {line} Goals"
-                if mkt.startswith("asian_handicap_"):
-                    line = mkt.replace("asian_handicap_", "").replace("_", ".")
-                    return f"AH {line}"
-                return mkt.replace("_", " ").title()
-
-            # Priority order: key markets first, then everything else
-            priority = ["1x2", "match_winner", "moneyline", "btts", "double_chance",
-                        "dnb", "half_time", "ht_ft", "total_goals", "winner"]
-            ou_sorted = sorted(
-                [k for k in best_odds if k.startswith(("over_under_goals_", "over_under_"))],
-                key=lambda k: float(k.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")) if k.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".").replace(".", "", 1).isdigit() else 999
-            )
+            arbs = m.get("arbitrage") or []
+            arb_markets = {arb.get("market") for arb in arbs if arb.get("market")}
+            priority = ["1x2", "match_winner", "moneyline", "btts", "double_chance", "dnb", "half_time", "ht_ft", "total_goals", "winner"]
+            ou_sorted = sorted([k for k in best_odds if k.startswith(("over_under_goals_", "over_under_"))], key=lambda k: float(k.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")) if k.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".").replace(".", "", 1).isdigit() else 999)
             other_mkts = [k for k in best_odds if k not in priority and k not in ou_sorted]
             ordered_mkts = priority + ou_sorted + sorted(other_mkts)
-
-            # Filter out arbitrage markets to prevent duplicate clutter
             filtered_mkts = [mkt for mkt in ordered_mkts if mkt not in arb_markets]
 
             if filtered_mkts:
-                p_std_title = doc.add_paragraph()
-                p_std_title.paragraph_format.space_after = Pt(4)
-                r_std_title = p_std_title.add_run("📊 COMPARISON GRID (NO ARBITRAGE)")
-                r_std_title.bold = True
-                r_std_title.font.size = SIZE_TINY
-                r_std_title.font.color.rgb = RGB_SECONDARY
-
-                table = doc.add_table(rows=1, cols=5)
-                table.style = 'Light Shading Accent 1'
-                
-                # Header columns: Market | Selection | SportPesa | Betika | OdiBets
-                hdr_cells = table.rows[0].cells
+                nested_table = left_cell.add_table(rows=1, cols=7)
+                nested_table.autofit = False
+                col_widths = [Inches(1.15), Inches(0.55), Inches(0.50), Inches(0.50), Inches(0.50), Inches(0.65), Inches(0.75)]
+                for row in nested_table.rows:
+                    for c_idx, width in enumerate(col_widths): row.cells[c_idx].width = width
+                hdr_cells = nested_table.rows[0].cells
                 hdr_cells[0].text = 'Market'
-                hdr_cells[1].text = 'Selection'
-                hdr_cells[2].text = 'SportPesa'
-                hdr_cells[3].text = 'Betika'
-                hdr_cells[4].text = 'OdiBets'
-                for cell in hdr_cells:
-                    cell.paragraphs[0].runs[0].font.bold = True
-                    cell.paragraphs[0].runs[0].font.size = SIZE_HEADER
-                    cell.paragraphs[0].runs[0].font.color.rgb = RGB_PRIMARY
-                    _set_cell_shading(cell, HEX_MUTED_BG)
-
+                hdr_cells[1].text = 'Sel.'
+                hdr_cells[2].text = 'SP'
+                hdr_cells[3].text = 'BT'
+                hdr_cells[4].text = 'OD'
+                hdr_cells[5].text = 'Best Odd'
+                hdr_cells[6].text = 'Best BK'
+                for c_idx, cell in enumerate(hdr_cells):
+                    p_hdr = cell.paragraphs[0]
+                    p_hdr.alignment = WD_ALIGN_PARAGRAPH.LEFT if c_idx < 2 else WD_ALIGN_PARAGRAPH.CENTER
+                    p_hdr.runs[0].font.bold = True
+                    p_hdr.runs[0].font.size = SIZE_HEADER
+                    p_hdr.runs[0].font.color.rgb = RGB_WHITE
+                    _set_cell_shading(cell, HEX_PRIMARY_BG)
+                    _set_cell_margins(cell, top=80, bottom=80, left=60, right=60)
                 rows_added = 0
-                for mkt in filtered_mkts:
+                for mkt in filtered_mkts[:12]:
                     mkt_data = best_odds.get(mkt)
-                    if not mkt_data or not isinstance(mkt_data, dict):
-                        continue
+                    if not mkt_data or not isinstance(mkt_data, dict): continue
                     label = _mkt_label(mkt)
-                    
                     for out in mkt_data.keys():
-                        # Read odds for each local bookmaker
                         sp_odd = _get_float_odd(m.get("bookmakers", {}).get("sp", {}).get("markets", {}).get(mkt, {}).get(out))
                         bt_odd = _get_float_odd(m.get("bookmakers", {}).get("bt", {}).get("markets", {}).get(mkt, {}).get(out))
                         od_odd = _get_float_odd(m.get("bookmakers", {}).get("od", {}).get("markets", {}).get(mkt, {}).get(out))
-                        
-                        # Only render row if we have at least one valid odd
-                        if sp_odd is None and bt_odd is None and od_odd is None:
-                            continue
-                            
-                        # Find best odd to highlight
+                        if sp_odd is None and bt_odd is None and od_odd is None: continue
                         odds_list = [o for o in (sp_odd, bt_odd, od_odd) if o is not None]
                         best_val = max(odds_list) if odds_list else 0.0
-
-                        row_cells = table.add_row().cells
-                        
-                        # Alternating row background for enhanced readability
+                        best_bks_list = []
+                        if sp_odd == best_val and best_val > 1.0: best_bks_list.append("SP")
+                        if bt_odd == best_val and best_val > 1.0: best_bks_list.append("BT")
+                        if od_odd == best_val and best_val > 1.0: best_bks_list.append("OD")
+                        best_bks_str = " / ".join(best_bks_list)
+                        row_cells = nested_table.add_row().cells
+                        for c_idx, width in enumerate(col_widths): row_cells[c_idx].width = width
                         if rows_added % 2 == 1:
-                            for cell in row_cells:
-                                _set_cell_shading(cell, HEX_ALT_ROW_BG)
-
-                        # Write Market and Selection
+                            for cell in row_cells: _set_cell_shading(cell, HEX_ALT_ROW_BG)
+                        for cell in row_cells:
+                            _set_cell_border_bottom(cell, HEX_STD_BORDER, sz="2")
+                            _set_cell_margins(cell, top=60, bottom=60, left=50, right=50)
                         _add_styled_paragraph(row_cells[0], label, size=SIZE_TEXT, color=RGB_TEXT)
                         _add_styled_paragraph(row_cells[1], str(out).upper(), bold=True, size=SIZE_TEXT, color=RGB_SECONDARY)
-
-                        # Write SportPesa odd
                         if sp_odd is not None:
                             is_best = (sp_odd == best_val and best_val > 1.0)
-                            cell_color = RGB_GREEN if is_best else RGB_TEXT
-                            _add_styled_paragraph(row_cells[2], f"{sp_odd:.2f}", bold=is_best, size=SIZE_TEXT, color=cell_color)
-                            if is_best:
-                                _set_cell_shading(row_cells[2], HEX_BEST_ODD_BG)
-                        else:
-                            _add_styled_paragraph(row_cells[2], "—", size=SIZE_TEXT, color=RGB_MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
-
-                        # Write Betika odd
+                            _add_styled_paragraph(row_cells[2], f"{sp_odd:.2f}", bold=is_best, size=SIZE_TEXT, color=RGB_GREEN if is_best else RGB_SP, align=WD_ALIGN_PARAGRAPH.CENTER)
+                            if is_best: _set_cell_shading(row_cells[2], HEX_BEST_ODD_BG)
+                        else: _add_styled_paragraph(row_cells[2], "—", size=SIZE_TEXT, color=RGB_MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
                         if bt_odd is not None:
                             is_best = (bt_odd == best_val and best_val > 1.0)
-                            cell_color = RGB_GREEN if is_best else RGB_TEXT
-                            _add_styled_paragraph(row_cells[3], f"{bt_odd:.2f}", bold=is_best, size=SIZE_TEXT, color=cell_color)
-                            if is_best:
-                                _set_cell_shading(row_cells[3], HEX_BEST_ODD_BG)
-                        else:
-                            _add_styled_paragraph(row_cells[3], "—", size=SIZE_TEXT, color=RGB_MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
-
-                        # Write OdiBets odd
+                            _add_styled_paragraph(row_cells[3], f"{bt_odd:.2f}", bold=is_best, size=SIZE_TEXT, color=RGB_GREEN if is_best else RGB_BT, align=WD_ALIGN_PARAGRAPH.CENTER)
+                            if is_best: _set_cell_shading(row_cells[3], HEX_BEST_ODD_BG)
+                        else: _add_styled_paragraph(row_cells[3], "—", size=SIZE_TEXT, color=RGB_MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
                         if od_odd is not None:
                             is_best = (od_odd == best_val and best_val > 1.0)
-                            cell_color = RGB_GREEN if is_best else RGB_TEXT
-                            _add_styled_paragraph(row_cells[4], f"{od_odd:.2f}", bold=is_best, size=SIZE_TEXT, color=cell_color)
-                            if is_best:
-                                _set_cell_shading(row_cells[4], HEX_BEST_ODD_BG)
-                        else:
-                            _add_styled_paragraph(row_cells[4], "—", size=SIZE_TEXT, color=RGB_MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
-
+                            _add_styled_paragraph(row_cells[4], f"{od_odd:.2f}", bold=is_best, size=SIZE_TEXT, color=RGB_GREEN if is_best else RGB_OD, align=WD_ALIGN_PARAGRAPH.CENTER)
+                            if is_best: _set_cell_shading(row_cells[4], HEX_BEST_ODD_BG)
+                        else: _add_styled_paragraph(row_cells[4], "—", size=SIZE_TEXT, color=RGB_MUTED, align=WD_ALIGN_PARAGRAPH.CENTER)
+                        _add_styled_paragraph(row_cells[5], f"{best_val:.2f}" if best_val > 0 else "—", bold=True, size=SIZE_TEXT, color=RGB_TEXT, align=WD_ALIGN_PARAGRAPH.CENTER)
+                        _set_cell_shading(row_cells[5], HEX_BEST_ODD_BG)
+                        _add_styled_paragraph(row_cells[6], best_bks_str, bold=True, size=SIZE_TINY, color=RGB_GREEN, align=WD_ALIGN_PARAGRAPH.CENTER)
                         rows_added += 1
 
-                if rows_added == 0:
-                    doc.paragraphs[-1]._element.getparent().remove(table._element)
-                    p_no_odds = doc.add_paragraph()
-                    r_no_odds = p_no_odds.add_run("  No standard odds comparison currently available.")
-                    r_no_odds.italic = True
+                # Clean up left cell default paragraph if nested table was populated
+                if rows_added > 0 and len(left_cell.paragraphs) > 1:
+                    p0 = left_cell.paragraphs[0]
+                    p0._element.getparent().remove(p0._element)
+            else:
+                _add_styled_paragraph(left_cell, "No odds comparison available for this match.", italic=True, size=SIZE_TEXT, color=RGB_MUTED)
 
+            # ── 4. RIGHT COLUMN: Arbitrage Sidebar Card Box ───────────────────
+            # Set styled border and color background depending on arb presence!
+            if arbs:
+                _set_cell_shading(right_cell, HEX_ARB_CARD_BG)
+                _set_cell_borders(right_cell, color_hex=HEX_ARB_BORDER, sz="8")
+                
+                # Header
+                _add_styled_paragraph(right_cell, "✅ ARBITRAGE ACTIVE", bold=True, color=RGB_GREEN, size=SIZE_HEADER, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=4)
+                
+                # Active opportunity details
+                best_arb = arbs[0]
+                profit = float(best_arb.get("profit_pct", 0))
+                
+                _add_styled_paragraph(right_cell, f"Profit Margin: {profit:.2f}%", bold=True, color=RGB_ORANGE, size=SIZE_TEXT, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=8)
+                
+                _add_styled_paragraph(right_cell, "Stake Distribution (2,000 KES):", bold=True, color=RGB_SECONDARY, size=SIZE_TINY, space_after=6)
+                
+                # Calculate optimal stakes based on KES 2,000 total bet
+                total_stake = 2000.0
+                legs = best_arb.get("legs", [])
+                s_inv = sum(1.0 / float(leg.get("odd") or 1) for leg in legs)
+                
+                for leg in legs:
+                    odd = float(leg.get("odd") or 1)
+                    bk_slug = str(leg.get("bk") or "").lower()
+                    
+                    if s_inv > 0:
+                        stake_pct = (1.0 / odd) / s_inv * 100
+                        stake_amt = (1.0 / odd) / s_inv * total_stake
+                    else:
+                        stake_pct = 0.0
+                        stake_amt = 0.0
+                        
+                    # BK color badge
+                    p_leg = right_cell.add_paragraph()
+                    p_leg.paragraph_format.space_after = Pt(4)
+                    p_leg.paragraph_format.line_spacing = 1.0
+                    
+                    r_bk = p_leg.add_run(f"[{bk_slug.upper()}] ")
+                    r_bk.bold = True
+                    r_bk.font.size = SIZE_TINY
+                    r_bk.font.color.rgb = RGB_SP if bk_slug == "sp" else (RGB_BT if bk_slug == "bt" else RGB_OD)
+                    
+                    r_det = p_leg.add_run(f"{stake_pct:.1f}% → ")
+                    r_det.font.size = SIZE_TINY
+                    r_det.font.color.rgb = RGB_TEXT
+                    
+                    r_amt = p_leg.add_run(f"KES {stake_amt:.0f}")
+                    r_amt.bold = True
+                    r_amt.font.size = SIZE_TINY
+                    r_amt.font.color.rgb = RGB_TEXT
+                    
+                    r_odd = p_leg.add_run(f" @ {odd:.2f}")
+                    r_odd.font.size = SIZE_TINY
+                    r_odd.font.italic = True
+                    r_odd.font.color.rgb = RGB_MUTED
+
+                # Display Total Return
+                p_ret = right_cell.add_paragraph()
+                p_ret.paragraph_format.space_before = Pt(8)
+                p_ret.paragraph_format.space_after = Pt(2)
+                p_ret.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+                ret_amt = total_stake * (1.0 / s_inv) if s_inv > 0 else total_stake
+                r_ret = p_ret.add_run(f"Payout KES {ret_amt:.0f}")
+                r_ret.bold = True
+                r_ret.font.size = SIZE_HEADER
+                r_ret.font.color.rgb = RGB_GREEN
+                
+            else:
+                _set_cell_shading(right_cell, HEX_ALT_ROW_BG)
+                _set_cell_borders(right_cell, color_hex=HEX_STD_BORDER, sz="6")
+                
+                # Standard Match Header
+                _add_styled_paragraph(right_cell, "❌ NO ARBITRAGE", bold=True, color=RGB_SECONDARY, size=SIZE_HEADER, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=6)
+                
+                _add_styled_paragraph(right_cell, "No guaranteed profit opportunities detected.", italic=True, size=SIZE_TINY, color=RGB_MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=8)
+                
+                _add_styled_paragraph(right_cell, "📲 Quick Tip:", bold=True, color=RGB_PRIMARY, size=SIZE_TINY, space_after=2)
+                
+                _add_styled_paragraph(right_cell, "Bet on the Best Odds column highlighted in green to maximize your long term payout.", size=SIZE_TINY, color=RGB_TEXT, space_after=8)
+                
+                _add_styled_paragraph(right_cell, "🔄 Dynamic Updates:", bold=True, color=RGB_PRIMARY, size=SIZE_TINY, space_after=2)
+                
+                _add_styled_paragraph(right_cell, "All comparisons are refreshed and pre-built every 10 minutes to guarantee data freshness.", size=SIZE_TINY, color=RGB_TEXT)
+            
+            # Clean up right cell first empty paragraph if needed
+            if len(right_cell.paragraphs) > 1 and not right_cell.paragraphs[0].text:
+                p_to_del = right_cell.paragraphs[0]
+                p_to_del._element.getparent().remove(p_to_del._element)
+
+            # Spacer between matches
             doc.add_paragraph().paragraph_format.space_after = Pt(12)
+
+    # ── 8. Footer Legend ───────────────────────────────────────────────────
+    p_foot = doc.add_paragraph()
+    p_foot.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_foot.paragraph_format.space_before = Pt(24)
+    r_foot = p_foot.add_run("Arbitrage opportunities are calculated based on the best available odds across the selected bookmakers.")
+    r_foot.font.size = SIZE_TINY
+    r_foot.font.italic = True
+    r_foot.font.color.rgb = RGB_MUTED
 
     f_stream = io.BytesIO()
     doc.save(f_stream)
