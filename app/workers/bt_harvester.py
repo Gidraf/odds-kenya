@@ -272,6 +272,7 @@ def _normalise_match(raw: dict, *, source: str = "upcoming", override_sport_id: 
         return {
             "bt_match_id": match_id,
             "bt_parent_id": parent_id,
+            "bt_game_id": str(raw.get("game_id") or ""),
             "betradar_id": betradar_id,
             "home_team": home,
             "away_team": away,

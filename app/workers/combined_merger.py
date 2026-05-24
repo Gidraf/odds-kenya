@@ -331,8 +331,8 @@ def get_bk_match_id(raw: dict, bk: BK) -> str:
     if bk == "sp":
         return str(raw.get("sp_game_id") or raw.get("game_id") or "")
     if bk == "bt":
-        return str(raw.get("bt_match_id") or raw.get("match_id") or "")
-    return str(raw.get("od_match_id") or raw.get("od_event_id") or raw.get("event_id") or "")
+        return str(raw.get("bt_game_id") or raw.get("game_id") or raw.get("bt_match_id") or raw.get("match_id") or "")
+    return str(raw.get("od_event_id") or raw.get("game_id") or raw.get("event_id") or raw.get("od_match_id") or "")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

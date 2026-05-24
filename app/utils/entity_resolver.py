@@ -101,6 +101,18 @@ class EntityResolver:
         except Exception:
             return None
 
+    def _get_bookmaker_id(self, slug: str) -> int | None:
+        try:
+            from app.models.bookmakers_model import Bookmaker
+            bm = Bookmaker.query.filter_by(slug=slug).first()
+            if not bm:
+                name_map = {"sp": "sportpesa", "bt": "betika", "od": "odibets"}
+                if slug in name_map:
+                    bm = Bookmaker.query.filter(db.func.lower(Bookmaker.name) == name_map[slug]).first()
+            return bm.id if bm else None
+        except Exception:
+            return None
+
     def resolve_sport(self, sport_slug: str) -> int | None:
         slug_lower = (sport_slug or "").lower().strip()
         if not slug_lower:
@@ -372,8 +384,23 @@ class EntityResolver:
                         um.sport_name = sport_name_db
                     if cm_country and not um.country_name:
                         um.country_name = cm_country
-                if cm_sp_game_id:
-                    self._map_sp_match(um.id, cm_sp_game_id, cm_betradar_id)
+                # Map BookmakerMatchLink for all bookmakers using bk_ids if present
+                bk_ids = self._val(cm, "bk_ids") or {}
+                if not bk_ids and cm_sp_game_id:
+                    bk_ids = {"sp": cm_sp_game_id}
+
+                for slug, ext_id in bk_ids.items():
+                    if ext_id:
+                        bk_id = self._get_bookmaker_id(slug)
+                        if bk_id:
+                            try:
+                                from app.models.bookmakers_model import BookmakerMatchLink
+                                BookmakerMatchLink.upsert(
+                                    match_id=um.id, bookmaker_id=bk_id,
+                                    external_match_id=str(ext_id), betradar_id=cm_betradar_id,
+                                )
+                            except Exception as e:
+                                logger.error(f"❌ [Linker Error] Failed to upsert BookmakerMatchLink for {slug} (ext_id: {ext_id}): {e}")
                 sp_id = self._get_sp_bookmaker_id()
                 if sp_id and cm_markets:
                     bmo = BookmakerMatchOdds.query.filter_by(

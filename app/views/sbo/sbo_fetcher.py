@@ -554,6 +554,7 @@ class SportpesaFetcher:
                     for m in matches:
                         betradar_id = str(m.get("betradarId") or "")
                         game_id     = str(m.get("id") or "")
+                        sms_id      = str(m.get("smsId") or "")
                         if not betradar_id or betradar_id == "None":
                             continue
                         if game_id in seen_ids:
@@ -572,6 +573,7 @@ class SportpesaFetcher:
                         results.append({
                             "betradar_id":    betradar_id,
                             "game_id":        game_id,
+                            "sms_id":         sms_id,
                             "home_team":      home,
                             "away_team":      away,
                             "start_time":     m.get("date"),
@@ -911,6 +913,8 @@ class OdibetsFetcher:
                 meta_out["home_team"] = data["team_home"]
             if "team_away" in data:
                 meta_out["away_team"] = data["team_away"]
+            if "game_id" in data:
+                meta_out["od_game_id"] = str(data["game_id"] or "")
 
             return raw_markets, meta_out
 
@@ -1170,6 +1174,7 @@ class OddsAggregator:
                 "competition": m.get("competition", ""),
                 "sport":       m.get("sport", sport),
                 "sp_game_id":  m.get("game_id", ""),
+                "sp_sms_id":   m.get("sms_id", ""),
             }
 
         # Add Betika-only matches
@@ -1254,13 +1259,18 @@ class OddsAggregator:
                         "raw_markets": od_raw,
                         "fetched_at":  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     }
+                    if od_meta.get("od_game_id"):
+                        bk_data["Odibets"]["external_match_id"] = od_meta["od_game_id"]
 
             # ── Build output ──────────────────────────────────────────────────
             best  = MarketMerger.best_odds(unified_mkts)
             arbs  = ArbCalculator.check(unified_mkts)
 
+            sp_sms_id = info.get("sp_sms_id") or sp_game_id
             entry = {
                 **info,
+                "sp_game_id":      sp_sms_id,
+                "sp_api_id":       sp_game_id,
                 "bookmakers":     bk_data,
                 "unified_markets": unified_mkts,
                 "best_odds":       best,

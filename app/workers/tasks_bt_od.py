@@ -268,9 +268,9 @@ def _build_multi_bk_matches(
             # persist helpers: dynamically lookup the right ID, fallback to shared betradar_id
             "bk_ids": {
                 slug: str(
-                    m.get(f"{slug}_match_id") or 
                     m.get(f"{slug}_game_id") or 
                     m.get(f"{slug}_event_id") or 
+                    m.get(f"{slug}_match_id") or 
                     m.get(f"{slug}_parent_id") or 
                     m.get("match_id") or 
                     m.get("event_id") or 
