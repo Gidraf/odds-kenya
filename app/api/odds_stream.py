@@ -494,6 +494,15 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
                     if v and str(v).lower() != "none":
                         ex_ids[k] = v
 
+                # Expose root-level Game/SMS ID keys for seamless backward compatibility with UI templates
+                if ex_ids.get("sp"):
+                    ex["sp_game_id"] = str(ex_ids["sp"])
+                    ex["sms_id"] = str(ex_ids["sp"])
+                if ex_ids.get("bt"):
+                    ex["bt_game_id"] = str(ex_ids["bt"])
+                if ex_ids.get("od"):
+                    ex["od_game_id"] = str(ex_ids["od"])
+
                 for xbk, xbd in (m.get("bookmakers") or {}).items():
                     if xbk == bk_slug: continue
                     xm = _normalise_markets(xbd.get("markets") or {})
@@ -526,6 +535,11 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
                 # For upcoming mode, always False — the live tab handles live.
                 is_live_val = bool(m.get("is_live", False)) if is_live_mode else False
 
+                # Expose root-level Game/SMS ID keys for seamless backward compatibility with UI templates
+                sp_game_id_val = bk_ids_seed.get("sp")
+                bt_game_id_val = bk_ids_seed.get("bt")
+                od_game_id_val = bk_ids_seed.get("od")
+
                 entry: dict = {
                     "match_id":          m.get("match_id") or key_jk,
                     "join_key":          key_jk,
@@ -549,6 +563,10 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
                     "bookmakers":        bks_seed,
                     "bk_count":          len(bks_seed),
                     "bk_ids":            {k: v for k, v in bk_ids_seed.items() if v and str(v).lower() != "none"},
+                    "sp_game_id":        str(sp_game_id_val) if sp_game_id_val else "",
+                    "bt_game_id":        str(bt_game_id_val) if bt_game_id_val else "",
+                    "od_game_id":        str(od_game_id_val) if od_game_id_val else "",
+                    "sms_id":            str(sp_game_id_val) if sp_game_id_val else "",
                 }
                 pos = len(result); result.append(entry)
                 if key_jk: by_jk[key_jk]   = pos
