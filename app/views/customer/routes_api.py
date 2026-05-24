@@ -287,21 +287,22 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     # 2. Fetch matches (upcoming and live) for this sport from the high-speed Redis cache
     matches_raw = []
     try:
-        raw_upcoming = _read_cache_sources("upcoming", sport)
-        raw_live = _read_cache_sources("live", sport)
+        from app.api.odds_stream import _get_unified_patched
+        raw_upcoming = _get_unified_patched("upcoming", sport)
+        raw_live = _get_unified_patched("live", sport)
         
         seen_jks = set()
-        for m_raw in _deduplicate(raw_upcoming + raw_live):
-            mode = "live" if m_raw.get("_cache_source") == "live" else "upcoming"
-            m_norm = _normalise_cache_match(m_raw, mode)
-            if m_norm:
-                jk = m_norm.get("join_key")
-                if jk not in seen_jks:
-                    seen_jks.add(jk)
-                    # Preserve cache-native bookmaker game IDs if present
-                    if "bk_ids" in m_raw and isinstance(m_raw["bk_ids"], dict):
-                        m_norm["bk_ids"] = m_raw["bk_ids"]
-                    matches_raw.append(m_norm)
+        for m in (raw_upcoming + raw_live):
+            if not isinstance(m, dict):
+                continue
+            jk = m.get("join_key") or m.get("parent_match_id")
+            if jk and jk not in seen_jks:
+                seen_jks.add(jk)
+                # Map arb_opportunities to arbitrage key
+                if m.get("arb_opportunities") and not m.get("arbitrage"):
+                    m["arbitrage"] = m["arb_opportunities"]
+                    m["has_arb"] = True
+                matches_raw.append(m)
     except Exception:
         pass
 
@@ -316,7 +317,7 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
 
     # Dynamically compute up-to-date active arbitrage for every match
     for m in matches_raw:
-        if not m.get("has_arb") or not m.get("arb_markets"):
+        if not m.get("has_arb") or not m.get("arbitrage"):
             best = m.get("best") or {}
             arb_markets = []
             if len(m.get("bookmakers") or {}) >= 2:
