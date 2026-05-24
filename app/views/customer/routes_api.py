@@ -852,19 +852,6 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     f_stream = io.BytesIO()
     doc.save(f_stream)
     f_stream.seek(0)
-    return f_streamows_added += 1
-
-            if rows_added == 0:
-                doc.paragraphs[-1]._element.getparent().remove(table._element)
-                p_no_odds = doc.add_paragraph()
-                r_no_odds = p_no_odds.add_run("  No odds parsed or currently available.")
-                r_no_odds.italic = True
-
-            doc.add_paragraph().paragraph_format.space_after = Pt(8)
-
-    f_stream = io.BytesIO()
-    doc.save(f_stream)
-    f_stream.seek(0)
     return f_stream
 
 def download_odds_word():
