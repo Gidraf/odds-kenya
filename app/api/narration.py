@@ -83,10 +83,11 @@ NARRATION_STYLES = {
 # ── add permissive CORS only when the app hasn't already set it ─────────────
 @bp_odds_narration.after_request
 def _cors(resp):
-    if "Access-Control-Allow-Origin" not in resp.headers:
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    origin = request.headers.get("Origin") or "*"
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
     return resp
 
 
@@ -257,7 +258,16 @@ def narration():
 
     t0 = time.time()
     script = _script(match, durations, style)
+    
+    # Respect the scheme forwarded by Nginx SSL termination to prevent Mixed Content blocking
+    proto = request.headers.get("X-Forwarded-Proto", "http")
+    host = request.host.split(":")[0]
+    if host not in ("localhost", "127.0.0.1", "0.0.0.0") and not host.startswith("192.168."):
+        proto = "https"
+    
     base = request.host_url.rstrip("/")
+    if proto == "https" and base.startswith("http://"):
+        base = "https" + base[4:]
 
     segments = []
     for s in SCENES:

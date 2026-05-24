@@ -1,7 +1,7 @@
 from app.workers.live_feed_bridge import start_live_bridge
 import os
 import threading
-from flask import Flask
+from flask import Flask, request
 from dotenv import load_dotenv
 from app.extensions import db, init_celery, jwt, socketio, migrate, cors
 
@@ -41,6 +41,18 @@ def create_app() -> Flask:
     jwt.init_app(flask_app)
     cors.init_app(flask_app, supports_credentials=True, origins="*")
     migrate.init_app(flask_app, db, compare_type=True)
+
+    @flask_app.after_request
+    def add_cors_headers(response):
+        origin = request.headers.get("Origin")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        else:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        return response
 
     redis_url = flask_app.config["CELERY_BROKER_URL"]
 

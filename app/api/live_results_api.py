@@ -32,6 +32,34 @@ log = logging.getLogger("kinetic.live_api")
 bp_results = Blueprint("results",           __name__, url_prefix="/api")
 bp_live    = Blueprint("customer_live_api", __name__, url_prefix="/api/live")
 
+@bp_results.before_request
+def handle_options_results():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+@bp_live.before_request
+def handle_options_live():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+@bp_results.after_request
+def _cors_results(resp):
+    origin = request.headers.get("Origin") or "*"
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
+    return resp
+
+@bp_live.after_request
+def _cors_live(resp):
+    origin = request.headers.get("Origin") or "*"
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
+    return resp
+
 _KEEPALIVE = 20
 
 
@@ -71,7 +99,7 @@ def _auth_user():
 # RESULTS — finished matches from DB
 # =============================================================================
 
-@bp_results.route("/results/<sport>", methods=["GET"])
+@bp_results.route("/results/<sport>", methods=["GET", "OPTIONS"])
 def get_results(sport: str):
     """
     GET /api/results/<sport>
@@ -157,7 +185,7 @@ def _calc_winner(home, away) -> str | None:
 # LIVE MATCHES — from LiveFeedBridge (SP primary, BT/OD fallback)
 # =============================================================================
 
-@bp_live.route("/matches/<sport>", methods=["GET"])
+@bp_live.route("/matches/<sport>", methods=["GET", "OPTIONS"])
 def live_matches(sport: str):
     """
     GET /api/live/matches/<sport>
@@ -203,7 +231,7 @@ def live_matches(sport: str):
                             "sport": sport, "error": str(exc)})
 
 
-@bp_live.route("/match/<join_key>", methods=["GET"])
+@bp_live.route("/match/<join_key>", methods=["GET", "OPTIONS"])
 def live_match_detail(join_key: str):
     """
     GET /api/live/match/<join_key>
@@ -404,7 +432,7 @@ def match_stream(join_key: str):
 # DEBUG / MONITOR
 # =============================================================================
 
-@bp_live.route("/window", methods=["GET"])
+@bp_live.route("/window", methods=["GET", "OPTIONS"])
 def window_status():
     """GET /api/live/window — live match debug."""
     try:
