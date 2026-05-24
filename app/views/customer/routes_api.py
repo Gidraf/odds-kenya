@@ -274,29 +274,15 @@ def search_matches():
     log_event("odds_search", {"q": q_str, "mode": mode, "total": total})
     return _signed_response({"ok": True, "q": q_str, "mode": mode, "tier": tier, "total": total, "page": page, "per_page": per_page, "pages": max(1, (total + per_page - 1) // per_page), "latency_ms": int((time.perf_counter() - t0) * 1000), "matches": results, "source": "postgresql"}, encrypt_for=user)
 
-@bp_odds_customer.route("/odds/download/word")
-def download_odds_word():
-    from app.utils.customer_jwt_helpers import _current_user_from_header
-    from flask import send_file, make_response
-    import io
+def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement, parse_xml
     from docx.oxml.ns import nsdecls, qn
+    import io
+    import time
     
-    sport = request.args.get("sport", "soccer").lower().strip()
-    arb_only = request.args.get("arb_only", "") in ("1", "true")
-
-    # 1. AUTH RULE: Only soccer (football) is free anonymous.
-    # Other sports require authentication.
-    user = None
-    if sport != "soccer":
-        user = _current_user_from_header()
-        if not user:
-            # Return standard HTTP 401
-            return make_response("Authentication required to download reports for this sport.", 401)
-
     # 2. Fetch matches (upcoming and live) for this sport from the high-speed Redis cache
     matches_raw = []
     try:
@@ -566,7 +552,31 @@ def download_odds_word():
     f_stream = io.BytesIO()
     doc.save(f_stream)
     f_stream.seek(0)
+    return f_stream
 
+@bp_odds_customer.route("/odds/download/word")
+def download_odds_word():
+    from app.utils.customer_jwt_helpers import _current_user_from_header
+    from flask import send_file, make_response
+    import time
+    
+    sport = request.args.get("sport", "soccer").lower().strip()
+    arb_only = request.args.get("arb_only", "") in ("1", "true")
+
+    # 1. AUTH RULE: Only soccer (football) is free anonymous.
+    # Other sports require authentication.
+    user = None
+    if sport != "soccer":
+        user = _current_user_from_header()
+        if not user:
+            # Return standard HTTP 401
+            return make_response("Authentication required to download reports for this sport.", 401)
+
+    # Log report download activity for monetization funnel analytics!
+    from app.utils.decorators_ import log_event
+    log_event("report_download", {"sport": sport, "arb_only": arb_only})
+
+    f_stream = _generate_word_document(sport, arb_only)
     filename = f"OddsKenya_Report_{sport}_{time.strftime('%Y%m%d_%H%M%S')}.docx"
     
     response = make_response(send_file(

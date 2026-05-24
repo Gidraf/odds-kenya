@@ -140,6 +140,8 @@ def register():
     db.session.add(user)
     db.session.flush() # Flush to get user.id for foreign keys
 
+    referral_sport = data.get("referral_sport")
+
     Subscription.start_trial(user.id, tier)
 
     # Create verification token
@@ -152,7 +154,7 @@ def register():
     )
     db.session.add(token_rec)
     
-    MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr)
+    MetricsEvent.log("signup", user_id=user.id, tier=tier, ip=request.remote_addr, meta={"referral_sport": referral_sport} if referral_sport else None)
     
     # FIX: Consolidated commit
     db.session.commit()
