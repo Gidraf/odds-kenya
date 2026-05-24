@@ -126,19 +126,34 @@ def _script(match: dict, durations: dict, style: str) -> dict:
     away = match.get("away_team", "Away")
     comp = match.get("competition", "the match")
     arb = match.get("best_arb_pct", 0)
-    mw = (match.get("best", {}) or {}).get("match_winner", {}) or {}
-    o1 = (mw.get("1", {}) or {}).get("odd")
-    ox = (mw.get("X", {}) or {}).get("odd")
-    o2 = (mw.get("2", {}) or {}).get("odd")
+    best_data = match.get("best", {}) or {}
+    mw = best_data.get("match_winner") or best_data.get("1x2") or best_data.get("moneyline") or {}
+    
+    # Support both numeric outcome keys ("1", "X", "2") and text outcome keys ("home", "draw", "away")
+    o1_data = mw.get("1") or mw.get("home") or {}
+    ox_data = mw.get("X") or mw.get("draw") or {}
+    o2_data = mw.get("2") or mw.get("away") or {}
+    
+    o1 = o1_data.get("odd") if isinstance(o1_data, dict) else None
+    ox = ox_data.get("odd") if isinstance(ox_data, dict) else None
+    o2 = o2_data.get("odd") if isinstance(o2_data, dict) else None
+    
     bks = match.get("bookmakers", []) or []
     budgets = {s: max(6, round(WORDS_PER_SEC * durations[s])) for s in SCENES}
 
     if not OPENAI_OK:
         return _fallback_script(home, away, comp, arb, budgets)
 
+    # Format odds text dynamically to prevent mentioning "None"
+    odds_parts = []
+    if o1: odds_parts.append(f"Home {o1}")
+    if ox: odds_parts.append(f"Draw {ox}")
+    if o2: odds_parts.append(f"Away {o2}")
+    odds_txt = ", ".join(odds_parts) if odds_parts else "available across markets"
+
     tone = NARRATION_STYLES.get(style, NARRATION_STYLES["hype"])
     facts = (f"Match: {home} vs {away} ({comp}). "
-             f"Best odds — Home {o1}, Draw {ox}, Away {o2}. "
+             f"Best odds are: {odds_txt}. "
              f"Arbitrage edge: {arb} percent. "
              f"Bookmakers: {', '.join(str(b) for b in bks[:6]) or 'multiple'}.")
     sys = ("You write the voice-over for a short sports-betting highlight video. "
