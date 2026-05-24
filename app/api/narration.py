@@ -51,7 +51,7 @@ except Exception as e:                                  # noqa
 
 # ── voice catalogue — reuse commentary.py so both share one voice list ──────
 try:
-    from app.views.customer.gemini_comentary import (
+    from app.views.customer.commentary import (
         EDGE_TTS_VOICES, DEFAULT_MALE, DEFAULT_FEMALE,
     )
 except Exception:                                       # standalone fallback
@@ -111,8 +111,8 @@ def _fallback_script(home, away, comp, arb, budgets):
         "match": f"{home} take on {away} in the {comp}.",
         "odds":  "Here are the best prices across every bookmaker, side by side.",
         "arb":   f"A guaranteed arbitrage edge of {arb} percent — you profit whoever wins.",
-        "outro": ("Follow for daily edges. Strictly for adults eighteen and over. "
-                  "Gamble responsibly."),
+        "outro": ("Odds move fast — always counter-check the prices before you stake. "
+                  "Strictly for adults eighteen and over. Bet responsibly."),
     }
 
 
@@ -139,15 +139,19 @@ def _script(match: dict, durations: dict, style: str) -> dict:
     sys = ("You write the voice-over for a short sports-betting highlight video. "
            f"Tone: {tone}. One narrator, spoken aloud. Short, punchy sentences. "
            "No emojis, no stage directions, no speaker labels — only the words to "
-           "be spoken. The outro MUST contain a brief responsible-gambling line and "
-           "state it is for adults eighteen and over.")
+           "be spoken. Do NOT urge the viewer to 'bet now' or place a bet. The "
+           "outro MUST instead warn that odds change quickly so the viewer should "
+           "counter-check the prices first, state it is strictly for adults "
+           "eighteen and over, and tell them to bet responsibly.")
     usr = (f"{facts}\n\nWrite ONE narration line per scene, each within ~15% of its "
            f"word budget so it fits the scene length:\n"
            f"- intro ({budgets['intro']} words): hook the viewer, tease the edge.\n"
            f"- match ({budgets['match']} words): name the teams and the fixture.\n"
            f"- odds ({budgets['odds']} words): call out the best odds and bookmakers.\n"
            f"- arb ({budgets['arb']} words): reveal the guaranteed arbitrage profit.\n"
-           f"- outro ({budgets['outro']} words): call to action + 18+ responsible-gambling note.\n\n"
+           f"- outro ({budgets['outro']} words): NO 'bet now' push — warn that odds "
+           f"change fast so viewers should counter-check the prices first, plus an "
+           f"18+ and bet-responsibly note.\n\n"
            'Return ONLY JSON: {"intro":"","match":"","odds":"","arb":"","outro":""}')
     try:
         r = _openai.chat.completions.create(
