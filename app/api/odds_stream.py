@@ -1160,3 +1160,8 @@ def watch_match_inline():
     mgr   = get_lifecycle_manager()
     saved = mgr.save_match(body.get("match") or {}, prefs)
     return _signed_response({"ok": True, "watch": saved.to_dict()}), 201
+
+@bp_stream.route("/odds/download/word", methods=["GET"])
+def download_odds_word():
+    from app.views.customer.routes_api import download_odds_word as _download_odds_word
+    return _download_odds_word()

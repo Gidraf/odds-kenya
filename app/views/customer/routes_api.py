@@ -554,7 +554,6 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     f_stream.seek(0)
     return f_stream
 
-@bp_odds_customer.route("/odds/download/word")
 def download_odds_word():
     from app.utils.customer_jwt_helpers import _current_user_from_header
     from flask import send_file, make_response
