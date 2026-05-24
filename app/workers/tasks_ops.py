@@ -274,6 +274,29 @@ def compute_ev_arb(self, match_id) -> dict:
     return {"ok": True, **result}
 
 
+@celery.task(
+    name="tasks.ops.generate_custom_report",
+    bind=True, max_retries=1,
+    soft_time_limit=300, time_limit=450, acks_late=True,
+)
+def generate_custom_report(self, sport: str, arb_only: bool, start_time_str: str = None, end_time_str: str = None) -> dict:
+    import base64
+    from app.views.customer.routes_api import _generate_word_document
+    r = _get_redis()
+    task_id = self.request.id
+    try:
+        f_stream = _generate_word_document(sport, arb_only, start_time_str=start_time_str, end_time_str=end_time_str)
+        data_bytes = f_stream.getvalue()
+        encoded = base64.b64encode(data_bytes).decode('utf-8')
+        redis_key = f"custom_report:{task_id}"
+        r.set(redis_key, encoded, ex=300)
+        logger.info("[generate_custom_report] Successfully generated and stored custom report for task_id: %s", task_id)
+        return {"status": "SUCCESS", "task_id": task_id}
+    except Exception as exc:
+        logger.error("[generate_custom_report] Failed to generate custom report: %s", exc, exc_info=True)
+        return {"status": "FAILED", "error": str(exc)}
+
+
 # =============================================================================
 # PER-BK PUBLISH
 # =============================================================================

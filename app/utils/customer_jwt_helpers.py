@@ -39,13 +39,21 @@ def _current_user_from_header() -> "Customer | None":
     auth = request.headers.get("Authorization", "")
     token = None
     if auth.startswith("Bearer "):
-        token = auth[7:]
-    elif request.args.get("token"):
-        token = request.args.get("token")
-    elif request.headers.get("X-Api-Key"):
+        token = auth[7:].strip()
+        if token.lower() in ("", "null", "undefined"):
+            token = None
+    
+    if not token and request.args.get("token"):
+        token = request.args.get("token").strip()
+        if token.lower() in ("", "null", "undefined"):
+            token = None
+
+    if not token and request.headers.get("X-Api-Key"):
         return _current_user_from_api_key(request.headers.get("X-Api-Key"))
-    else:
+
+    if not token:
         return None
+
     try:
         payload = _decode_token(token)
         if payload.get("type") not in ("access", "api"):

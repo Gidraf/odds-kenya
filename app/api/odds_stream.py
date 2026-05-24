@@ -475,24 +475,33 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
             elif bk_slug == "bt":
                 ext_id = str(m.get("bt_game_id") or m.get("game_id") or "").strip()
             elif bk_slug == "od":
-                ext_id = str(m.get("od_game_id") or m.get("game_id") or "").strip()
+                ext_id = str(m.get("od_game_id") or m.get("game_id") or m.get("od_event_id") or "").strip()
 
             # Ensure we only pick valid short IDs (typical betting IDs are 3 to 6 digits).
             # If the resolved ID is longer than 6 digits or non-digit, we ignore it and check fallbacks.
             if not ext_id or len(ext_id) > 6 or ext_id.lower() == "none" or not ext_id.isdigit():
-                ext_id = str(
-                    m.get("sms_id") or m.get("sp_game_id") or m.get("sp_api_id") or
-                    m.get("bt_game_id") or m.get("od_game_id") or
-                    m.get("bt_parent_id") or m.get("bt_match_id") or
-                    m.get("od_parent_id") or m.get("od_event_id") or m.get("od_match_id") or
-                    m.get("match_id") or m.get("game_id") or m.get("event_id") or ""
-                ).strip()
+                fallback_ids = [
+                    m.get("sms_id"), m.get("sp_game_id"), m.get("sp_api_id"),
+                    m.get("bt_game_id"), m.get("od_game_id"),
+                    m.get("od_event_id"), m.get("bt_parent_id"), m.get("bt_match_id"),
+                    m.get("od_parent_id"), m.get("od_match_id"),
+                    m.get("match_id"), m.get("game_id"), m.get("event_id")
+                ]
+                ext_id = ""
+                for fid in fallback_ids:
+                    if fid:
+                        fid_str = str(fid).strip()
+                        if fid_str.isdigit() and len(fid_str) <= 6:
+                            ext_id = fid_str
+                            break
 
             bk_ids_seed = {}
             for k, v in (m.get("bk_ids") or {}).items():
                 if v and str(v).lower() != "none":
-                    bk_ids_seed[k] = str(v)
-            if ext_id and ext_id.lower() != "none":
+                    v_str = str(v).strip()
+                    if v_str.isdigit() and len(v_str) <= 6:
+                        bk_ids_seed[k] = v_str
+            if ext_id and ext_id.lower() != "none" and ext_id.isdigit() and len(ext_id) <= 6:
                 bk_ids_seed[bk_slug] = ext_id
 
             if pos is not None:

@@ -355,7 +355,7 @@ def _save_minio_report(sport: str, arb_only: bool, buf: io.BytesIO) -> bool:
         return True
     except Exception:
         return False
-def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
+def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = None, end_time_str: str = None) -> io.BytesIO:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -619,6 +619,40 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                 m["has_arb"] = True
                 m["arbitrage"] = arb_markets
                 m["best_arb_pct"] = arb_markets[0]["profit_pct"]
+
+    start_dt = None
+    end_dt   = None
+    def _parse_dt(s: str) -> _dt | None:
+        if not s: return None
+        s = s.strip()
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                val = s[:19] if ("T" in s or "-" in s) else s
+                return _dt.strptime(val, "%Y-%m-%d %H:%M:%S" if " " in val else "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_tz.utc)
+            except Exception: pass
+        try: return _dt.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception: return None
+
+    try:
+        start_dt = _parse_dt(start_time_str)
+        end_dt   = _parse_dt(end_time_str)
+    except Exception: pass
+
+    if start_dt or end_dt:
+        filtered_matches = []
+        for m in matches_raw:
+            st_raw = m.get("start_time") or ""
+            if not st_raw:
+                continue
+            try:
+                m_dt = _dt.fromisoformat(st_raw.replace("Z", "+00:00"))
+                if m_dt.tzinfo is None: m_dt = m_dt.replace(tzinfo=_tz.utc)
+                if start_dt and m_dt < start_dt: continue
+                if end_dt and m_dt > end_dt: continue
+                filtered_matches.append(m)
+            except Exception:
+                pass
+        matches_raw = filtered_matches
 
     matches = matches_raw
     if arb_only: matches = [m for m in matches if m.get("has_arb") or m.get("arbitrage")]
@@ -1037,3 +1071,91 @@ def download_odds_word():
     ))
     response.headers["Access-Control-Allow-Origin"] = "*"
     return response
+
+
+@bp_odds_customer.route("/odds/download/word/async", methods=["POST"])
+def download_odds_word_async():
+    from app.utils.customer_jwt_helpers import _current_user_from_header
+    from flask import jsonify, request
+    import logging
+
+    # Parse JSON body
+    data = request.get_json(silent=True) or {}
+    sport = data.get("sport", "soccer").lower().strip()
+    arb_only = bool(data.get("arb_only", False))
+    start_time = data.get("start_time")
+    end_time = data.get("end_time")
+
+    # AUTH RULE: Only soccer is free. Other sports require authorization.
+    if sport != "soccer":
+        user = _current_user_from_header()
+        if not user:
+            return jsonify({"error": "Authentication required to download reports for this sport."}), 401
+
+    # Import the Celery task
+    try:
+        from app.workers.tasks_ops import generate_custom_report
+        task = generate_custom_report.delay(sport, arb_only, start_time, end_time)
+        return jsonify({"task_id": task.id, "status": "PENDING"}), 202
+    except Exception as exc:
+        logging.error("Failed to enqueue custom report task: %s", exc)
+        return jsonify({"error": f"Failed to enqueue background export task: {str(exc)}"}), 500
+
+
+@bp_odds_customer.route("/odds/download/word/status/<task_id>", methods=["GET"])
+def download_odds_word_status(task_id):
+    from app.workers.celery_tasks import celery
+    from flask import jsonify
+    
+    # Query task status from Celery
+    res = celery.AsyncResult(task_id)
+    state = res.state  # PENDING, STARTED, RETRY, SUCCESS, FAILURE
+    
+    # Also check if it's already generated and stored in Redis
+    from app.workers.celery_tasks import _redis as _get_redis
+    r = _get_redis()
+    redis_key = f"custom_report:{task_id}"
+    exists = r.exists(redis_key)
+    
+    if exists:
+        return jsonify({"status": "SUCCESS", "task_id": task_id})
+    
+    if state == "SUCCESS" and not exists:
+        # Task says success, but data not in redis (maybe expired?)
+        return jsonify({"status": "EXPIRED", "task_id": task_id})
+    elif state in ("FAILURE", "REVOKED"):
+        return jsonify({"status": "FAILED", "task_id": task_id, "error": str(res.result or "Task failed")})
+    
+    return jsonify({"status": state, "task_id": task_id})
+
+
+@bp_odds_customer.route("/odds/download/word/retrieve/<task_id>", methods=["GET"])
+def download_odds_word_retrieve(task_id):
+    from flask import send_file, make_response, jsonify
+    from app.workers.celery_tasks import _redis as _get_redis
+    import base64
+    import io
+    import time
+    
+    r = _get_redis()
+    redis_key = f"custom_report:{task_id}"
+    encoded = r.get(redis_key)
+    if not encoded:
+        return jsonify({"error": "Report not found or expired. Please generate a new report."}), 404
+        
+    try:
+        data_bytes = base64.b64decode(encoded)
+        f_stream = io.BytesIO(data_bytes)
+        f_stream.seek(0)
+        
+        filename = f"OddsKenya_Custom_Report_{time.strftime('%Y%m%d_%H%M%S')}.docx"
+        response = make_response(send_file(
+            f_stream,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            as_attachment=True,
+            download_name=filename,
+        ))
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+    except Exception as exc:
+        return jsonify({"error": f"Failed to retrieve report: {str(exc)}"}), 500
