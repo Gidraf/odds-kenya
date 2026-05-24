@@ -127,6 +127,7 @@ def create_app() -> Flask:
     from app.api.notifications  import bp_notify
     from app.views.odds.admin   import bp_admin as debug_admin
     from app.api.video_render   import video_bp
+    from app.api.narration      import bp_odds_narration
     # from app.workers.match_lifecycle import bp_lifecycle
 
     # New blueprints from live_results_api — aliased to avoid name collision
@@ -167,6 +168,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_results)       # GET /api/results/<sport>
     flask_app.register_blueprint(bp_live_window)   # GET /api/live/*, SSE /api/live/stream/*
     flask_app.register_blueprint(video_bp)
+    flask_app.register_blueprint(bp_odds_narration)
     # flask_app.register_blueprint(bp_lifecycle)     # /api/matches/* watch routes
     flask_app.register_blueprint(bp_activity)
     flask_app.register_blueprint(bp_refresh)

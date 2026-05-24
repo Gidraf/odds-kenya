@@ -163,6 +163,37 @@ def cleanup_old_videos():
     logger.info("Cleanup done. Removed %d uploads, %d outputs.",
                 count_uploads, count_outputs)
     return {"ok": True, "removed_uploads": count_uploads, "removed_outputs": count_outputs}
+ 
+@celery.task(name="tasks.video.cleanup_old_videos")
+def cleanup_old_videos():
+    """Delete uploads and encoded MP4s older than RESULT_TTL_SECONDS (hourly)."""
+    logger.info("Running video storage cleanup...")
+    now = time.time()
+    ttl = config.RESULT_TTL_SECONDS
+    count_uploads = count_outputs = 0
+ 
+    if config.UPLOAD_DIR.exists():
+        for item in config.UPLOAD_DIR.iterdir():
+            if item.is_file() and (now - item.stat().st_mtime) > ttl:
+                try:
+                    item.unlink()
+                    count_uploads += 1
+                except Exception as e:
+                    logger.warning("Failed to delete upload %s: %s", item, e)
+ 
+    if config.OUTPUT_DIR.exists():
+        for item in config.OUTPUT_DIR.iterdir():
+            if item.is_file() and item.suffix.lower() == ".mp4" \
+                    and (now - item.stat().st_mtime) > ttl:
+                try:
+                    item.unlink()
+                    count_outputs += 1
+                except Exception as e:
+                    logger.warning("Failed to delete output %s: %s", item, e)
+ 
+    logger.info("Cleanup done. Removed %d uploads, %d outputs.",
+                count_uploads, count_outputs)
+    return {"ok": True, "removed_uploads": count_uploads, "removed_outputs": count_outputs}
     
 
 @celery.task(name="tasks.video.cleanup_old_videos")
