@@ -187,7 +187,7 @@ def _rate_for(text: str, target: float) -> str:
     words = max(1, len(text.split()))
     est = words / WORDS_PER_SEC
     pct = int(round((est / max(0.8, target) - 1) * 100))
-    pct = max(-10, min(45, pct))
+    pct = max(-10, min(15, pct))  # Capped at +15% for natural speech
     return f"+{pct}%" if pct >= 0 else f"{pct}%"
 
 
@@ -253,7 +253,7 @@ def narration():
     key = hashlib.sha1(json.dumps({
         "h": match.get("home_team"), "a": match.get("away_team"),
         "c": match.get("competition"), "p": match.get("best_arb_pct"),
-        "d": round(dur, 1), "v": voice, "s": style,
+        "d": round(dur, 1), "v": voice, "s": style, "rv": "v2",
     }, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
     t0 = time.time()
