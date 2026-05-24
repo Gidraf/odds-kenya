@@ -365,6 +365,24 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
     import time
     from datetime import datetime as _dt, timezone as _tz
     import json as _json
+
+    start_dt = None
+    end_dt   = None
+    def _parse_dt(s: str) -> _dt | None:
+        if not s: return None
+        s = s.strip()
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                val = s[:19] if ("T" in s or "-" in s) else s
+                return _dt.strptime(val, "%Y-%m-%d %H:%M:%S" if " " in val else "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_tz.utc)
+            except Exception: pass
+        try: return _dt.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception: return None
+
+    try:
+        start_dt = _parse_dt(start_time_str)
+        end_dt   = _parse_dt(end_time_str)
+    except Exception: pass
     
     # ─── STYLE CONSTANTS FOR REBRANDING & PREMIUM DESIGN ───
     FONT_FAMILY = "Arial"
@@ -502,9 +520,9 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
     if not sp_raw_list:
         try:
             from app.workers.tasks_upcoming import sp_harvest_sport
-            sp_harvest_sport.apply(args=[sport])
-            sp_raw_list = _read_sp_raw(sport)
-            sp_harvested = True
+            # Dispatch scraper as an async Celery job so we do not block the active compiler thread
+            sp_harvest_sport.delay(sport)
+            # Proceed immediately using existing cached markets from other providers
         except Exception:
             pass
 
@@ -517,6 +535,14 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
         live_jks = set()
         for m in raw_live:
             if not isinstance(m, dict): continue
+            st_raw = m.get("start_time") or ""
+            if st_raw:
+                try:
+                    m_dt = _dt.fromisoformat(st_raw.replace("Z", "+00:00"))
+                    if m_dt.tzinfo is None: m_dt = m_dt.replace(tzinfo=_tz.utc)
+                    if start_dt and m_dt < start_dt: continue
+                    if end_dt and m_dt > end_dt: continue
+                except Exception: pass
             jk = m.get("join_key") or m.get("parent_match_id")
             if jk: live_jks.add(jk)
         seen_jks = set()
@@ -524,6 +550,14 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
             if not isinstance(m, dict): continue
             jk = m.get("join_key") or m.get("parent_match_id")
             if jk and jk not in seen_jks:
+                st_raw = m.get("start_time") or ""
+                if st_raw:
+                    try:
+                        m_dt = _dt.fromisoformat(st_raw.replace("Z", "+00:00"))
+                        if m_dt.tzinfo is None: m_dt = m_dt.replace(tzinfo=_tz.utc)
+                        if start_dt and m_dt < start_dt: continue
+                        if end_dt and m_dt > end_dt: continue
+                    except Exception: pass
                 seen_jks.add(jk)
                 m.setdefault("_is_live_doc", True)
                 if m.get("arb_opportunities") and not m.get("arbitrage"):
@@ -540,6 +574,8 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
                     st_dt = _dt.fromisoformat(st_raw.replace("Z", "+00:00"))
                     if st_dt.tzinfo is None: st_dt = st_dt.replace(tzinfo=_tz.utc)
                     if st_dt.timestamp() < _now_ts - 90: continue
+                    if start_dt and st_dt < start_dt: continue
+                    if end_dt and st_dt > end_dt: continue
                 except Exception: pass
             if jk: seen_jks.add(jk)
             if m.get("arb_opportunities") and not m.get("arbitrage"):
@@ -548,6 +584,7 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
     except Exception: pass
 
     try:
+        from app.api.odds_stream import _normalise_markets, _get_price
         _sp_by_br: dict  = {}
         _sp_by_name: dict = {}
         for sp_m in sp_raw_list:
@@ -578,7 +615,6 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
                 if len(existing_sp_mkts) < len(sp_mkts): m["bookmakers"]["sp"]["markets"] = sp_mkts
             if sp_mkts and m.get("best") is not None:
                 try:
-                    from app.api.odds_stream import _normalise_markets, _get_price
                     norm_sp = _normalise_markets(sp_mkts)
                     for mkt, outcomes in norm_sp.items():
                         if not isinstance(outcomes, dict): continue
@@ -748,9 +784,11 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
                 um_ids = list(um_id_to_br.keys())
                 if um_ids:
                     bml_list = BookmakerMatchLink.query.filter(BookmakerMatchLink.match_id.in_(um_ids)).all()
+                    # Pre-query all bookmakers to resolve Bookmaker query N+1 bottleneck
+                    bks = Bookmaker.query.all()
+                    bk_map = {b.id: b.slug for b in bks}
                     for bml in bml_list:
-                        bk = Bookmaker.query.get(bml.bookmaker_id)
-                        slug = bk.slug if bk else str(bml.bookmaker_id)
+                        slug = bk_map.get(bml.bookmaker_id, str(bml.bookmaker_id))
                         br_id = um_id_to_br.get(bml.match_id)
                         if br_id: link_dict.setdefault(br_id, {})[slug] = bml.external_match_id
             except Exception as e:
