@@ -344,6 +344,17 @@ def _save_minio_report(sport: str, arb_only: bool, buf: io.BytesIO) -> bool:
         client, bucket = _get_minio_client()
         if not client:
             return False
+        key    = _minio_report_key(sport, arb_only)
+        buf.seek(0)
+        length = buf.getbuffer().nbytes
+        client.put_object(
+            bucket, key, buf, length,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        buf.seek(0)
+        return True
+    except Exception:
+        return False
 def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
