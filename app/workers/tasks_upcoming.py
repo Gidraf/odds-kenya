@@ -204,7 +204,12 @@ def _write_bk_keys(bk_slug: str, sport_slug: str, matches: list[dict],
     Write to BOTH key patterns so _merge_bks in odds_stream finds the data:
       cache_key (bt:upcoming:{sport})         → via cache_set()
       odds key  (odds:bt:upcoming:{sport})    → via publish_snapshot()
+
+    TTL = 86400s (24h) — mirrors the unified-cache stale-fallback window so
+    BK data never expires before the unified cache goes stale.  Previously
+    set to 3600s which caused SP data to vanish after 1 hour.
     """
+    _BK_KEY_TTL = 86400  # 24 hours
     from app.workers.redis_bus import publish_snapshot
     payload = {
         "source":      source_name,
@@ -214,9 +219,9 @@ def _write_bk_keys(bk_slug: str, sport_slug: str, matches: list[dict],
         "harvested_at": _now_iso(),
         "matches":     matches,
     }
-    cache_set(f"{bk_slug}:upcoming:{sport_slug}", payload, ttl=3600)
+    cache_set(f"{bk_slug}:upcoming:{sport_slug}", payload, ttl=_BK_KEY_TTL)
     publish_snapshot(bk_slug, "upcoming", sport_slug, matches,
-                     meta={"source": source_name})
+                     meta={"source": source_name}, ttl=_BK_KEY_TTL)
 
 
 # =============================================================================
@@ -420,12 +425,15 @@ def bt_od_harvest_sport(self, sport_slug: str) -> dict:
         "latency_ms": latency, "ts": _now_iso(),
     })
 
-    # Invalidate unified cache so next SSE connect gets fresh merged data
-    try:
-        r = _redis()
-        r.delete(f"odds:unified:upcoming:{sport_slug}")
-    except Exception:
-        pass
+    # Invalidate unified cache so next SSE connect gets fresh merged data.
+    # But only delete if we have data — avoid wiping when both BK harvests
+    # returned empty (which would lose the SP data that's still in Redis).
+    if bt_matches or od_matches:
+        try:
+            r = _redis()
+            r.delete(f"odds:unified:upcoming:{sport_slug}")
+        except Exception:
+            pass
 
     return {
         "ok": True, "sport": sport_slug,

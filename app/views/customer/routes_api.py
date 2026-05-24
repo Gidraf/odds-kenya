@@ -275,6 +275,88 @@ def search_matches():
     log_event("odds_search", {"q": q_str, "mode": mode, "total": total})
     return _signed_response({"ok": True, "q": q_str, "mode": mode, "tier": tier, "total": total, "page": page, "per_page": per_page, "pages": max(1, (total + per_page - 1) // per_page), "latency_ms": int((time.perf_counter() - t0) * 1000), "matches": results, "source": "postgresql"}, encrypt_for=user)
 
+# ── Bookmaker slug → full display name ──────────────────────────────────────
+_BK_DISPLAY = {
+    "sp":        "SportPesa",
+    "bt":        "Betika",
+    "od":        "OdiBets",
+    "1xbet":     "1xBet",
+    "22bet":     "22Bet",
+    "betwinner": "BetWinner",
+    "melbet":    "Melbet",
+    "megapari":  "Megapari",
+    "helabet":   "Helabet",
+    "paripesa":  "PariPesa",
+    "sbo":       "SBO",
+}
+
+def _bk_display(slug: str) -> str:
+    """Return the full bookmaker display name for a given slug."""
+    return _BK_DISPLAY.get(slug.lower(), slug.upper())
+
+
+# ── MinIO helpers for pre-generated Word document caching ───────────────────
+def _get_minio_client():
+    """Return an initialised MinIO client, or None if unavailable."""
+    import os
+    try:
+        from minio import Minio
+        endpoint = os.environ.get("STORAGE_ENDPOINT", "5.78.137.59:6500")
+        clean    = endpoint.replace("http://", "").replace("https://", "")
+        secure   = endpoint.startswith("https")
+        client   = Minio(
+            clean,
+            access_key=os.environ.get("STORAGE_ACCESS_KEY", "minioadmin"),
+            secret_key=os.environ.get("STORAGE_SECRET_KEY", "minioadmin"),
+            secure=secure,
+        )
+        bucket = "odds-reports"
+        if not client.bucket_exists(bucket):
+            client.make_bucket(bucket)
+        return client, bucket
+    except Exception:
+        return None, None
+
+
+def _minio_report_key(sport: str, arb_only: bool) -> str:
+    suffix = "_arb" if arb_only else "_full"
+    return f"reports/{sport}{suffix}_latest.docx"
+
+
+def _serve_minio_report(sport: str, arb_only: bool):
+    """Try to fetch the pre-generated report from MinIO. Returns BytesIO or None."""
+    try:
+        client, bucket = _get_minio_client()
+        if not client:
+            return None
+        key  = _minio_report_key(sport, arb_only)
+        resp = client.get_object(bucket, key)
+        data = resp.read()
+        resp.close(); resp.release_conn()
+        return io.BytesIO(data)
+    except Exception:
+        return None
+
+
+def _save_minio_report(sport: str, arb_only: bool, buf: io.BytesIO) -> bool:
+    """Upload a generated Word report to MinIO. buf position is preserved."""
+    try:
+        client, bucket = _get_minio_client()
+        if not client:
+            return False
+        key    = _minio_report_key(sport, arb_only)
+        buf.seek(0)
+        length = buf.getbuffer().nbytes
+        client.put_object(
+            bucket, key, buf, length,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        buf.seek(0)
+        return True
+    except Exception:
+        return False
+
+
 def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
@@ -284,38 +366,72 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
     import io
     import time
     
-    # 2. Fetch matches (upcoming and live) for this sport from the high-speed Redis cache
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+
+    # ── 1. Fetch upcoming + live from high-speed Redis cache ────────────────
     matches_raw = []
+    _now_ts = _time.time()
     try:
         from app.api.odds_stream import _get_unified_patched
         raw_upcoming = _get_unified_patched("upcoming", sport)
-        raw_live = _get_unified_patched("live", sport)
-        
-        seen_jks = set()
-        for m in (raw_upcoming + raw_live):
-            if not isinstance(m, dict):
-                continue
+        raw_live     = _get_unified_patched("live",     sport)
+
+        # Build set of join-keys already seen in live so we don't double-count
+        live_jks = set()
+        for m in raw_live:
+            if not isinstance(m, dict): continue
+            jk = m.get("join_key") or m.get("parent_match_id")
+            if jk: live_jks.add(jk)
+
+        seen_jks: set = set()
+
+        # Add live matches first (they have scores / match-time)
+        for m in raw_live:
+            if not isinstance(m, dict): continue
             jk = m.get("join_key") or m.get("parent_match_id")
             if jk and jk not in seen_jks:
                 seen_jks.add(jk)
-                # Map arb_opportunities to arbitrage key
+                m.setdefault("_is_live_doc", True)
                 if m.get("arb_opportunities") and not m.get("arbitrage"):
-                    m["arbitrage"] = m["arb_opportunities"]
-                    m["has_arb"] = True
+                    m["arbitrage"] = m["arb_opportunities"]; m["has_arb"] = True
                 matches_raw.append(m)
+
+        # Add upcoming only if NOT already seen via live, and NOT already started
+        for m in raw_upcoming:
+            if not isinstance(m, dict): continue
+            jk = m.get("join_key") or m.get("parent_match_id")
+            if jk in live_jks: continue          # skip — already in live list
+            if jk and jk in seen_jks: continue
+            # Skip matches that have already kicked off (start_time in the past)
+            st_raw = m.get("start_time") or ""
+            if st_raw:
+                try:
+                    st_dt = _dt.fromisoformat(st_raw.replace("Z", "+00:00"))
+                    # if naive, treat as UTC
+                    if st_dt.tzinfo is None:
+                        st_dt = st_dt.replace(tzinfo=_tz.utc)
+                    if st_dt.timestamp() < _now_ts - 90:  # started >90s ago → live
+                        continue
+                except Exception:
+                    pass
+            if jk: seen_jks.add(jk)
+            if m.get("arb_opportunities") and not m.get("arbitrage"):
+                m["arbitrage"] = m["arb_opportunities"]; m["has_arb"] = True
+            matches_raw.append(m)
     except Exception:
         pass
 
-    # Fallback to database loading if Redis cache is empty (e.g. during harvesting downtime)
+    # ── 2. DB fallback if Redis cache is empty ──────────────────────────────
     if not matches_raw:
         try:
             db_upcoming, _, _ = _load_db_matches(sport, mode="upcoming", page=1, per_page=500)
-            db_live, _, _ = _load_db_matches(sport, mode="live", page=1, per_page=100)
+            db_live,     _, _ = _load_db_matches(sport, mode="live",     page=1, per_page=100)
             matches_raw.extend(db_upcoming + db_live)
         except Exception:
             pass
 
-    # Dynamically compute up-to-date active arbitrage for every match
+    # ── 3. Dynamically compute arbitrage for every match ───────────────────
     for m in matches_raw:
         if not m.get("has_arb") or not m.get("arbitrage"):
             best = m.get("best") or {}
@@ -328,13 +444,8 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                         if arb_sum < 1.0:
                             profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
                             legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]} for o, v in outcomes.items()]
-                            arb_markets.append({
-                                "market": mkt,
-                                "market_slug": mkt,
-                                "profit_pct": profit_pct,
-                                "arb_sum": round(arb_sum, 6),
-                                "legs": legs
-                            })
+                            arb_markets.append({"market": mkt, "profit_pct": profit_pct,
+                                                "arb_sum": round(arb_sum, 6), "legs": legs})
                     except Exception:
                         pass
                 arb_markets.sort(key=lambda x: -x["profit_pct"])
@@ -343,11 +454,10 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                 m["arbitrage"] = arb_markets
                 m["best_arb_pct"] = arb_markets[0]["profit_pct"]
 
-    # Filter and sort
+    # ── 4. Filter & sort ───────────────────────────────────────────────────
     matches = matches_raw
     if arb_only:
         matches = [m for m in matches if m.get("has_arb") or m.get("arbitrage")]
-
     matches.sort(key=lambda x: x.get("start_time") or "")
 
     # 3. GENERATE WORD REPORT USING python-docx
@@ -501,46 +611,73 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                 cell._tc.get_or_add_tcPr().append(shading)
 
             best_odds = m.get("best_odds") or m.get("best") or {}
-            
-            market_names = {
-                "1x2": "Full-Time 1X2",
-                "btts": "Both Teams to Score",
-                "double_chance": "Double Chance",
-                "dnb": "Draw No Bet",
+
+            # ── Market pretty-print helpers ───────────────────────────────
+            _MARKET_NAMES = {
+                "1x2":               "Full-Time 1X2",
+                "match_winner":       "Match Winner",
+                "moneyline":          "Moneyline",
+                "btts":               "Both Teams to Score",
+                "double_chance":      "Double Chance",
+                "dnb":                "Draw No Bet",
+                "half_time":          "Half-Time Result",
+                "ht_ft":              "Half-Time / Full-Time",
+                "correct_score":      "Correct Score",
+                "winner":             "Winner",
+                "total_goals":        "Total Goals",
+                "asian_handicap":     "Asian Handicap",
+                "european_handicap":  "European Handicap",
+                "odd_even":           "Odd / Even Goals",
+                "first_goal":         "First Goal",
+                "last_goal":          "Last Goal",
+                "anytime_scorer":     "Anytime Goal-Scorer",
+                "first_scorer":       "First Goal-Scorer",
+                "clean_sheet_home":   "Home Clean Sheet",
+                "clean_sheet_away":   "Away Clean Sheet",
+                "win_to_nil_home":    "Home Win to Nil",
+                "win_to_nil_away":    "Away Win to Nil",
+                "both_score_win":     "BTTS & Win",
             }
-            
-            ou_keys = sorted([k for k in best_odds.keys() if k.startswith("over_under_goals_") or k.startswith("over_under_")], reverse=True)
-            markets_to_show = ["1x2", "btts", "double_chance"]
-            if ou_keys:
-                markets_to_show.append(ou_keys[0])
+
+            def _mkt_label(mkt: str) -> str:
+                if mkt in _MARKET_NAMES:
+                    return _MARKET_NAMES[mkt]
+                if mkt.startswith(("over_under_goals_", "over_under_")):
+                    line = mkt.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")
+                    return f"Over/Under {line} Goals"
+                if mkt.startswith("asian_handicap_"):
+                    line = mkt.replace("asian_handicap_", "").replace("_", ".")
+                    return f"AH {line}"
+                return mkt.replace("_", " ").title()
+
+            # ── Priority order: key markets first, then everything else ──
+            priority = ["1x2", "match_winner", "moneyline", "btts", "double_chance",
+                        "dnb", "half_time", "ht_ft", "total_goals", "winner"]
+            ou_sorted = sorted(
+                [k for k in best_odds if k.startswith(("over_under_goals_", "over_under_"))],
+                key=lambda k: float(k.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")) if k.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".").replace(".", "", 1).isdigit() else 999
+            )
+            other_mkts = [k for k in best_odds if k not in priority and k not in ou_sorted]
+            ordered_mkts = priority + ou_sorted + sorted(other_mkts)
 
             rows_added = 0
-            for mkt in markets_to_show:
+            for mkt in ordered_mkts:
                 mkt_data = best_odds.get(mkt)
                 if not mkt_data or not isinstance(mkt_data, dict):
                     continue
-                
-                mkt_label = market_names.get(mkt)
-                if not mkt_label:
-                    if mkt.startswith("over_under_goals_") or mkt.startswith("over_under_"):
-                        line = mkt.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")
-                        mkt_label = f"Over/Under {line}"
-                    else:
-                        mkt_label = mkt.replace("_", " ").title()
-
+                label = _mkt_label(mkt)
                 for out, odd_bundle in mkt_data.items():
                     if not isinstance(odd_bundle, dict):
                         continue
                     odd = odd_bundle.get("odd") or odd_bundle.get("best_odd")
-                    bk = odd_bundle.get("bk") or odd_bundle.get("best_bk")
+                    bk  = odd_bundle.get("bk")  or odd_bundle.get("best_bk") or ""
                     if not odd:
                         continue
-
                     row_cells = table.add_row().cells
-                    row_cells[0].text = str(mkt_label)
+                    row_cells[0].text = label
                     row_cells[1].text = str(out).upper()
                     row_cells[2].text = f"{float(odd):.2f}"
-                    row_cells[3].text = str(bk).upper()
+                    row_cells[3].text = _bk_display(str(bk))
                     rows_added += 1
 
             if rows_added == 0:
@@ -548,7 +685,7 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
                 p_no_odds = doc.add_paragraph()
                 r_no_odds = p_no_odds.add_run("  No odds parsed or currently available.")
                 r_no_odds.italic = True
-            
+
             doc.add_paragraph().paragraph_format.space_after = Pt(8)
 
     f_stream = io.BytesIO()
@@ -560,31 +697,40 @@ def download_odds_word():
     from app.utils.customer_jwt_helpers import _current_user_from_header
     from flask import send_file, make_response
     import time
-    
-    sport = request.args.get("sport", "soccer").lower().strip()
+
+    sport    = request.args.get("sport", "soccer").lower().strip()
     arb_only = request.args.get("arb_only", "") in ("1", "true")
 
-    # 1. AUTH RULE: Only soccer (football) is free anonymous.
-    # Other sports require authentication.
+    # 1. AUTH RULE: Only soccer (football) is free & anonymous.
+    #    Other sports require an authenticated session.
     user = None
     if sport != "soccer":
         user = _current_user_from_header()
         if not user:
-            # Return standard HTTP 401
             return make_response("Authentication required to download reports for this sport.", 401)
 
-    # Log report download activity for monetization funnel analytics!
+    # Log report download for monetization funnel analytics
     from app.utils.decorators_ import log_event
     log_event("report_download", {"sport": sport, "arb_only": arb_only})
 
-    f_stream = _generate_word_document(sport, arb_only)
+    # 2. Try serving the pre-generated MinIO-cached document first (fast path)
+    f_stream = _serve_minio_report(sport, arb_only)
+
+    # 3. Fall back to on-demand generation if MinIO is unavailable or cache is stale
+    if f_stream is None:
+        f_stream = _generate_word_document(sport, arb_only)
+        # Persist to MinIO in the background so the next request is instant
+        try:
+            _save_minio_report(sport, arb_only, f_stream)
+        except Exception:
+            pass
+
     filename = f"OddsKenya_Report_{sport}_{time.strftime('%Y%m%d_%H%M%S')}.docx"
-    
     response = make_response(send_file(
         f_stream,
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         as_attachment=True,
-        download_name=filename
+        download_name=filename,
     ))
     response.headers["Access-Control-Allow-Origin"] = "*"
     return response

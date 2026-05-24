@@ -166,6 +166,15 @@ def make_celery(flask_app=None):
                 "schedule": 3600,
                 "options":  {"queue": "video"},
             },
+
+            # ── Word Report Pre-Generation ────────────────────────────────────
+            # Every 5 minutes: generate fresh Word reports for all sports and
+            # push to MinIO. Download endpoint serves the cached file instantly.
+            "word-reports-5min": {
+                "task":     "tasks.ops.pre_generate_word_reports",
+                "schedule": 300,
+                "options":  {"queue": "default"},
+            },
         },
     )
 
