@@ -109,7 +109,9 @@ def _fallback_script(home, away, comp, arb, budgets):
     return {
         "intro": "Stop scrolling. There is free money on the table tonight.",
         "match": f"{home} take on {away} in the {comp}.",
-        "odds":  "Here are the best prices across every bookmaker, side by side.",
+        "odds":  ("Here are the best prices across every bookmaker, side by side. "
+                  "But watch closely — these odds move fast. Take your time, "
+                  "compare them carefully, and analyze before you decide."),
         "arb":   f"A guaranteed arbitrage edge of {arb} percent — you profit whoever wins.",
         "outro": ("Odds move fast — always counter-check the prices before you stake. "
                   "Strictly for adults eighteen and over. Bet responsibly."),
@@ -143,11 +145,17 @@ def _script(match: dict, durations: dict, style: str) -> dict:
            "outro MUST instead warn that odds change quickly so the viewer should "
            "counter-check the prices first, state it is strictly for adults "
            "eighteen and over, and tell them to bet responsibly.")
-    usr = (f"{facts}\n\nWrite ONE narration line per scene, each within ~15% of its "
-           f"word budget so it fits the scene length:\n"
+    usr = (f"{facts}\n\nWrite ONE narration line per scene. Each line MUST be close "
+           f"to its word budget — aim for 90 to 105 percent of the budget — so the "
+           f"voice keeps talking and fills the whole scene with no long silent "
+           f"gaps. Pad with natural commentary, never with filler words:\n"
            f"- intro ({budgets['intro']} words): hook the viewer, tease the edge.\n"
            f"- match ({budgets['match']} words): name the teams and the fixture.\n"
-           f"- odds ({budgets['odds']} words): call out the best odds and bookmakers.\n"
+           f"- odds ({budgets['odds']} words): call out the best odds and bookmakers, "
+           f"then — while the prices are still on screen — warn that odds move very "
+           f"fast and tell the viewer to take their time, compare carefully and "
+           f"analyze properly before deciding. This is the longest line; keep "
+           f"talking through the whole odds animation.\n"
            f"- arb ({budgets['arb']} words): reveal the guaranteed arbitrage profit.\n"
            f"- outro ({budgets['outro']} words): NO 'bet now' push — warn that odds "
            f"change fast so viewers should counter-check the prices first, plus an "
