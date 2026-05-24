@@ -39,7 +39,12 @@ def create_app() -> Flask:
 
     db.init_app(flask_app)
     jwt.init_app(flask_app)
-    cors.init_app(flask_app, supports_credentials=True, origins="*")
+    cors.init_app(
+        flask_app,
+        supports_credentials=True,
+        origins="*",
+        allow_headers=["Content-Type", "Authorization", "X-Admin-Key", "x-admin-key", "X-Requested-With", "Accept"]
+    )
     migrate.init_app(flask_app, db, compare_type=True)
 
     @flask_app.after_request
