@@ -71,6 +71,7 @@ os.makedirs(_CACHE, exist_ok=True)
 
 WORDS_PER_SEC = 2.6      # spoken pace used to size each scene's line
 SCENES = ["intro", "match", "odds", "arb", "outro"]
+MAX_ARBS = 4             # mirrors MAX_ARBS in OddsVideoComponents.tsx
 
 NARRATION_STYLES = {
     "hype":    "loud, fast, high-energy sports-betting promo",
@@ -91,6 +92,7 @@ def _cors(resp):
 
 # ── scene timing — mirrors getSceneBoundaries() in OddsVideoComponents.tsx ──
 def _boundaries(num_arbs: int):
+    num_arbs = max(1, min(MAX_ARBS, int(num_arbs or 1)))   # cap, same as frontend
     if num_arbs <= 1:
         return [0, 0.18, 0.36, 0.62, 0.82, 1.0]
     intro_w, match_w, odds_w, outro_w = 14, 14, 20, 14
