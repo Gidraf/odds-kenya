@@ -468,13 +468,25 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
             bk_bd = m.get("bookmakers", {}).get(bk_slug, {})
             mkts  = _normalise_markets(bk_bd.get("markets") or m.get("markets") or {})
 
-            # Extract bookmaker-specific external match ID / Game ID (the "king" SMS ID)
-            ext_id = str(
-                m.get("sms_id") or m.get("sp_game_id") or m.get("sp_api_id") or
-                m.get("bt_parent_id") or m.get("bt_match_id") or m.get("bt_game_id") or
-                m.get("od_parent_id") or m.get("od_event_id") or m.get("od_match_id") or m.get("od_game_id") or
-                m.get("match_id") or m.get("game_id") or m.get("event_id") or ""
-            ).strip()
+            # Prioritize short 4/5/6-digit betting Game/SMS IDs first!
+            ext_id = ""
+            if bk_slug == "sp":
+                ext_id = str(m.get("sms_id") or m.get("sp_game_id") or m.get("game_id") or "").strip()
+            elif bk_slug == "bt":
+                ext_id = str(m.get("bt_game_id") or m.get("game_id") or "").strip()
+            elif bk_slug == "od":
+                ext_id = str(m.get("od_game_id") or m.get("game_id") or "").strip()
+
+            # Ensure we only pick valid short IDs (typical betting IDs are 3 to 6 digits).
+            # If the resolved ID is longer than 6 digits or non-digit, we ignore it and check fallbacks.
+            if not ext_id or len(ext_id) > 6 or ext_id.lower() == "none" or not ext_id.isdigit():
+                ext_id = str(
+                    m.get("sms_id") or m.get("sp_game_id") or m.get("sp_api_id") or
+                    m.get("bt_game_id") or m.get("od_game_id") or
+                    m.get("bt_parent_id") or m.get("bt_match_id") or
+                    m.get("od_parent_id") or m.get("od_event_id") or m.get("od_match_id") or
+                    m.get("match_id") or m.get("game_id") or m.get("event_id") or ""
+                ).strip()
 
             bk_ids_seed = {}
             for k, v in (m.get("bk_ids") or {}).items():

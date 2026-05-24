@@ -771,14 +771,21 @@ def _generate_word_document(sport: str, arb_only: bool) -> io.BytesIO:
             br_id   = m.get("betradar_id") or m.get("parent_match_id")
             m_links = {}
             sp_gid = m.get("sms_id") or m.get("sp_game_id")
-            if sp_gid: m_links["sp"] = str(sp_gid)
-            if br_id and br_id in link_dict:
-                for slug, ext_id in link_dict[br_id].items():
-                    if slug not in m_links and ext_id: m_links[slug] = ext_id
+            if sp_gid and len(str(sp_gid)) <= 6 and str(sp_gid).isdigit():
+                m_links["sp"] = str(sp_gid)
+
+            # ② Prioritize bk_ids from unified match (highly reliable short IDs)
             for slug in ("sp", "bt", "od"):
                 if slug not in m_links:
                     val = (m.get("bk_ids") or {}).get(slug)
-                    if val: m_links[slug] = str(val)
+                    if val and len(str(val)) <= 6 and str(val).isdigit():
+                        m_links[slug] = str(val)
+
+            # ③ Fallback: DB BookmakerMatchLink table (only accept if short/SMS ID)
+            if br_id and br_id in link_dict:
+                for slug, ext_id in link_dict[br_id].items():
+                    if slug not in m_links and ext_id and len(str(ext_id)) <= 6 and str(ext_id).isdigit():
+                        m_links[slug] = str(ext_id)
             ids_str = []
             if "sp" in m_links: ids_str.append(f"SportPesa: #{m_links['sp']}")
             if "bt" in m_links: ids_str.append(f"Betika: #{m_links['bt']}")

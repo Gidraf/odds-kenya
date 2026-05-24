@@ -37,8 +37,11 @@ def _decode_token(token: str) -> dict:
 def _current_user_from_header() -> "Customer | None":
     from app.models.customer import Customer
     auth = request.headers.get("Authorization", "")
+    token = None
     if auth.startswith("Bearer "):
         token = auth[7:]
+    elif request.args.get("token"):
+        token = request.args.get("token")
     elif request.headers.get("X-Api-Key"):
         return _current_user_from_api_key(request.headers.get("X-Api-Key"))
     else:
