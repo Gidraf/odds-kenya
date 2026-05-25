@@ -279,19 +279,36 @@ def compute_ev_arb(self, match_id) -> dict:
     bind=True, max_retries=1,
     soft_time_limit=300, time_limit=450, acks_late=True,
 )
-def generate_custom_report(self, sport: str, arb_only: bool, start_time_str: str = None, end_time_str: str = None) -> dict:
+def generate_custom_report(self, sport: str, arb_only: bool, start_time_str: str = None, end_time_str: str = None, preset: str = "all") -> dict:
     import base64
-    from app.views.customer.routes_api import _generate_word_document
+    from app.views.customer.routes_api import _generate_word_document, _serve_minio_report
     r = _get_redis()
     task_id = self.request.id
     try:
-        f_stream = _generate_word_document(sport, arb_only, start_time_str=start_time_str, end_time_str=end_time_str)
+        # Try fetching from pre-generated MinIO cache first!
+        f_stream = _serve_minio_report(sport, arb_only, preset=preset)
+        sp_available = True
+        
+        sp_flag = r.get(f"odds_report:sp_available:{sport}:{preset}")
+        if sp_flag is not None:
+            sp_available = (sp_flag == b"1" or sp_flag == "1")
+        else:
+            sp_available = True
+            
+        if f_stream is None:
+            # Fall back to dynamic on-demand generation
+            f_stream, sp_available = _generate_word_document(sport, arb_only, start_time_str=start_time_str, end_time_str=end_time_str)
+            
         data_bytes = f_stream.getvalue()
         encoded = base64.b64encode(data_bytes).decode('utf-8')
         redis_key = f"custom_report:{task_id}"
         r.set(redis_key, encoded, ex=300)
-        logger.info("[generate_custom_report] Successfully generated and stored custom report for task_id: %s", task_id)
-        return {"status": "SUCCESS", "task_id": task_id}
+        
+        # Save sp_available flag in Redis for this task
+        r.set(f"custom_report:sp_available:{task_id}", "1" if sp_available else "0", ex=300)
+        
+        logger.info("[generate_custom_report] Successfully generated and stored custom report for task_id: %s (sp_available=%s)", task_id, sp_available)
+        return {"status": "SUCCESS", "task_id": task_id, "sp_available": sp_available}
     except Exception as exc:
         logger.error("[generate_custom_report] Failed to generate custom report: %s", exc, exc_info=True)
         return {"status": "FAILED", "error": str(exc)}
@@ -907,6 +924,127 @@ def pre_generate_word_reports() -> dict:
 
     return {
         "ok":        True,
+        "sports":    len(_REPORT_SPORTS),
+        "variants":  2,
+        "sp_fetched": sp_fetched,
+        "success":   successes,
+        "failures":  failures,
+        "skipped":   skipped,
+    }
+
+
+@celery.task(
+    name="tasks.ops.pre_generate_preset_reports",
+    bind=True, max_retries=1,
+    soft_time_limit=900, time_limit=1200, acks_late=True,
+)
+def pre_generate_preset_reports(self, preset: str) -> dict:
+    """
+    Pre-generate Word booklet reports for a specific preset (today, tomorrow, week, month)
+    across all sports and save them to the MinIO bucket.
+    
+    1. today -> run every 5 minutes
+    2. tomorrow (every 15 minutes) -> run every 15 minutes
+    3. week (weekday presets) -> run every 25 minutes
+    4. month (30 day) -> run every 1 hour
+    """
+    import json as _json
+    import time
+    from datetime import datetime as _dt, timezone as _tz, timedelta
+    from app.views.customer.routes_api import (
+        _generate_word_document, _save_minio_report,
+    )
+    from app.workers.celery_tasks import _redis as _get_redis
+
+    now = _dt.now(_tz.utc)
+    start_dt = None
+    end_dt = None
+
+    if preset == "today":
+        start_dt = now
+        eat_now = now + timedelta(hours=3)
+        eat_end = eat_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        end_dt = eat_end - timedelta(hours=3)
+    elif preset == "tomorrow":
+        eat_now = now + timedelta(hours=3)
+        eat_tomorrow_start = (eat_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        eat_tomorrow_end = (eat_now + timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        start_dt = eat_tomorrow_start - timedelta(hours=3)
+        end_dt = eat_tomorrow_end - timedelta(hours=3)
+    elif preset == "week":
+        start_dt = now
+        end_dt = now + timedelta(days=7)
+    elif preset == "month":
+        start_dt = now
+        end_dt = now + timedelta(days=30)
+    else:
+        preset = "all"
+
+    start_time_str = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if start_dt else None
+    end_time_str = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if end_dt else None
+
+    successes = 0
+    failures  = 0
+    skipped   = 0
+    sp_fetched = 0
+
+    _r = _get_redis()
+
+    def _sp_match_count(sport_slug: str) -> int:
+        for key in (f"odds:sp:upcoming:{sport_slug}", f"sp:upcoming:{sport_slug}"):
+            try:
+                raw = _r.get(key)
+                if not raw:
+                    continue
+                obj = _json.loads(raw)
+                if isinstance(obj, list):
+                    return len([m for m in obj if isinstance(m, dict)])
+                if isinstance(obj, dict):
+                    ms = obj.get("matches") or obj.get("data") or []
+                    if isinstance(ms, list):
+                        return len([m for m in ms if isinstance(m, dict)])
+            except Exception:
+                pass
+        return 0
+
+    for sport in _REPORT_SPORTS:
+        # Check if SportPesa data is available
+        has_sp = _sp_match_count(sport) > 0
+        if not has_sp:
+            log.warning("[word_reports_%s] SP data missing for %s — triggering async harvest", preset, sport)
+            try:
+                from app.workers.tasks_upcoming import sp_harvest_sport
+                sp_harvest_sport.delay(sport)
+                sp_fetched += 1
+            except Exception as exc:
+                log.warning("[word_reports_%s] Failed to trigger SP harvest: %s", preset, exc)
+
+        # Generate full + arb-only variants and push to MinIO
+        for arb_only in (False, True):
+            try:
+                # Generate document
+                buf, sp_avail = _generate_word_document(sport, arb_only, start_time_str=start_time_str, end_time_str=end_time_str)
+                saved = _save_minio_report(sport, arb_only, buf, preset=preset)
+                if saved:
+                    # Save sp_available flag in Redis for this preset/sport
+                    _r.set(f"odds_report:sp_available:{sport}:{preset}", "1" if sp_avail else "0", ex=86400)
+                    # Also write readiness flag
+                    _r.setex(
+                        f"odds_report:ready:{sport}:{preset}:{'arb' if arb_only else 'full'}",
+                        3600,
+                        _json.dumps({"sport": sport, "arb_only": arb_only, "preset": preset, "ts": time.time()}),
+                    )
+                    successes += 1
+                    log.info("[word_reports_%s] ✓ %s arb=%s (sp_available=%s) → MinIO", preset, sport, arb_only, sp_avail)
+                else:
+                    skipped += 1
+            except Exception as exc:
+                failures += 1
+                log.warning("[word_reports_%s] ✗ %s arb=%s: %s", preset, sport, arb_only, exc)
+
+    return {
+        "ok":        True,
+        "preset":    preset,
         "sports":    len(_REPORT_SPORTS),
         "variants":  2,
         "sp_fetched": sp_fetched,

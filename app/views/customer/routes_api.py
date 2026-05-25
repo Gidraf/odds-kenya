@@ -318,18 +318,18 @@ def _get_minio_client():
         return None, None
 
 
-def _minio_report_key(sport: str, arb_only: bool) -> str:
+def _minio_report_key(sport: str, arb_only: bool, preset: str = "all") -> str:
     suffix = "_arb" if arb_only else "_full"
-    return f"reports/{sport}{suffix}_latest.docx"
+    return f"reports/{sport}_{preset}{suffix}_latest.docx"
 
 
-def _serve_minio_report(sport: str, arb_only: bool):
+def _serve_minio_report(sport: str, arb_only: bool, preset: str = "all"):
     """Try to fetch the pre-generated report from MinIO. Returns BytesIO or None."""
     try:
         client, bucket = _get_minio_client()
         if not client:
             return None
-        key  = _minio_report_key(sport, arb_only)
+        key  = _minio_report_key(sport, arb_only, preset=preset)
         resp = client.get_object(bucket, key)
         data = resp.read()
         resp.close(); resp.release_conn()
@@ -338,13 +338,13 @@ def _serve_minio_report(sport: str, arb_only: bool):
         return None
 
 
-def _save_minio_report(sport: str, arb_only: bool, buf: io.BytesIO) -> bool:
+def _save_minio_report(sport: str, arb_only: bool, buf: io.BytesIO, preset: str = "all") -> bool:
     """Upload a generated Word report to MinIO. buf position is preserved."""
     try:
         client, bucket = _get_minio_client()
         if not client:
             return False
-        key    = _minio_report_key(sport, arb_only)
+        key    = _minio_report_key(sport, arb_only, preset=preset)
         buf.seek(0)
         length = buf.getbuffer().nbytes
         client.put_object(
@@ -383,6 +383,16 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
         start_dt = _parse_dt(start_time_str)
         end_dt   = _parse_dt(end_time_str)
     except Exception: pass
+
+    # Always enforce that we only include matches starting in the future (relative to compilation time)
+    _now_dt = _dt.now(_tz.utc)
+    if start_dt is None:
+        start_dt = _now_dt
+    else:
+        if start_dt < _now_dt:
+            start_dt = _now_dt
+
+    sp_available = True
     
     # ─── STYLE CONSTANTS FOR REBRANDING & PREMIUM DESIGN ───
     FONT_FAMILY = "Arial"
@@ -517,6 +527,7 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
 
     sp_harvested = False
     sp_raw_list = _read_sp_raw(sport)
+    sp_available = len(sp_raw_list) > 0
     if not sp_raw_list:
         try:
             from app.workers.tasks_upcoming import sp_harvest_sport
@@ -1066,7 +1077,7 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
     f_stream = io.BytesIO()
     doc.save(f_stream)
     f_stream.seek(0)
-    return f_stream
+    return f_stream, sp_available
 
 def download_odds_word():
     from app.utils.customer_jwt_helpers import _current_user_from_header
@@ -1075,6 +1086,7 @@ def download_odds_word():
 
     sport    = request.args.get("sport", "soccer").lower().strip()
     arb_only = request.args.get("arb_only", "") in ("1", "true")
+    preset   = request.args.get("preset", "all").lower().strip()
 
     # 1. AUTH RULE: Only soccer (football) is free & anonymous.
     #    Other sports require an authenticated session.
@@ -1086,17 +1098,27 @@ def download_odds_word():
 
     # Log report download for monetization funnel analytics
     from app.utils.decorators_ import log_event
-    log_event("report_download", {"sport": sport, "arb_only": arb_only})
+    log_event("report_download", {"sport": sport, "arb_only": arb_only, "preset": preset})
 
+    sp_available = True
     # 2. Try serving the pre-generated MinIO-cached document first (fast path)
-    f_stream = _serve_minio_report(sport, arb_only)
+    f_stream = _serve_minio_report(sport, arb_only, preset=preset)
+    if f_stream is not None:
+        from app.workers.celery_tasks import _redis as _get_redis
+        r = _get_redis()
+        sp_flag = r.get(f"odds_report:sp_available:{sport}:{preset}")
+        if sp_flag is not None:
+            sp_available = (sp_flag == b"1" or sp_flag == "1")
 
     # 3. Fall back to on-demand generation if MinIO is unavailable or cache is stale
     if f_stream is None:
-        f_stream = _generate_word_document(sport, arb_only)
+        f_stream, sp_available = _generate_word_document(sport, arb_only)
         # Persist to MinIO in the background so the next request is instant
         try:
-            _save_minio_report(sport, arb_only, f_stream)
+            _save_minio_report(sport, arb_only, f_stream, preset=preset)
+            from app.workers.celery_tasks import _redis as _get_redis
+            r = _get_redis()
+            r.set(f"odds_report:sp_available:{sport}:{preset}", "1" if sp_available else "0", ex=86400)
         except Exception:
             pass
 
@@ -1108,6 +1130,7 @@ def download_odds_word():
         download_name=filename,
     ))
     response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["X-SportPesa-Available"] = "1" if sp_available else "0"
     return response
 
 
@@ -1123,6 +1146,7 @@ def download_odds_word_async():
     arb_only = bool(data.get("arb_only", False))
     start_time = data.get("start_time")
     end_time = data.get("end_time")
+    preset = data.get("preset", "all").lower().strip()
 
     # AUTH RULE: Only soccer is free. Other sports require authorization.
     if sport != "soccer":
@@ -1133,7 +1157,7 @@ def download_odds_word_async():
     # Import the Celery task
     try:
         from app.workers.tasks_ops import generate_custom_report
-        task = generate_custom_report.delay(sport, arb_only, start_time, end_time)
+        task = generate_custom_report.delay(sport, arb_only, start_time, end_time, preset=preset)
         return jsonify({"task_id": task.id, "status": "PENDING"}), 202
     except Exception as exc:
         logging.error("Failed to enqueue custom report task: %s", exc)

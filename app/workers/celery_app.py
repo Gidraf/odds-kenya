@@ -167,15 +167,33 @@ def make_celery(flask_app=None):
                 "options":  {"queue": "video"},
             },
 
-            # ── Word Report Pre-Generation ────────────────────────────────────
-            # Every 10 minutes: check SP data, harvest if missing, then generate
-            # fresh Word reports for all sports and push to MinIO.
-            # Download endpoint serves the cached file instantly (< 200 ms).
-            # Interval = 10 min to avoid overlapping runs (task can take up to 10
-            # min when SP data is missing and a live harvest is triggered).
-            "word-reports-10min": {
-                "task":     "tasks.ops.pre_generate_word_reports",
-                "schedule": 600,
+            # ── Word Report Pre-Generation (Optimized Presets) ──────────────────
+            # "Today" preset booklet: generated and uploaded to MinIO every 5 minutes
+            "word-reports-today-5min": {
+                "task":     "tasks.ops.pre_generate_preset_reports",
+                "schedule": 300,
+                "args":     ("today",),
+                "options":  {"queue": "default"},
+            },
+            # "Tomorrow" preset booklet: generated and uploaded to MinIO every 15 minutes
+            "word-reports-tomorrow-15min": {
+                "task":     "tasks.ops.pre_generate_preset_reports",
+                "schedule": 900,
+                "args":     ("tomorrow",),
+                "options":  {"queue": "default"},
+            },
+            # "Week" (weekday) preset booklet: generated and uploaded to MinIO every 25 minutes
+            "word-reports-week-25min": {
+                "task":     "tasks.ops.pre_generate_preset_reports",
+                "schedule": 1500,
+                "args":     ("week",),
+                "options":  {"queue": "default"},
+            },
+            # "Month" (30 day) preset booklet: generated and uploaded to MinIO every 1 hour (3600s)
+            "word-reports-month-1h": {
+                "task":     "tasks.ops.pre_generate_preset_reports",
+                "schedule": 3600,
+                "args":     ("month",),
                 "options":  {"queue": "default"},
             },
         },
