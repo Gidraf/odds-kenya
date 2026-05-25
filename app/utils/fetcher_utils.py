@@ -4,9 +4,9 @@ from enum import Enum
 
 class SubscriptionTier(str, Enum):
     FREE    = "free"
-    BASIC   = "basic"      # KES 180/day
-    PRO     = "pro"        # KES 3 500/month
-    PREMIUM = "premium"    # KES 5 500/month
+    BASIC   = "basic"      # KES 250/day
+    PRO     = "pro"        # KES 5 000/month
+    PREMIUM = "premium"    # KES 7 500/month
  
  
 class SubscriptionStatus(str, Enum):
@@ -27,9 +27,9 @@ class BankrollStrategy(str, Enum):
 # ─── Pricing config ──────────────────────────────────────────────────────────
  
 TIER_PRICES: dict[str, dict] = {
-    "basic":   {"amount_kes": 150,  "period_days": 1,  "trial_days": 90},
-    "pro":     {"amount_kes": 3000, "period_days": 30, "trial_days": 90},
-    "premium": {"amount_kes": 5000, "period_days": 30, "trial_days": 90},
+    "basic":   {"amount_kes": 250,  "period_days": 1,  "trial_days": 30},
+    "pro":     {"amount_kes": 5000, "period_days": 30, "trial_days": 30},
+    "premium": {"amount_kes": 7500, "period_days": 30, "trial_days": 30},
 }
  
 TIER_LIMITS: dict[str, dict] = {

@@ -58,7 +58,7 @@ def _send_verification_email(user, raw_token: str) -> None:
         display_name     = user.display_name or user.email.split("@")[0],
         tier             = user.tier,
         verification_url = verify_url,
-        trial_ends       = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%d %b %Y"),
+        trial_ends       = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%d %b %Y"),
         app_url          = app_url,
         year             = datetime.now(timezone.utc).year,
     )
@@ -174,7 +174,7 @@ def register():
         "subscription":  user.subscription.to_dict() if user.subscription else None,
         "access_token":  access_token,
         "refresh_token": refresh_token,
-        "trial_message": f"You have a 3-day free trial of the {tier.title()} plan.",
+        "trial_message": f"You have a 30-day free trial of the {tier.title()} plan.",
         "verify_notice": "A verification email has been sent. Please check your inbox.",
     }, 201)
 
