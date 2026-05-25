@@ -1112,7 +1112,32 @@ def download_odds_word():
 
     # 3. Fall back to on-demand generation if MinIO is unavailable or cache is stale
     if f_stream is None:
-        f_stream, sp_available = _generate_word_document(sport, arb_only)
+        from datetime import datetime as _dt, timezone as _tz, timedelta
+        now = _dt.now(_tz.utc)
+        start_dt = None
+        end_dt = None
+        if preset == "today":
+            start_dt = now
+            eat_now = now + timedelta(hours=3)
+            eat_end = eat_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            end_dt = eat_end - timedelta(hours=3)
+        elif preset == "tomorrow":
+            eat_now = now + timedelta(hours=3)
+            eat_tomorrow_start = (eat_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            eat_tomorrow_end = (eat_now + timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+            start_dt = eat_tomorrow_start - timedelta(hours=3)
+            end_dt = eat_tomorrow_end - timedelta(hours=3)
+        elif preset == "week":
+            start_dt = now
+            end_dt = now + timedelta(days=7)
+        elif preset == "month":
+            start_dt = now
+            end_dt = now + timedelta(days=30)
+
+        start_time_str = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if start_dt else None
+        end_time_str = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if end_dt else None
+
+        f_stream, sp_available = _generate_word_document(sport, arb_only, start_time_str=start_time_str, end_time_str=end_time_str)
         # Persist to MinIO in the background so the next request is instant
         try:
             _save_minio_report(sport, arb_only, f_stream, preset=preset)
