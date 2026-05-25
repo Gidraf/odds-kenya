@@ -118,6 +118,7 @@ def create_app() -> Flask:
     from app.views.monitor                           import bp_monitor
     from app.views.monitor.harvest_control           import bp_harvest_ctrl
     from app.views.customer                          import bp_odds_customer
+    from app.views.customer.download_routes_v2       import bp_download_v2
     from app.views.odds_feed.live_sse_routes         import bp_live_sse
     from app.views.monitor.analytics_view            import bp_analytics_dash
     from app.views.customer.sportradar_tracker       import bp_tracker
@@ -163,6 +164,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
     flask_app.register_blueprint(bp_odds_customer)
+    flask_app.register_blueprint(bp_download_v2)
     flask_app.register_blueprint(bp_story)
     flask_app.register_blueprint(bp_raw_stream)
     flask_app.register_blueprint(bp_interceptor)
