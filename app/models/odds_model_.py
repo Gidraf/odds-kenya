@@ -79,11 +79,29 @@ class MatchStatus(str, enum.Enum):
     POSTPONED  = "POSTPONED"
     SUSPENDED  = "SUSPENDED"
 
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            val_upper = value.upper()
+            for member in cls:
+                if member.value == val_upper or member.name == val_upper:
+                    return member
+        return None
+
 
 class OpportunityStatus(str, enum.Enum):
     OPEN   = "OPEN"    # still available right now
     CLOSED = "CLOSED"  # price moved, no longer profitable
     EXPIRED = "EXPIRED" # match kicked off before anyone acted
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            val_upper = value.upper()
+            for member in cls:
+                if member.value == val_upper or member.name == val_upper:
+                    return member
+        return None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
