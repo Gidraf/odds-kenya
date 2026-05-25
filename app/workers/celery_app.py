@@ -196,6 +196,12 @@ def make_celery(flask_app=None):
                 "args":     ("month",),
                 "options":  {"queue": "default"},
             },
+            # Tailscale proxy monitor (NEW): runs every 5 minutes (300s)
+            "monitor-tailscale-proxies-5m": {
+                "task":     "tasks.ops.monitor_tailscale_proxies",
+                "schedule": 300,
+                "options":  {"queue": "default"},
+            },
         },
     )
 

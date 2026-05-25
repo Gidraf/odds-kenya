@@ -1052,3 +1052,90 @@ def pre_generate_preset_reports(self, preset: str) -> dict:
         "failures":  failures,
         "skipped":   skipped,
     }
+
+
+@celery.task(
+    name="tasks.ops.monitor_tailscale_proxies",
+    bind=True, max_retries=1,
+)
+def monitor_tailscale_proxies(self) -> dict:
+    """
+    Monitor the Tailscale active proxy pool in Redis.
+    If empty or missing, sends an alert email to the developer.
+    Uses a 1-hour rate limit lock to avoid spamming the developer's inbox.
+    """
+    import json as _json
+    import time
+    from app.workers.celery_tasks import _redis as _get_redis, send_async_email
+    import os
+
+    r = _get_redis()
+    if not r:
+        return {"ok": False, "error": "Redis connection unavailable"}
+
+    raw = r.get("tailscale:active_proxies")
+    active_count = 0
+    if raw:
+        try:
+            proxies = _json.loads(raw)
+            if isinstance(proxies, list):
+                active_count = len(proxies)
+        except Exception:
+            pass
+
+    log.info("[monitor_tailscale_proxies] Verified proxy pool. Active proxies count: %s", active_count)
+
+    if active_count == 0:
+        # Check if an alert was already sent in the last 1 hour
+        alert_sent_flag = r.get("tailscale:alert_sent_lock")
+        if not alert_sent_flag:
+            log.warning("[monitor_tailscale_proxies] No active Tailscale proxy devices found! Dispatching alert email to orenjagidraf@gmail.com")
+            
+            # Rate limit lock for 1 hour (3600 seconds)
+            r.setex("tailscale:alert_sent_lock", 3600, "1")
+            
+            subject = "⚠️ ALERT: OddsKenya Tailscale Proxies Connection Down!"
+            recipient = "orenjagidraf@gmail.com"
+            html_body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; background-color: #0c111d; color: #f4f4f4; padding: 20px;">
+                <div style="max-width: 600px; margin: 0 auto; background-color: #161b26; border: 1px solid #ff4a4a; padding: 24px; border-radius: 8px;">
+                    <h2 style="color: #ff4a4a; margin-top: 0;">🚨 CONNECTION DOWN ALERT</h2>
+                    <p style="font-size: 14px; line-height: 1.6;">
+                        This is an automated notification from your <b>OddsKenya</b> backend server.
+                    </p>
+                    <p style="font-size: 14px; line-height: 1.6; background-color: rgba(255,74,74,0.08); border-left: 4px solid #ff4a4a; padding: 12px; border-radius: 4px;">
+                        <b>Critical Warning:</b> No active Tailscale SOCKS5 proxy devices were detected in the active pool.
+                        The harvesting and scraper engines are currently operating in <b>Direct/Fallback Mode</b>, which might lead to IP blocks or connection timeouts from bookmaker APIs.
+                    </p>
+                    <h3 style="color: #38BDF8;">Troubleshooting Steps:</h3>
+                    <ul style="font-size: 13px; line-height: 1.6; padding-left: 20px;">
+                        <li>Check if your SOCKS5 proxy devices are connected to Tailscale and are active exit nodes.</li>
+                        <li>Verify that the SOCKS5 proxy service is listening on port <b>1080</b> on each device.</li>
+                        <li>Verify if the host crontab task is running: <code>tailscale status</code> and <code>/app/scripts/update_proxies.py</code>.</li>
+                    </ul>
+                    <hr style="border: 0; border-top: 1px solid #2d3139; margin: 20px 0;" />
+                    <p style="font-size: 11px; color: #8a8f98; text-align: center;">
+                        This alert was triggered by the Celery Beat scheduler. Only 1 alert is sent per hour when the connection is down.
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+            
+            try:
+                send_async_email.apply_async(args=[
+                    subject,
+                    [recipient],
+                    html_body,
+                    "html",
+                    [],
+                    os.environ.get("ADMIN_EMAIL"),
+                    os.environ.get("ADMIN_EMAIL_PASSWORD"),
+                ])
+                return {"ok": True, "alert_sent": True, "active_count": 0}
+            except Exception as e:
+                log.error("[monitor_tailscale_proxies] Failed to dispatch alert email: %s", e)
+                return {"ok": False, "error": str(e), "active_count": 0}
+
+    return {"ok": True, "alert_sent": False, "active_count": active_count}
