@@ -164,7 +164,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(bp_customer_subscriptions)
     flask_app.register_blueprint(bp_customer)
     flask_app.register_blueprint(bp_odds_customer)
-    flask_app.register_blueprint(bp_download_v2)
+    flask_app.register_blueprint(bp_download_v2, url_prefix="/api")
     flask_app.register_blueprint(bp_story)
     flask_app.register_blueprint(bp_raw_stream)
     flask_app.register_blueprint(bp_interceptor)
