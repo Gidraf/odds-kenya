@@ -89,43 +89,372 @@ _BK_NAME_TO_SLUG: dict[str, str] = {
     "paripesa": "paripesa", "sbo": "sbo",
 }
 
-# ── Market definitions ─────────────────────────────────────────────────────────
-BASE_MARKETS = [
-    ("Full-Time 1X2",       ["1x2", "match_winner", "moneyline", "full_time_result"],
-     [("1", ["1", "home", "home_win", "win"]),
-      ("X", ["x", "draw", "tie"]),
-      ("2", ["2", "away", "away_win", "loss"])]),
+# ─────────────────────────────────────────────────────────────────────────────
+# SPORT-SPECIFIC MARKET DEFINITIONS
+# Each entry: (display_label, [market_key_aliases], [(out_label, [out_aliases])])
+# ─────────────────────────────────────────────────────────────────────────────
 
-    ("Both Teams to Score", ["btts", "both_teams_to_score", "gg_ng"],
-     [("Yes", ["yes", "btts_yes", "both_score", "gg"]),
-      ("No",  ["no",  "btts_no",  "no_score",  "ng"])]),
-
-    ("Double Chance",       ["double_chance"],
-     [("1X", ["1x", "home_or_draw"]),
-      ("12", ["12", "home_or_away"]),
-      ("X2", ["x2", "draw_or_away"])]),
-
-    ("Draw No Bet",         ["dnb", "draw_no_bet"],
-     [("1", ["1", "home"]),
-      ("2", ["2", "away"])]),
-
-    ("Half-Time 1X2",       ["half_time", "half_time_result", "ht_result"],
-     [("1", ["1", "home"]),
-      ("X", ["x", "draw"]),
-      ("2", ["2", "away"])]),
-
-    ("Over 2.5 Goals",      ["over_under_goals_2_5", "over_under_2_5", "ou_2_5"],
-     [("Over",  ["over", "o"]),
-      ("Under", ["under", "u"])]),
-
-    ("Over 1.5 Goals",      ["over_under_goals_1_5", "over_under_1_5", "ou_1_5"],
-     [("Over",  ["over", "o"]),
-      ("Under", ["under", "u"])]),
-
-    ("Over 3.5 Goals",      ["over_under_goals_3_5", "over_under_3_5", "ou_3_5"],
-     [("Over",  ["over", "o"]),
-      ("Under", ["under", "u"])]),
+# Shared outcome aliases reused across sports
+_WIN_DRAW_WIN = [
+    ("1", ["1", "home", "home_win", "win", "w1"]),
+    ("X", ["x", "draw", "tie"]),
+    ("2", ["2", "away", "away_win", "loss", "w2"]),
 ]
+_WIN_LOSE = [
+    ("1", ["1", "home", "home_win", "win", "w1"]),
+    ("2", ["2", "away", "away_win", "loss", "w2"]),
+]
+_OVER_UNDER = [
+    ("Over",  ["over", "o", "ov"]),
+    ("Under", ["under", "u", "un"]),
+]
+_YES_NO = [
+    ("Yes", ["yes", "y", "gg"]),
+    ("No",  ["no",  "n", "ng"]),
+]
+
+_SPORT_MARKET_DEFS: dict[str, list] = {
+
+    # ── Soccer ────────────────────────────────────────────────────────────────
+    "soccer": [
+        ("Full-Time 1X2",
+         ["1x2", "match_winner", "moneyline", "full_time_result"],
+         _WIN_DRAW_WIN),
+        ("Both Teams to Score",
+         ["btts", "both_teams_to_score", "gg_ng"],
+         _YES_NO),
+        ("Double Chance",
+         ["double_chance"],
+         [("1X", ["1x", "home_or_draw"]),
+          ("12", ["12", "home_or_away"]),
+          ("X2", ["x2", "draw_or_away"])]),
+        ("Draw No Bet",
+         ["dnb", "draw_no_bet"],
+         _WIN_LOSE),
+        ("Half-Time 1X2",
+         ["half_time", "half_time_result", "ht_result"],
+         _WIN_DRAW_WIN),
+        ("Over 2.5 Goals",
+         ["over_under_goals_2_5", "over_under_2_5", "ou_2_5"],
+         _OVER_UNDER),
+        ("Over 1.5 Goals",
+         ["over_under_goals_1_5", "over_under_1_5", "ou_1_5"],
+         _OVER_UNDER),
+        ("Over 3.5 Goals",
+         ["over_under_goals_3_5", "over_under_3_5", "ou_3_5"],
+         _OVER_UNDER),
+    ],
+
+    # ── Basketball ────────────────────────────────────────────────────────────
+    "basketball": [
+        ("Match Winner",
+         ["match_winner", "moneyline", "basketball_1x2", "1x2",
+          "basketball_match_winner", "outright_winner"],
+         _WIN_LOSE),
+        ("Match Winner incl. OT",
+         ["match_winner_incl_ot", "win_including_ot", "winner_incl_ot"],
+         _WIN_LOSE),
+        ("Half-Time Winner",
+         ["first_half_1x2", "half_time", "first_half_winner",
+          "basketball_first_half", "h1_winner"],
+         _WIN_LOSE),
+        ("Quarter Winner (1st)",
+         ["quarter_winner", "first_quarter_winner", "q1_winner"],
+         _WIN_LOSE),
+        ("Over/Under Points",
+         ["over_under", "total_points", "total", "over_under_points",
+          "basketball_over_under"],
+         _OVER_UNDER),
+        ("Asian Handicap",
+         ["asian_handicap", "point_spread", "handicap",
+          "basketball_asian_handicap"],
+         [("Home", ["home", "1", "h"]),
+          ("Away", ["away", "2", "a"])]),
+        ("1st Half Over/Under",
+         ["first_half_over_under", "first_half_total", "h1_over_under"],
+         _OVER_UNDER),
+    ],
+
+    # ── Tennis ────────────────────────────────────────────────────────────────
+    "tennis": [
+        ("Match Winner",
+         ["match_winner", "moneyline", "winner", "tennis_winner",
+          "outright_winner", "1x2"],
+         _WIN_LOSE),
+        ("Set Betting",
+         ["set_betting", "correct_score_sets", "sets_score"],
+         [("2-0", ["2-0", "2_0"]),
+          ("2-1", ["2-1", "2_1"]),
+          ("0-2", ["0-2", "0_2"]),
+          ("1-2", ["1-2", "1_2"])]),
+        ("Total Games Over/Under",
+         ["total_games", "over_under_games", "games_over_under"],
+         _OVER_UNDER),
+        ("Game Handicap",
+         ["game_handicap", "games_handicap", "tennis_handicap"],
+         [("Home", ["home", "1", "player1"]),
+          ("Away", ["away", "2", "player2"])]),
+    ],
+
+    # ── Cricket ───────────────────────────────────────────────────────────────
+    "cricket": [
+        ("Match Winner",
+         ["match_winner", "winner", "1x2", "cricket_winner",
+          "moneyline", "outright"],
+         _WIN_DRAW_WIN),
+        ("Match Winner (no draw)",
+         ["match_winner_nodraw", "to_win_match", "win_toss_win_match"],
+         _WIN_LOSE),
+        ("Over/Under Runs",
+         ["over_under_runs", "total_runs", "runs_over_under",
+          "over_under", "innings_runs"],
+         _OVER_UNDER),
+        ("Top Batsman",
+         ["top_batsman", "top_run_scorer"],
+         []),
+    ],
+
+    # ── Ice Hockey ────────────────────────────────────────────────────────────
+    "ice-hockey": [
+        ("Full-Time 1X2",
+         ["1x2", "match_winner", "moneyline", "puck_line"],
+         _WIN_DRAW_WIN),
+        ("Both Teams to Score",
+         ["btts", "both_teams_to_score"],
+         _YES_NO),
+        ("Over/Under Goals",
+         ["over_under", "over_under_goals", "over_under_goals_5_5",
+          "over_under_5_5", "total_goals"],
+         _OVER_UNDER),
+        ("Asian Handicap (Puck Line)",
+         ["asian_handicap", "puck_line", "handicap"],
+         _WIN_LOSE),
+        ("60 Min Result",
+         ["60_min_result", "regulation_result", "3_way"],
+         _WIN_DRAW_WIN),
+    ],
+
+    # ── Volleyball ────────────────────────────────────────────────────────────
+    "volleyball": [
+        ("Match Winner",
+         ["match_winner", "winner", "volleyball_winner",
+          "moneyline", "1x2"],
+         _WIN_LOSE),
+        ("Set Handicap",
+         ["set_handicap", "handicap_sets", "volleyball_handicap"],
+         [("Home -1.5", ["home", "1", "-1.5"]),
+          ("Away +1.5", ["away", "2", "+1.5"])]),
+        ("Total Sets",
+         ["total_sets", "over_under_sets", "sets_over_under"],
+         _OVER_UNDER),
+        ("Correct Score (Sets)",
+         ["correct_score_sets", "sets_score"],
+         [("3-0", ["3-0", "3_0"]),
+          ("3-1", ["3-1", "3_1"]),
+          ("3-2", ["3-2", "3_2"]),
+          ("0-3", ["0-3", "0_3"]),
+          ("1-3", ["1-3", "1_3"]),
+          ("2-3", ["2-3", "2_3"])]),
+    ],
+
+    # ── Rugby ─────────────────────────────────────────────────────────────────
+    "rugby": [
+        ("Match Winner",
+         ["match_winner", "moneyline", "1x2", "rugby_winner"],
+         _WIN_DRAW_WIN),
+        ("Handicap",
+         ["asian_handicap", "handicap", "rugby_handicap"],
+         _WIN_LOSE),
+        ("Over/Under Points",
+         ["over_under", "total_points", "over_under_points"],
+         _OVER_UNDER),
+        ("Both Teams to Score",
+         ["btts", "both_teams_to_score"],
+         _YES_NO),
+    ],
+
+    # ── Handball ──────────────────────────────────────────────────────────────
+    "handball": [
+        ("Match Winner",
+         ["match_winner", "1x2", "moneyline", "handball_winner"],
+         _WIN_DRAW_WIN),
+        ("Asian Handicap",
+         ["asian_handicap", "handicap"],
+         _WIN_LOSE),
+        ("Over/Under Goals",
+         ["over_under", "over_under_goals", "total_goals"],
+         _OVER_UNDER),
+        ("Both Teams to Score",
+         ["btts", "both_teams_to_score"],
+         _YES_NO),
+        ("Half-Time",
+         ["half_time", "half_time_result"],
+         _WIN_DRAW_WIN),
+    ],
+
+    # ── Table Tennis ─────────────────────────────────────────────────────────
+    "table-tennis": [
+        ("Match Winner",
+         ["match_winner", "winner", "moneyline", "1x2",
+          "table_tennis_winner"],
+         _WIN_LOSE),
+        ("Total Points",
+         ["total_points", "over_under", "over_under_points"],
+         _OVER_UNDER),
+        ("Handicap (Games)",
+         ["asian_handicap", "handicap"],
+         _WIN_LOSE),
+    ],
+
+    # ── MMA ───────────────────────────────────────────────────────────────────
+    "mma": [
+        ("Fight Winner",
+         ["match_winner", "fight_winner", "winner", "moneyline",
+          "mma_winner", "1x2"],
+         _WIN_LOSE),
+        ("Over/Under Rounds",
+         ["over_under", "total_rounds", "over_under_rounds"],
+         _OVER_UNDER),
+        ("Method of Victory",
+         ["method_of_victory", "winning_method"],
+         [("KO/TKO", ["ko", "tko", "ko_tko"]),
+          ("Submission", ["submission", "sub"]),
+          ("Decision", ["decision", "dec", "points"])]),
+    ],
+
+    # ── Boxing ────────────────────────────────────────────────────────────────
+    "boxing": [
+        ("Fight Winner",
+         ["match_winner", "fight_winner", "winner", "moneyline",
+          "boxing_winner", "1x2"],
+         _WIN_DRAW_WIN),
+        ("Over/Under Rounds",
+         ["over_under", "total_rounds", "over_under_rounds"],
+         _OVER_UNDER),
+        ("Method of Victory",
+         ["method_of_victory", "winning_method"],
+         [("KO/TKO", ["ko", "tko", "ko_tko"]),
+          ("Points", ["decision", "dec", "points"]),
+          ("Draw", ["draw", "x"])]),
+    ],
+
+    # ── Darts ─────────────────────────────────────────────────────────────────
+    "darts": [
+        ("Match Winner",
+         ["match_winner", "winner", "moneyline", "1x2", "darts_winner"],
+         _WIN_LOSE),
+        ("Correct Score (Legs)",
+         ["correct_score", "legs_score", "correct_score_legs"],
+         [("Home", ["home", "1"]),
+          ("Away", ["away", "2"])]),
+        ("Total 180s",
+         ["total_180s", "over_under_180s"],
+         _OVER_UNDER),
+    ],
+
+    # ── American Football ─────────────────────────────────────────────────────
+    "american-football": [
+        ("Moneyline",
+         ["moneyline", "match_winner", "1x2", "nfl_winner"],
+         _WIN_LOSE),
+        ("Point Spread",
+         ["point_spread", "asian_handicap", "handicap"],
+         [("Home", ["home", "1", "h"]),
+          ("Away", ["away", "2", "a"])]),
+        ("Over/Under Total Points",
+         ["over_under", "total_points", "over_under_points"],
+         _OVER_UNDER),
+        ("1st Half Moneyline",
+         ["first_half_1x2", "1h_moneyline", "first_half_winner"],
+         _WIN_LOSE),
+    ],
+
+    # ── Baseball ─────────────────────────────────────────────────────────────
+    "baseball": [
+        ("Moneyline",
+         ["moneyline", "match_winner", "1x2", "run_line"],
+         _WIN_LOSE),
+        ("Run Line",
+         ["run_line", "point_spread", "asian_handicap"],
+         [("Home -1.5", ["home", "1"]),
+          ("Away +1.5", ["away", "2"])]),
+        ("Over/Under Runs",
+         ["over_under", "total_runs", "over_under_runs"],
+         _OVER_UNDER),
+    ],
+
+    # ── eSoccer ── (same as soccer)
+    "esoccer": [],  # filled dynamically below
+}
+
+# eSoccer = soccer markets
+_SPORT_MARKET_DEFS["esoccer"] = list(_SPORT_MARKET_DEFS["soccer"])
+
+# Kept for backward compatibility (used elsewhere)
+BASE_MARKETS = _SPORT_MARKET_DEFS["soccer"]
+
+
+def _get_display_markets(
+    sport:         str,
+    matches:       list,
+    market_filter: list | None = None,
+) -> list:
+    """
+    Build the ordered list of (label, aliases, outcomes) to display in the
+    Word document for a given sport.
+
+    Strategy (3 layers):
+      1. Start with hardcoded sport-specific definitions (most important markets
+         shown first in the correct order).
+      2. Detect any additional market slugs present in the actual match data
+         that aren't covered by layer 1 (dynamic — handles harvester variations).
+      3. If market_filter is provided, restrict to matching markets only.
+    """
+    # Layer 1 — sport-specific hardcoded definitions
+    base = list(_SPORT_MARKET_DEFS.get(sport.lower(), _SPORT_MARKET_DEFS["soccer"]))
+
+    # Track all alias keys already covered so we don't double-render
+    covered: set[str] = set()
+    for _, aliases, _ in base:
+        covered.update(aliases)
+
+    # Layer 2 — dynamic detection from actual match data
+    # Scan `best` to find market slugs not yet covered, then infer outcomes
+    dynamic_markets: dict[str, set[str]] = {}  # slug → {outcome_key, …}
+    for m in matches:
+        for mkt_slug, outcomes_dict in (m.get("best") or {}).items():
+            if not isinstance(outcomes_dict, dict):
+                continue
+            # Skip if already covered by a hardcoded alias
+            if mkt_slug in covered:
+                continue
+            # Also skip if it matches any covered alias (partial)
+            already = False
+            for cv in covered:
+                if cv in mkt_slug or mkt_slug in cv:
+                    already = True; break
+            if already:
+                continue
+            dynamic_markets.setdefault(mkt_slug, set()).update(outcomes_dict.keys())
+
+    for mkt_slug, outcome_keys in sorted(dynamic_markets.items()):
+        if not outcome_keys:
+            continue
+        label    = mkt_slug.replace("_", " ").title()
+        outcomes = [(k.title(), [k, k.lower()]) for k in sorted(outcome_keys)]
+        base.append((label, [mkt_slug], outcomes))
+        covered.add(mkt_slug)
+
+    # Layer 3 — apply market_filter if provided
+    if not market_filter:
+        return base
+
+    mf_set = {m.lower() for m in market_filter}
+    return [
+        d for d in base
+        if any(alias in mf_set for alias in d[1])
+        or d[0].lower().replace(" ", "_") in mf_set
+    ]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -538,38 +867,12 @@ def generate_group_document(
 
     active_bks = _detect_active_bks(group_matches) or PRIMARY_BKS[:]
 
-    # Determine which markets to show
-    all_market_defs = list(BASE_MARKETS)
-    seen_ou: set = set()
-    for m in group_matches:
-        for k in (m.get("best") or {}):
-            if k.startswith(("over_under_goals_", "over_under_")) and k not in {
-                "over_under_goals_1_5", "over_under_1_5",
-                "over_under_goals_2_5", "over_under_2_5",
-                "over_under_goals_3_5", "over_under_3_5",
-            }:
-                raw = k.replace("over_under_goals_", "").replace("over_under_", "").replace("_", ".")
-                try:
-                    float(raw)
-                    if raw not in seen_ou:
-                        seen_ou.add(raw)
-                        all_market_defs.append((
-                            f"Over {raw} Goals",
-                            [k, f"over_under_goals_{raw.replace('.', '_')}"],
-                            [("Over", ["over", "o"]), ("Under", ["under", "u"])],
-                        ))
-                except Exception:
-                    pass
-
-    if market_filter:
-        mf_set = {m.lower() for m in market_filter}
-        display_markets = [
-            d for d in all_market_defs
-            if any(alias in mf_set for alias in d[1])
-            or d[0].lower().replace(" ", "_") in mf_set
-        ]
-    else:
-        display_markets = all_market_defs
+    # ── Sport-aware market definitions (replaces static BASE_MARKETS) ─────────
+    # _get_display_markets uses sport-specific hardcoded definitions for the
+    # most important markets, then dynamically adds any extra markets it finds
+    # in the actual match data.  This means basketball gets match_winner /
+    # total_points, cricket gets match_winner / runs, etc.
+    display_markets = _get_display_markets(sport, group_matches, market_filter)
 
     # ── Style constants ───────────────────────────────────────────────────────
     FF     = "Arial"
