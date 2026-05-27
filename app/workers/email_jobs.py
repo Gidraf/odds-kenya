@@ -35,6 +35,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 # from playwright.sync_api import sync_playwright
 from app import create_app
+from .celery_app import celery_app as celery
 import arrow
 import json
 # import base64
