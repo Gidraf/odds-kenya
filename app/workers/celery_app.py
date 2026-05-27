@@ -43,6 +43,7 @@ def make_celery(flask_app=None):
         #    defined inside a closure in live_results_api.py and were never
         #    auto-discovered, causing "task not found" errors.
         include = [
+            "app.workers.email_jobs",       
             "app.workers.tasks_ops",
             "app.workers.tasks_upcoming",
             "app.workers.tasks_live",
@@ -80,6 +81,7 @@ def make_celery(flask_app=None):
             "tasks.lifecycle.save_match_result":  {"queue": "results"},
             "tasks.lifecycle.flush_live_markets": {"queue": "results"},
             "tasks.lifecycle.notify_event":       {"queue": "notify"},
+            "app.workers.email_jobs.send_async_email":   {"queue": "notify"}, 
             "tasks.lifecycle.window_scan":        {"queue": "default"},
 
             # ── Beat / ops ────────────────────────────────────────────────────
