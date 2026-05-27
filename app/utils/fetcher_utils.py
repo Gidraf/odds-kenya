@@ -27,9 +27,9 @@ class BankrollStrategy(str, Enum):
 # ─── Pricing config ──────────────────────────────────────────────────────────
  
 TIER_PRICES: dict[str, dict] = {
-    "basic":   {"amount_kes": 250,  "period_days": 1,  "trial_days": 30},
-    "pro":     {"amount_kes": 5000, "period_days": 30, "trial_days": 30},
-    "premium": {"amount_kes": 7500, "period_days": 30, "trial_days": 30},
+    "basic":   {"amount_kes": 250,  "period_days": 90,  "trial_days": 90},
+    "pro":     {"amount_kes": 5000, "period_days": 90, "trial_days": 90},
+    "premium": {"amount_kes": 7500, "period_days": 90, "trial_days": 90},
 }
  
 TIER_LIMITS: dict[str, dict] = {

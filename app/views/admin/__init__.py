@@ -68,12 +68,12 @@ def send_outreach_email():
     if sport:
         try:
             from app.views.customer.routes_api import _generate_word_document
-            f_stream = _generate_word_document(sport, arb_only)
+            f_stream, _sp_available = _generate_word_document(sport, arb_only)   # ← unpack tuple
             content_b64 = base64.b64encode(f_stream.read()).decode("utf-8")
             attachments.append({
                 "filename": f"OddsKenya_Report_{sport}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
-                "content": content_b64,
-                "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                "content":  content_b64,
+                "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             })
         except Exception as e:
             return _err(f"Failed to generate Word report attachment: {str(e)}", 500)
