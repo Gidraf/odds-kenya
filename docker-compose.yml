@@ -16,6 +16,11 @@ x-celery-common: &celery-common
     JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM}
     JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM}
     RESPONSE_SIGNING_SECRET: ${RESPONSE_SIGNING_SECRET}
+    ADMIN_EMAIL: ${ADMIN_EMAIL}
+    ADMIN_EMAIL_PASSWORD: ${ADMIN_EMAIL_PASSWORD}
+    MAIL_SERVER: ${MAIL_SERVER}
+    MAIL_PORT: ${MAIL_PORT:-587}
+    DOMAIN: ${DOMAIN}
 
     # Redis — use Docker service name "redis6382" (not host.docker.internal)
     # Password has NO @ prefix → no %40 encoding needed
