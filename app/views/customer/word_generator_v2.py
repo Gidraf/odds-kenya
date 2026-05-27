@@ -600,6 +600,34 @@ def _detect_active_bks(matches: list) -> list:
     return result + extras[:3]
 
 
+def _get_game_ids(m: dict) -> dict:
+    """
+    Extract short bookmaker game IDs from a match dict.
+    Returns {slug: id_str} for slugs with a valid 1-8 digit numeric ID.
+    """
+    ids: dict = {}
+
+    for slug, val in (m.get("bk_ids") or {}).items():
+        if val and str(val).strip().isdigit():
+            s = str(val).strip()
+            if 1 <= len(s) <= 8:
+                ids[slug] = s
+
+    sp_cands = [m.get("sp_game_id"), m.get("sms_id")]
+    bt_cands = [m.get("bt_game_id"), m.get("bt_match_id"), m.get("bt_parent_id")]
+    od_cands = [m.get("od_game_id"), m.get("od_event_id"), m.get("od_match_id")]
+
+    for slug, cands in [("sp", sp_cands), ("bt", bt_cands), ("od", od_cands)]:
+        if slug not in ids:
+            for v in cands:
+                if v and str(v).strip().isdigit():
+                    s = str(v).strip()
+                    if 1 <= len(s) <= 8:
+                        ids[slug] = s
+                        break
+    return ids
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA LOADING — DB primary, Redis fallback
 # ══════════════════════════════════════════════════════════════════════════════
@@ -961,13 +989,21 @@ def generate_group_document(
     doc.styles["Normal"].font.size      = Pt(6.5)
     doc.styles["Normal"].font.color.rgb = W
 
-    USABLE_W = Cm(19.7)
-    n_bk = len(active_bks)
-    mkt_w = 5.6
-    sel_w = 2.0
-    bk_w  = round((19.7 - mkt_w - sel_w) / max(n_bk, 1), 2)
-    bk_w  = max(bk_w, 2.0)
-    mkt_w = max(round(19.7 - sel_w - bk_w * n_bk, 2), 3.5)
+    # ── 2-column layout ───────────────────────────────────────────────────────
+    # Header (full-width) renders in section 1 (1 col).
+    # A continuous section break after the header switches to 2 columns.
+    # Per-column usable width: (19.7 - 0.5 gutter) / 2 = 9.6 cm
+    COL_W_CM   = 9.6          # usable width per column
+    USABLE_W   = Cm(19.7)     # used for the full-width header table only
+    COL_USABLE = Cm(COL_W_CM) # used for per-match tables
+
+    n_bk  = len(active_bks)
+    # Column widths within each 9.6 cm match table
+    mkt_w = 3.3
+    sel_w = 1.3
+    bk_w  = round((COL_W_CM - mkt_w - sel_w) / max(n_bk, 1), 2)
+    bk_w  = max(bk_w, 1.5)
+    mkt_w = max(round(COL_W_CM - sel_w - bk_w * n_bk, 2), 2.5)
     n_cols = 2 + n_bk
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -1028,9 +1064,31 @@ def generate_group_document(
 
     # Accent stripe
     pa = doc.add_paragraph()
-    pa.paragraph_format.space_before = Pt(0); pa.paragraph_format.space_after = Pt(5)
+    pa.paragraph_format.space_before = Pt(0); pa.paragraph_format.space_after = Pt(0)
     ra = pa.add_run("─" * 200)
     ra.font.size = Pt(1.5); ra.font.color.rgb = CYAN; ra.font.name = FF
+
+    # ── Switch to 2-column layout for match content ───────────────────────────
+    # Insert a continuous section break. The sectPr inside the paragraph's pPr
+    # describes the section that ENDS here (1-col header section). Everything
+    # after this paragraph is section 2 which has 2 columns.
+    def _insert_two_col_break():
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after  = Pt(0)
+        pPr    = p._p.get_or_add_pPr()
+        sectPr = OxmlElement("w:sectPr")
+        # 2-column spec for section 2
+        cols = OxmlElement("w:cols")
+        cols.set(qn("w:num"), "2")
+        cols.set(qn("w:space"), "283")   # ≈ 0.5 cm gutter
+        cols.set(qn("w:equalWidth"), "1")
+        sectPr.append(cols)
+        # Continuous break — no page break between header and match content
+        t = OxmlElement("w:type")
+        t.set(qn("w:val"), "continuous")
+        sectPr.append(t)
+        pPr.append(sectPr)
 
     if not group_matches:
         pn = doc.add_paragraph()
@@ -1040,43 +1098,61 @@ def generate_group_document(
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
+    _insert_two_col_break()
+
     # ── Match tables ──────────────────────────────────────────────────────────
     for match_idx, m in enumerate(group_matches, 1):
         m_dt  = _parse_dt(m.get("start_time", "")) or _now_utc()
-        home  = (m.get("home_team") or "Home")[:30]
-        away  = (m.get("away_team") or "Away")[:30]
-        comp  = (m.get("competition") or "")[:40]
+        home  = (m.get("home_team") or "Home")[:24]
+        away  = (m.get("away_team") or "Away")[:24]
+        comp  = (m.get("competition") or "")[:36]
         ko    = _eat(m_dt).strftime("%H:%M")
         has_arb = bool(m.get("has_arb") or m.get("arbitrage"))
+        game_ids = _get_game_ids(m)
 
         # Match header
         mh_bg = "064E3B" if has_arb else C_HDR
         mht = doc.add_table(rows=1, cols=1)
         _no_borders(mht); mht.autofit = False
-        mht.columns[0].width = USABLE_W
+        mht.columns[0].width = COL_USABLE
         mhc = mht.rows[0].cells[0]
         _shd(mhc, mh_bg)
-        _pad(mhc, top=85, bot=70, left=110, right=100)
+        _pad(mhc, top=70, bot=55, left=90, right=80)
         _borders(mhc, "1E40AF" if not has_arb else "16A34A", "6")
 
         pm = mhc.paragraphs[0]
         pm.paragraph_format.line_spacing = 1.0; pm.paragraph_format.space_after = Pt(1)
         rnum = pm.add_run(f"{match_idx}. ")
-        rnum.font.size = Pt(7); rnum.font.color.rgb = MUTED; rnum.font.name = FF
-        rh = pm.add_run(home); rh.bold = True; rh.font.size = Pt(9.5)
+        rnum.font.size = Pt(6.5); rnum.font.color.rgb = MUTED; rnum.font.name = FF
+        rh = pm.add_run(home); rh.bold = True; rh.font.size = Pt(8.5)
         rh.font.color.rgb = CYAN; rh.font.name = FF
-        rv = pm.add_run("  vs  "); rv.font.size = Pt(7); rv.font.color.rgb = MUTED; rv.font.name = FF
-        ra_ = pm.add_run(away); ra_.bold = True; ra_.font.size = Pt(9.5)
+        rv = pm.add_run("  vs  "); rv.font.size = Pt(6); rv.font.color.rgb = MUTED; rv.font.name = FF
+        ra_ = pm.add_run(away); ra_.bold = True; ra_.font.size = Pt(8.5)
         ra_.font.color.rgb = W; ra_.font.name = FF
-        rko = pm.add_run(f"     ⏱ {ko} EAT")
-        rko.font.size = Pt(7); rko.font.color.rgb = GOLD; rko.font.name = FF
+        rko = pm.add_run(f"   ⏱ {ko}")
+        rko.font.size = Pt(6); rko.font.color.rgb = GOLD; rko.font.name = FF
         if comp:
-            rcp = pm.add_run(f"     🏆 {comp}")
-            rcp.font.size = Pt(6.5); rcp.font.color.rgb = DIM; rcp.font.name = FF
+            rcp = pm.add_run(f"   🏆 {comp}")
+            rcp.font.size = Pt(5.5); rcp.font.color.rgb = DIM; rcp.font.name = FF
         if has_arb:
-            rarb = pm.add_run("     ⚡ ARB")
-            rarb.bold = True; rarb.font.size = Pt(7)
+            rarb = pm.add_run("  ⚡ARB")
+            rarb.bold = True; rarb.font.size = Pt(6)
             rarb.font.color.rgb = GREEN; rarb.font.name = FF
+
+        # Game IDs row (only shown when at least one BK ID is known)
+        if game_ids:
+            p_ids = mhc.add_paragraph()
+            p_ids.paragraph_format.line_spacing = 1.0
+            p_ids.paragraph_format.space_after  = Pt(0)
+            id_parts = []
+            for slug in active_bks:
+                if slug in game_ids:
+                    id_parts.append(f"{slug.upper()}#{game_ids[slug]}")
+            if id_parts:
+                r_ids = p_ids.add_run("📲  " + "   ".join(id_parts))
+                r_ids.font.size = Pt(5.5)
+                r_ids.font.color.rgb = RGBColor(0xA7, 0xF3, 0xD0)
+                r_ids.font.name = FF
 
         # Market table
         tbl = doc.add_table(rows=1, cols=n_cols)
@@ -1088,10 +1164,10 @@ def generate_group_document(
 
         # Column headers
         hrow = tbl.rows[0]
-        _shd(hrow.cells[0], C_THDR); _pad(hrow.cells[0], 55, 55, 70, 50); _borders(hrow.cells[0], C_LINE, "2")
-        _cw(hrow.cells[0], "Market", bold=True, color=CYAN, size=Pt(6.5))
-        _shd(hrow.cells[1], C_THDR); _pad(hrow.cells[1], 55, 55, 55, 55); _borders(hrow.cells[1], C_LINE, "2")
-        _cw(hrow.cells[1], "Selection", bold=True, color=CYAN, size=Pt(6.5), align=WD_ALIGN_PARAGRAPH.CENTER)
+        _shd(hrow.cells[0], C_THDR); _pad(hrow.cells[0], 50, 50, 60, 45); _borders(hrow.cells[0], C_LINE, "2")
+        _cw(hrow.cells[0], "Market", bold=True, color=CYAN, size=Pt(6))
+        _shd(hrow.cells[1], C_THDR); _pad(hrow.cells[1], 50, 50, 45, 45); _borders(hrow.cells[1], C_LINE, "2")
+        _cw(hrow.cells[1], "Selection", bold=True, color=CYAN, size=Pt(6), align=WD_ALIGN_PARAGRAPH.CENTER)
 
         for ci, slug in enumerate(active_bks):
             c = hrow.cells[2 + ci]
