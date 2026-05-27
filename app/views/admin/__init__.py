@@ -89,7 +89,7 @@ def send_outreach_email():
                     "mimetype": str(att.get("mimetype") or "application/octet-stream")
                 })
             
-    from app.workers.celery_tasks import send_async_email
+    from app.workers.email_jobs import send_async_email
     send_async_email.apply_async(args=[
         subject,
         recipients,
