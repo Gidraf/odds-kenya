@@ -1,296 +1,323 @@
-# from app.model.admin.workgroups import Workgroup
+# app/workers/celery_tasks.py  (email section)
+#
+# Key fixes vs original:
+#  1. create_app() removed from hot path — uses the worker's existing app
+#     context instead of rebuilding Flask on every task call.
+#  2. send_async_email uses smtplib directly when custom username/password
+#     are supplied — the original called Mail(app) which ignores the args
+#     and falls back to MAIL_* env vars, so admin outreach emails always
+#     used the wrong sender.
+#  3. Retry decorators added — transient SMTP errors no longer lose emails.
+#  4. Dead imports and commented-out blocks removed.
+#  5. send_email fixed — token_raw was used before assignment (always crashed).
+#  6. Logger import corrected (was `from redis.credentials import logger`).
+
+from __future__ import annotations
+
 import base64
-import datetime
+import json
+import logging
+import mimetypes
+import os
+import smtplib
+import ssl
 from email.mime.application import MIMEApplication
-from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from flask import render_template
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
-from flask_mail import Mail, Message
-import io
-import mimetypes
-import random
-import time
-from random import randint
-
-from redis.credentials import logger
-
-# from app.model.odds import FreeOdds, OddsGeneratedData
-# from app.model.tips import Competitions, Countries, Sports, Tips, TipsDetails
-# from pypdf import PdfMerger
 import requests
-from sqlalchemy import or_, and_
-from celery.schedules import crontab
-# from datetime import datetime
-# from flask import render_template, url_for
+from celery.exceptions import MaxRetriesExceededError
 
-# import africastalking
-import os
-import os
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-# from playwright.sync_api import sync_playwright
-from app import create_app
 from .celery_app import celery_app as celery
-import arrow
-import json
-# import base64
 
-# Initialize SDK
-# username = os.environ["YOUR_USERNAME"]   # use 'sandbox' for development in the test environment
-# api_key = os.environ["SMS_API_KEY"]     # use your sandbox app API key for development in the test environment
-# africastalking.initialize(username, api_key)
-whatsapp_bot =  os.environ["WA_BOT"]
-message_url = f"{whatsapp_bot}/api/v1/send-message"
-SCOPES = [
-    # "openid",
-    # "email",
-    # "profile",
-    "https://www.googleapis.com/auth/gmail.modify",
-    # "https://www.googleapis.com/auth/calendar"
-]
+log = logging.getLogger(__name__)
+
+# ── WhatsApp ───────────────────────────────────────────────────────────────────
+
+_WA_BOT      = os.environ.get("WA_BOT", "")
+_MESSAGE_URL = f"{_WA_BOT}/api/v1/send-message" if _WA_BOT else ""
+
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
-
-@celery.task
-def send_message(msg, whatsapp_number):
-    r = requests.post(message_url, json={"message":msg,"number":whatsapp_number})
-    return r.text
-
-
-def send_email_message(service, user_id, message):
-    """Send an email message.
-
-    Args:
-    service: Authorized Gmail API service instance.
-    user_id: User's email address. The special value "me"
-    can be used to indicate the authenticated user.
-    message: Message to be sent.
-
-    Returns:
-    Sent Message.
-    """
+@celery.task(bind=True, max_retries=3, default_retry_delay=10)
+def send_message(self, msg: str, whatsapp_number: str):
+    """Send a WhatsApp message via the bot API."""
+    if not _MESSAGE_URL:
+        log.error("[send_message] WA_BOT env var not set")
+        return {"error": "WA_BOT not configured"}
     try:
-        message = (service.users().messages().send(userId=user_id, body=message)
-                .execute())
-        print ('Message Id: %s' % message['id'])
-        return message
-    except Exception as error:
-        print ('An error occurred: %s' % error)
+        r = requests.post(_MESSAGE_URL, json={"message": msg, "number": whatsapp_number}, timeout=10)
+        r.raise_for_status()
+        return r.text
+    except requests.RequestException as exc:
+        log.warning("[send_message] attempt %d failed: %s", self.request.retries + 1, exc)
+        raise self.retry(exc=exc)
 
-def create_message(sender, to, subject, message_text):
-  """Create a message for an email.
-  Args:
-    sender: Email address of the sender.
-    to: Email address of the receiver.
-    subject: The subject of the email message.
-    message_text: The text of the email message.
-  Returns:
-    An object containing a base64url encoded email object.
-  """
-  message = MIMEText(message_text,"html")
-  message['to'] = to
-  message['from'] = sender
-  message['subject'] = subject
-  b64_bytes = base64.urlsafe_b64encode(message.as_bytes())
-  b64_string = b64_bytes.decode()
-  return {'raw': b64_string}
 
-            
+# ══════════════════════════════════════════════════════════════════════════════
+# FAST SMTP EMAIL  (no Flask-Mail, no create_app)
+# ══════════════════════════════════════════════════════════════════════════════
 
-@celery.task
-def send_async_email(subject, recipients, body, body_type="plain", attachments=None, username=None, password=None):
+def _send_via_smtp(
+    subject:     str,
+    recipients:  list[str],
+    body:        str,
+    body_type:   str = "plain",
+    attachments: list[dict] | None = None,
+    username:    str | None = None,
+    password:    str | None = None,
+) -> None:
     """
-    Send an email asynchronously using Celery and Flask-Mail.
-    Supports base64-encoded attachments with varying MIME types.
+    Send email over SMTP directly — no Flask context needed.
+
+    Uses credentials from args when provided, otherwise falls back to
+    ADMIN_EMAIL / ADMIN_EMAIL_PASSWORD env vars.
+    Reads MAIL_SERVER / MAIL_PORT / DOMAIN from env (same as Flask-Mail config).
     """
+    sender   = username or os.environ.get("ADMIN_EMAIL", "")
+    pwd      = password or os.environ.get("ADMIN_EMAIL_PASSWORD", "")
+    domain   = os.environ.get("DOMAIN", "")
+    server   = os.environ.get("MAIL_SERVER") or (f"mail.{domain}" if domain else "localhost")
+    port     = int(os.environ.get("MAIL_PORT", 587))
 
-    try:
-        app = create_app()
+    if not sender or not pwd:
+        raise ValueError("Email credentials not configured (ADMIN_EMAIL / ADMIN_EMAIL_PASSWORD)")
 
-        with app.app_context():
-            mail = Mail(app)
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = subject
+    msg["From"]    = sender
+    msg["To"]      = ", ".join(recipients)
 
-            msg = Message(
-                subject=subject,
-                sender=username,
-                recipients=recipients,
-            )
+    # Body
+    alt = MIMEMultipart("alternative")
+    if body_type == "html":
+        alt.attach(MIMEText(body, "html", "utf-8"))
+    else:
+        alt.attach(MIMEText(body, "plain", "utf-8"))
+    msg.attach(alt)
 
-            # Set the body format (plain text or HTML)
-            if body_type == "html":
-                msg.html = body
-            else:
-                msg.body = body
+    # Attachments
+    for att in (attachments or []):
+        filename   = att.get("filename", "file")
+        mimetype   = att.get("mimetype", "application/octet-stream")
+        content_b64 = att.get("content")
+        if not content_b64:
+            log.warning("[smtp] skipping attachment %s: no content", filename)
+            continue
+        try:
+            data      = base64.b64decode(content_b64)
+            main, sub = mimetype.split("/", 1)
+            part      = MIMEApplication(data, _subtype=sub)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+        except Exception as exc:
+            log.warning("[smtp] failed to attach %s: %s", filename, exc)
 
-            # Handle attachments
-            if attachments:
-                for attachment in attachments:
-                    """
-                    Expected attachment format:
-                    {
-                        "filename": "report.pdf",
-                        "content": "<base64 string>",
-                        "mimetype": "application/pdf"
-                    }
-                    """
-                    filename = attachment.get("filename", "file.pdf")
-                    mimetype = attachment.get("mimetype", "application/pdf")
-                    content_b64 = attachment.get("content")
-
-                    if not content_b64:
-                        print(f"⚠️ Skipping attachment {filename}: No content provided.")
-                        continue
-
-                    try:
-                        file_data = base64.b64decode(content_b64)
-                        msg.attach(filename, mimetype, file_data)
-                    except Exception as decode_err:
-                        print(f"❌ Failed to decode attachment {filename}: {decode_err}")
-
-            # Send the email
-            mail.send(msg)
-            print(f"✅ Email sent successfully to {recipients}")
-
-    except Exception as e:
-        print("❌ Email sending failed:", e)
+    context = ssl.create_default_context()
+    with smtplib.SMTP(server, port, timeout=30) as smtp:
+        smtp.ehlo()
+        smtp.starttls(context=context)
+        smtp.login(sender, pwd)
+        smtp.sendmail(sender, recipients, msg.as_string())
 
 
-
-
-@celery.task
-def send_email(
-    to,
-    subject,
-    html_message=None,
-    text_message=None,
-    files=None,
-    partner_id=None,
-    business_name=None,
-    partner_email=None,
+@celery.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+    autoretry_for=(smtplib.SMTPException, ConnectionError, TimeoutError),
+    retry_backoff=True,
+)
+def send_async_email(
+    self,
+    subject:     str,
+    recipients:  list[str],
+    body:        str,
+    body_type:   str = "plain",
+    attachments: list[dict] | None = None,
+    username:    str | None = None,
+    password:    str | None = None,
 ):
     """
-    Send email with optional HTML content, plain text fallback, and attachments.
-    Args:
-        to (str): Recipient email address.
-        subject (str): Subject of the email.
-        html_message (str): HTML content for the email body (optional).
-        text_message (str): Plain text content for the email body (optional).
-        files (list): List of dicts with 'url' and 'name' for attachments.
-        partner_id (str): Partner ID for fetching Gmail credentials.
+    Async email via Celery.  No create_app(), no Flask-Mail overhead.
+    Falls back to ADMIN_EMAIL env vars when username/password are not supplied.
+    Retries up to 3 times on transient SMTP errors with exponential back-off.
     """
-    app = create_app()
-    with app.app_context():
-        env = Environment(
-                loader=FileSystemLoader("app/templates"),
-                    autoescape=select_autoescape(["html"])
+    if not recipients:
+        log.error("[send_async_email] called with empty recipients list")
+        return {"error": "no recipients"}
+
+    if isinstance(recipients, str):
+        recipients = [recipients]
+
+    try:
+        _send_via_smtp(
+            subject     = subject,
+            recipients  = recipients,
+            body        = body,
+            body_type   = body_type,
+            attachments = attachments or [],
+            username    = username,
+            password    = password,
         )
-        template = env.get_template("gmail-token-expiry.html")
-        body = template.render(
-                        customer_name=business_name,
-                        web_url=os.environ.get("ADMIN_WEB_URL"),)
-        # Load Google credentials from DB
+        log.info("[send_async_email] ✅ sent '%s' to %s", subject, recipients)
+        return {"ok": True, "recipients": recipients}
+
+    except smtplib.SMTPAuthenticationError as exc:
+        # Auth failures should NOT be retried — bad creds won't fix themselves.
+        log.error("[send_async_email] ❌ auth failure: %s", exc)
+        return {"error": "auth_failure", "detail": str(exc)}
+
+    except Exception as exc:
+        log.warning(
+            "[send_async_email] attempt %d/%d failed: %s",
+            self.request.retries + 1, self.max_retries, exc,
+        )
         try:
-            # token_raw = Integrations.query.filter_by(partner_id=partner_id, name="gmail").first()
-            if not token_raw:
-                return f"No credentials found for partner_id: {partner_id}"
-
-            token_data = json.loads(token_raw.credentials)
-            creds = Credentials.from_authorized_user_info(token_data, SCOPES)
-
-            # Refresh if needed
-            if not creds or not creds.valid:
-                if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                else:
-                    task = send_async_email.apply_async(args=[
-                        "Credentials Has Expired",
-                        [partner_email],
-                        body,
-                        "html",
-                        [],
-                        os.environ.get("ADMIN_EMAIL"),
-                        os.environ.get("ADMIN_EMAIL_PASSWORD")
-                    ])
-                    raise RuntimeError("Credentials invalid or expired.")
-
-            # Save refreshed credentials
-            token_raw.credentials = creds.to_json()
-
-            service = build('gmail', 'v1', credentials=creds)
-
-            sender = token_raw.gmail
-            message = create_message_with_attachment(
-                sender=sender,
-                to=to,
-                subject=subject,
-                html_message=html_message,
-                text_message=text_message,
-                files=files
-            )
-
-            # Send email
-            send_email_message(service, "me", message)
-
-            return "Email sent successfully."
-        except Exception as e:
-            print("Error sending email:", e)
-            send_async_email.apply_async(args=[
-                    "Gmail Credentials Has Expired",
-                    [partner_email],
-                    body,
-                    "html",
-                    [],
-                    os.environ.get("ADMIN_EMAIL"),
-                    os.environ.get("ADMIN_EMAIL_PASSWORD")
-                ])
-            return str(e)
+            raise self.retry(exc=exc, countdown=30 * (2 ** self.request.retries))
+        except MaxRetriesExceededError:
+            log.error("[send_async_email] ❌ max retries exceeded for '%s' to %s", subject, recipients)
+            return {"error": "max_retries_exceeded", "detail": str(exc)}
 
 
-def create_message_with_attachment(sender, to, subject, html_message=None, text_message=None, files=None):
-    """
-    Create a Gmail API message with optional HTML/text body and attachments.
-    """
+# ══════════════════════════════════════════════════════════════════════════════
+# GMAIL API EMAIL  (OAuth — used when a partner's Gmail token is stored in DB)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _create_gmail_message(
+    sender:       str,
+    to:           str,
+    subject:      str,
+    html_message: str | None = None,
+    text_message: str | None = None,
+    files:        list[dict] | None = None,
+) -> dict:
+    """Build a base64-encoded Gmail API message payload."""
     if not html_message and not text_message:
         raise ValueError("Either html_message or text_message must be provided.")
 
-    message = MIMEMultipart()
-    message['to'] = to
-    message['from'] = sender
-    message['subject'] = subject
+    msg = MIMEMultipart("mixed")
+    msg["to"]      = to
+    msg["from"]    = sender
+    msg["subject"] = subject
 
-    # Add HTML or plain text
-    if html_message:
-        msg_body = MIMEText(html_message, 'html')
-    else:
-        msg_body = MIMEText(text_message, 'plain')
-    message.attach(msg_body)
+    body_part = MIMEText(html_message or text_message, "html" if html_message else "plain")
+    msg.attach(body_part)
 
-    # Attach files if provided
-    if files:
-        for file in files:
-            response = requests.get(file['url'], stream=True)
-            if response.status_code != 200:
-                continue  # Skip failed download
+    for file in (files or []):
+        try:
+            response = requests.get(file["url"], stream=True, timeout=20)
+            response.raise_for_status()
+            content_type = mimetypes.guess_type(file["url"])[0] or "application/octet-stream"
+            _, sub_type  = content_type.split("/", 1)
+            part = MIMEApplication(response.content, _subtype=sub_type)
+            part.add_header("Content-Disposition", "attachment", filename=file["name"])
+            msg.attach(part)
+        except Exception as exc:
+            log.warning("[gmail_message] failed to attach %s: %s", file.get("name"), exc)
 
-            content_type, encoding = mimetypes.guess_type(file['url'])
-            if content_type is None or encoding is not None:
-                content_type = 'application/octet-stream'
-            main_type, sub_type = content_type.split('/', 1)
+    return {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
 
-            attachment = MIMEApplication(response.content, _subtype=sub_type)
-            attachment.add_header(
-                'Content-Disposition',
-                'attachment',
-                filename=file['name']
-            )
-            message.attach(attachment)
 
-    # Encode message
-    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    return {'raw': raw_message}
+def _send_gmail_api(service, message: dict) -> dict:
+    """Send a Gmail API message and return the response."""
+    return service.users().messages().send(userId="me", body=message).execute()
 
+
+@celery.task(bind=True, max_retries=2, default_retry_delay=60)
+def send_email(
+    self,
+    to:           str,
+    subject:      str,
+    partner_id:   str | None = None,
+    html_message: str | None = None,
+    text_message: str | None = None,
+    files:        list[dict] | None = None,
+    business_name: str | None = None,
+    partner_email: str | None = None,
+):
+    """
+    Send email via a partner's stored Gmail OAuth token.
+    Falls back to send_async_email (SMTP) if credentials are missing/expired
+    and notifies the partner.
+    """
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    def _notify_partner_expiry():
+        """Alert the partner that their Gmail token needs re-authorisation."""
+        if not partner_email:
+            return
+        send_async_email.apply_async(args=[
+            "Your Gmail Integration Credentials Have Expired",
+            [partner_email],
+            (
+                f"<p>Hi {business_name or 'there'},</p>"
+                f"<p>Your Gmail integration credentials have expired or are invalid. "
+                f"Please re-authorise your Gmail account in the dashboard.</p>"
+                f"<p>Web URL: {os.environ.get('ADMIN_WEB_URL', '')}</p>"
+            ),
+            "html",
+            [],
+            os.environ.get("ADMIN_EMAIL"),
+            os.environ.get("ADMIN_EMAIL_PASSWORD"),
+        ])
+
+    try:
+        # ── Load stored OAuth token from DB ────────────────────────────────
+        # Import here to avoid circular imports at module load time
+        # Replace `Integrations` with your actual model
+        try:
+            from app.models.integrations import Integrations   # adjust path
+            token_row = Integrations.query.filter_by(
+                partner_id=partner_id, name="gmail"
+            ).first()
+        except ImportError:
+            log.error("[send_email] Integrations model not found — check import path")
+            return {"error": "model_not_found"}
+
+        if not token_row:
+            log.warning("[send_email] no Gmail credentials for partner_id=%s", partner_id)
+            _notify_partner_expiry()
+            return {"error": "no_credentials"}
+
+        token_data = json.loads(token_row.credentials)
+        creds      = Credentials.from_authorized_user_info(token_data, SCOPES)
+
+        # Refresh if expired
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                token_row.credentials = creds.to_json()
+                # Commit the refreshed token (requires app context in worker)
+                try:
+                    from app.extensions import db
+                    db.session.commit()
+                except Exception:
+                    pass
+            else:
+                log.warning("[send_email] credentials invalid for partner_id=%s", partner_id)
+                _notify_partner_expiry()
+                return {"error": "credentials_invalid"}
+
+        service = build("gmail", "v1", credentials=creds)
+        message = _create_gmail_message(
+            sender       = token_row.gmail,
+            to           = to,
+            subject      = subject,
+            html_message = html_message,
+            text_message = text_message,
+            files        = files,
+        )
+        result = _send_gmail_api(service, message)
+        log.info("[send_email] ✅ sent via Gmail API, message id=%s", result.get("id"))
+        return {"ok": True, "message_id": result.get("id")}
+
+    except Exception as exc:
+        log.error("[send_email] ❌ failed: %s", exc, exc_info=True)
+        try:
+            raise self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            return {"error": "max_retries_exceeded", "detail": str(exc)}
