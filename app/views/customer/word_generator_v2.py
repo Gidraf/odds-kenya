@@ -1214,19 +1214,34 @@ def generate_group_document(
         outer.columns[0].width = Cm(COL_W)
         outer.columns[1].width = Cm(COL_W)
 
+        # Remove default table cell spacing (prevents column squeeze)
+        tblPr  = outer._tbl.tblPr
+        sp_el  = OxmlElement("w:tblCellSpacing")
+        sp_el.set(qn("w:w"), "0"); sp_el.set(qn("w:type"), "dxa")
+        tblPr.append(sp_el)
+
         left_cell  = outer.rows[0].cells[0]
         right_cell = outer.rows[0].cells[1]
 
-        # Top-align both cells so short matches don't leave a gap at the bottom
+        # Top-align + zero cell margins so inner 9.55cm tables don't overflow.
+        # Word's default cell margin is ~1.9mm per side = 3.8mm total, which
+        # pushes the rightmost BK column (OD) off the edge.
         for cell in (left_cell, right_cell):
             tcPr   = cell._tc.get_or_add_tcPr()
             vAlign = OxmlElement("w:vAlign")
             vAlign.set(qn("w:val"), "top")
             tcPr.append(vAlign)
+            tcMar = OxmlElement("w:tcMar")
+            for nm in ("top", "bottom", "left", "right"):
+                n = OxmlElement(f"w:{nm}")
+                n.set(qn("w:w"), "0"); n.set(qn("w:type"), "dxa")
+                tcMar.append(n)
+            tcPr.append(tcMar)
 
         _render_match_to_cell(left_cell,  left_m,  pair_start + 1)
         if right_m:
             _render_match_to_cell(right_cell, right_m, pair_start + 2)
+
 
     # ── Footer ────────────────────────────────────────────────────────────────
     pf = doc.add_paragraph()
