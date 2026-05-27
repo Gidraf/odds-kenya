@@ -283,7 +283,7 @@ class NotificationService:
                     event_type=event_type,
                     user_name=getattr(user, "name", None) or user.email.split("@")[0],
                 )
-                from app.workers.celery_tasks import send_async_email
+                from app.workers.email_jobs import send_async_email
                 send_async_email.apply_async(
                     args=[subject, [user.email], html, "html"],
                     queue="notify",
@@ -352,7 +352,7 @@ class NotificationService:
                 return
             recipients = [admin]
         try:
-            from app.workers.celery_tasks import send_async_email
+            from app.workers.email_jobs import send_async_email
             html = f"""<div style="font-family:monospace;background:#060e1a;color:#fff;padding:16px;">
 <strong style="color:#1FB954">[{APP_NAME}] {subject}</strong><br><br>
 <pre style="color:rgba(255,255,255,0.7)">{message}</pre>

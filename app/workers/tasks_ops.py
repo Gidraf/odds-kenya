@@ -829,7 +829,8 @@ def pre_generate_preset_reports(self, preset: str) -> dict:
 @celery.task(name="tasks.ops.monitor_tailscale_proxies", bind=True, max_retries=1)
 def monitor_tailscale_proxies(self) -> dict:
     import json as _json, os
-    from app.workers.celery_tasks import _redis as _get_redis, send_async_email
+    from app.workers.celery_tasks import _redis as _get_redis
+    from app.workers.email_jobs import send_async_email
 
     r = _get_redis()
     if not r:
