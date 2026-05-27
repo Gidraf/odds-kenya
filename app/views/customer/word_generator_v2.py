@@ -989,21 +989,22 @@ def generate_group_document(
     doc.styles["Normal"].font.size      = Pt(6.5)
     doc.styles["Normal"].font.color.rgb = W
 
-    # ── 2-column layout ───────────────────────────────────────────────────────
-    # Header (full-width) renders in section 1 (1 col).
-    # A continuous section break after the header switches to 2 columns.
-    # Per-column usable width: (19.7 - 0.5 gutter) / 2 = 9.6 cm
-    COL_W_CM   = 9.6          # usable width per column
-    USABLE_W   = Cm(19.7)     # used for the full-width header table only
-    COL_USABLE = Cm(COL_W_CM) # used for per-match tables
+    # ── Column widths ─────────────────────────────────────────────────────────
+    # 2-column layout uses an outer 2-cell table per pair of matches.
+    # This is more reliable than Word's w:cols sectPr which doesn't work
+    # consistently with nested tables across Word/LibreOffice versions.
+    #
+    # Page usable: 19.7 cm → each column = 9.55 cm, gutter = 0.6 cm (Word
+    # default table spacing absorbs it — total stays within 19.7 cm).
+    COL_W    = 9.55   # cm per column
+    USABLE_W = Cm(19.7)
 
     n_bk  = len(active_bks)
-    # Column widths within each 9.6 cm match table
     mkt_w = 3.3
     sel_w = 1.3
-    bk_w  = round((COL_W_CM - mkt_w - sel_w) / max(n_bk, 1), 2)
+    bk_w  = round((COL_W - mkt_w - sel_w) / max(n_bk, 1), 2)
     bk_w  = max(bk_w, 1.5)
-    mkt_w = max(round(COL_W_CM - sel_w - bk_w * n_bk, 2), 2.5)
+    mkt_w = max(round(COL_W - sel_w - bk_w * n_bk, 2), 2.5)
     n_cols = 2 + n_bk
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -1064,31 +1065,9 @@ def generate_group_document(
 
     # Accent stripe
     pa = doc.add_paragraph()
-    pa.paragraph_format.space_before = Pt(0); pa.paragraph_format.space_after = Pt(0)
+    pa.paragraph_format.space_before = Pt(0); pa.paragraph_format.space_after = Pt(4)
     ra = pa.add_run("─" * 200)
     ra.font.size = Pt(1.5); ra.font.color.rgb = CYAN; ra.font.name = FF
-
-    # ── Switch to 2-column layout for match content ───────────────────────────
-    # Insert a continuous section break. The sectPr inside the paragraph's pPr
-    # describes the section that ENDS here (1-col header section). Everything
-    # after this paragraph is section 2 which has 2 columns.
-    def _insert_two_col_break():
-        p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after  = Pt(0)
-        pPr    = p._p.get_or_add_pPr()
-        sectPr = OxmlElement("w:sectPr")
-        # 2-column spec for section 2
-        cols = OxmlElement("w:cols")
-        cols.set(qn("w:num"), "2")
-        cols.set(qn("w:space"), "283")   # ≈ 0.5 cm gutter
-        cols.set(qn("w:equalWidth"), "1")
-        sectPr.append(cols)
-        # Continuous break — no page break between header and match content
-        t = OxmlElement("w:type")
-        t.set(qn("w:val"), "continuous")
-        sectPr.append(t)
-        pPr.append(sectPr)
 
     if not group_matches:
         pn = doc.add_paragraph()
@@ -1098,23 +1077,30 @@ def generate_group_document(
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    _insert_two_col_break()
+    # ── 2-column match layout ─────────────────────────────────────────────────
+    # Each pair of matches is placed in a 2-cell outer table so they sit
+    # side-by-side on the page — left cell = match N, right cell = match N+1.
+    # This is the reliable cross-renderer approach vs Word's w:cols sectPr.
 
-    # ── Match tables ──────────────────────────────────────────────────────────
-    for match_idx, m in enumerate(group_matches, 1):
-        m_dt  = _parse_dt(m.get("start_time", "")) or _now_utc()
-        home  = (m.get("home_team") or "Home")[:24]
-        away  = (m.get("away_team") or "Away")[:24]
-        comp  = (m.get("competition") or "")[:36]
-        ko    = _eat(m_dt).strftime("%H:%M")
-        has_arb = bool(m.get("has_arb") or m.get("arbitrage"))
+    def _render_match_to_cell(outer_cell, m, match_idx):
+        """Render a complete match (header + market table) into a table cell."""
+        m_dt     = _parse_dt(m.get("start_time", "")) or _now_utc()
+        home     = (m.get("home_team") or "Home")[:24]
+        away     = (m.get("away_team") or "Away")[:24]
+        comp     = (m.get("competition") or "")[:36]
+        ko       = _eat(m_dt).strftime("%H:%M")
+        has_arb  = bool(m.get("has_arb") or m.get("arbitrage"))
         game_ids = _get_game_ids(m)
+        mh_bg    = "064E3B" if has_arb else C_HDR
 
-        # Match header
-        mh_bg = "064E3B" if has_arb else C_HDR
-        mht = doc.add_table(rows=1, cols=1)
+        # Shrink the default empty paragraph every cell starts with
+        outer_cell.paragraphs[0].paragraph_format.space_after  = Pt(0)
+        outer_cell.paragraphs[0].paragraph_format.space_before = Pt(0)
+
+        # ── Match header ──────────────────────────────────────────────────────
+        mht = outer_cell.add_table(rows=1, cols=1)
         _no_borders(mht); mht.autofit = False
-        mht.columns[0].width = COL_USABLE
+        mht.columns[0].width = Cm(COL_W)
         mhc = mht.rows[0].cells[0]
         _shd(mhc, mh_bg)
         _pad(mhc, top=70, bot=55, left=90, right=80)
@@ -1124,11 +1110,12 @@ def generate_group_document(
         pm.paragraph_format.line_spacing = 1.0; pm.paragraph_format.space_after = Pt(1)
         rnum = pm.add_run(f"{match_idx}. ")
         rnum.font.size = Pt(6.5); rnum.font.color.rgb = MUTED; rnum.font.name = FF
-        rh = pm.add_run(home); rh.bold = True; rh.font.size = Pt(8.5)
-        rh.font.color.rgb = CYAN; rh.font.name = FF
-        rv = pm.add_run("  vs  "); rv.font.size = Pt(6); rv.font.color.rgb = MUTED; rv.font.name = FF
-        ra_ = pm.add_run(away); ra_.bold = True; ra_.font.size = Pt(8.5)
-        ra_.font.color.rgb = W; ra_.font.name = FF
+        rh = pm.add_run(home)
+        rh.bold = True; rh.font.size = Pt(8.5); rh.font.color.rgb = CYAN; rh.font.name = FF
+        rv = pm.add_run("  vs  ")
+        rv.font.size = Pt(6); rv.font.color.rgb = MUTED; rv.font.name = FF
+        ra_ = pm.add_run(away)
+        ra_.bold = True; ra_.font.size = Pt(8.5); ra_.font.color.rgb = W; ra_.font.name = FF
         rko = pm.add_run(f"   ⏱ {ko}")
         rko.font.size = Pt(6); rko.font.color.rgb = GOLD; rko.font.name = FF
         if comp:
@@ -1139,36 +1126,30 @@ def generate_group_document(
             rarb.bold = True; rarb.font.size = Pt(6)
             rarb.font.color.rgb = GREEN; rarb.font.name = FF
 
-        # Game IDs row (only shown when at least one BK ID is known)
         if game_ids:
             p_ids = mhc.add_paragraph()
             p_ids.paragraph_format.line_spacing = 1.0
             p_ids.paragraph_format.space_after  = Pt(0)
-            id_parts = []
-            for slug in active_bks:
-                if slug in game_ids:
-                    id_parts.append(f"{slug.upper()}#{game_ids[slug]}")
+            id_parts = [f"{s.upper()}#{game_ids[s]}" for s in active_bks if s in game_ids]
             if id_parts:
                 r_ids = p_ids.add_run("📲  " + "   ".join(id_parts))
                 r_ids.font.size = Pt(5.5)
                 r_ids.font.color.rgb = RGBColor(0xA7, 0xF3, 0xD0)
                 r_ids.font.name = FF
 
-        # Market table
-        tbl = doc.add_table(rows=1, cols=n_cols)
+        # ── Market table ──────────────────────────────────────────────────────
+        tbl = outer_cell.add_table(rows=1, cols=n_cols)
         _no_borders(tbl); tbl.autofit = False
         tbl.columns[0].width = Cm(mkt_w)
         tbl.columns[1].width = Cm(sel_w)
         for ci in range(2, n_cols):
             tbl.columns[ci].width = Cm(bk_w)
 
-        # Column headers
         hrow = tbl.rows[0]
         _shd(hrow.cells[0], C_THDR); _pad(hrow.cells[0], 50, 50, 60, 45); _borders(hrow.cells[0], C_LINE, "2")
         _cw(hrow.cells[0], "Market", bold=True, color=CYAN, size=Pt(6))
         _shd(hrow.cells[1], C_THDR); _pad(hrow.cells[1], 50, 50, 45, 45); _borders(hrow.cells[1], C_LINE, "2")
         _cw(hrow.cells[1], "Selection", bold=True, color=CYAN, size=Pt(6), align=WD_ALIGN_PARAGRAPH.CENTER)
-
         for ci, slug in enumerate(active_bks):
             c = hrow.cells[2 + ci]
             hx, _ = BK_COLORS.get(slug, ("334155", "1E293B"))
@@ -1176,7 +1157,6 @@ def generate_group_document(
             _cw(c, BK_LABELS.get(slug, slug.upper()[:4]), bold=True, color=W,
                 size=Pt(7), align=WD_ALIGN_PARAGRAPH.CENTER)
 
-        # Data rows
         row_idx = 0
         for mkt_label, mkt_aliases, outcomes in display_markets:
             any_data = any(
@@ -1186,23 +1166,18 @@ def generate_group_document(
             )
             if not any_data:
                 continue
-
             for out_label, out_aliases in outcomes:
-                bk_odds = {slug: _extract_odd(m, slug, mkt_aliases, out_aliases) for slug in active_bks}
+                bk_odds    = {slug: _extract_odd(m, slug, mkt_aliases, out_aliases) for slug in active_bks}
                 valid_odds = [v for v in bk_odds.values() if v is not None]
                 if not valid_odds:
                     continue
                 best_odd = max(valid_odds)
-
                 bg = C_ROW0 if row_idx % 2 == 0 else C_ROW1
                 dr = tbl.add_row()
-
                 c0 = dr.cells[0]; _shd(c0, bg); _pad(c0, 40, 40, 70, 40); _borders(c0, C_LINE, "2")
                 _cw(c0, mkt_label if out_label == outcomes[0][0] else "", color=DIM, size=Pt(6.5))
-
                 c1 = dr.cells[1]; _shd(c1, bg); _pad(c1, 40, 40, 50, 50); _borders(c1, C_LINE, "2")
                 _cw(c1, out_label, bold=True, color=W, size=Pt(6.5), align=WD_ALIGN_PARAGRAPH.CENTER)
-
                 for ci, slug in enumerate(active_bks):
                     odd = bk_odds.get(slug)
                     c   = dr.cells[2 + ci]
@@ -1220,12 +1195,38 @@ def generate_group_document(
                         ro.font.name = FF
                     else:
                         _cw(c, "—", color=MUTED, size=Pt(6), align=WD_ALIGN_PARAGRAPH.CENTER)
-
                 row_idx += 1
 
-        sp = doc.add_paragraph()
-        sp.paragraph_format.space_after = Pt(5)
-        sp.paragraph_format.space_before = Pt(0)
+        # Spacer at bottom of cell
+        sp_p = outer_cell.add_paragraph()
+        sp_p.paragraph_format.space_after  = Pt(4)
+        sp_p.paragraph_format.space_before = Pt(0)
+
+    # ── Render pairs of matches into 2-column outer tables ────────────────────
+    for pair_start in range(0, len(group_matches), 2):
+        left_m  = group_matches[pair_start]
+        right_m = group_matches[pair_start + 1] if pair_start + 1 < len(group_matches) else None
+
+        # Outer container: 1 row × 2 cells, each cell = one match column
+        outer = doc.add_table(rows=1, cols=2)
+        _no_borders(outer)
+        outer.autofit = False
+        outer.columns[0].width = Cm(COL_W)
+        outer.columns[1].width = Cm(COL_W)
+
+        left_cell  = outer.rows[0].cells[0]
+        right_cell = outer.rows[0].cells[1]
+
+        # Top-align both cells so short matches don't leave a gap at the bottom
+        for cell in (left_cell, right_cell):
+            tcPr   = cell._tc.get_or_add_tcPr()
+            vAlign = OxmlElement("w:vAlign")
+            vAlign.set(qn("w:val"), "top")
+            tcPr.append(vAlign)
+
+        _render_match_to_cell(left_cell,  left_m,  pair_start + 1)
+        if right_m:
+            _render_match_to_cell(right_cell, right_m, pair_start + 2)
 
     # ── Footer ────────────────────────────────────────────────────────────────
     pf = doc.add_paragraph()
