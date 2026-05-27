@@ -27,6 +27,7 @@ from email.mime.text import MIMEText
 
 import requests
 from celery.exceptions import MaxRetriesExceededError
+from email.utils import formatdate, make_msgid 
 
 from .celery_app import celery_app as celery
 
@@ -60,36 +61,25 @@ def send_message(self, msg: str, whatsapp_number: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _send_via_smtp(
-    subject:     str,
-    recipients:  list[str],
-    body:        str,
-    body_type:   str = "plain",
-    attachments: list[dict] | None = None,
-    username:    str | None = None,
-    password:    str | None = None,
-) -> None:
-    """
-    Send email over SMTP directly — no Flask context needed.
-
-    Uses credentials from args when provided, otherwise falls back to
-    ADMIN_EMAIL / ADMIN_EMAIL_PASSWORD env vars.
-    Reads MAIL_SERVER / MAIL_PORT / DOMAIN from env (same as Flask-Mail config).
-    """
-    sender   = username or os.environ.get("ADMIN_EMAIL", "")
-    pwd      = password or os.environ.get("ADMIN_EMAIL_PASSWORD", "")
-    domain   = os.environ.get("DOMAIN", "")
-    server   = os.environ.get("MAIL_SERVER") or (f"mail.{domain}" if domain else "localhost")
-    port     = int(os.environ.get("MAIL_PORT", 587))
+    subject, recipients, body, body_type="plain",
+    attachments=None, username=None, password=None,
+):
+    sender  = username or os.environ.get("ADMIN_EMAIL", "")
+    pwd     = password or os.environ.get("ADMIN_EMAIL_PASSWORD", "")
+    domain  = os.environ.get("DOMAIN", "") or (sender.split("@")[1] if "@" in sender else "localhost")
+    server  = os.environ.get("MAIL_SERVER") or f"mail.{domain}"
+    port    = int(os.environ.get("MAIL_PORT", 587))
 
     if not sender or not pwd:
-        raise ValueError("Email credentials not configured (ADMIN_EMAIL / ADMIN_EMAIL_PASSWORD)")
+        raise ValueError("Email credentials not configured")
 
     msg = MIMEMultipart("mixed")
-    msg["Subject"] = subject
-    msg["From"]    = sender
-    msg["To"]      = ", ".join(recipients)
+    msg["Subject"]    = subject
+    msg["From"]       = sender
+    msg["To"]         = ", ".join(recipients)
+    msg["Date"]       = formatdate(localtime=True)        # ← REQUIRED by Amavis
+    msg["Message-ID"] = make_msgid(domain=domain)        # ← REQUIRED by Amavis
 
-    # Body
     alt = MIMEMultipart("alternative")
     if body_type == "html":
         alt.attach(MIMEText(body, "html", "utf-8"))
@@ -97,17 +87,16 @@ def _send_via_smtp(
         alt.attach(MIMEText(body, "plain", "utf-8"))
     msg.attach(alt)
 
-    # Attachments
     for att in (attachments or []):
-        filename   = att.get("filename", "file")
-        mimetype   = att.get("mimetype", "application/octet-stream")
+        filename    = att.get("filename", "file")
+        mimetype    = att.get("mimetype", "application/octet-stream")
         content_b64 = att.get("content")
         if not content_b64:
-            log.warning("[smtp] skipping attachment %s: no content", filename)
             continue
         try:
+            import base64
             data      = base64.b64decode(content_b64)
-            main, sub = mimetype.split("/", 1)
+            _, sub    = mimetype.split("/", 1)
             part      = MIMEApplication(data, _subtype=sub)
             part.add_header("Content-Disposition", "attachment", filename=filename)
             msg.attach(part)
@@ -118,10 +107,10 @@ def _send_via_smtp(
     with smtplib.SMTP(server, port, timeout=30) as smtp:
         smtp.ehlo()
         smtp.starttls(context=context)
-        smtp.login(sender, pwd)
-        smtp.sendmail(sender, recipients, msg.as_string())
-
-
+        smtp.ehlo()
+        if pwd:
+            smtp.login(sender, pwd)
+        smtp.send_message(msg) 
 @celery.task(
     bind=True,
     max_retries=3,
