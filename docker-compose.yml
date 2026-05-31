@@ -135,14 +135,14 @@ services:
     <<: *celery-common
     container_name: odds-kenya-celery-results-1
     command: >
-      celery -A app.workers.celery_app worker --queues=results,ev_arb,notify,video,default --concurrency=2 --prefetch-multiplier=2 --max-tasks-per-child=500 --loglevel=info --hostname=results@%h
+      celery -A app.workers.celery_app worker --queues=results,ev_arb,notify,video,default --concurrency=1 --prefetch-multiplier=2 --max-tasks-per-child=500 --loglevel=info --hostname=results@%h
 
   # ── Celery: Analytics ──────────────────────────────────────────────────────
   celery-analytics:
     <<: *celery-common
     container_name: odds-kenya-celery-analytics-1
     command: >
-      celery -A app.workers.celery_app worker --queues=analytics --concurrency=2 --prefetch-multiplier=1 --max-tasks-per-child=50 --loglevel=info --hostname=analytics@%h
+      celery -A app.workers.celery_app worker --queues=analytics --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=50 --loglevel=info --hostname=analytics@%h
 
   # ── Celery: Beat ───────────────────────────────────────────────────────────
   celery-beat:
