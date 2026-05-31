@@ -336,7 +336,11 @@ class NotificationDispatcher:
 
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.ehlo()
-            server.starttls()
+            import ssl
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            server.starttls(context=context)
             server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(SMTP_FROM, notif.watcher.email, msg.as_string())
 

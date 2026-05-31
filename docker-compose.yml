@@ -128,14 +128,14 @@ services:
     <<: *celery-common
     container_name: odds-kenya-celery-harvest-1
     command: >
-      celery -A app.workers.celery_app worker --queues=harvest,live --concurrency=8 --prefetch-multiplier=1 --max-tasks-per-child=200 --loglevel=info --hostname=harvest@%h
+      celery -A app.workers.celery_app worker --queues=harvest,live --concurrency=2 --prefetch-multiplier=1 --max-tasks-per-child=200 --loglevel=info --hostname=harvest@%h
 
   # ── Celery: Results ────────────────────────────────────────────────────────
   celery-results:
     <<: *celery-common
     container_name: odds-kenya-celery-results-1
     command: >
-      celery -A app.workers.celery_app worker --queues=results,ev_arb,notify,video,default --concurrency=6 --prefetch-multiplier=2 --max-tasks-per-child=500 --loglevel=info --hostname=results@%h
+      celery -A app.workers.celery_app worker --queues=results,ev_arb,notify,video,default --concurrency=2 --prefetch-multiplier=2 --max-tasks-per-child=500 --loglevel=info --hostname=results@%h
 
   # ── Celery: Analytics ──────────────────────────────────────────────────────
   celery-analytics:

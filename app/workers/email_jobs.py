@@ -104,6 +104,8 @@ def _send_via_smtp(
             log.warning("[smtp] failed to attach %s: %s", filename, exc)
 
     context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
     with smtplib.SMTP(server, port, timeout=30) as smtp:
         smtp.ehlo()
         smtp.starttls(context=context)

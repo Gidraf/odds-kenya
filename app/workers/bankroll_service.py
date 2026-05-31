@@ -239,7 +239,11 @@ class NotificationService:
 
         with smtplib.SMTP(smtp_host, smtp_port) as s:
             s.ehlo()
-            s.starttls()
+            import ssl
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            s.starttls(context=context)
             s.login(smtp_user, smtp_pass)
             s.sendmail(from_addr, [user.email], msg.as_string())
 

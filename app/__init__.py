@@ -22,6 +22,10 @@ def create_app() -> Flask:
     mail_password = os.getenv("MAIL_PASSWORD", EMAIL_PASSWORD)
 
     flask_app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
+    flask_app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 3600,
+    }
     flask_app.config["SECRET_KEY"]              = os.environ.get("SECRET_KEY")
     flask_app.config["JWT_SECRET_KEY"]          = os.environ.get("JWT_SECRET_KEY")
     flask_app.config["SQLALCHEMY_ECHO"]         = False
