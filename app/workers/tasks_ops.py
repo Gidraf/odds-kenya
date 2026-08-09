@@ -522,13 +522,14 @@ def on_worker_ready(sender, **kwargs):
     except Exception as exc:
         log.warning("[startup] harvest dispatch failed: %s", exc)
 
-    # Step 4: OD live poller
+    # Step 4: Mozzart WebSocket live harvester
     try:
-        from app.workers.od_harvester import init_live_poller
-        init_live_poller(_get_redis(), interval=2.0)
-        log.info("[startup] OD live poller started")
+        from app.workers.mz_live_harvester import get_mozzart_live_harvester
+        mz_h = get_mozzart_live_harvester()
+        mz_h.start()
+        log.info("[startup] Mozzart WebSocket harvester started")
     except Exception as exc:
-        log.warning("[startup] OD live poller failed: %s", exc)
+        log.warning("[startup] Mozzart live harvester failed: %s", exc)
 
     # Step 5: SP WebSocket harvester
     try:
@@ -566,12 +567,13 @@ def _dispatch_startup_harvests() -> None:
     dispatched = []
     try:
         from app.workers.tasks_harvest_pages import (
-            sp_harvest_all_paged, bt_harvest_all_paged, od_harvest_all_paged,
+            sp_harvest_all_paged, bt_harvest_all_paged,
         )
+        from app.workers.celery_tasks import harvest_mozzart_upcoming_task
         sp_harvest_all_paged.apply_async(queue="harvest", countdown=5)
         bt_harvest_all_paged.apply_async(queue="harvest", countdown=15)
-        od_harvest_all_paged.apply_async(queue="harvest", countdown=25)
-        dispatched.extend(["sp", "bt", "od"])
+        harvest_mozzart_upcoming_task.apply_async(queue="harvest", countdown=25)
+        dispatched.extend(["sp", "bt", "mz"])
     except ImportError as exc:
         log.warning("[startup] harvest_pages import failed: %s", exc)
 
