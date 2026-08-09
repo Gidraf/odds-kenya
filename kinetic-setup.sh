@@ -17,10 +17,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Unset DOCKER_HOST if pointing to host.docker.internal to use local docker socket
-if [[ "${DOCKER_HOST:-}" == *"host.docker.internal"* ]]; then
-  unset DOCKER_HOST
-fi
+# Force local Docker daemon socket and default context
+unset DOCKER_HOST
+export DOCKER_HOST=""
+docker context use default &>/dev/null || true
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -72,6 +72,8 @@ ENVEOF
   fi
   # Source it so $REDIS_PASSWORD is available
   set -a; source .env; set +a
+  unset DOCKER_HOST
+  export DOCKER_HOST=""
   REDIS_PASS="${REDIS_PASSWORD:-Winners1127}"
 }
 
