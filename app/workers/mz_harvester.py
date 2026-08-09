@@ -29,7 +29,9 @@ HEADERS    = {"User-Agent": USER_AGENT, "Origin": BASE_URL, "Content-Type": "app
 
 def _get_redis():
     import redis
-    url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    url = os.getenv("REDIS_URL", "redis://redis6382:6382/0")
+    if os.path.exists("/.dockerenv") and "localhost" in url:
+        url = url.replace("localhost", "redis6382").replace("6379", "6382")
     return redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=3, socket_timeout=3)
 
 

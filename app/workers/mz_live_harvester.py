@@ -44,7 +44,11 @@ LIVE_SPORT_IDS = [1, 2, 3, 5, 20, 23, 29, 110, 111, 137, 155]
 def _get_redis():
     """Connect to Redis for Mozzart live snapshots and pub/sub."""
     import redis
-    url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    url = os.getenv("REDIS_URL", "redis://redis6382:6382/0")
+    if "localhost" in url and not os.path.exists("/.dockerenv"):
+        url = url
+    elif os.path.exists("/.dockerenv") and "localhost" in url:
+        url = url.replace("localhost", "redis6382").replace("6379", "6382")
     return redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=3, socket_timeout=3)
 
 
