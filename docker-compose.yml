@@ -1,5 +1,3 @@
-version: "3.9"
-
 x-celery-common: &celery-common
   build: .
   restart: unless-stopped
@@ -10,33 +8,32 @@ x-celery-common: &celery-common
     - storage_data:/app/storage
   environment: &celery-env
     FLASK_APP: run.py
-    FLASK_ENV: production
-    SECRET_KEY: ${SECRET_KEY}
-    DATABASE_URL: ${DATABASE_URL}
-    JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM}
-    JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM}
-    RESPONSE_SIGNING_SECRET: ${RESPONSE_SIGNING_SECRET}
-    ADMIN_EMAIL: ${ADMIN_EMAIL}
-    ADMIN_EMAIL_PASSWORD: ${ADMIN_EMAIL_PASSWORD}
-    MAIL_SERVER: ${MAIL_SERVER}
+    FLASK_ENV: ${FLASK_ENV:-production}
+    SECRET_KEY: ${SECRET_KEY:-change_me_to_something_random_32chars}
+    DATABASE_URL: ${DATABASE_URL:-postgresql://kinetic:kinetic_pass@localhost:5432/kinetic}
+    JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:-}
+    JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+    RESPONSE_SIGNING_SECRET: ${RESPONSE_SIGNING_SECRET:-change_me}
+    ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@oddskenya.com}
+    ADMIN_EMAIL_PASSWORD: ${ADMIN_EMAIL_PASSWORD:-}
+    MAIL_SERVER: ${MAIL_SERVER:-smtp.gmail.com}
     MAIL_PORT: ${MAIL_PORT:-587}
-    DOMAIN: ${DOMAIN}
+    DOMAIN: ${DOMAIN:-oddskenya.com}
 
     # Redis — use Docker service name "redis6382" (not host.docker.internal)
-    # Password has NO @ prefix → no %40 encoding needed
-    REDIS_URL: "redis://:${REDIS_PASSWORD}@redis6382:6382/0"
-    REDIS_CACHE_URL: "redis://:${REDIS_PASSWORD}@redis6382:6382/2"
+    REDIS_URL: "redis://:${REDIS_PASSWORD:-Winners1127}@redis6382:6382/0"
+    REDIS_CACHE_URL: "redis://:${REDIS_PASSWORD:-Winners1127}@redis6382:6382/2"
     REDIS_HOST: "redis6382"
     REDIS_PORT: "6382"
-    REDIS_PASSWORD: "${REDIS_PASSWORD}"
+    REDIS_PASSWORD: "${REDIS_PASSWORD:-Winners1127}"
     REDIS_DB: "0"
 
-    CELERY_BROKER_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic"
-    CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD}@redis6382:6382/1"
+    CELERY_BROKER_URL: "amqp://${RABBITMQ_USER:-kinetic}:${RABBITMQ_PASS:-kinetic_rabbit_pass}@host.docker.internal:5672/kinetic"
+    CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD:-Winners1127}@redis6382:6382/1"
 
     MINIO_ENDPOINT: ${MINIO_ENDPOINT:-host.docker.internal:6500}
-    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-gidraf}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-Winners1127}
     MINIO_SECURE: "false"
     HTTP_PROXY: "socks5h://100.70.180.34:1080"
     HTTPS_PROXY: "socks5h://100.70.180.34:1080"
