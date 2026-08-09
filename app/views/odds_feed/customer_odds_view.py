@@ -56,8 +56,8 @@ _EXCLUDE_FROM_UPCOMING = frozenset({
 })
 
 _BK_SLUG: dict[str, str] = {
-    "sportpesa": "sp", "betika": "bt", "odibets": "od",
-    "sp": "sp", "bt": "bt", "od": "od", "sbo": "sbo", "b2b": "b2b",
+    "sportpesa": "sp", "betika": "bt", "mozzart": "mz", "mozzartbet": "mz", "odibets": "od",
+    "sp": "sp", "bt": "bt", "mz": "mz", "od": "od", "sbo": "sbo", "b2b": "b2b",
 }
 
 _SPORT_ALIASES: dict[str, list[str]] = {
@@ -1040,7 +1040,7 @@ def get_match(parent_match_id: str):
     t0   = time.perf_counter()
     user = _current_user_from_header()
     tier = getattr(user, "tier", "free") if user else "free"
-    from app.models.odds import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
     from sqlalchemy import and_, func
 
@@ -1096,8 +1096,7 @@ def get_match(parent_match_id: str):
         st = um.start_time if um.start_time.tzinfo else um.start_time.replace(tzinfo=timezone.utc)
         minutes_elapsed = int((_now_utc() - st).total_seconds() / 60)
 
-    history = (BookmakerOddsHistory.query.filter_by(match_id=um.id).order_by(BookmakerOddsHistory.recorded_at.desc()).limit(50).all())
-    history_rows = [{"bookmaker": bk_map[h.bookmaker_id].name if h.bookmaker_id in bk_map else str(h.bookmaker_id), "market": h.market, "selection": h.selection, "old_price": h.old_price, "new_price": h.new_price, "price_delta": h.price_delta, "recorded_at": h.recorded_at.isoformat() if h.recorded_at else None} for h in history]
+    history_rows = []
     
     try:
         arb_list = [a.to_dict() for a in ArbitrageOpportunity.query.filter_by(match_id=um.id, status="OPEN").all()]

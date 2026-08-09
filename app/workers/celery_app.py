@@ -111,6 +111,11 @@ def make_celery(flask_app=None):
                 "schedule": 300,
                 "options":  {"queue": "harvest"},
             },
+            "mz-harvest-5min": {
+                "task":     "tasks.mz.harvest_all_upcoming",
+                "schedule": 300,
+                "options":  {"queue": "harvest"},
+            },
             "b2b-harvest-10min": {
                 "task":     "tasks.b2b.harvest_all_upcoming",
                 "schedule": 600,

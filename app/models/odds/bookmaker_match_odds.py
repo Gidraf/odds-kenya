@@ -32,12 +32,6 @@ class BookmakerMatchOdds(db.Model):
     )
 
     match   = db.relationship("UnifiedMatch", back_populates="match_odds_rel")
-    history = db.relationship(
-        "BookmakerOddsHistory",
-        back_populates="bmo",
-        lazy="dynamic",
-        cascade="all, delete-orphan",
-    )
 
     @classmethod
     def lock(cls, match_id: int, bookmaker_id: int) -> "BookmakerMatchOdds | None":

@@ -36,11 +36,11 @@ from typing import Any
 # TYPES
 # ─────────────────────────────────────────────────────────────────────────────
 
-BK = str   # "sp" | "bt" | "od"
-BOOKMAKERS: list[BK] = ["sp", "bt", "od"]
+BK = str   # "sp" | "bt" | "od" | "mz"
+BOOKMAKERS: list[BK] = ["sp", "bt", "mz", "od"]
 
-BK_LABELS = {"sp": "SportPesa", "bt": "Betika", "od": "OdiBets"}
-BK_SHORT  = {"sp": "SP", "bt": "BT", "od": "OD"}
+BK_LABELS = {"sp": "SportPesa", "bt": "Betika", "mz": "Mozzart", "od": "OdiBets"}
+BK_SHORT  = {"sp": "SP", "bt": "BT", "mz": "MZ", "od": "OD"}
 
 
 @dataclass
@@ -126,8 +126,9 @@ class CombinedMatch:
     start_time:  str
     is_live:     bool
 
-    # Per-bk match IDs
+    # Per-bk match IDs & SMS short codes
     bk_ids:           dict[BK, str]          = field(default_factory=dict)
+    sms_ids:          dict[BK, str]          = field(default_factory=dict)
     betradar_id:      str | None             = None
 
     # Live state

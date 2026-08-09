@@ -4,7 +4,6 @@ from .unified_match import UnifiedMatch
 from .match_alignment import MatchAlignment
 from .bk_snapshot_log import BkSnapshotLog
 from .bookmaker_match_odds import BookmakerMatchOdds
-from .bookmaker_odds_history import BookmakerOddsHistory
 from .arbitrage_opportunity import ArbitrageOpportunity
 from .ev_opportunity import EVOpportunity
 from .queries import OddsQueryHelper
@@ -17,7 +16,6 @@ __all__ = [
     "MatchAlignment",
     "BkSnapshotLog",
     "BookmakerMatchOdds",
-    "BookmakerOddsHistory",
     "ArbitrageOpportunity",
     "EVOpportunity",
     "OddsQueryHelper",

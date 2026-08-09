@@ -106,7 +106,7 @@ class EntityResolver:
             from app.models.bookmakers_model import Bookmaker
             bm = Bookmaker.query.filter_by(slug=slug).first()
             if not bm:
-                name_map = {"sp": "sportpesa", "bt": "betika", "od": "odibets"}
+                name_map = {"sp": "sportpesa", "bt": "betika", "od": "odibets", "mz": "mozzart"}
                 if slug in name_map:
                     bm = Bookmaker.query.filter(db.func.lower(Bookmaker.name) == name_map[slug]).first()
             return bm.id if bm else None
@@ -311,7 +311,7 @@ class EntityResolver:
 
     def persist_sp_match(self, cm) -> int | None:
         from app.models.odds import (
-            UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory
+            UnifiedMatch, BookmakerMatchOdds
         )
         cm_competition = self._val(cm, "competition")
         cm_home_team   = self._val(cm, "home_team")
@@ -427,16 +427,6 @@ class EntityResolver:
                                 selection=outcome, price=price, bookmaker_id=sp_id,
                             )
                             if price_changed:
-                                history_batch.append({
-                                    "bmo_id": bmo.id, "bookmaker_id": sp_id,
-                                    "match_id": um.id, "market": mkt_slug,
-                                    "specifier": None, "selection": outcome,
-                                    "old_price": old_price, "new_price": price,
-                                    "price_delta": round(price - old_price, 4) if old_price else None,
-                                    "recorded_at": datetime.utcnow(),
-                                })
-                    if history_batch:
-                        BookmakerOddsHistory.bulk_append(history_batch)
                 return um.id
         except Exception as exc:
             logger.error(

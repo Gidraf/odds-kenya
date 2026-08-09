@@ -176,8 +176,8 @@ def unified_matches(sport_slug: str):
 
         # ── Build response rows ───────────────────────────────────────────────
         BK_SLUG_MAP = {
-            "sportpesa": "sp", "betika": "bt", "odibets": "od",
-            "sp": "sp", "bt": "bt", "od": "od",
+            "sportpesa": "sp", "betika": "bt", "mozzart": "mz", "mozzartbet": "mz", "odibets": "od",
+            "sp": "sp", "bt": "bt", "mz": "mz", "od": "od",
         }
 
         result_rows = []
@@ -307,7 +307,7 @@ def unified_match_detail(match_id: int):
     try:
         from app.extensions import db
         from app.models.odds import (
-            UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
+            UnifiedMatch, BookmakerMatchOdds,
             ArbitrageOpportunity, EVOpportunity,
         )
         from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
@@ -344,25 +344,7 @@ def unified_match_detail(match_id: int):
         for bk_slug, bk_data in bookmakers.items():
             bk_data["link"] = links.get(bk_data["bookmaker_id"])
 
-        # Recent odds history (last 50 changes)
-        history = (
-            BookmakerOddsHistory.query
-            .filter_by(match_id=match_id)
-            .order_by(BookmakerOddsHistory.recorded_at.desc())
-            .limit(50).all()
-        )
         history_rows = []
-        for h in history:
-            bk_obj = bk_map.get(h.bookmaker_id)
-            history_rows.append({
-                "bookmaker":   bk_obj.name if bk_obj else str(h.bookmaker_id),
-                "market":      h.market,
-                "selection":   h.selection,
-                "old_price":   h.old_price,
-                "new_price":   h.new_price,
-                "price_delta": h.price_delta,
-                "recorded_at": h.recorded_at.isoformat() if h.recorded_at else None,
-            })
 
         # Open arbs / EVs
         arbs = ArbitrageOpportunity.query.filter_by(

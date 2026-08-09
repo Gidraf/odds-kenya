@@ -270,20 +270,7 @@ class SteamMoveDetector:
         """
         Compare current best_odds against history and return steam signals.
         """
-        from app.models.odds import BookmakerOddsHistory
-
-        cutoff   = datetime.now(timezone.utc) - timedelta(seconds=STEAM_WINDOW_SECS)
-        signals: list[dict] = []
-
-        # Pull recent history for this match
-        history_rows = (
-            BookmakerOddsHistory.query
-            .filter(
-                BookmakerOddsHistory.match_id == match_id,
-                BookmakerOddsHistory.recorded_at >= cutoff,
-            )
-            .all()
-        )
+        return []
 
         # Build: (market, selection, bookmaker_id) → oldest price in window
         old_prices: dict[tuple, float] = {}

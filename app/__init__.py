@@ -218,7 +218,7 @@ def create_app() -> Flask:
             ResearchSession, ResearchFinding, ResearchEndpoint,
         )
         from app.models.odds import (
-            UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
+            UnifiedMatch, BookmakerMatchOdds,
             MarketDefinition, ArbitrageOpportunity, EVOpportunity,
         )
         from app.models.competions_model  import Team, Sport, Competition, Player, TeamPlayer
@@ -258,21 +258,12 @@ def create_app() -> Flask:
         # start_harvester_thread()
 
         try:
-            import redis as _redis_lib
-            _rd = _redis_lib.from_url(
-                flask_app.config.get("CELERY_BROKER_URL", "redis://localhost:6379/1"),
-                decode_responses=False, socket_timeout=3,
-            )
-            from app.workers.od_harvester import init_live_poller as od_init
-            # od_init(_rd, interval=2.0)
+            from app.workers.mz_live_harvester import get_mozzart_live_harvester
+            mz_harvester = get_mozzart_live_harvester()
+            mz_harvester.start()
+            print("[init] Mozzart live WebSocket harvester started")
         except Exception as _e:
-            print(f"[init] OdiBets live poller skipped: {_e}")
-
-        try:
-            from app.workers.bt_harvester import init_live_poller as bt_init
-            # bt_init(_rd, interval=1.5)
-        except Exception as _e:
-            print(f"[init] Betika live poller skipped: {_e}")
+            print(f"[init] Mozzart live WebSocket harvester skipped: {_e}")
 
     return flask_app
 

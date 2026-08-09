@@ -232,9 +232,9 @@ class LiveFeedBridge:
             try:
                 r      = _r()
                 pubsub = r.pubsub(ignore_subscribe_messages=True)
-                # SP live harvester publishes here
-                pubsub.subscribe("live:all")
-                log.info("LiveFeedBridge: subscribed to live:all (SP)")
+                # Subscribe to SP and MZ live channels
+                pubsub.subscribe("live:all", "mz:live:all")
+                log.info("LiveFeedBridge: subscribed to live:all (SP) and mz:live:all (MZ)")
 
                 while self._running:
                     msg = pubsub.get_message(timeout=2.0)
@@ -335,7 +335,7 @@ class LiveFeedBridge:
         # Sports that SP covers
         sp_sports = set(_SP_SPORT_SLUG.values())
 
-        for bk_slug in ("bt", "od"):
+        for bk_slug in ("bt", "mz"):
             for sport in sp_sports:
                 key = f"odds:{bk_slug}:live:{sport}"
                 try:

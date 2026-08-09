@@ -84,7 +84,7 @@ def get_results_by_date(date_str: str = ""):
 def get_match(parent_match_id: str):
     from app.utils.customer_jwt_helpers import _current_user_from_header, _err, _signed_response
     from app.utils.decorators_ import log_event
-    from app.models.odds import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity, BookmakerOddsHistory
+    from app.models.odds import UnifiedMatch, BookmakerMatchOdds, ArbitrageOpportunity, EVOpportunity
     from app.models.bookmakers_model import Bookmaker, BookmakerMatchLink
     from sqlalchemy import and_, func
     from datetime import timedelta, timezone
@@ -138,7 +138,7 @@ def get_match(parent_match_id: str):
     status_out = _effective_status(getattr(um, "status", None), um.start_time)
     minutes_elapsed = int((_now_utc() - (um.start_time if um.start_time.tzinfo else um.start_time.replace(tzinfo=timezone.utc))).total_seconds() / 60) if um.start_time and status_out == "IN_PLAY" else None
 
-    history_rows = [{"bookmaker": bk_map[h.bookmaker_id].name if h.bookmaker_id in bk_map else str(h.bookmaker_id), "market": h.market, "selection": h.selection, "old_price": h.old_price, "new_price": h.new_price, "price_delta": h.price_delta, "recorded_at": h.recorded_at.isoformat() if h.recorded_at else None} for h in BookmakerOddsHistory.query.filter_by(match_id=um.id).order_by(BookmakerOddsHistory.recorded_at.desc()).limit(50).all()]
+    history_rows = []
     
     try:
         arb_list = [a.to_dict() for a in ArbitrageOpportunity.query.filter_by(match_id=um.id, status="OPEN").all()]
@@ -279,6 +279,7 @@ def search_matches():
 _BK_DISPLAY = {
     "sp":        "SportPesa",
     "bt":        "Betika",
+    "mz":        "Mozzart",
     "od":        "OdiBets",
     "1xbet":     "1xBet",
     "22bet":     "22Bet",

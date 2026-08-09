@@ -41,7 +41,6 @@ from app.extensions import db
 from app.models.odds import (
     UnifiedMatch,
     BookmakerMatchOdds,
-    BookmakerOddsHistory,
     validate_parser_row,
     REQUIRED_PARSER_KEYS,
 )
@@ -165,19 +164,6 @@ def upsert_odds_rows(
                 stats["odds_unchanged"] += 1
                 continue
 
-            # ── 4. Append history row on first-seen or price change ───────
-            db.session.add(BookmakerOddsHistory(
-                bmo_id       = bmo.id,
-                bookmaker_id = bookmaker_id,
-                match_id     = unified.id,
-                market       = market,
-                specifier    = str(specifier) if specifier is not None else None,
-                selection    = selection,
-                old_price    = old_price,
-                new_price    = price,
-                price_delta  = round(price - old_price, 6) if old_price is not None else None,
-            ))
-
             if old_price is None:
                 stats["odds_new"] += 1
             else:
@@ -235,19 +221,6 @@ def update_single_price(
 
     # Update aggregated view
     unified.upsert_bookmaker_price(market, specifier, selection, new_price, bookmaker_id)
-
-    # History
-    db.session.add(BookmakerOddsHistory(
-        bmo_id       = bmo.id,
-        bookmaker_id = bookmaker_id,
-        match_id     = unified.id,
-        market       = market,
-        specifier    = str(specifier) if specifier is not None else None,
-        selection    = selection,
-        old_price    = old_price,
-        new_price    = new_price,
-        price_delta  = round(new_price - old_price, 6) if old_price is not None else None,
-    ))
 
     if commit:
         db.session.commit()

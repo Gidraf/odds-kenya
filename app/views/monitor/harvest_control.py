@@ -730,6 +730,7 @@ def ui():
       <select id="f-bookmaker">
         <option value="sp">SportPesa (SP)</option>
         <option value="bt">Betika (BT)</option>
+        <option value="mz">Mozzart (MZ)</option>
         <option value="od">OdiBets (OD)</option>
         <option value="b2b">B2B Direct</option>
         <option value="b2b_page">B2B Page</option>
@@ -935,7 +936,7 @@ function renderCard(rec) {
   const status = rec.status || "running";
   const stCls  = `st-${status}`;
   const stIcon = {running:"▶",paused:"⏸",done:"✔",failed:"✗",stopped:"■"}[status] || "?";
-  const bkLabel= {sp:"SportPesa",bt:"Betika",od:"OdiBets",
+  const bkLabel= {sp:"SportPesa",bt:"Betika",mz:"Mozzart",od:"OdiBets",
                   b2b:"B2B",b2b_page:"B2BPage",sbo:"SBO"}[rec.bookmaker] || rec.bookmaker;
 
   const div = document.createElement("div");

@@ -3,7 +3,6 @@ from app.extensions import db
 from .unified_match import UnifiedMatch
 from .arbitrage_opportunity import ArbitrageOpportunity
 from .ev_opportunity import EVOpportunity
-from .bookmaker_odds_history import BookmakerOddsHistory
 from .common import MatchStatus, OpportunityStatus, _utcnow_naive
 
 class OddsQueryHelper:
@@ -121,11 +120,4 @@ class OddsQueryHelper:
         selection:    str,
         bookmaker_id: int | None = None,
     ):
-        q = BookmakerOddsHistory.query.filter(
-            BookmakerOddsHistory.match_id  == match_id,
-            BookmakerOddsHistory.market    == market,
-            BookmakerOddsHistory.selection == selection,
-        )
-        if bookmaker_id:
-            q = q.filter(BookmakerOddsHistory.bookmaker_id == bookmaker_id)
-        return q.order_by(BookmakerOddsHistory.recorded_at)
+        return []

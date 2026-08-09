@@ -204,7 +204,7 @@ def _to_upsert_shape(m: dict) -> dict:
 def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
     try:
         from app.extensions import db
-        from app.models.odds import (UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory)
+        from app.models.odds import (UnifiedMatch, BookmakerMatchOdds)
 
         parent_id = str(match_data.get("match_id") or "").strip()
         if not parent_id:
@@ -273,18 +273,6 @@ def _upsert_unified_match(match_data: dict, bookmaker_id, bookmaker_name: str):
                     market=mkt_key, specifier=None, selection=outcome,
                     price=price, bookmaker_id=bookmaker_id,
                 )
-                if price_changed:
-                    history_batch.append({
-                        "bmo_id": bmo.id, "bookmaker_id": bookmaker_id,
-                        "match_id": um.id, "market": mkt_key, "specifier": None,
-                        "selection": outcome, "old_price": old_price, "new_price": price,
-                        "price_delta": round(price - old_price, 4) if old_price else None,
-                        "recorded_at": datetime.now(timezone.utc),
-                    })
-
-        if history_batch:
-            BookmakerOddsHistory.bulk_append(history_batch)
-
         db.session.commit()
         return um.id
 
@@ -348,3 +336,17 @@ def _upsert_and_chain(matches: list[dict], bk_name: str) -> None:
 
     except Exception as exc:
         _log.error("[upsert_and_chain] %s: %s", bk_name, exc)
+
+
+@celery.task(name="tasks.mz.harvest_all_upcoming")
+def harvest_mozzart_upcoming_task():
+    """Celery task to run Mozzart prematch upcoming harvest."""
+    try:
+        from app.workers.mz_harvester import run_mozzart_upcoming_harvest
+        res = run_mozzart_upcoming_harvest()
+        total = sum(len(v) for v in res.values())
+        _log.info("[tasks.mz.harvest_all_upcoming] Success: %d matches across %d sports", total, len(res))
+        return {"ok": True, "count": total}
+    except Exception as exc:
+        _log.error("[tasks.mz.harvest_all_upcoming] Failed: %s", exc)
+        return {"ok": False, "error": str(exc)}

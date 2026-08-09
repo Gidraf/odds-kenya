@@ -33,7 +33,7 @@ from app.extensions import db, celery, socketio
 from app.models.vendor_template import VendorTemplate, BookmakerVendorConfig
 from app.models.bookmakers_model import Bookmaker
 from app.models.odds import (
-    UnifiedMatch, BookmakerMatchOdds, BookmakerOddsHistory,
+    UnifiedMatch, BookmakerMatchOdds,
     validate_parser_row,
 )
 from app.utils.probe_curl import _probe
@@ -364,15 +364,6 @@ def _upsert_rows(rows: list[dict], bookmaker_id: int) -> dict:
                     stats["odds_new"] += 1
                 else:
                     stats["odds_changed"] += 1
-                    delta = price - old_price
-                    hist = BookmakerOddsHistory(
-                        bmo_id=bmo.id, bookmaker_id=bookmaker_id,
-                        match_id=um.id, market=market,
-                        specifier=str(specifier) if specifier else None,
-                        selection=selection, old_price=old_price,
-                        new_price=price, price_delta=delta,
-                    )
-                    db.session.add(hist)
             else:
                 stats["odds_unchanged"] += 1
 

@@ -247,7 +247,7 @@ def _upsert_bk_odds(match_id: int, bookmaker_id: int, markets: dict) -> int:
         return 0
     try:
         from app.extensions import db
-        from app.models.odds import BookmakerMatchOdds, BookmakerOddsHistory
+        from app.models.odds import BookmakerMatchOdds
         bmo = (BookmakerMatchOdds.query
                .filter_by(match_id=match_id, bookmaker_id=bookmaker_id)
                .with_for_update(skip_locked=True)
@@ -256,7 +256,6 @@ def _upsert_bk_odds(match_id: int, bookmaker_id: int, markets: dict) -> int:
             bmo = BookmakerMatchOdds(match_id=match_id, bookmaker_id=bookmaker_id)
             db.session.add(bmo)
             db.session.flush()
-        history: list[dict] = []
         count = 0
         for mkt_slug, outcomes in markets.items():
             for outcome, price in outcomes.items():
@@ -266,26 +265,8 @@ def _upsert_bk_odds(match_id: int, bookmaker_id: int, markets: dict) -> int:
                         selection=outcome, price=float(price),
                     )
                     count += 1
-                    if changed:
-                        history.append({
-                            "bmo_id":       bmo.id,
-                            "bookmaker_id": bookmaker_id,
-                            "match_id":     match_id,
-                            "market":       mkt_slug,
-                            "specifier":    None,
-                            "selection":    outcome,
-                            "old_price":    old_price,
-                            "new_price":    float(price),
-                            "price_delta":  round(float(price) - (old_price or 0), 4),
-                            "recorded_at":  datetime.utcnow(),
-                        })
                 except Exception:
                     pass
-        if history:
-            try:
-                BookmakerOddsHistory.bulk_append(history)
-            except Exception:
-                pass
         return count
     except Exception as exc:
         logger.warning("_upsert_bk_odds match=%s bk=%s: %s", match_id, bookmaker_id, exc)
