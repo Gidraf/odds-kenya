@@ -28,7 +28,7 @@ x-celery-common: &celery-common
     REDIS_PASSWORD: "${REDIS_PASSWORD:-Winners1127}"
     REDIS_DB: "0"
 
-    CELERY_BROKER_URL: "amqp://${RABBITMQ_USER:-kinetic}:${RABBITMQ_PASS:-kinetic_rabbit_pass}@host.docker.internal:5672/kinetic"
+    CELERY_BROKER_URL: "${CELERY_BROKER_URL:-redis://:${REDIS_PASSWORD:-Winners1127}@redis6382:6382/1}"
     CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD:-Winners1127}@redis6382:6382/1"
 
     MINIO_ENDPOINT: ${MINIO_ENDPOINT:-host.docker.internal:6500}
@@ -116,7 +116,7 @@ services:
     <<: *celery-common
     container_name: kinetic-flower
     command: >
-      celery -A app.workers.celery_app flower --broker=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@host.docker.internal:5672/kinetic --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASS:-flower_pass} --url_prefix=flower --persistent=true --db=/tmp/flower.db
+      celery -A app.workers.celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASS:-flower_pass} --url_prefix=flower --persistent=true --db=/tmp/flower.db
     ports:
       - "5555:5555"
 
