@@ -37,10 +37,10 @@ from typing import Any
 # ─────────────────────────────────────────────────────────────────────────────
 
 BK = str   # "sp" | "bt" | "od" | "mz"
-BOOKMAKERS: list[BK] = ["sp", "bt", "mz", "od"]
+BOOKMAKERS: list[BK] = ["sp", "bt", "mz"]
 
-BK_LABELS = {"sp": "SportPesa", "bt": "Betika", "mz": "Mozzart", "od": "OdiBets"}
-BK_SHORT  = {"sp": "SP", "bt": "BT", "mz": "MZ", "od": "OD"}
+BK_LABELS = {"sp": "SportPesa", "bt": "Betika", "mz": "Mozzart"}
+BK_SHORT  = {"sp": "SP", "bt": "BT", "mz": "MZ"}
 
 
 @dataclass
