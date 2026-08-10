@@ -224,24 +224,18 @@ def unified_matches(sport_slug: str):
                         if out not in best[mkt] or fv > best[mkt][out]["odd"]:
                             best[mkt][out] = {"odd": fv, "bk": bk_slug}
 
-            # Detect arbitrage from best odds
-            arb_markets: list[dict] = []
-            for mkt, outcomes in best.items():
-                if len(outcomes) < 2:
-                    continue
-                arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
-                if arb_sum < 1.0:
-                    profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
-                    arb_markets.append({
-                        "market":     mkt,
-                        "profit_pct": profit_pct,
-                        "arb_sum":    round(arb_sum, 6),
-                        "legs": [
-                            {"outcome": out, "bk": v["bk"], "odd": v["odd"]}
-                            for out, v in outcomes.items()
-                        ],
-                    })
-            arb_markets.sort(key=lambda x: -x["profit_pct"])
+            # Detect arbitrage from best odds using strict market-complete logic.
+            try:
+                from app.workers.arb_engine import detect_arb_for_stream
+                has_arb_detected, _best_pct, arb_markets = detect_arb_for_stream(best)
+                if has_arb_detected:
+                    for a in arb_markets:
+                        if "market_slug" not in a:
+                            a["market_slug"] = a.get("market")
+                else:
+                    arb_markets = []
+            except Exception:
+                arb_markets = []
 
             has_arb_flag  = bool(arb_markets) or um.id in arb_match_ids
 

@@ -202,6 +202,12 @@ def get_match_full_markets(parent_match_id: str):
             has_arb, _best_arb_pct, arb_markets = detect_arb_for_stream(best)
             if not has_arb:
                 arb_markets = []
+            else:
+                for a in arb_markets:
+                    if "market_slug" not in a:
+                        a["market_slug"] = a.get("market")
+                    if "market_label" not in a:
+                        a["market_label"] = a.get("market_display") or a.get("market")
         except Exception:
             arb_markets = []
 

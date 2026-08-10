@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from . import config
 
@@ -29,19 +30,42 @@ def _normalise_sport_slug(raw: str) -> str:
     if not raw: return raw
     return config._CANONICAL_SLUG.get(raw, raw.lower().replace(" ", "-"))
 
+
+_LINE_SPEC_RE = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+
+
+def _spec_suffix(spec_val: object) -> str:
+    s = str(spec_val or "").strip()
+    if not s:
+        return ""
+    if _LINE_SPEC_RE.fullmatch(s):
+        return s.replace(",", ".")
+    return ""
+
+
+def _market_with_spec(market_slug: str, spec_val: object) -> str:
+    suffix = _spec_suffix(spec_val)
+    if not suffix:
+        return market_slug
+    key_suffix = suffix.replace(".", "_").replace("-", "m").replace("+", "p")
+    return f"{market_slug}__spec__{key_suffix}"
+
 def _flatten_db_markets(raw_markets: dict) -> dict:
     flat: dict = {}
     for mkt_slug, spec_dict in (raw_markets or {}).items():
         if not isinstance(spec_dict, dict):
             flat[mkt_slug] = spec_dict
             continue
-        outcomes: dict = {}
+
         for spec_val, inner in spec_dict.items():
             if isinstance(inner, dict):
-                for out_key, out_val in inner.items(): outcomes[out_key] = out_val
+                market_key = _market_with_spec(mkt_slug, spec_val)
+                outcomes = flat.setdefault(market_key, {})
+                for out_key, out_val in inner.items():
+                    outcomes[out_key] = out_val
             else:
+                outcomes = flat.setdefault(mkt_slug, {})
                 outcomes[spec_val] = inner
-        flat[mkt_slug] = outcomes
     return flat
 
 def _sse(event: str, data: dict) -> str: return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"

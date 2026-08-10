@@ -17,6 +17,7 @@ Streaming endpoints:
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -356,20 +357,42 @@ def _bk_slug(name: str) -> str:
     return _BK_SLUG.get(name.lower(), name.lower()[:4])
 
 
+_LINE_SPEC_RE = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+
+
+def _spec_suffix(spec_val: object) -> str:
+    s = str(spec_val or "").strip()
+    if not s:
+        return ""
+    if _LINE_SPEC_RE.fullmatch(s):
+        return s.replace(",", ".")
+    return ""
+
+
+def _market_with_spec(market_slug: str, spec_val: object) -> str:
+    suffix = _spec_suffix(spec_val)
+    if not suffix:
+        return market_slug
+    key_suffix = suffix.replace(".", "_").replace("-", "m").replace("+", "p")
+    return f"{market_slug}__spec__{key_suffix}"
+
+
 def _flatten_db_markets(raw_markets: dict) -> dict:
     flat: dict = {}
     for mkt_slug, spec_dict in (raw_markets or {}).items():
         if not isinstance(spec_dict, dict):
             flat[mkt_slug] = spec_dict
             continue
-        outcomes: dict = {}
+
         for spec_val, inner in spec_dict.items():
             if isinstance(inner, dict):
+                market_key = _market_with_spec(mkt_slug, spec_val)
+                outcomes = flat.setdefault(market_key, {})
                 for out_key, out_val in inner.items():
                     outcomes[out_key] = out_val
             else:
+                outcomes = flat.setdefault(mkt_slug, {})
                 outcomes[spec_val] = inner
-        flat[mkt_slug] = outcomes
     return flat
 
 
@@ -425,23 +448,18 @@ def _build_match_dict(um, bmos, bk_objs, links_by_match, arb_set, sport_slug, an
     best_odds = {mkt: {out: {"odd": v["odd"], "bookie": v["bk"]} for out, v in outs.items()} for mkt, outs in best.items()}
     arb_markets: list[dict] = []
     if len(bookmakers) >= 2:
-        for mkt, outcomes in best.items():
-            if len(outcomes) < 2:
-                continue
-            arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
-            if arb_sum < 1.0:
-                profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
-                legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]} for o, v in outcomes.items()]
-                breakdown = [{
-                    **leg, "stake_pct": round((1.0 / leg["odd"] / arb_sum) * 100, 3),
-                    "stake_kes": round(1000 * (1.0 / leg["odd"] / arb_sum), 2),
-                    "return_kes": round(1000 * (1.0 / leg["odd"] / arb_sum) * leg["odd"], 2),
-                } for leg in legs]
-                arb_markets.append({
-                    "market": mkt, "market_slug": mkt, "profit_pct": profit_pct, "arb_sum": round(arb_sum, 6),
-                    "legs": legs, "breakdown_1000": breakdown,
-                })
-        arb_markets.sort(key=lambda x: -x["profit_pct"])
+        try:
+            from app.workers.arb_engine import detect_arb_for_stream
+            has_arb_detected, _best_pct, detected_arbs = detect_arb_for_stream(best)
+            if has_arb_detected:
+                arb_markets = detected_arbs
+                for a in arb_markets:
+                    if "market_slug" not in a:
+                        a["market_slug"] = a.get("market")
+            else:
+                arb_markets = []
+        except Exception:
+            arb_markets = []
 
     db_status       = getattr(um, "status", None)
     status_out      = _effective_status(db_status, um.start_time)
@@ -1166,14 +1184,18 @@ def get_match_full_markets(parent_match_id: str):
 
     arb_markets: list[dict] = []
     if len(combined) >= 2:
-        for mkt, outcomes in best.items():
-            if len(outcomes) < 2: continue
-            arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
-            if arb_sum < 1.0:
-                profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
-                legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]} for o, v in outcomes.items()]
-                arb_markets.append({"market": mkt, "profit_pct": profit_pct, "arb_sum": round(arb_sum, 6), "legs": legs})
-        arb_markets.sort(key=lambda x: -x["profit_pct"])
+        try:
+            from app.workers.arb_engine import detect_arb_for_stream
+            has_arb_detected, _best_pct, detected_arbs = detect_arb_for_stream(best)
+            if has_arb_detected:
+                arb_markets = detected_arbs
+                for a in arb_markets:
+                    if "market_slug" not in a:
+                        a["market_slug"] = a.get("market")
+            else:
+                arb_markets = []
+        except Exception:
+            arb_markets = []
 
     db_status  = getattr(um, "status", None)
     status_out = _effective_status(db_status, um.start_time)

@@ -172,6 +172,37 @@ _HTFT_CONCAT = {
     "21": "2/1", "2x": "2/X", "22": "2/2",
 }
 
+_OU_SPEC_RE = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+
+
+def _is_over_under_market_slug(slug: str) -> bool:
+    s = str(slug or "").lower()
+    return (
+        "over_under" in s
+        or s.startswith("total_goals")
+        or s.startswith("total_points")
+        or s.startswith("total_runs")
+    )
+
+
+def _extract_ou_spec(market_slug: str, outcome_key: str) -> str:
+    """
+    Extract O/U line spec (e.g. 2.5) from market slug or outcome text.
+    Returns normalized dotted value, e.g. '2.5'.
+    """
+    for source in (str(market_slug or ""), str(outcome_key or "")):
+        m = _OU_SPEC_RE.search(source.replace("_", "."))
+        if m:
+            return m.group(0).replace(",", ".")
+    return ""
+
+
+def _market_with_ou_spec(market_slug: str, spec: str) -> str:
+    if not spec:
+        return market_slug
+    suffix = spec.replace(".", "_").replace("-", "m").replace("+", "p")
+    return f"{market_slug}__spec__{suffix}"
+
 
 def _norm_outcome(key: str, market: str = "") -> str:
     k  = key.strip()
@@ -690,19 +721,27 @@ def _build_best(bookmakers: dict) -> dict:
     for bk_slug, bd in bookmakers.items():
         for mkt, outcomes in (bd.get("markets") or {}).items():
             if not isinstance(outcomes, dict): continue
-            best.setdefault(mkt, {})
             for raw_k, p in outcomes.items():
                 can_k = _norm_outcome(str(raw_k), mkt)
                 price = _get_price(p)
                 if price <= 1.0: continue
-                existing = best[mkt].get(can_k)
+                target_mkt = mkt
+                if _is_over_under_market_slug(mkt):
+                    spec = _extract_ou_spec(mkt, str(raw_k))
+                    if spec:
+                        target_mkt = _market_with_ou_spec(mkt, spec)
+                    # Only accept canonical over/under outcomes for O/U markets.
+                    if can_k not in {"Over", "Under"}:
+                        continue
+                best.setdefault(target_mkt, {})
+                existing = best[target_mkt].get(can_k)
                 if not existing or price > existing.get("odd", 0):
-                    best[mkt][can_k] = {"odd": price, "bk": bk_slug}
+                    best[target_mkt][can_k] = {"odd": price, "bk": bk_slug}
     return best
 
 
 def _detect_arb(best: dict) -> tuple[bool, float, list]:
-    """Detect arb — tries arb_engine first, falls back to inline 2-way scan."""
+    """Detect arb — strict mode: complete outcomes only for each market type."""
     try:
         from app.workers.arb_engine import detect_arb_for_stream
         return detect_arb_for_stream(best)
@@ -711,19 +750,57 @@ def _detect_arb(best: dict) -> tuple[bool, float, list]:
     except Exception as exc:
         log.debug("[detect_arb] arb_engine error: %s", exc)
 
-    # Inline fallback: simple 2-way scan
+    # Inline fallback: strict scan with complete required outcomes.
+    three_way = {
+        "1x2", "match_winner", "moneyline", "3way",
+        "first_half_1x2", "second_half_1x2", "half_time", "ht_1x2",
+    }
+    two_way_yes_no = {"btts", "both_teams_to_score"}
+    two_way_odd_even = {"odd_even"}
+    two_way_dnb = {"draw_no_bet", "dnb"}
+
     for mkt, ob in best.items():
         if not isinstance(ob, dict) or len(ob) < 2:
             continue
-        keys = [k for k, v in ob.items() if isinstance(v, dict) and v.get("odd", 0) > 1]
-        if len(keys) < 2:
+
+        slug = str(mkt or "").lower()
+        required: set[str] | None = None
+        if slug in three_way:
+            required = {"1", "x", "2"}
+        elif _is_over_under_market_slug(slug):
+            required = {"over", "under"}
+        elif slug in two_way_yes_no:
+            required = {"yes", "no"}
+        elif slug in two_way_odd_even:
+            required = {"odd", "even"}
+        elif slug in two_way_dnb:
+            required = {"1", "2"}
+        else:
             continue
-        odds    = [ob[k]["odd"] for k in keys[:3]]
+
+        canon: dict[str, dict] = {}
+        for out, data in ob.items():
+            if not isinstance(data, dict):
+                continue
+            odd = float(data.get("odd") or 0)
+            if odd <= 1.0:
+                continue
+            key = str(out or "").strip().lower()
+            if key in required:
+                prev = canon.get(key)
+                if not prev or odd > float(prev.get("odd") or 0):
+                    canon[key] = data
+
+        if not required.issubset(canon.keys()):
+            continue
+
+        keys = [k for k in ["1", "x", "2", "over", "under", "yes", "no", "odd", "even"] if k in canon]
+        odds = [float(canon[k]["odd"]) for k in keys]
         sum_inv = sum(1 / o for o in odds)
         if 0 < sum_inv < 1.0:
             pct  = round((1 - sum_inv) * 100, 3)
-            legs = [{"outcome": k, "odd": ob[k]["odd"], "bk": ob[k].get("bk")}
-                    for k in keys[:3]]
+            legs = [{"outcome": k.upper() if k == "x" else k, "odd": canon[k]["odd"], "bk": canon[k].get("bk")}
+                    for k in keys]
             return True, pct, [{"market": mkt, "profit_pct": pct, "legs": legs}]
     return False, 0.0, []
 

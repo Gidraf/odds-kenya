@@ -64,8 +64,41 @@ def _market_type(slug: str) -> str:
     s = slug.lower()
     if s in _THREE_WAY:                               return "3way"
     if s in _TWO_WAY:                                 return "2way"
-    if s.startswith(_OU_PREFIX) and "asian" not in s: return "2way"
+    if _is_over_under_market(s) and "asian" not in s: return "2way"
     return "unknown"
+
+
+def _is_over_under_market(slug: str) -> bool:
+    s = slug.lower()
+    return (
+        s.startswith(_OU_PREFIX)
+        or "over_under" in s
+        or s.startswith("total_goals")
+        or s.startswith("total_points")
+        or s.startswith("total_runs")
+    )
+
+
+def _split_market_spec(market_slug: str) -> tuple[str, str]:
+    """
+    Market keys can carry a spec suffix from flatten/merge, e.g.:
+      over_under_goals__spec__2_5
+    Returns (base_slug, spec_text) -> ('over_under_goals', '2.5').
+    """
+    raw = str(market_slug or "")
+    marker = "__spec__"
+    if marker not in raw:
+        return raw, ""
+    base, suffix = raw.split(marker, 1)
+    spec = suffix.replace("m", "-").replace("p", "+").replace("_", ".")
+    return base, spec
+
+
+def _market_display_label(market_slug: str) -> str:
+    base, spec = _split_market_spec(market_slug)
+    if spec:
+        return f"{base} ({spec})"
+    return base
 
 
 def _canon_outcome_key(value: str) -> str:
@@ -94,7 +127,7 @@ def _valid_outcomes_for_market(market_slug: str, outcomes: dict[str, dict]) -> d
 
     if mtype == "3way":
         wanted = {"1", "x", "2"}
-    elif slug.startswith(_OU_PREFIX):
+    elif _is_over_under_market(slug):
         wanted = {"over", "under"}
     elif slug in {"btts", "both_teams_to_score"}:
         wanted = {"yes", "no"}
@@ -154,6 +187,9 @@ class ArbLeg:
 @dataclass
 class ArbOpportunity:
     market:            str
+    market_base:       str
+    market_spec:       str
+    market_display:    str
     n_legs:            int
     arb_sum:           float
     profit_pct:        float
@@ -166,6 +202,11 @@ class ArbOpportunity:
     def to_dict(self) -> dict:
         return {
             "market":            self.market,
+            "market_slug":       self.market,
+            "market_label":      self.market_display,
+            "market_base":       self.market_base,
+            "market_spec":       self.market_spec,
+            "market_display":    self.market_display,
             "n_legs":            self.n_legs,
             "arb_sum":           round(self.arb_sum, 6),
             "profit_pct":        round(self.profit_pct, 4),
@@ -179,7 +220,7 @@ class ArbOpportunity:
             "n_bks":             len(self.bks_used),
             "breakdown_1000":    [l.to_dict() for l in self.legs],
             "explanation": (
-                f"Place {self.n_legs} bets on ALL outcomes of '{self.market}' "
+                f"Place {self.n_legs} bets on ALL outcomes of '{self.market_display}' "
                 f"using {self.bk_pair_label}. "
                 f"Profit: {round(self.profit_pct, 2)}% guaranteed."
             ),
@@ -220,13 +261,11 @@ def detect_all_arbs(
         mtype = _market_type(market_slug)
 
         if mtype == "3way":
+            # Strict rule: 1X2/3-way arbs are valid only when ALL three
+            # outcomes are present (1, X, 2). Never compute 2-leg pseudo-arbs.
             arb = _check_legs(market_slug, clean, min_profit_pct, require_n=3)
             if arb:
                 results.append(arb)
-            if len(clean) == 2:           # only 2 of 3 outcomes present
-                arb2 = _check_legs(market_slug, clean, min_profit_pct, require_n=2)
-                if arb2:
-                    results.append(arb2)
         elif mtype == "2way":
             arb = _check_legs(market_slug, clean, min_profit_pct, require_n=2)
             if arb:
@@ -271,6 +310,8 @@ def _check_legs(
 
     guaranteed = 1000.0 / arb_sum
     pair_key   = _make_pair_key(bks)
+    market_base, market_spec = _split_market_spec(market_slug)
+    market_display = _market_display_label(market_slug)
 
     legs = []
     for out, bk, odd in legs_raw:
@@ -287,6 +328,9 @@ def _check_legs(
 
     return ArbOpportunity(
         market            = market_slug,
+        market_base       = market_base,
+        market_spec       = market_spec,
+        market_display    = market_display,
         n_legs            = len(legs),
         arb_sum           = round(arb_sum, 6),
         profit_pct        = round(profit_pct, 4),
