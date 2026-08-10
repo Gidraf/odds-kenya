@@ -197,12 +197,13 @@ def get_match_full_markets(parent_match_id: str):
 
     arb_markets = []
     if len(combined) >= 2:
-        for mkt, outcomes in best.items():
-            if len(outcomes) < 2: continue
-            arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
-            if arb_sum < 1.0:
-                arb_markets.append({"market": mkt, "profit_pct": round((1.0 / arb_sum - 1.0) * 100, 4), "arb_sum": round(arb_sum, 6), "legs": [{"outcome": o, "bk": v["bk"], "odd": v["odd"]} for o, v in outcomes.items()]})
-        arb_markets.sort(key=lambda x: -x["profit_pct"])
+        try:
+            from app.workers.arb_engine import detect_arb_for_stream
+            has_arb, _best_arb_pct, arb_markets = detect_arb_for_stream(best)
+            if not has_arb:
+                arb_markets = []
+        except Exception:
+            arb_markets = []
 
     status_out = _effective_status(getattr(um, "status", None), um.start_time)
     analytics_summary = _build_analytics_summary(_get_analytics(parent_match_id, trigger_if_missing=True))
@@ -634,20 +635,13 @@ def _generate_word_document(sport: str, arb_only: bool, start_time_str: str = No
             best = m.get("best") or {}
             arb_markets_calc = []
             if len(m.get("bookmakers") or {}) >= 2:
-                for mkt, outcomes in best.items():
-                    if len(outcomes) < 2: continue
-                    try:
-                        arb_sum = sum(1.0 / float(v["odd"]) for v in outcomes.values())
-                        if arb_sum < 1.0:
-                            profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
-                            legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]}
-                                    for o, v in outcomes.items()]
-                            arb_markets_calc.append({
-                                "market": mkt, "profit_pct": profit_pct,
-                                "arb_sum": round(arb_sum, 6), "legs": legs
-                            })
-                    except Exception: pass
-                arb_markets_calc.sort(key=lambda x: -x["profit_pct"])
+                try:
+                    from app.workers.arb_engine import detect_arb_for_stream
+                    has_arb_calc, _best_arb_calc, arb_markets_calc = detect_arb_for_stream(best)
+                    if not has_arb_calc:
+                        arb_markets_calc = []
+                except Exception:
+                    arb_markets_calc = []
             if arb_markets_calc:
                 m["has_arb"] = True
                 m["arbitrage"] = arb_markets_calc

@@ -73,15 +73,13 @@ def _build_match_dict(um, bmos, bk_objs, links_by_match, arb_set, sport_slug, an
     best_odds = {mkt: {out: {"odd": v["odd"], "bookie": v["bk"]} for out, v in outs.items()} for mkt, outs in best.items()}
     arb_markets = []
     if len(bookmakers) >= 2:
-        for mkt, outcomes in best.items():
-            if len(outcomes) < 2: continue
-            arb_sum = sum(1.0 / v["odd"] for v in outcomes.values())
-            if arb_sum < 1.0:
-                profit_pct = round((1.0 / arb_sum - 1.0) * 100, 4)
-                legs = [{"outcome": o, "bk": v["bk"], "odd": v["odd"]} for o, v in outcomes.items()]
-                breakdown = [{**leg, "stake_pct": round((1.0 / leg["odd"] / arb_sum) * 100, 3), "stake_kes": round(1000 * (1.0 / leg["odd"] / arb_sum), 2), "return_kes": round(1000 * (1.0 / leg["odd"] / arb_sum) * leg["odd"], 2)} for leg in legs]
-                arb_markets.append({"market": mkt, "market_slug": mkt, "profit_pct": profit_pct, "arb_sum": round(arb_sum, 6), "legs": legs, "breakdown_1000": breakdown})
-        arb_markets.sort(key=lambda x: -x["profit_pct"])
+        try:
+            from app.workers.arb_engine import detect_arb_for_stream
+            has_arb, _best_arb_pct, arb_markets = detect_arb_for_stream(best)
+            if not has_arb:
+                arb_markets = []
+        except Exception:
+            arb_markets = []
 
     status_out = _effective_status(getattr(um, "status", None), um.start_time)
     minutes_elapsed = int((_now_utc() - (um.start_time if um.start_time.tzinfo else um.start_time.replace(tzinfo=timezone.utc))).total_seconds() / 60) if um.start_time and status_out == "IN_PLAY" else None

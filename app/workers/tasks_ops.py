@@ -166,6 +166,12 @@ def compute_ev_arb(self, match_id) -> dict:
     arbs: list[dict] = []
     evs:  list[dict] = []
 
+    try:
+        from app.workers.arb_engine import detect_arb_for_stream
+        has_arb, best_arb, arbs = detect_arb_for_stream(best)
+    except Exception:
+        has_arb, best_arb, arbs = False, 0.0, []
+
     for mkt, ob in best.items():
         keys = list(ob.keys())
         n    = len(keys)
@@ -191,20 +197,6 @@ def compute_ev_arb(self, match_id) -> dict:
         if not valid or sum_inv <= 0:
             continue
 
-        if sum_inv < 1.0:
-            profit = round((1.0 - sum_inv) * 100, 3)
-            legs   = [{
-                "outcome": k, "odd": ob[k]["odd"], "bk": ob[k]["bk"],
-                "stake":   round((1.0 / ob[k]["odd"]) / sum_inv, 4),
-            } for k in use]
-            arbs.append({
-                "market":     mkt,
-                "profit_pct": profit,
-                "sum_inv":    round(sum_inv, 6),
-                "legs":       legs,
-                "bks_used":   list({l["bk"] for l in legs}),
-            })
-
         for k in use:
             odd = ob[k]["odd"]
             if odd > 1.0:
@@ -216,9 +208,7 @@ def compute_ev_arb(self, match_id) -> dict:
                         "bk": ob[k]["bk"], "ev_pct": ev_pct,
                     })
 
-    has_arb  = bool(arbs)
     has_ev   = bool(evs)
-    best_arb = max((a["profit_pct"] for a in arbs), default=0.0)
     best_ev  = max((e["ev_pct"]     for e in evs),  default=0.0)
 
     result = {

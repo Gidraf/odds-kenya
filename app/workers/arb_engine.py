@@ -16,8 +16,7 @@ New in this version:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from itertools import combinations
+from dataclasses import dataclass
 from typing import Any
 
 # ── Market classification ──────────────────────────────────────────────────────
@@ -29,11 +28,26 @@ _THREE_WAY = frozenset({
 
 _TWO_WAY = frozenset({
     "btts", "both_teams_to_score", "odd_even",
-    "draw_no_bet", "dnb", "asian_handicap",
+    "draw_no_bet", "dnb",
 })
 
 _OU_PREFIX     = "over_under_"
 _DOUBLE_CHANCE = frozenset({"1X", "X2", "12"})
+
+_AMBIGUOUS_OUTCOMES = frozenset({
+    "", "none", "no goal", "no_goal", "null", "unknown", "other", "othr",
+})
+
+_EXCLUDED_MARKET_TOKENS = (
+    "correct_score",
+    "scorecast",
+    "goalscorer",
+    "winning_margin",
+    "multigoals",
+    "exact_goals",
+    "result_and_",
+    "double_chance_and_",
+)
 
 _BK_LABELS: dict[str, str] = {
     "sp": "SportPesa", "bt": "Betika", "od": "OdiBets",
@@ -52,6 +66,53 @@ def _market_type(slug: str) -> str:
     if s in _TWO_WAY:                                 return "2way"
     if s.startswith(_OU_PREFIX) and "asian" not in s: return "2way"
     return "unknown"
+
+
+def _canon_outcome_key(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_ambiguous_outcome(value: str) -> bool:
+    return _canon_outcome_key(value) in _AMBIGUOUS_OUTCOMES
+
+
+def _market_allowed(slug: str) -> bool:
+    s = slug.lower()
+    if any(tok in s for tok in _EXCLUDED_MARKET_TOKENS):
+        return False
+    return _market_type(s) != "unknown"
+
+
+def _valid_outcomes_for_market(market_slug: str, outcomes: dict[str, dict]) -> dict[str, dict]:
+    """
+    Keep only canonical outcomes required for low-ambiguity arbitrage markets.
+    """
+    slug = market_slug.lower()
+    mtype = _market_type(slug)
+    if mtype == "unknown":
+        return {}
+
+    if mtype == "3way":
+        wanted = {"1", "x", "2"}
+    elif slug.startswith(_OU_PREFIX):
+        wanted = {"over", "under"}
+    elif slug in {"btts", "both_teams_to_score"}:
+        wanted = {"yes", "no"}
+    elif slug == "odd_even":
+        wanted = {"odd", "even"}
+    elif slug in {"draw_no_bet", "dnb"}:
+        wanted = {"1", "2"}
+    else:
+        wanted = set()
+
+    if not wanted:
+        return {}
+
+    filtered: dict[str, dict] = {}
+    for out, data in outcomes.items():
+        if _canon_outcome_key(out) in wanted:
+            filtered[out] = data
+    return filtered
 
 
 def bk_label(slug: str) -> str:
@@ -140,16 +201,18 @@ def detect_all_arbs(
     results: list[ArbOpportunity] = []
 
     for market_slug, outcomes in best.items():
-        if not outcomes:
+        if not outcomes or not _market_allowed(market_slug):
             continue
 
-        # Strip double-chance synthetic outcomes — not valid arb legs
+        # Keep only deterministic outcomes and skip ambiguous labels.
         clean = {
             out: data for out, data in outcomes.items()
             if out not in _DOUBLE_CHANCE
             and isinstance(data, dict)
+            and not _is_ambiguous_outcome(out)
             and data.get("odd", 0) > 1.0
         }
+        clean = _valid_outcomes_for_market(market_slug, clean)
 
         if len(clean) < 2:
             continue
@@ -169,11 +232,7 @@ def detect_all_arbs(
             if arb:
                 results.append(arb)
         else:
-            for combo in combinations(list(clean.keys()), 2):
-                subset = {k: clean[k] for k in combo}
-                arb = _check_legs(market_slug, subset, min_profit_pct, require_n=2)
-                if arb:
-                    results.append(arb)
+            continue
 
     results.sort(key=lambda a: -a.profit_pct)
     return results

@@ -121,7 +121,7 @@ _SIMPLE_MAP = {
     "yes":  "Yes",   "no":    "No",
     "odd":  "Odd",   "even":  "Even",
     "othr": "Other", "other": "Other",
-    "none": "None",
+    "none": "No Goal",
 }
 _HTFT_CONCAT = {
     "11": "1/1", "1x": "1/X", "12": "1/2",
