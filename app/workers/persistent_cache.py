@@ -92,6 +92,30 @@ def _count(data: Any) -> int:
     return 0
 
 
+def _is_effectively_empty_payload(raw_val: Any) -> bool:
+    """
+    True when a Redis key exists but carries no usable matches.
+    This lets startup hydration recover from stale empty payloads.
+    """
+    if not raw_val:
+        return True
+    try:
+        data = json.loads(raw_val)
+    except Exception:
+        return False
+
+    if isinstance(data, dict):
+        matches = data.get("matches")
+        if isinstance(matches, list):
+            return len(matches) == 0
+        return False
+
+    if isinstance(data, list):
+        return len(data) == 0
+
+    return False
+
+
 # =============================================================================
 # SMART SET
 # =============================================================================
@@ -291,7 +315,15 @@ def hydrate_from_unified_match(r) -> int:
 
             # Unified key — the main key _get_unified_patched reads
             unified_key = f"odds:unified:upcoming:{sport_slug}"
-            if not r.exists(unified_key):
+            write_unified = True
+            try:
+                existing_unified = r.get(unified_key)
+                if existing_unified and not _is_effectively_empty_payload(existing_unified):
+                    write_unified = False
+            except Exception:
+                write_unified = True
+
+            if write_unified:
                 smart_set(r, unified_key, {
                     "mode":        "upcoming",
                     "sport":       sport_slug,
@@ -322,7 +354,15 @@ def hydrate_from_unified_match(r) -> int:
                     f"{bk_slug}:upcoming:{sport_slug}",
                     f"odds:{bk_slug}:upcoming:{sport_slug}",
                 ]:
-                    if not r.exists(key_tmpl):
+                    write_bk = True
+                    try:
+                        existing_bk = r.get(key_tmpl)
+                        if existing_bk and not _is_effectively_empty_payload(existing_bk):
+                            write_bk = False
+                    except Exception:
+                        write_bk = True
+
+                    if write_bk:
                         smart_set(r, key_tmpl, bk_payload, ttl=TTL_BK_SNAP)
                         n += 1
 

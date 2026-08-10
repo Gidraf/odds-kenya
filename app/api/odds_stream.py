@@ -22,6 +22,7 @@ import json
 import re
 import time
 import logging
+import threading
 from functools import wraps
 
 from flask import Blueprint, Response, request, stream_with_context, g
@@ -36,6 +37,9 @@ _LOCAL_BKS = {"sp", "bt", "od"}
 _KEEPALIVE  = 20
 _CACHE_TTL  = 300
 
+# Polling interval used when Redis pub/sub is unavailable.
+_DEGRADED_POLL_SEC = 5
+
 _HTFT_MARKETS = frozenset({"ht_ft", "half_time_full_time", "htft"})
 
 ALL_SPORTS = [
@@ -43,6 +47,45 @@ ALL_SPORTS = [
     "volleyball", "handball", "table-tennis", "baseball", "mma", "boxing",
     "darts", "american-football", "esoccer",
 ]
+
+# Last-known-good unified payloads kept in-process so SSE can keep serving data
+# when Redis is temporarily unavailable.
+_LAST_GOOD_LOCK = threading.RLock()
+_LAST_GOOD_UNIFIED: dict[tuple[str, str], dict] = {}
+
+
+def _remember_last_good(mode: str, sport: str, matches: list[dict]) -> None:
+    if not matches:
+        return
+    with _LAST_GOOD_LOCK:
+        _LAST_GOOD_UNIFIED[(mode, sport)] = {
+            "matches": matches,
+            "updated_at": time.time(),
+        }
+
+
+def _get_last_good(mode: str, sport: str, max_age_sec: int = 3600) -> list[dict]:
+    with _LAST_GOOD_LOCK:
+        cached = _LAST_GOOD_UNIFIED.get((mode, sport))
+    if not cached:
+        return []
+    age = time.time() - float(cached.get("updated_at") or 0)
+    if age > max_age_sec:
+        return []
+    matches = cached.get("matches")
+    return matches if isinstance(matches, list) else []
+
+
+def _matches_version(matches: list[dict]) -> str:
+    """Lightweight version marker used to avoid re-emitting identical batches."""
+    if not matches:
+        return "0"
+    ids: list[str] = []
+    for m in matches[:64]:
+        if not isinstance(m, dict):
+            continue
+        ids.append(str(m.get("join_key") or m.get("match_id") or ""))
+    return f"{len(matches)}|{'|'.join(ids)}"
 
 _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
     ("sp", [
@@ -375,7 +418,19 @@ _LIVE_CACHE_TTL      = 30      # live mode: re-read every 30s (scores change)
 
 
 def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
-    r           = _r()
+    try:
+        r = _r()
+    except Exception as exc:
+        stale_mem = _get_last_good(mode, sport)
+        if stale_mem:
+            log.warning(
+                "[unified] Redis unavailable for %s/%s — serving in-memory stale cache (%d matches): %s",
+                mode, sport, len(stale_mem), exc,
+            )
+            return stale_mem
+        log.warning("[unified] Redis unavailable for %s/%s and no stale memory cache: %s", mode, sport, exc)
+        return []
+
     unified_key = f"odds:unified:{mode}:{sport}"
 
     # Read cached data upfront — used for both fresh serve and stale fallback
@@ -394,6 +449,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
     if not force_refresh and cached_matches:
         ttl = _LIVE_CACHE_TTL if mode == "live" else _CACHE_TTL
         if cached_age < ttl:
+            _remember_last_good(mode, sport, cached_matches)
             return cached_matches
 
     # ── Try to rebuild from BK Redis keys ─────────────────────────────────────
@@ -412,6 +468,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
             log.info("[unified] cached %d %s/%s matches", len(merged), mode, sport)
         except Exception as exc:
             log.warning("[unified] cache write failed %s/%s: %s", mode, sport, exc)
+        _remember_last_good(mode, sport, merged)
         return merged
 
     # ── BK keys expired — serve stale unified cache ───────────────────────────
@@ -421,7 +478,16 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
             "(age=%.0fs, %d matches)",
             mode, sport, cached_age, len(cached_matches)
         )
+        _remember_last_good(mode, sport, cached_matches)
         return cached_matches
+
+    stale_mem = _get_last_good(mode, sport)
+    if stale_mem:
+        log.warning(
+            "[unified] 0 Redis matches for %s/%s — serving in-memory stale cache (%d matches)",
+            mode, sport, len(stale_mem),
+        )
+        return stale_mem
 
     log.warning("[unified] 0 matches and no stale cache for %s/%s", mode, sport)
     return []
@@ -760,11 +826,13 @@ def _sse(event: str, data) -> str:
 def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "pro"):
 
     def generate():
+        r = None
+        redis_ready = True
         try:
             r = _r()
-        except RuntimeError as exc:
-            yield _sse("error", {"error": str(exc), "code": 503})
-            return
+        except Exception as exc:
+            redis_ready = False
+            log.warning("[stream] redis unavailable at connect for %s/%s: %s", mode, sport, exc)
 
         all_matches = _get_unified_patched(mode, sport)
         matches     = _filter_tier(all_matches, tier)
@@ -803,12 +871,38 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "p
             "mode":      mode,
             "tier":      tier,
             "live_push": live_tier,
+            "degraded":  not redis_ready,
             "count":     len(matches),
         })
 
         if not live_tier:
             yield ": keepalive\n\n"
             return
+
+        if not redis_ready or r is None:
+            # Redis is down — keep the SSE open and poll the resilient unified layer.
+            last_ver = _matches_version(matches)
+            last_ka = time.time()
+            last_poll = 0.0
+            while True:
+                now = time.time()
+                if now - last_poll >= _DEGRADED_POLL_SEC:
+                    fresh = _filter_tier(_get_unified_patched(mode, sport), tier)
+                    ver = _matches_version(fresh)
+                    if ver != last_ver:
+                        yield _sse("batch", {
+                            "matches": [_strip_markets(m) for m in fresh],
+                            "source":  "degraded_poll",
+                            "sport":   sport,
+                            "mode":    mode,
+                            "count":   len(fresh),
+                        })
+                        last_ver = ver
+                    last_poll = now
+                if now - last_ka > _KEEPALIVE:
+                    yield ": keepalive\n\n"
+                    last_ka = now
+                time.sleep(0.5)
 
         # ── Pub/sub push loop ─────────────────────────────────────────────
         pubsub   = r.pubsub(ignore_subscribe_messages=True)
@@ -824,7 +918,32 @@ def _make_generator(mode: str, sport: str, user, live_tier: bool, tier: str = "p
 
         try:
             while True:
-                msg = pubsub.get_message(timeout=1.0)
+                try:
+                    msg = pubsub.get_message(timeout=1.0)
+                except Exception as exc:
+                    log.warning("[stream] pubsub lost for %s/%s, switching to degraded polling: %s", mode, sport, exc)
+                    last_ver = _matches_version(matches)
+                    last_ka = time.time()
+                    last_poll = 0.0
+                    while True:
+                        now = time.time()
+                        if now - last_poll >= _DEGRADED_POLL_SEC:
+                            fresh = _filter_tier(_get_unified_patched(mode, sport), tier)
+                            ver = _matches_version(fresh)
+                            if ver != last_ver:
+                                yield _sse("batch", {
+                                    "matches": [_strip_markets(m) for m in fresh],
+                                    "source":  "degraded_poll",
+                                    "sport":   sport,
+                                    "mode":    mode,
+                                    "count":   len(fresh),
+                                })
+                                last_ver = ver
+                            last_poll = now
+                        if now - last_ka > _KEEPALIVE:
+                            yield ": keepalive\n\n"
+                            last_ka = now
+                        time.sleep(0.5)
                 if msg and msg.get("type") == "message":
                     try:
                         payload = json.loads(msg["data"])
