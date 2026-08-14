@@ -38,7 +38,7 @@ from urllib3.util.retry import Retry
 
 # ─── Shared proxy ─────────────────────────────────────────────────────────────
 import os
-_PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
+_PROXY = os.environ.get("ALL_PROXY") or os.environ.get("HTTP_PROXY") or "socks5h://100.68.207.107:1080"
 
 # ─── How far ahead to bother fetching full (multi-market) details ─────────────
 # Matches beyond this window get only the inline 1X2 odds.
@@ -109,7 +109,7 @@ _COMPRESSION_HEADERS = {
 }
 
 def make_httpx_client(
-    proxy: str = _PROXY,
+    proxy: str | None = None,
     max_connections: int = 40,       # lower than before — saves phone RAM
     max_keepalive: int = 20,
     keepalive_expiry: float = 30.0,
@@ -124,22 +124,35 @@ def make_httpx_client(
     saving N × (TCP handshake + TLS + proxy CONNECT) round-trips over your
     phone link.
     """
+    if not proxy:
+        from app.utils.proxy_manager import get_active_proxy
+        proxy = get_active_proxy()
+
     limits = httpx.Limits(
         max_connections=max_connections,
         max_keepalive_connections=max_keepalive,
         keepalive_expiry=keepalive_expiry,
     )
-    transport = httpx.HTTPTransport(
-        proxy=proxy,
-        retries=2,
-        http2=http2,
-    )
-    return httpx.Client(
-        headers=_COMPRESSION_HEADERS,
-        limits=limits,
-        timeout=timeout,
-        transport=transport,
-    )
+    if proxy and proxy.startswith("socks"):
+        return httpx.Client(
+            proxy=proxy,
+            headers=_COMPRESSION_HEADERS,
+            limits=limits,
+            timeout=timeout,
+            http2=http2,
+        )
+    else:
+        transport = httpx.HTTPTransport(
+            proxy=proxy if proxy else None,
+            retries=2,
+            http2=http2,
+        )
+        return httpx.Client(
+            headers=_COMPRESSION_HEADERS,
+            limits=limits,
+            timeout=timeout,
+            transport=transport,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -176,7 +189,7 @@ _etag_cache = _ETagCache()
 
 
 def compressed_session(
-    proxy: str = _PROXY,
+    proxy: str | None = None,
     pool_connections: int = 10,
     pool_maxsize: int = 20,
 ) -> requests.Session:
@@ -188,8 +201,12 @@ def compressed_session(
       - ETag support               → 304 responses cost ~200 bytes vs full payload
       - Larger connection pool     → reuse sockets across paged sport requests
     """
+    if not proxy:
+        from app.utils.proxy_manager import get_active_proxy
+        proxy = get_active_proxy()
     session = requests.Session()
-    session.proxies = {"http": proxy, "https": proxy}
+    if proxy:
+        session.proxies = {"http": proxy, "https": proxy}
 
     retries = Retry(total=3, backoff_factor=0.5,
                     status_forcelist=[500, 502, 503, 504])

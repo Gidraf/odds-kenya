@@ -156,8 +156,8 @@ def _get(url: str, params: dict | None = None, timeout: float = 10.0) -> dict | 
     for attempt in range(2):
         try:
             import os
-            _PROXY = os.environ.get("ALL_PROXY", "socks5h://[100.68.207.107]")
-            r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout, proxies={"all://": _PROXY})
+            _PROXY = os.environ.get("ALL_PROXY") or os.environ.get("HTTP_PROXY") or "socks5h://100.68.207.107:1080"
+            r = httpx.get(url, params=params, headers=HEADERS, timeout=timeout, proxy=_PROXY if _PROXY else None)
             r.raise_for_status()
             return r.json()
         except httpx.HTTPStatusError as exc:

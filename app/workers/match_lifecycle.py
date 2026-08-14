@@ -489,11 +489,11 @@ class SofaScoreBridge:
             return None
         try:
             import os
-            _PROXY = os.environ.get("_PROXY", "socks5h://[100.68.207.107]")
+            _PROXY = os.environ.get("ALL_PROXY") or os.environ.get("HTTP_PROXY") or "socks5h://100.68.207.107:1080"
             resp = httpx.get(
                 f"{SOFASCORE_API}/event/{sofascore_id}",
                 headers=self._headers, timeout=6.0,
-                proxies={"all://": _PROXY}
+                proxy=_PROXY if _PROXY else None
             )
             if not resp.is_success:
                 return None
