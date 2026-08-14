@@ -152,7 +152,7 @@ def _rebuild_unified_snapshot(r, mode: str, sport: str, ttl: int = 3600) -> None
     all_matches: list[dict] = []
     seen_ids: set = set()
 
-    for bk in ["sp", "bt", "od", "b2b"]:
+    for bk in ALL_BK_SLUGS:
         raw = r.get(ch_data(bk, mode, sport))
         if not raw:
             continue

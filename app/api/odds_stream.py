@@ -247,20 +247,57 @@ def _get_price(p) -> float:
     except: return 0.0
 
 
-def _normalise_markets(markets: dict) -> dict:
-    if not markets or not isinstance(markets, dict): return markets or {}
+def _normalise_markets(markets) -> dict:
+    if not markets:
+        return {}
+
+    # If markets is a list of market objects: [{"name"/"slug": "1X2", "outcomes": [...] or {...}}, ...]
+    if isinstance(markets, list):
+        converted = {}
+        for mkt_item in markets:
+            if not isinstance(mkt_item, dict):
+                continue
+            mkt_name = (
+                mkt_item.get("slug") or mkt_item.get("name") or
+                mkt_item.get("market") or mkt_item.get("market_name") or ""
+            ).strip()
+            if not mkt_name:
+                continue
+
+            raw_outcomes = mkt_item.get("outcomes") or mkt_item.get("selections") or mkt_item.get("odds") or {}
+            outcomes_dict = {}
+            if isinstance(raw_outcomes, list):
+                for o in raw_outcomes:
+                    if isinstance(o, dict):
+                        oname = (o.get("name") or o.get("outcome") or o.get("type") or o.get("header") or "").strip()
+                        oprice = _get_price(o.get("odds") or o.get("price") or o.get("value") or o)
+                        if oname:
+                            outcomes_dict[oname] = oprice
+            elif isinstance(raw_outcomes, dict):
+                for k, v in raw_outcomes.items():
+                    outcomes_dict[str(k)] = _get_price(v)
+
+            if outcomes_dict:
+                converted[mkt_name] = outcomes_dict
+        markets = converted
+
+    if not isinstance(markets, dict):
+        return {}
+
     result = {}
     for mkt, outcomes in markets.items():
-        if not isinstance(outcomes, dict): result[mkt] = outcomes; continue
+        if not isinstance(outcomes, dict):
+            result[str(mkt)] = outcomes
+            continue
         norm: dict = {}
         for raw_k, val in outcomes.items():
-            can_k = _norm_outcome(str(raw_k), mkt)
+            can_k = _norm_outcome(str(raw_k), str(mkt))
             price = _get_price(val)
             if can_k not in norm:
                 norm[can_k] = val
             elif price > _get_price(norm[can_k]):
                 norm[can_k] = val
-        result[mkt] = norm
+        result[str(mkt)] = norm
     return result
 
 
