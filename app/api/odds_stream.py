@@ -23,6 +23,7 @@ import re
 import time
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 from flask import Blueprint, Response, request, stream_with_context, g
@@ -524,11 +525,29 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
     return []
 
 
+def _parse_start_time(st_raw) -> datetime | None:
+    if not st_raw:
+        return None
+    try:
+        if isinstance(st_raw, (int, float)):
+            if st_raw > 1e11:
+                st_raw = st_raw / 1000.0
+            return datetime.fromtimestamp(st_raw, tz=timezone.utc)
+        s = str(st_raw).strip()
+        if not s:
+            return None
+        s = s if (s.endswith("Z") or "+" in s) else s + "Z"
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
                is_live_mode: bool = False) -> list[dict]:
     result:  list[dict] = []
     by_jk:   dict[str, int] = {}
     by_name: dict[str, int] = {}
+    now_utc = datetime.now(timezone.utc)
 
     def jk(m: dict) -> str:
         return str(
@@ -557,6 +576,25 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
         for m in raw_matches:
             if not isinstance(m, dict):
                 continue
+
+            # ── Strict Time & Live/Upcoming Filtering ───────────────────────
+            st_raw = m.get("start_time")
+            st_dt = _parse_start_time(st_raw)
+            status_str = str(m.get("status") or "").upper()
+
+            if is_live_mode:
+                if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
+                    continue
+                # For live matches: must have kicked off within the last 3.5 hours and not > 30 min in future
+                if st_dt and (st_dt < (now_utc - timedelta(hours=3, minutes=30)) or st_dt > (now_utc + timedelta(minutes=30))):
+                    continue
+            else:
+                if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED", "IN_PLAY", "LIVE", "INPLAY", "IN PLAY"):
+                    continue
+                # For upcoming matches: start time must be NOW or in the future (>= now - 5 mins)
+                if st_dt and st_dt < (now_utc - timedelta(minutes=5)):
+                    continue
+
             key_jk = jk(m); key_nk = nk(m)
             pos = by_jk.get(key_jk) if key_jk else None
             if pos is None and key_nk:

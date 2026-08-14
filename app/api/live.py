@@ -178,6 +178,21 @@ def _filter_matches(matches: list, request_args) -> list:
             except Exception:
                 pass
 
+        # Mode & Time Filtering (Now and Above)
+        mode = (request_args.get("mode") or request_args.get("phase") or "").lower()
+        status_str = str(m.get("status") or "").upper()
+
+        if mode == "live" or m.get("is_live"):
+            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
+                continue
+            if st_dt and (st_dt < (now - timedelta(hours=3, minutes=30)) or st_dt > (now + timedelta(minutes=30))):
+                continue
+        elif mode == "upcoming":
+            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED", "IN_PLAY", "LIVE", "INPLAY", "IN PLAY"):
+                continue
+            if st_dt and st_dt < (now - timedelta(minutes=5)):
+                continue
+
         # Days-ahead filter
         if cutoff_dt and st_dt and st_dt > cutoff_dt:
             continue
