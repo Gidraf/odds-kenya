@@ -50,6 +50,36 @@ KEEPALIVE_SEC = 15
 SSE_TIMEOUT   = 3600   # 1 hour max per SSE connection
 
 
+_SPORT_LIVE_DURATION_HOURS: dict[str, float] = {
+    "soccer":            2.2,   # ~2h 12m
+    "football":          2.2,
+    "basketball":        2.2,   # ~2h 12m
+    "tennis":            3.5,   # ~3.5h
+    "ice-hockey":        2.5,   # ~2.5h
+    "volleyball":        2.5,   # ~2.5h
+    "handball":          2.0,   # ~2.0h
+    "table-tennis":      1.5,   # ~1.5h
+    "badminton":         1.5,
+    "squash":            1.5,
+    "snooker":           4.0,
+    "cricket":           5.0,
+    "rugby":             2.2,   # ~80m + halftime
+    "baseball":          3.5,
+    "american-football": 3.5,
+    "mma":               1.5,
+    "boxing":            1.5,
+    "darts":             2.5,
+    "esoccer":           0.5,   # ~15-30m
+    "futsal":            1.8,
+}
+
+def _get_max_live_hours(sport_name: str | None) -> float:
+    if not sport_name:
+        return 3.0
+    sp = str(sport_name).lower().strip()
+    return _SPORT_LIVE_DURATION_HOURS.get(sp, 3.0)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -169,28 +199,29 @@ def _filter_matches(matches: list, request_args) -> list:
     out = []
     for m in matches:
         st_raw = m.get("start_time")
-        st_dt  = None
-        if st_raw:
-            try:
-                s     = str(st_raw)
-                s     = s if (s.endswith("Z") or "+" in s) else s + "Z"
-                st_dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            except Exception:
-                pass
+        from app.api.odds_stream import _parse_start_time
+        st_dt = _parse_start_time(st_raw)
 
-        # Mode & Time Filtering (Now and Above)
+        # Mode & Time Filtering (Now and Above with Sport Duration Bounds)
         mode = (request_args.get("mode") or request_args.get("phase") or "").lower()
         status_str = str(m.get("status") or "").upper()
+        sport_slug = str(m.get("sport") or request_args.get("sport") or "soccer").lower()
 
         if mode == "live" or m.get("is_live"):
             if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
                 continue
-            if st_dt and (st_dt < (now - timedelta(hours=3, minutes=30)) or st_dt > (now + timedelta(minutes=30))):
-                continue
+            if st_dt:
+                # 1. UNDER: Match start_time is in the future (> 20 mins)
+                if st_dt > (now + timedelta(minutes=20)):
+                    continue
+                # 2. OVER: Match duration has elapsed
+                max_hours = _get_max_live_hours(sport_slug)
+                if st_dt < (now - timedelta(hours=max_hours)):
+                    continue
         elif mode == "upcoming":
-            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED", "IN_PLAY", "LIVE", "INPLAY", "IN PLAY"):
+            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
                 continue
-            if st_dt and st_dt < (now - timedelta(minutes=5)):
+            if st_dt and st_dt < (now - timedelta(minutes=10)):
                 continue
 
         # Days-ahead filter

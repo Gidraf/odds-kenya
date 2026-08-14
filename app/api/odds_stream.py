@@ -96,10 +96,16 @@ _BK_KEY_FORMATS: list[tuple[str, list[str]]] = [
     ("bt", [
         "odds:bt:upcoming:{sport}",
         "bt:upcoming:{sport}",
+        "bt:upcoming:{sport}:data",
     ]),
     ("od", [
         "odds:od:upcoming:{sport}",
         "od:upcoming:{sport}",
+        "od:upcoming:{sport}:data",
+    ]),
+    ("mz", [
+        "odds:mz:upcoming:{sport}",
+        "mz:upcoming:{sport}",
     ]),
     ("1xbet", [
         "odds:1xbet:upcoming:{sport}",
@@ -142,6 +148,14 @@ _BK_KEY_FORMATS_LIVE: list[tuple[str, list[str]]] = [
     ("sp", ["odds:sp:live:{sport}", "sp:live:{sport}"]),
     ("bt", ["odds:bt:live:{sport}", "bt:live:{sport}"]),
     ("od", ["odds:od:live:{sport}", "od:live:{sport}"]),
+    ("mz", ["odds:mz:live:{sport}", "mz:live:{sport}"]),
+    ("1xbet", ["odds:1xbet:live:{sport}", "odds:b2b:1xbet:live:{sport}"]),
+    ("22bet", ["odds:22bet:live:{sport}", "odds:b2b:22bet:live:{sport}"]),
+    ("betwinner", ["odds:betwinner:live:{sport}", "odds:b2b:betwinner:live:{sport}"]),
+    ("melbet", ["odds:melbet:live:{sport}", "odds:b2b:melbet:live:{sport}"]),
+    ("megapari", ["odds:megapari:live:{sport}", "odds:b2b:megapari:live:{sport}"]),
+    ("helabet", ["odds:helabet:live:{sport}", "odds:b2b:helabet:live:{sport}"]),
+    ("paripesa", ["odds:paripesa:live:{sport}", "odds:b2b:paripesa:live:{sport}"]),
 ]
 
 # ── Outcome normalisation ──────────────────────────────────────────────────────
@@ -449,7 +463,69 @@ _STALE_FALLBACK_TTL  = 86400   # also 24h — always serve stale if BK keys expi
 _LIVE_CACHE_TTL      = 30      # live mode: re-read every 30s (scores change)
 
 
-def _filter_by_time_and_mode(matches: list[dict], mode: str) -> list[dict]:
+_EAT_TZ = timezone(timedelta(hours=3))
+
+_SPORT_LIVE_DURATION_HOURS: dict[str, float] = {
+    "soccer":            2.75,  # ~2h 45m (90m + HT 15m + ET/stoppage)
+    "football":          2.75,
+    "basketball":        2.5,   # ~2.5h
+    "tennis":            4.0,   # ~4.0h
+    "ice-hockey":        3.0,   # ~3.0h
+    "volleyball":        3.0,   # ~3.0h
+    "handball":          2.2,   # ~2.2h
+    "table-tennis":      2.0,   # ~2.0h
+    "badminton":         2.0,
+    "squash":            2.0,
+    "snooker":           5.0,
+    "cricket":           6.0,
+    "rugby":             2.5,   # ~80m + HT
+    "baseball":          4.0,
+    "american-football": 4.0,
+    "mma":               2.0,
+    "boxing":            2.0,
+    "darts":             3.0,
+    "esoccer":           1.0,   # ~30-60m
+    "futsal":            2.0,
+}
+
+def _get_max_live_hours(sport_name: str | None) -> float:
+    if not sport_name:
+        return 3.0
+    sp = str(sport_name).lower().strip()
+    return _SPORT_LIVE_DURATION_HOURS.get(sp, 3.0)
+
+
+def _parse_start_time(st_raw) -> datetime | None:
+    if not st_raw:
+        return None
+    try:
+        if isinstance(st_raw, (int, float)):
+            if st_raw > 1e11:
+                st_raw = st_raw / 1000.0
+            return datetime.fromtimestamp(st_raw, tz=timezone.utc)
+        s = str(st_raw).strip()
+        if not s:
+            return None
+
+        # Check if timestamp already contains timezone info (+, Z, or ISO offset)
+        has_explicit_tz = s.endswith("Z") or "+" in s[10:] or (len(s) > 19 and "-" in s[19:])
+
+        if has_explicit_tz:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        else:
+            # Naive timestamp string (e.g. "2026-08-14 21:00:00") from Kenya bookmakers -> treat as UTC+3 (EAT)
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_EAT_TZ)
+            return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _filter_by_time_and_mode(matches: list[dict], mode: str, sport: str = "") -> list[dict]:
     if not matches:
         return []
     now_utc = datetime.now(timezone.utc)
@@ -460,20 +536,34 @@ def _filter_by_time_and_mode(matches: list[dict], mode: str) -> list[dict]:
         st_raw = m.get("start_time")
         st_dt = _parse_start_time(st_raw)
         status_str = str(m.get("status") or "").upper()
+        sport_slug = str(m.get("sport") or sport or "").lower()
 
         if mode == "live":
+            # Exclude terminal statuses
             if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
                 continue
-            # Live matches must have kicked off within the last 3.5 hours and not > 30 min in future
-            if st_dt and (st_dt < (now_utc - timedelta(hours=3, minutes=30)) or st_dt > (now_utc + timedelta(minutes=30))):
-                continue
+
+            if st_dt:
+                # 1. UNDER: Match start_time has not arrived yet (allow up to 20m grace window for matches starting right now)
+                if st_dt > (now_utc + timedelta(minutes=20)):
+                    continue
+
+                # 2. OVER: Match duration has passed (kickoff + max_duration < now)
+                max_hours = _get_max_live_hours(sport_slug)
+                if st_dt < (now_utc - timedelta(hours=max_hours)):
+                    continue
+
             filtered.append(m)
-        else:  # upcoming mode
-            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED", "IN_PLAY", "LIVE", "INPLAY", "IN PLAY"):
+        else:  # upcoming / pre-match mode
+            # Exclude terminal statuses
+            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
                 continue
-            # Upcoming matches must start NOW or in the future (>= now - 5 mins)
-            if st_dt and st_dt < (now_utc - timedelta(minutes=5)):
-                continue
+
+            if st_dt:
+                # Exclude past matches (kickoff was > 10 minutes ago)
+                if st_dt < (now_utc - timedelta(minutes=10)):
+                    continue
+
             filtered.append(m)
     return filtered
 
@@ -488,7 +578,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
                 "[unified] Redis unavailable for %s/%s — serving in-memory stale cache (%d matches): %s",
                 mode, sport, len(stale_mem), exc,
             )
-            return _filter_by_time_and_mode(stale_mem, mode)
+            return _filter_by_time_and_mode(stale_mem, mode, sport)
         log.warning("[unified] Redis unavailable for %s/%s and no stale memory cache: %s", mode, sport, exc)
         return []
 
@@ -510,7 +600,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
     if not force_refresh and cached_matches:
         ttl = _LIVE_CACHE_TTL if mode == "live" else _CACHE_TTL
         if cached_age < ttl:
-            filtered_cache = _filter_by_time_and_mode(cached_matches, mode)
+            filtered_cache = _filter_by_time_and_mode(cached_matches, mode, sport)
             _remember_last_good(mode, sport, filtered_cache)
             return filtered_cache
 
@@ -519,7 +609,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
     merged     = _merge_bks(r, sport, bk_formats, is_live_mode=(mode == "live"))
 
     if merged:
-        filtered_merged = _filter_by_time_and_mode(merged, mode)
+        filtered_merged = _filter_by_time_and_mode(merged, mode, sport)
         try:
             r.setex(unified_key, _UNIFIED_CACHE_TTL, json.dumps({
                 "mode":        mode,
@@ -536,7 +626,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
 
     # ── BK keys expired — serve stale unified cache ───────────────────────────
     if cached_matches and cached_age < _STALE_FALLBACK_TTL:
-        filtered_stale = _filter_by_time_and_mode(cached_matches, mode)
+        filtered_stale = _filter_by_time_and_mode(cached_matches, mode, sport)
         log.warning(
             "[unified] BK keys empty for %s/%s — serving stale cache "
             "(age=%.0fs, %d matches)",
@@ -551,27 +641,10 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
             "[unified] 0 Redis matches for %s/%s — serving in-memory stale cache (%d matches)",
             mode, sport, len(stale_mem),
         )
-        return _filter_by_time_and_mode(stale_mem, mode)
+        return _filter_by_time_and_mode(stale_mem, mode, sport)
 
     log.warning("[unified] 0 matches and no stale cache for %s/%s", mode, sport)
     return []
-
-
-def _parse_start_time(st_raw) -> datetime | None:
-    if not st_raw:
-        return None
-    try:
-        if isinstance(st_raw, (int, float)):
-            if st_raw > 1e11:
-                st_raw = st_raw / 1000.0
-            return datetime.fromtimestamp(st_raw, tz=timezone.utc)
-        s = str(st_raw).strip()
-        if not s:
-            return None
-        s = s if (s.endswith("Z") or "+" in s) else s + "Z"
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except Exception:
-        return None
 
 
 def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
@@ -617,14 +690,16 @@ def _merge_bks(r, sport: str, bk_formats: list[tuple[str, list[str]]],
             if is_live_mode:
                 if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
                     continue
-                # For live matches: must have kicked off within the last 3.5 hours and not > 30 min in future
-                if st_dt and (st_dt < (now_utc - timedelta(hours=3, minutes=30)) or st_dt > (now_utc + timedelta(minutes=30))):
-                    continue
+                if st_dt:
+                    if st_dt > (now_utc + timedelta(minutes=20)):
+                        continue
+                    max_hours = _get_max_live_hours(sport)
+                    if st_dt < (now_utc - timedelta(hours=max_hours)):
+                        continue
             else:
-                if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED", "IN_PLAY", "LIVE", "INPLAY", "IN PLAY"):
+                if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
                     continue
-                # For upcoming matches: start time must be NOW or in the future (>= now - 5 mins)
-                if st_dt and st_dt < (now_utc - timedelta(minutes=5)):
+                if st_dt and st_dt < (now_utc - timedelta(minutes=10)):
                     continue
 
             key_jk = jk(m); key_nk = nk(m)
