@@ -449,6 +449,35 @@ _STALE_FALLBACK_TTL  = 86400   # also 24h — always serve stale if BK keys expi
 _LIVE_CACHE_TTL      = 30      # live mode: re-read every 30s (scores change)
 
 
+def _filter_by_time_and_mode(matches: list[dict], mode: str) -> list[dict]:
+    if not matches:
+        return []
+    now_utc = datetime.now(timezone.utc)
+    filtered = []
+    for m in matches:
+        if not isinstance(m, dict):
+            continue
+        st_raw = m.get("start_time")
+        st_dt = _parse_start_time(st_raw)
+        status_str = str(m.get("status") or "").upper()
+
+        if mode == "live":
+            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED"):
+                continue
+            # Live matches must have kicked off within the last 3.5 hours and not > 30 min in future
+            if st_dt and (st_dt < (now_utc - timedelta(hours=3, minutes=30)) or st_dt > (now_utc + timedelta(minutes=30))):
+                continue
+            filtered.append(m)
+        else:  # upcoming mode
+            if status_str in ("FINISHED", "CLOSED", "ENDED", "CANCELLED", "POSTPONED", "SETTLED", "IN_PLAY", "LIVE", "INPLAY", "IN PLAY"):
+                continue
+            # Upcoming matches must start NOW or in the future (>= now - 5 mins)
+            if st_dt and st_dt < (now_utc - timedelta(minutes=5)):
+                continue
+            filtered.append(m)
+    return filtered
+
+
 def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> list[dict]:
     try:
         r = _r()
@@ -459,7 +488,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
                 "[unified] Redis unavailable for %s/%s — serving in-memory stale cache (%d matches): %s",
                 mode, sport, len(stale_mem), exc,
             )
-            return stale_mem
+            return _filter_by_time_and_mode(stale_mem, mode)
         log.warning("[unified] Redis unavailable for %s/%s and no stale memory cache: %s", mode, sport, exc)
         return []
 
@@ -481,37 +510,40 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
     if not force_refresh and cached_matches:
         ttl = _LIVE_CACHE_TTL if mode == "live" else _CACHE_TTL
         if cached_age < ttl:
-            _remember_last_good(mode, sport, cached_matches)
-            return cached_matches
+            filtered_cache = _filter_by_time_and_mode(cached_matches, mode)
+            _remember_last_good(mode, sport, filtered_cache)
+            return filtered_cache
 
     # ── Try to rebuild from BK Redis keys ─────────────────────────────────────
     bk_formats = _BK_KEY_FORMATS_LIVE if mode == "live" else _BK_KEY_FORMATS
     merged     = _merge_bks(r, sport, bk_formats, is_live_mode=(mode == "live"))
 
     if merged:
+        filtered_merged = _filter_by_time_and_mode(merged, mode)
         try:
             r.setex(unified_key, _UNIFIED_CACHE_TTL, json.dumps({
                 "mode":        mode,
                 "sport":       sport,
-                "match_count": len(merged),
+                "match_count": len(filtered_merged),
                 "updated_at":  time.time(),
-                "matches":     merged,
+                "matches":     filtered_merged,
             }, default=str))
-            log.info("[unified] cached %d %s/%s matches", len(merged), mode, sport)
+            log.info("[unified] cached %d %s/%s matches", len(filtered_merged), mode, sport)
         except Exception as exc:
             log.warning("[unified] cache write failed %s/%s: %s", mode, sport, exc)
-        _remember_last_good(mode, sport, merged)
-        return merged
+        _remember_last_good(mode, sport, filtered_merged)
+        return filtered_merged
 
     # ── BK keys expired — serve stale unified cache ───────────────────────────
     if cached_matches and cached_age < _STALE_FALLBACK_TTL:
+        filtered_stale = _filter_by_time_and_mode(cached_matches, mode)
         log.warning(
             "[unified] BK keys empty for %s/%s — serving stale cache "
             "(age=%.0fs, %d matches)",
-            mode, sport, cached_age, len(cached_matches)
+            mode, sport, cached_age, len(filtered_stale)
         )
-        _remember_last_good(mode, sport, cached_matches)
-        return cached_matches
+        _remember_last_good(mode, sport, filtered_stale)
+        return filtered_stale
 
     stale_mem = _get_last_good(mode, sport)
     if stale_mem:
@@ -519,7 +551,7 @@ def _get_unified_patched(mode: str, sport: str, force_refresh: bool = False) -> 
             "[unified] 0 Redis matches for %s/%s — serving in-memory stale cache (%d matches)",
             mode, sport, len(stale_mem),
         )
-        return stale_mem
+        return _filter_by_time_and_mode(stale_mem, mode)
 
     log.warning("[unified] 0 matches and no stale cache for %s/%s", mode, sport)
     return []
