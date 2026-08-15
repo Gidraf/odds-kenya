@@ -533,6 +533,12 @@ def _get_max_live_hours(sport_name: str | None) -> float:
 
 
 def _parse_start_time(st_raw) -> datetime | None:
+    """
+    Parse a start_time value from any bookmaker into a UTC-aware datetime.
+    
+    Betika, Odibets, SportPesa, MozzartBet, and B2B APIs all return UTC timestamps.
+    Naive strings (no tz suffix) are treated as UTC.
+    """
     if not st_raw:
         return None
     try:
@@ -541,23 +547,21 @@ def _parse_start_time(st_raw) -> datetime | None:
                 st_raw = st_raw / 1000.0
             return datetime.fromtimestamp(st_raw, tz=timezone.utc)
         s = str(st_raw).strip()
-        if not s:
+        if not s or s in ("None", "null", ""):
             return None
 
-        # Check if timestamp already contains timezone info (+, Z, or ISO offset)
-        has_explicit_tz = s.endswith("Z") or "+" in s[10:] or (len(s) > 19 and "-" in s[19:])
+        # Normalise common separators
+        s = s.replace("T", " ", 1) if "T" in s and "Z" not in s and "+" not in s else s
 
-        if has_explicit_tz:
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
-        else:
-            # Naive timestamp string (e.g. "2026-08-14 21:00:00") from Kenya bookmakers -> treat as UTC+3 (EAT)
-            dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_EAT_TZ)
-            return dt.astimezone(timezone.utc)
+        # Try explicit tz first (Z suffix or +HH:MM offset)
+        if s.endswith("Z"):
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if "+" in s[10:]:
+            return datetime.fromisoformat(s).astimezone(timezone.utc)
+
+        # Naive string — all bookmaker APIs return UTC
+        dt = datetime.fromisoformat(s)
+        return dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
 
